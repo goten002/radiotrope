@@ -1,0 +1,24 @@
+[package]
+name = "radiotrope"
+version = "0.1.0-dev"
+edition = "2021"
+rust-version = "1.75"
+description = "Internet radio engine - stream resolution, audio playback, and format probing"
+license = "MIT"
+authors = ["George Alexiou <goten002@gmail.com>"]
+repository = "https://github.com/goten002/radiotrope"
+readme = "../../README.md"
+keywords = ["radio", "audio", "streaming", "internet-radio"]
+categories = ["multimedia::audio"]
+
+[dependencies]
+rodio = { workspace = true }
+symphonia = { workspace = true }
+symphonia-adapter-libopus = { workspace = true }
+symphonia-adapter-fdk-aac = { workspace = true }
+rustfft = { workspace = true }
+m3u8-rs = { workspace = true }
+mpeg2ts = { workspace = true }
+crossbeam-channel = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }

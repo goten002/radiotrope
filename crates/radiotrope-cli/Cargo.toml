@@ -1,0 +1,24 @@
+[package]
+name = "radiotrope-cli"
+version = "0.1.0-dev"
+edition = "2021"
+rust-version = "1.75"
+description = "Terminal internet radio player"
+license = "MIT"
+authors = ["George Alexiou <goten002@gmail.com>"]
+repository = "https://github.com/goten002/radiotrope"
+readme = "../../README.md"
+keywords = ["radio", "tui", "streaming", "internet-radio"]
+categories = ["command-line-utilities", "multimedia::audio"]
+
+[[bin]]
+name = "radiotrope-cli"
+path = "src/main.rs"
+
+[dependencies]
+radiotrope = { path = "../radiotrope" }
+crossbeam-channel = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.30"
+crossterm = "0.29"
+libc = "0.2"

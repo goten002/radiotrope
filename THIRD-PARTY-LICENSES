@@ -1,0 +1,46 @@
+Third-Party Licenses
+====================
+
+Radiotrope depends on the following third-party libraries that have licenses
+differing from the project's MIT license. All other dependencies are licensed
+under MIT, Apache-2.0, or a dual MIT/Apache-2.0 license.
+
+
+Symphonia
+---------
+Audio demuxing and decoding library.
+
+License: Mozilla Public License 2.0 (MPL-2.0)
+Source:  https://github.com/pdeljanov/Symphonia
+SPDX:   MPL-2.0
+
+The MPL-2.0 is a file-level copyleft license. Symphonia's source files remain
+under MPL-2.0. If you modify any Symphonia source files and distribute the
+result, you must make those modifications available under the MPL-2.0.
+
+Using Symphonia as an unmodified dependency (as this project does) does not
+impose copyleft requirements on the rest of the codebase.
+
+Full license text: https://www.mozilla.org/en-US/MPL/2.0/
+
+
+Fraunhofer FDK AAC (via symphonia-adapter-fdk-aac)
+---------------------------------------------------
+AAC audio codec library.
+
+License: Fraunhofer FDK AAC Codec Library for Android (BSD-style with patent disclaimer)
+Source:  https://github.com/mstorsjo/fdk-aac
+SPDX:   FDK-AAC
+
+The Rust wrapper crate (symphonia-adapter-fdk-aac) is licensed under
+MIT/Apache-2.0. However, the underlying C library (libfdk-aac) is distributed
+under the Fraunhofer FDK AAC license, which includes the following notice:
+
+  "NO EXPRESS OR IMPLIED LICENSES TO ANY PATENT CLAIMS, including without
+   limitation the patents of Fraunhofer, ARE GRANTED BY THIS SOFTWARE LICENSE."
+
+This means no patent license is provided for AAC encoding or decoding. Users
+distributing binaries that include FDK-AAC should be aware of potential patent
+obligations in their jurisdiction.
+
+Full license text: https://github.com/mstorsjo/fdk-aac/blob/master/NOTICE
