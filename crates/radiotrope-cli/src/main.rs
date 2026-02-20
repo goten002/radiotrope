@@ -38,7 +38,7 @@ struct App {
     decode_errors: u64,
     bytes_received: u64,
     health_state: HealthState,
-    buffer_target: usize,
+    buffer_capacity: usize,
     buffer_level: usize,
     is_buffering: bool,
     throughput_kbps: f64,
@@ -66,7 +66,7 @@ impl App {
             decode_errors: 0,
             bytes_received: 0,
             health_state: HealthState::WaitingForAudio,
-            buffer_target: 0,
+            buffer_capacity: 0,
             buffer_level: 0,
             is_buffering: false,
             throughput_kbps: 0.0,
@@ -288,7 +288,7 @@ fn update_stats(
         app.frames_played = stats.frames_played;
         app.decode_errors = stats.decode_errors;
         app.health_state = stats.health_state;
-        app.buffer_target = stats.buffer_target_bytes;
+        app.buffer_capacity = stats.buffer_capacity_bytes;
         app.buffer_level = stats.buffer_level_bytes;
         app.is_buffering = stats.is_buffering;
         app.throughput_kbps = stats.throughput_kbps;

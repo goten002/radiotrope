@@ -3,20 +3,21 @@ resolver = "2"
 members = [
     "crates/radiotrope",
     "crates/radiotrope-cli",
+    "crates/radiotrope-app",
 ]
 
 [workspace.dependencies]
 # Audio
-rodio = { version = "0.21", default-features = false, features = ["playback"] }
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 symphonia = { version = "0.5", default-features = false, features = [
     "ogg", "pcm", "mp3", "aac", "isomp4", "flac", "vorbis", "wav"
 ] }
-symphonia-adapter-libopus = { version = "0.2.5", features = ["bundled"] }
+symphonia-adapter-libopus = { version = "0.2.6", features = ["bundled"] }
 symphonia-adapter-fdk-aac = "0.1.3"
 rustfft = "6.4"
 
 # Streaming
-m3u8-rs = "6"
+m3u8-rs = "6.0"
 mpeg2ts = "0.6"
 crossbeam-channel = "0.5"
 
@@ -25,8 +26,17 @@ reqwest = { version = "0.13", default-features = false, features = [
     "blocking", "native-tls", "http2"
 ] }
 
+## GUI
+slint = { version = "1.15", default-features = true }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
 # Utilities
-thiserror = "2"
+thiserror = "2.0"
 
 [profile.release]
 strip = true
+lto = true
+codegen-units = 1
+panic = "abort"

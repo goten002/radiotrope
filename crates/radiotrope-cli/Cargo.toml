@@ -18,7 +18,7 @@ path = "src/main.rs"
 [dependencies]
 radiotrope = { path = "../radiotrope" }
 crossbeam-channel = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true }
 ratatui = "0.30"
 crossterm = "0.29"
 libc = "0.2"
