@@ -9,9 +9,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use radiotrope::audio::{
-    AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, SharedStats,
-};
+use radiotrope::audio::{AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, SharedStats};
 use radiotrope::stream::metadata::StreamMetadata;
 use radiotrope::stream::{StreamResolver, StreamType};
 
@@ -231,8 +229,7 @@ impl AppController {
                 std::thread::Builder::new()
                     .name("stream-resolve-inner".into())
                     .spawn(move || {
-                        let result =
-                            StreamResolver::resolve(&url_inner).map_err(|e| e.to_string());
+                        let result = StreamResolver::resolve(&url_inner).map_err(|e| e.to_string());
                         let _ = tx.send(result);
                     })
                     .expect("Failed to spawn stream-resolve-inner thread");
@@ -245,10 +242,7 @@ impl AppController {
                     )),
                 };
 
-                let _ = cmd_tx.send(AppCommand::InternalStreamResolved {
-                    generation,
-                    result,
-                });
+                let _ = cmd_tx.send(AppCommand::InternalStreamResolved { generation, result });
             })
             .expect("Failed to spawn stream-resolve thread");
     }

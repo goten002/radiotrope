@@ -73,7 +73,10 @@ fn main() {
     let mute_tx = cmd_tx.clone();
     let mute_state = shared_state.clone();
     ui.on_mute_clicked(move || {
-        let is_muted = mute_state.lock().unwrap_or_else(|e| e.into_inner()).is_muted;
+        let is_muted = mute_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_muted;
         if is_muted {
             let _ = mute_tx.send(app::state::AppCommand::Unmute);
         } else {
@@ -95,9 +98,7 @@ fn main() {
         .expect("Failed to spawn controller thread");
 
     // Wait for engine to initialize and send us the analysis Arc + SharedStats
-    let analysis = analysis_rx
-        .recv_timeout(Duration::from_secs(5))
-        .ok();
+    let analysis = analysis_rx.recv_timeout(Duration::from_secs(5)).ok();
     let shared_stats = stats_rx.recv_timeout(Duration::from_secs(5)).ok();
 
     // Visualization timer — 30ms (~33 FPS)
@@ -138,43 +139,47 @@ fn main() {
     let ui_weak = ui.as_weak();
     let poll_state = shared_state.clone();
     let _timer = slint::Timer::default();
-    _timer.start(slint::TimerMode::Repeated, Duration::from_millis(200), move || {
-        let Some(ui) = ui_weak.upgrade() else { return };
-        let s = poll_state.lock().unwrap_or_else(|e| e.into_inner());
-        ui.set_station_name(s.station_name.as_deref().unwrap_or("Radiotrope").into());
-        ui.set_codec_info(format_codec_line(&s).into());
-        ui.set_status_text(s.status_text.as_ref().into());
-        let is_loading = s.is_resolving || s.status_text == "Connecting...";
+    _timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_millis(200),
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let s = poll_state.lock().unwrap_or_else(|e| e.into_inner());
+            ui.set_station_name(s.station_name.as_deref().unwrap_or("Radiotrope").into());
+            ui.set_codec_info(format_codec_line(&s).into());
+            ui.set_status_text(s.status_text.as_ref().into());
+            let is_loading = s.is_resolving || s.status_text == "Connecting...";
 
-        // Playback state
-        ui.set_is_playing(s.playback == PlaybackState::Playing);
+            // Playback state
+            ui.set_is_playing(s.playback == PlaybackState::Playing);
 
-        // Now-playing title from ICY metadata
-        let now_playing = if !s.title.is_empty() {
-            if !s.artist.is_empty() {
-                format!("{} - {}", s.artist, s.title)
+            // Now-playing title from ICY metadata
+            let now_playing = if !s.title.is_empty() {
+                if !s.artist.is_empty() {
+                    format!("{} - {}", s.artist, s.title)
+                } else {
+                    s.title.clone()
+                }
             } else {
-                s.title.clone()
+                String::new()
+            };
+            ui.set_now_playing_title(now_playing.into());
+
+            // Volume & mute — controller is source of truth; skip volume during drag
+            if !ui.get_volume_dragging() {
+                ui.set_volume(s.volume);
             }
-        } else {
-            String::new()
-        };
-        ui.set_now_playing_title(now_playing.into());
+            ui.set_is_muted(s.is_muted);
 
-        // Volume & mute — controller is source of truth; skip volume during drag
-        if !ui.get_volume_dragging() {
-            ui.set_volume(s.volume);
-        }
-        ui.set_is_muted(s.is_muted);
+            // Remember station URL for play-clicked
+            if let Some(ref url) = s.station_url {
+                ui.set_station_url(url.as_str().into());
+            }
 
-        // Remember station URL for play-clicked
-        if let Some(ref url) = s.station_url {
-            ui.set_station_url(url.as_str().into());
-        }
-
-        drop(s);
-        ui.set_is_loading(is_loading);
-    });
+            drop(s);
+            ui.set_is_loading(is_loading);
+        },
+    );
 
     // Run Slint event loop (blocks main thread)
     ui.run().unwrap();
@@ -195,7 +200,10 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
             Some(StreamType::Direct) => format!("{} (ICY)", ci.codec_name),
             None => ci.codec_name.clone(),
         };
-        let br = ci.bitrate.map(|b| format!("{b} kbps")).unwrap_or_else(|| "--".into());
+        let br = ci
+            .bitrate
+            .map(|b| format!("{b} kbps"))
+            .unwrap_or_else(|| "--".into());
         let sr = if ci.sample_rate > 0 {
             format!("{} Hz", ci.sample_rate)
         } else {

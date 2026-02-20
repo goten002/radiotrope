@@ -51,7 +51,8 @@ pub fn list_tools() -> Vec<ToolDefinition> {
         },
         ToolDefinition {
             name: "get_status",
-            description: "Get full application status including playback state, volume, and current station",
+            description:
+                "Get full application status including playback state, volume, and current station",
             input_schema: json!({ "type": "object", "properties": {} }),
         },
     ]
@@ -78,9 +79,7 @@ fn handle_play(args: &Value, cmd_tx: &Sender<AppCommand>) -> ToolResult {
         Some(q) => q,
         None => return ToolResult::error("Missing required parameter: query"),
     };
-    cmd_tx
-        .send(AppCommand::Play(query.to_string()))
-        .ok();
+    cmd_tx.send(AppCommand::Play(query.to_string())).ok();
     ToolResult::text(format!("Resolving stream: {query}"))
 }
 
@@ -115,7 +114,11 @@ fn handle_get_status(state: &Arc<Mutex<AppSnapshot>>) -> ToolResult {
         s.playback,
         s.station_name.as_deref().unwrap_or("—"),
         if s.title.is_empty() { "—" } else { &s.title },
-        if s.artist.is_empty() { "—" } else { &s.artist },
+        if s.artist.is_empty() {
+            "—"
+        } else {
+            &s.artist
+        },
         (s.volume * 100.0) as u8,
     );
     if s.is_resolving {

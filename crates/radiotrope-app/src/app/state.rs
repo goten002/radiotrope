@@ -22,7 +22,10 @@ pub enum AppCommand {
 
     // Favorites (planned)
     #[allow(dead_code)]
-    AddFavorite { name: String, url: String },
+    AddFavorite {
+        name: String,
+        url: String,
+    },
     #[allow(dead_code)]
     RemoveFavorite(String),
 

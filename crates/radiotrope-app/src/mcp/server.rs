@@ -12,8 +12,9 @@ use serde_json::{json, Value};
 use crate::app::state::{AppCommand, AppSnapshot};
 
 use super::tools;
-use super::types::{JsonRpcRequest, JsonRpcResponse, ToolCallParams, INVALID_PARAMS,
-                   METHOD_NOT_FOUND, PARSE_ERROR};
+use super::types::{
+    JsonRpcRequest, JsonRpcResponse, ToolCallParams, INVALID_PARAMS, METHOD_NOT_FOUND, PARSE_ERROR,
+};
 
 const SERVER_NAME: &str = "radiotrope";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -93,10 +94,7 @@ fn handle_initialize(id: Option<Value>) -> JsonRpcResponse {
 
 fn handle_tools_list(id: Option<Value>) -> JsonRpcResponse {
     let tool_defs = tools::list_tools();
-    JsonRpcResponse::success(
-        id,
-        json!({ "tools": tool_defs }),
-    )
+    JsonRpcResponse::success(id, json!({ "tools": tool_defs }))
 }
 
 fn handle_tools_call(
