@@ -1,0 +1,194 @@
+import { Theme } from "../theme.slint";
+
+component StyledLineEdit inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text;
+    in property <bool> enabled: true;
+    callback accepted(string);
+
+    height: 36px;
+    border-radius: 4px;
+    background: Theme.surface;
+    clip: true;
+
+    // Bottom accent line — visible only when focused
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        width: parent.width;
+        background: input.has-focus ? Theme.accent : transparent;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+
+        // Placeholder
+        if input.text == "" && !input.has-focus: Text {
+            text: root.placeholder-text;
+            color: Theme.text-secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        input := TextInput {
+            text <=> root.text;
+            color: Theme.text-primary;
+            font-size: 13px;
+            vertical-alignment: center;
+            accepted => { root.accepted(root.text); }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { input.focus(); }
+    }
+}
+
+component AccentButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    width: btn-text.preferred-width + 32px;
+    border-radius: 4px;
+    background: !root.enabled ? Theme.disabled-bg
+                : touch.pressed ? Theme.accent-hover
+                : touch.has-hover ? Theme.accent-hover
+                : Theme.accent;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+        mouse-cursor: root.enabled ? pointer : default;
+    }
+
+    btn-text := Text {
+        text: root.label;
+        color: root.enabled ? Theme.button-text : Theme.disabled-text;
+        font-size: 13px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component SecondaryButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    height: 32px;
+    width: btn-text.preferred-width + 32px;
+    border-radius: 4px;
+    background: touch.pressed ? Theme.menu-hover
+                : touch.has-hover ? Theme.menu-bar-hover
+                : Theme.surface;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    btn-text := Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: 13px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component NetworkStreamDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in-out property <string> url: "";
+    callback accepted(string);
+    callback cancelled();
+
+    // Overlay covers the entire window
+    if show-dialog: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000aa;
+
+        TouchArea {
+            clicked => {
+                root.url = "";
+                root.show-dialog = false;
+                root.cancelled();
+            }
+        }
+
+        // Dialog card
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 450px;
+            height: dialog-layout.preferred-height + 40px;
+            background: Theme.panel;
+            border-radius: 8px;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+
+            // Block clicks from closing the overlay
+            TouchArea {}
+
+            dialog-layout := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+
+                Text {
+                    text: "Open Network Stream";
+                    color: Theme.text-primary;
+                    font-size: 16px;
+                    font-weight: 600;
+                }
+
+                VerticalLayout {
+                    Text {
+                        text: "Enter the URL of the radio station:";
+                        color: Theme.text-secondary;
+                        font-size: 12px;
+                    }
+
+                    url-input := StyledLineEdit {
+                        placeholder-text: "https://stream.example.com/radio";
+                        text <=> root.url;
+                        accepted(url) => {
+                            if root.url != "" {
+                                root.show-dialog = false;
+                                root.accepted(root.url);
+                                root.url = "";
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+
+                    SecondaryButton {
+                        label: "Cancel";
+                        clicked => {
+                            root.url = "";
+                            root.show-dialog = false;
+                            root.cancelled();
+                        }
+                    }
+
+                    AccentButton {
+                        label: "Play";
+                        enabled: root.url != "";
+                        clicked => {
+                            root.show-dialog = false;
+                            root.accepted(root.url);
+                            root.url = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

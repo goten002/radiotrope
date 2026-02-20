@@ -1,0 +1,81 @@
+import { Theme } from "theme.slint";
+import { Visualization } from "visualization.slint";
+
+export component Playback inherits Rectangle {
+    in property <string> station-name;
+    in property <string> codec-info;
+    in property <string> status-text;
+    in property <float> vu-left;
+    in property <float> vu-right;
+    in property <[float]> spectrum;
+    in property <bool> is-loading;
+    in-out property <string> viz-mode <=> viz.viz-mode;
+
+    height: 100px;
+    background: Theme.panel;
+
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        alignment: stretch;
+
+        // Logo placeholder
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 70px;
+                height: 70px;
+                background: Theme.surface;
+                border-radius: 4px;
+
+                Image {
+                    source: @image-url("icons/music-note.svg");
+                    width: 30px;
+                    height: 30px;
+                    colorize: Theme.text-secondary;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+
+        // Station info (center, stretches)
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 4px;
+
+            Text {
+                text: root.station-name;
+                color: Theme.text-primary;
+                font-size: 16px;
+                font-weight: 600;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.codec-info;
+                color: Theme.text-secondary;
+                font-size: 13px;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.status-text;
+                color: Theme.accent-text;
+                font-size: 11px;
+            }
+        }
+
+        // Visualization
+        VerticalLayout {
+            alignment: center;
+            viz := Visualization {
+                vu-left: root.vu-left;
+                vu-right: root.vu-right;
+                spectrum: root.spectrum;
+                is-loading: root.is-loading;
+            }
+        }
+    }
+}

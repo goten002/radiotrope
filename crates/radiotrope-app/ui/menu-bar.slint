@@ -1,0 +1,220 @@
+import { Theme } from "theme.slint";
+
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    height: 28px;
+    min-width: 160px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.menu-hover : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: start;
+
+        Text {
+            text: root.label;
+            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+component CheckMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> checked;
+    callback clicked();
+
+    height: 28px;
+    min-width: 160px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.menu-hover : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: start;
+
+        Rectangle {
+            width: 14px;
+
+            if root.checked: Image {
+                width: 12px;
+                height: 12px;
+                y: (parent.height - self.height) / 2;
+                source: @image-url("icons/tick.svg");
+                colorize: Theme.accent;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component MenuBar inherits Rectangle {
+    height: 32px;
+    background: Theme.panel;
+
+    callback open-network-stream();
+    callback open-statistics();
+
+    HorizontalLayout {
+        padding-left: 4px;
+        alignment: start;
+
+        Rectangle {
+            width: open-label.preferred-width + 20px;
+            height: 32px;
+            background: open-touch.has-hover ? Theme.menu-bar-hover : transparent;
+
+            open-touch := TouchArea {
+                clicked => { open-popup.show(); }
+            }
+
+            open-label := Text {
+                text: "Open";
+                color: Theme.menu-text;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            width: view-label.preferred-width + 20px;
+            height: 32px;
+            background: view-touch.has-hover ? Theme.menu-bar-hover : transparent;
+
+            view-touch := TouchArea {
+                clicked => { view-popup.show(); }
+            }
+
+            view-label := Text {
+                text: "View";
+                color: Theme.menu-text;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            width: tools-label.preferred-width + 20px;
+            height: 32px;
+            background: tools-touch.has-hover ? Theme.menu-bar-hover : transparent;
+
+            tools-touch := TouchArea {
+                clicked => { tools-popup.show(); }
+            }
+
+            tools-label := Text {
+                text: "Tools";
+                color: Theme.menu-text;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    open-popup := PopupWindow {
+        x: 4px;
+        y: 32px;
+        width: popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000033;
+            drop-shadow-offset-y: 2px;
+
+            popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "Network Stream...";
+                    clicked => {
+                        open-popup.close();
+                        root.open-network-stream();
+                    }
+                }
+            }
+        }
+    }
+
+    view-popup := PopupWindow {
+        x: 4px + open-label.preferred-width + 20px;
+        y: 32px;
+        width: view-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000033;
+            drop-shadow-offset-y: 2px;
+
+            view-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                CheckMenuItem {
+                    label: "Dark";
+                    checked: Theme.dark-mode;
+                    clicked => {
+                        view-popup.close();
+                        Theme.dark-mode = true;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Light";
+                    checked: !Theme.dark-mode;
+                    clicked => {
+                        view-popup.close();
+                        Theme.dark-mode = false;
+                    }
+                }
+            }
+        }
+    }
+
+    tools-popup := PopupWindow {
+        x: 4px + open-label.preferred-width + 20px + view-label.preferred-width + 20px;
+        y: 32px;
+        width: tools-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000033;
+            drop-shadow-offset-y: 2px;
+
+            tools-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "Statistics";
+                    clicked => {
+                        tools-popup.close();
+                        root.open-statistics();
+                    }
+                }
+            }
+        }
+    }
+}

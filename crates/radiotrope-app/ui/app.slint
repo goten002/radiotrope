@@ -1,0 +1,106 @@
+import "fonts/Inter/static/Inter_18pt-Regular.ttf";
+import "fonts/Inter/static/Inter_18pt-SemiBold.ttf";
+import { MenuBar } from "menu-bar.slint";
+import { Playback } from "playback.slint";
+import { Favorites } from "favorites.slint";
+import { Controls } from "controls.slint";
+import { Theme } from "theme.slint";
+import { NetworkStreamDialog } from "dialogs/network-stream.slint";
+import { StatisticsDialog } from "dialogs/statistics.slint";
+
+export component App inherits Window {
+    title: "Radiotrope";
+    default-font-family: "Inter 18pt";
+    background: Theme.surface;
+    min-width: 640px;
+    min-height: 480px;
+    preferred-width: 800px;
+    preferred-height: 600px;
+
+    callback play-url(string);
+    callback stop-clicked();
+    callback volume-changed(float);
+    callback mute-clicked();
+
+    in-out property <string> station-name;
+    in-out property <string> codec-info;
+    in-out property <string> status-text;
+    in-out property <float> vu-left;
+    in-out property <float> vu-right;
+    in-out property <[float]> spectrum;
+    in-out property <bool> is-loading;
+    in-out property <string> viz-mode <=> playback.viz-mode;
+    in-out property <bool> is-playing;
+    in-out property <string> now-playing-title;
+    in-out property <float> volume: 1.0;
+    in-out property <bool> is-muted;
+    in-out property <string> station-url;
+    out property <bool> volume-dragging: controls.volume-dragging;
+
+    in-out property <string> stat-health;
+    in-out property <string> stat-uptime;
+    in-out property <string> stat-codec;
+    in-out property <string> stat-bitrate;
+    in-out property <string> stat-sample-rate;
+    in-out property <string> stat-channels;
+    in-out property <string> stat-received;
+    in-out property <string> stat-throughput;
+    in-out property <string> stat-buffer-level;
+    in-out property <string> stat-buffer-capacity;
+    in-out property <string> stat-frames-played;
+    in-out property <string> stat-decode-errors;
+    in-out property <string> stat-underruns;
+
+    VerticalLayout {
+        MenuBar {
+            open-network-stream => {
+                stream-dialog.show-dialog = true;
+            }
+            open-statistics => {
+                stats-dialog.show-dialog = true;
+            }
+        }
+        playback := Playback {
+            station-name: root.station-name;
+            codec-info: root.codec-info;
+            status-text: root.status-text;
+            vu-left: root.vu-left;
+            vu-right: root.vu-right;
+            spectrum: root.spectrum;
+            is-loading: root.is-loading;
+        }
+        Favorites { vertical-stretch: 1; }
+        controls := Controls {
+            is-playing: root.is-playing;
+            now-playing-title: root.now-playing-title;
+            volume <=> root.volume;
+            is-muted <=> root.is-muted;
+            play-clicked => { root.play-url(root.station-url); }
+            stop-clicked => { root.stop-clicked(); }
+            volume-changed(vol) => { root.volume-changed(vol); }
+            mute-clicked => { root.mute-clicked(); }
+        }
+    }
+
+    stream-dialog := NetworkStreamDialog {
+        accepted(url) => {
+            root.play-url(url);
+        }
+    }
+
+    stats-dialog := StatisticsDialog {
+        stat-health: root.stat-health;
+        stat-uptime: root.stat-uptime;
+        stat-codec: root.stat-codec;
+        stat-bitrate: root.stat-bitrate;
+        stat-sample-rate: root.stat-sample-rate;
+        stat-channels: root.stat-channels;
+        stat-received: root.stat-received;
+        stat-throughput: root.stat-throughput;
+        stat-buffer-level: root.stat-buffer-level;
+        stat-buffer-capacity: root.stat-buffer-capacity;
+        stat-frames-played: root.stat-frames-played;
+        stat-decode-errors: root.stat-decode-errors;
+        stat-underruns: root.stat-underruns;
+    }
+}

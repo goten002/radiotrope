@@ -1,0 +1,185 @@
+import { Theme } from "theme.slint";
+
+component VuBar inherits Rectangle {
+    in property <float> level;
+
+    width: 100%;
+    height: 100%;
+    background: #191a1c;
+    border-radius: 3px;
+    clip: true;
+
+    Rectangle {
+        x: 2px;
+        width: parent.width - 4px;
+        height: clamp(root.level, 0, 1) * (parent.height - 4px);
+        y: parent.height - 2px - self.height;
+        border-radius: 2px;
+        background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+    }
+}
+
+component SpectrumBar inherits Rectangle {
+    in property <float> level;
+
+    background: transparent;
+    clip: true;
+
+    if root.level > 0.01: Rectangle {
+        x: 0;
+        width: parent.width;
+        height: clamp(root.level, 0, 1) * parent.height;
+        y: parent.height - self.height;
+        border-radius: 1px;
+        background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+    }
+}
+
+export component Visualization inherits Rectangle {
+    in property <float> vu-left;
+    in property <float> vu-right;
+    in property <[float]> spectrum;
+    in property <bool> is-loading;
+    in-out property <string> viz-mode: "mirror";
+
+    width: 70px;
+    height: 70px;
+    background: #191a1c;
+    border-radius: 4px;
+    clip: true;
+
+    // Click to cycle viz mode
+    TouchArea {
+        clicked => {
+            if root.viz-mode == "mirror" {
+                root.viz-mode = "vu";
+            } else if root.viz-mode == "vu" {
+                root.viz-mode = "spectrum";
+            } else if root.viz-mode == "spectrum" {
+                root.viz-mode = "hbars";
+            } else {
+                root.viz-mode = "mirror";
+            }
+        }
+    }
+
+    // Loading animation (5 bouncing bars)
+    if root.is-loading: HorizontalLayout {
+        padding: 6px;
+        spacing: 3px;
+
+        for i in [0, 1, 2, 3, 4]: Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+
+            Rectangle {
+                property <float> anim: abs(sin(mod(animation-tick() / 800ms * 360deg - i * 36deg, 360deg)));
+                width: parent.width;
+                height: parent.height * (0.3 + 0.7 * self.anim);
+                y: 0;
+                background: Theme.accent;
+                opacity: 0.6 + 0.4 * self.anim;
+                border-radius: 2px;
+            }
+        }
+    }
+
+    // VU meter mode (two vertical bars, L/R)
+    if !root.is-loading && root.viz-mode == "vu": HorizontalLayout {
+        padding: 5px;
+        spacing: 2px;
+        alignment: center;
+
+        VuBar {
+            width: (root.width - 12px) / 2;
+            height: root.height - 10px;
+            level: root.vu-left;
+        }
+
+        VuBar {
+            width: (root.width - 12px) / 2;
+            height: root.height - 10px;
+            level: root.vu-right;
+        }
+    }
+
+    // Spectrum mode (vertical bars with gaps)
+    if !root.is-loading && root.viz-mode == "spectrum": HorizontalLayout {
+        padding: 5px;
+        spacing: 1px;
+
+        for val[i] in root.spectrum: SpectrumBar {
+            horizontal-stretch: 1;
+            level: val;
+        }
+    }
+
+    // Horizontal bars mode (two horizontal bars, L/R)
+    if !root.is-loading && root.viz-mode == "hbars": VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+        alignment: center;
+
+        Rectangle {
+            height: (root.height - 20px) / 2;
+            background: #191a1c;
+            border-radius: 3px;
+
+            Rectangle {
+                x: 2px;
+                y: 2px;
+                width: clamp(root.vu-left, 0, 1) * (parent.width - 4px);
+                height: parent.height - 4px;
+                border-radius: 2px;
+                background: @linear-gradient(90deg, Theme.accent.darker(0.50) 0%, Theme.accent.darker(0.25) 50%, Theme.accent 100%);
+            }
+        }
+
+        Rectangle {
+            height: (root.height - 20px) / 2;
+            background: #191a1c;
+            border-radius: 3px;
+
+            Rectangle {
+                x: 2px;
+                y: 2px;
+                width: clamp(root.vu-right, 0, 1) * (parent.width - 4px);
+                height: parent.height - 4px;
+                border-radius: 2px;
+                background: @linear-gradient(90deg, Theme.accent.darker(0.50) 0%, Theme.accent.darker(0.25) 50%, Theme.accent 100%);
+            }
+        }
+    }
+
+    // Mirror spectrum mode (bar pairs growing from center)
+    if !root.is-loading && root.viz-mode == "mirror": HorizontalLayout {
+        padding: 5px;
+        spacing: 1px;
+
+        for val[i] in root.spectrum: Rectangle {
+            horizontal-stretch: 1;
+            background: transparent;
+            clip: true;
+
+            // Top half (grows upward from center)
+            if val > 0.01: Rectangle {
+                x: 0;
+                width: parent.width;
+                height: clamp(val, 0, 1) * parent.height / 2;
+                y: parent.height / 2 - self.height;
+                border-radius: 1px;
+                background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+            }
+
+            // Bottom half (grows downward from center)
+            if val > 0.01: Rectangle {
+                x: 0;
+                width: parent.width;
+                height: clamp(val, 0, 1) * parent.height / 2;
+                y: parent.height / 2;
+                border-radius: 1px;
+                background: @linear-gradient(0deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+            }
+        }
+    }
+}

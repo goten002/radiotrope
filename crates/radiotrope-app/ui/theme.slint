@@ -1,0 +1,25 @@
+// Theme colors — reactive dark/light mode
+
+export global Theme {
+    in-out property <bool> dark-mode: true;
+
+    out property <color> panel: dark-mode ? #25272a : #e0e1e6;
+    out property <color> surface: dark-mode ? #191a1c : #f5f5f5;
+    out property <color> accent: #f7931e;
+    out property <color> accent-hover: #e5850f;
+    out property <color> accent-text: dark-mode ? #f7931e : #c06a00;
+    out property <color> text-primary: dark-mode ? #ffffff : #1a1a1a;
+    out property <color> text-secondary: dark-mode ? #a0a0a0 : #666666;
+
+    // Button colors
+    out property <color> button-text: #1a1a1a;  // dark text on accent buttons (both themes)
+    out property <color> disabled-bg: dark-mode ? #555555 : #cccccc;
+    out property <color> disabled-text: dark-mode ? #888888 : #999999;
+
+    // Menu / popup colors
+    out property <color> popup-bg: dark-mode ? #2b2d31 : #ffffff;
+    out property <color> menu-hover: dark-mode ? #3a3d42 : #d8d9de;
+    out property <color> menu-bar-hover: dark-mode ? #2f3136 : #d0d1d6;
+    out property <color> menu-text: dark-mode ? #c8c8c8 : #444444;
+
+}
