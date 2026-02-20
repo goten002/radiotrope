@@ -86,7 +86,7 @@ impl NetworkMetrics {
 #[derive(Debug, Clone)]
 pub struct BufferStatus {
     pub level_bytes: usize,
-    pub target_bytes: usize,
+    pub capacity_bytes: usize,
     pub is_buffering: bool,
     pub throughput_kbps: f64,
     pub underrun_count: u32,
@@ -96,7 +96,7 @@ impl Default for BufferStatus {
     fn default() -> Self {
         Self {
             level_bytes: 0,
-            target_bytes: 0,
+            capacity_bytes: 0,
             is_buffering: false,
             throughput_kbps: 0.0,
             underrun_count: 0,
@@ -161,12 +161,11 @@ impl StreamBuffer {
 
         let producer_state = state.clone();
         let producer_stop = stop_flag.clone();
-        let producer_probing = probing_flag.clone();
 
         let handle = thread::Builder::new()
             .name("stream-buffer-producer".to_string())
             .spawn(move || {
-                Self::producer_loop(reader, producer_state, producer_stop, producer_probing);
+                Self::producer_loop(reader, producer_state, producer_stop);
             })
             .expect("Failed to spawn buffer producer thread");
 
@@ -185,7 +184,6 @@ impl StreamBuffer {
         mut reader: Box<dyn ReadSeek>,
         state: Arc<BufferState>,
         stop_flag: Arc<AtomicBool>,
-        probing_flag: Arc<AtomicBool>,
     ) {
         let mut chunk = vec![0u8; PRODUCER_CHUNK_SIZE];
 
@@ -224,23 +222,14 @@ impl StreamBuffer {
 
                         // Enforce max buffer size: wait if buffer is full
                         if inner.data.len() >= MAX_BUFFER_SIZE {
-                            if !probing_flag.load(Ordering::Relaxed) {
-                                Self::try_compact(&mut inner);
-                            }
-                            if inner.data.len() >= MAX_BUFFER_SIZE {
-                                drop(inner);
-                                thread::sleep(Duration::from_millis(10));
-                                continue; // Retry writing this same chunk
-                            }
+                            drop(inner);
+                            thread::sleep(Duration::from_millis(10));
+                            continue; // Retry writing this same chunk
                         }
 
                         inner.data.extend_from_slice(&chunk[..n]);
                         inner.write_pos += n;
                         inner.metrics.record_chunk(n);
-
-                        if !probing_flag.load(Ordering::Relaxed) {
-                            Self::try_compact(&mut inner);
-                        }
 
                         drop(inner);
                         state.data_available.notify_all();
@@ -259,21 +248,6 @@ impl StreamBuffer {
         }
     }
 
-    /// Try to compact the buffer by removing already-consumed data.
-    /// Called with the lock held.
-    fn try_compact(_inner: &mut BufferInner) {
-        // We compact based on how much data sits before write_pos that
-        // has already been consumed. We need to figure out the minimum
-        // read position. Since we don't track read_pos in BufferInner,
-        // we use a conservative approach: compact data before
-        // (write_pos - available_data) only when data.len() is large enough.
-        // Actually, we can't know read_pos here. Compaction needs to be
-        // driven by the consumer's read position.
-        //
-        // Instead, we'll expose compaction as something the consumer triggers.
-        // The consumer knows its read_pos and can request compaction.
-        // This is handled in StreamBufferReader::maybe_compact().
-    }
 }
 
 /// Consumer side: implements Read + Seek, passed to symphonia.
@@ -315,7 +289,7 @@ impl StreamBufferReader {
             let available = inner.write_pos.saturating_sub(local_read);
             s.level_bytes = available;
             // Total data held in memory (including safety margin behind read cursor)
-            s.target_bytes = inner.data.len();
+            s.capacity_bytes = inner.data.len();
             s.throughput_kbps = inner.metrics.throughput_kbps();
             s.underrun_count = inner.metrics.underrun_count;
             s.is_buffering = available == 0 && !inner.producer_done;
@@ -506,7 +480,7 @@ mod tests {
     fn buffer_status_default() {
         let s = BufferStatus::default();
         assert_eq!(s.level_bytes, 0);
-        assert_eq!(s.target_bytes, 0);
+        assert_eq!(s.capacity_bytes, 0);
         assert!(!s.is_buffering);
         assert_eq!(s.throughput_kbps, 0.0);
         assert_eq!(s.underrun_count, 0);
@@ -516,14 +490,14 @@ mod tests {
     fn buffer_status_clone() {
         let s = BufferStatus {
             level_bytes: 1024,
-            target_bytes: 2048,
+            capacity_bytes: 2048,
             is_buffering: true,
             throughput_kbps: 128.0,
             underrun_count: 3,
         };
         let c = s.clone();
         assert_eq!(c.level_bytes, 1024);
-        assert_eq!(c.target_bytes, 2048);
+        assert_eq!(c.capacity_bytes, 2048);
         assert!(c.is_buffering);
     }
 

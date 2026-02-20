@@ -7,7 +7,7 @@ use thiserror::Error;
 /// Main error type for Radiotrope engine
 #[derive(Error, Debug)]
 pub enum RadioError {
-    #[error("Network error: {0}")]
+    #[error("{}", friendly_network_error(.0))]
     Network(#[from] reqwest::Error),
 
     #[error("Audio error: {0}")]
@@ -28,3 +28,25 @@ pub enum RadioError {
 
 /// Result type alias for Radiotrope
 pub type Result<T> = std::result::Result<T, RadioError>;
+
+fn friendly_network_error(e: &reqwest::Error) -> String {
+    if e.is_builder() {
+        if let Some(url) = e.url() {
+            return format!("Invalid URL: {url}");
+        }
+        return "Invalid URL".to_string();
+    }
+    if e.is_connect() {
+        if let Some(url) = e.url() {
+            return format!("Could not connect to {}", url.host_str().unwrap_or("server"));
+        }
+        return "Could not connect to server".to_string();
+    }
+    if e.is_timeout() {
+        return "Connection timed out".to_string();
+    }
+    if e.is_decode() {
+        return "Invalid response from server".to_string();
+    }
+    format!("Network error: {e}")
+}

@@ -4,6 +4,7 @@
 //! supporting Opus (via libopus), MP3, AAC, FLAC, Vorbis, and more.
 
 use std::io::{Read, Seek};
+use std::num::NonZero;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -308,12 +309,12 @@ impl Source for SymphoniaSource {
         None
     }
 
-    fn channels(&self) -> u16 {
-        self.channels
+    fn channels(&self) -> NonZero<u16> {
+        NonZero::new(self.channels).expect("channels must be non-zero")
     }
 
-    fn sample_rate(&self) -> u32 {
-        self.sample_rate
+    fn sample_rate(&self) -> NonZero<u32> {
+        NonZero::new(self.sample_rate).expect("sample_rate must be non-zero")
     }
 
     fn total_duration(&self) -> Option<Duration> {
@@ -365,8 +366,8 @@ mod tests {
         let wav = make_wav(44100, 1, &samples);
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
 
-        assert_eq!(source.channels(), 1);
-        assert_eq!(source.sample_rate(), 44100);
+        assert_eq!(source.channels().get(), 1);
+        assert_eq!(source.sample_rate().get(), 44100);
     }
 
     #[test]
@@ -375,8 +376,8 @@ mod tests {
         let wav = make_wav(48000, 2, &samples);
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
 
-        assert_eq!(source.channels(), 2);
-        assert_eq!(source.sample_rate(), 48000);
+        assert_eq!(source.channels().get(), 2);
+        assert_eq!(source.sample_rate().get(), 48000);
     }
 
     #[test]
@@ -384,8 +385,8 @@ mod tests {
         let samples: Vec<i16> = (0..400).map(|i| (i * 50) as i16).collect();
         let wav = make_wav(8000, 1, &samples);
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
-        assert_eq!(source.sample_rate(), 8000);
-        assert_eq!(source.channels(), 1);
+        assert_eq!(source.sample_rate().get(), 8000);
+        assert_eq!(source.channels().get(), 1);
     }
 
     #[test]
@@ -393,7 +394,7 @@ mod tests {
         let samples: Vec<i16> = (0..1000).map(|i| (i * 10) as i16).collect();
         let wav = make_wav(96000, 2, &samples);
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
-        assert_eq!(source.sample_rate(), 96000);
+        assert_eq!(source.sample_rate().get(), 96000);
     }
 
     // --- Sample iteration ---
@@ -539,8 +540,8 @@ mod tests {
 
         let info = source.codec_info();
         assert_eq!(info.codec_name, source.codec_name());
-        assert_eq!(info.channels, source.channels());
-        assert_eq!(info.sample_rate, source.sample_rate());
+        assert_eq!(info.channels, source.channels().get());
+        assert_eq!(info.sample_rate, source.sample_rate().get());
         assert_eq!(info.bits_per_sample, source.bits_per_sample());
     }
 
@@ -664,7 +665,7 @@ mod tests {
     fn new_with_hint_wav() {
         let wav = make_wav(44100, 1, &[0; 100]);
         let source = SymphoniaSource::new_with_hint(Cursor::new(wav), Some("wav")).unwrap();
-        assert_eq!(source.channels(), 1);
+        assert_eq!(source.channels().get(), 1);
     }
 
     #[test]
@@ -689,7 +690,7 @@ mod tests {
         let result = SymphoniaSource::new_with_hint(Cursor::new(wav), Some("mp3"));
         // Either succeeds (probe overrides) or fails with decode error - both are valid
         if let Ok(source) = result {
-            assert_eq!(source.channels(), 1);
+            assert_eq!(source.channels().get(), 1);
         }
     }
 
@@ -820,7 +821,7 @@ mod tests {
         // Either succeeds (probe completes in time) or times out for very slow reads
         // Both are valid outcomes
         if let Ok(source) = result {
-            assert_eq!(source.channels(), 1);
+            assert_eq!(source.channels().get(), 1);
         }
     }
 
@@ -840,8 +841,8 @@ mod tests {
         let wav = make_wav(44100, 2, &samples);
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
 
-        assert_eq!(source.channels(), 2);
-        assert_eq!(source.sample_rate(), 44100);
+        assert_eq!(source.channels().get(), 2);
+        assert_eq!(source.sample_rate().get(), 44100);
         let decoded: Vec<f32> = source.collect();
         assert_eq!(decoded.len(), 2000);
     }
@@ -853,7 +854,7 @@ mod tests {
             let samples: Vec<i16> = (0..100).map(|j| ((i + j) * 50) as i16).collect();
             let wav = make_wav(44100, 1, &samples);
             let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
-            assert_eq!(source.channels(), 1);
+            assert_eq!(source.channels().get(), 1);
             let decoded: Vec<f32> = source.collect();
             assert_eq!(decoded.len(), 100);
         }
@@ -926,7 +927,7 @@ mod tests {
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
         let normal_elapsed = normal_start.elapsed();
 
-        assert_eq!(source.channels(), 1);
+        assert_eq!(source.channels().get(), 1);
         // Normal probe should be fast (under 1s), not blocked by the abandoned thread
         assert!(
             normal_elapsed.as_secs() < 2,

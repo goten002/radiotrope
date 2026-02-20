@@ -29,7 +29,7 @@ pub struct StreamStats {
     pub health_state: HealthState,
 
     pub buffer_level_bytes: usize,
-    pub buffer_target_bytes: usize,
+    pub buffer_capacity_bytes: usize,
     pub is_buffering: bool,
     pub throughput_kbps: f64,
     pub underrun_count: u32,
@@ -49,7 +49,7 @@ impl Default for StreamStats {
             sample_count: 0,
             health_state: HealthState::WaitingForAudio,
             buffer_level_bytes: 0,
-            buffer_target_bytes: 0,
+            buffer_capacity_bytes: 0,
             is_buffering: false,
             throughput_kbps: 0.0,
             underrun_count: 0,

@@ -17,16 +17,6 @@ pub enum PlaybackState {
     Paused,
 }
 
-impl fmt::Display for PlaybackState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PlaybackState::Stopped => write!(f, "Stopped"),
-            PlaybackState::Playing => write!(f, "Playing"),
-            PlaybackState::Paused => write!(f, "Paused"),
-        }
-    }
-}
-
 /// Codec information for the current stream
 #[derive(Debug, Clone)]
 pub struct CodecInfo {
@@ -35,21 +25,6 @@ pub struct CodecInfo {
     pub sample_rate: u32,
     pub bits_per_sample: Option<u32>,
     pub bitrate: Option<u32>,
-}
-
-impl fmt::Display for CodecInfo {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let channel_str = if self.channels == 1 { "Mono" } else { "Stereo" };
-        write!(f, "{}", self.codec_name)?;
-        if let Some(br) = self.bitrate {
-            write!(f, " · {} kbps", br)?;
-        }
-        write!(f, " · {} Hz", self.sample_rate)?;
-        if let Some(bits) = self.bits_per_sample {
-            write!(f, " · {}-bit", bits)?;
-        }
-        write!(f, " · {}", channel_str)
-    }
 }
 
 /// Trait alias for a seekable, sendable reader
@@ -169,13 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn playback_state_display() {
-        assert_eq!(PlaybackState::Stopped.to_string(), "Stopped");
-        assert_eq!(PlaybackState::Playing.to_string(), "Playing");
-        assert_eq!(PlaybackState::Paused.to_string(), "Paused");
-    }
-
-    #[test]
     fn playback_state_equality() {
         assert_eq!(PlaybackState::Playing, PlaybackState::Playing);
         assert_ne!(PlaybackState::Playing, PlaybackState::Stopped);
@@ -198,113 +166,6 @@ mod tests {
     }
 
     // --- CodecInfo ---
-
-    #[test]
-    fn codec_info_display_without_bits() {
-        let info = CodecInfo {
-            codec_name: "MP3".to_string(),
-            channels: 2,
-            sample_rate: 44100,
-            bits_per_sample: None,
-            bitrate: None,
-        };
-        assert_eq!(info.to_string(), "MP3 · 44100 Hz · Stereo");
-    }
-
-    #[test]
-    fn codec_info_display_with_bits() {
-        let info = CodecInfo {
-            codec_name: "FLAC".to_string(),
-            channels: 1,
-            sample_rate: 48000,
-            bits_per_sample: Some(24),
-            bitrate: None,
-        };
-        assert_eq!(info.to_string(), "FLAC · 48000 Hz · 24-bit · Mono");
-    }
-
-    #[test]
-    fn codec_info_display_with_bitrate() {
-        let info = CodecInfo {
-            codec_name: "MP3".to_string(),
-            channels: 2,
-            sample_rate: 44100,
-            bits_per_sample: None,
-            bitrate: Some(192),
-        };
-        assert_eq!(info.to_string(), "MP3 · 192 kbps · 44100 Hz · Stereo");
-    }
-
-    #[test]
-    fn codec_info_display_with_bits_and_bitrate() {
-        let info = CodecInfo {
-            codec_name: "FLAC".to_string(),
-            channels: 2,
-            sample_rate: 48000,
-            bits_per_sample: Some(24),
-            bitrate: Some(320),
-        };
-        assert_eq!(
-            info.to_string(),
-            "FLAC · 320 kbps · 48000 Hz · 24-bit · Stereo"
-        );
-    }
-
-    #[test]
-    fn codec_info_display_mono_shows_mono() {
-        let info = CodecInfo {
-            codec_name: "AAC".to_string(),
-            channels: 1,
-            sample_rate: 22050,
-            bits_per_sample: None,
-            bitrate: None,
-        };
-        assert!(info.to_string().contains("Mono"));
-    }
-
-    #[test]
-    fn codec_info_display_multichannel_shows_stereo() {
-        // Any channel count > 1 displays as "Stereo" (current behavior)
-        for ch in [2, 4, 6, 8] {
-            let info = CodecInfo {
-                codec_name: "PCM".to_string(),
-                channels: ch,
-                sample_rate: 44100,
-                bits_per_sample: None,
-                bitrate: None,
-            };
-            assert!(
-                info.to_string().contains("Stereo"),
-                "channels={} should display as Stereo",
-                ch
-            );
-        }
-    }
-
-    #[test]
-    fn codec_info_display_high_sample_rate() {
-        let info = CodecInfo {
-            codec_name: "FLAC".to_string(),
-            channels: 2,
-            sample_rate: 192000,
-            bits_per_sample: Some(32),
-            bitrate: None,
-        };
-        assert!(info.to_string().contains("192000"));
-    }
-
-    #[test]
-    fn codec_info_display_zero_sample_rate() {
-        let info = CodecInfo {
-            codec_name: "Unknown".to_string(),
-            channels: 2,
-            sample_rate: 0,
-            bits_per_sample: None,
-            bitrate: None,
-        };
-        // Should not panic, just display 0
-        assert!(info.to_string().contains("0 Hz"));
-    }
 
     #[test]
     fn codec_info_clone() {
@@ -334,20 +195,6 @@ mod tests {
         let debug = format!("{:?}", info);
         assert!(debug.contains("MP3"));
         assert!(debug.contains("44100"));
-    }
-
-    #[test]
-    fn codec_info_empty_codec_name() {
-        let info = CodecInfo {
-            codec_name: String::new(),
-            channels: 2,
-            sample_rate: 44100,
-            bits_per_sample: None,
-            bitrate: None,
-        };
-        // Should not panic
-        let display = info.to_string();
-        assert!(display.contains("44100"));
     }
 
     // --- AudioCommand ---

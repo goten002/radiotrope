@@ -10,7 +10,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
-use rodio::{OutputStreamBuilder, Sink};
+use rodio::{DeviceSinkBuilder, Player};
 
 use crate::config::timeouts::PROBE_TIMEOUT_SECS;
 use crate::error::RadioError;
@@ -197,16 +197,17 @@ impl AudioEngine {
         event_bus: Arc<EventBus>,
     ) {
         // Create audio output on this thread (cpal streams may be !Send)
-        let stream = match OutputStreamBuilder::open_default_stream() {
+        let mut stream = match DeviceSinkBuilder::open_default_sink() {
             Ok(s) => s,
             Err(e) => {
                 let _ = init_tx.send(Err(format!("Failed to open audio output: {}", e)));
                 return;
             }
         };
+        stream.log_on_drop(false);
 
         // `stream` must be declared before `sink` so Rust drops sink first
-        let sink = Sink::connect_new(stream.mixer());
+        let sink = Player::connect_new(stream.mixer());
 
         let _ = init_tx.send(Ok(()));
 
@@ -435,16 +436,12 @@ impl AudioEngine {
                                             HealthState::Failed(FailureReason::ProbeFailed);
                                     }
                                     let msg = format!(
-                                        "Format probe timed out after {}s",
+                                        "Unable to detect audio format (timed out after {}s)",
                                         PROBE_TIMEOUT_SECS
                                     );
                                     let _ = event_tx.send(AudioEvent::ProbeTimeout);
-                                    let _ = event_tx
-                                        .send(AudioEvent::Error(format!("Probe timeout: {}", msg)));
-                                    event_bus.emit(StreamEvent::Error(format!(
-                                        "Probe timeout: {}",
-                                        msg
-                                    )));
+                                    let _ = event_tx.send(AudioEvent::Error(msg.clone()));
+                                    event_bus.emit(StreamEvent::Error(msg));
                                 }
                             }
                             Err(TryRecvError::Disconnected) => {
@@ -532,7 +529,7 @@ impl AudioEngine {
                             if let Some(ref bs) = current_buffer_status {
                                 if let Ok(buf) = bs.lock() {
                                     stats.buffer_level_bytes = buf.level_bytes;
-                                    stats.buffer_target_bytes = buf.target_bytes;
+                                    stats.buffer_capacity_bytes = buf.capacity_bytes;
                                     stats.is_buffering = buf.is_buffering;
                                     stats.underrun_count = buf.underrun_count;
                                 }
@@ -547,8 +544,8 @@ impl AudioEngine {
                                         let pct = if !buf.is_buffering {
                                             // Recovered from buffering → signal 100% to clear status
                                             100
-                                        } else if buf.target_bytes > 0 {
-                                            ((buf.level_bytes as f64 / buf.target_bytes as f64)
+                                        } else if buf.capacity_bytes > 0 {
+                                            ((buf.level_bytes as f64 / buf.capacity_bytes as f64)
                                                 * 100.0)
                                                 as u8
                                         } else {
@@ -1059,6 +1056,8 @@ mod tests {
             Some(AudioEvent::Stopped) => {}
             _ => {}
         }
+        // Give the player time to fully drain after stop
+        thread::sleep(Duration::from_millis(100));
 
         // After stop, analysis should be reset
         let data = engine.analysis();
@@ -1523,6 +1522,8 @@ mod tests {
             Some(AudioEvent::Stopped) => {}
             _ => {}
         }
+        // Give the player time to fully drain after stop
+        thread::sleep(Duration::from_millis(100));
 
         let data = engine.analysis();
         let analysis = data.lock().unwrap();

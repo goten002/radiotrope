@@ -8,9 +8,6 @@ pub mod audio {
     /// Number of frequency bands in spectrum display
     pub const SPECTRUM_BANDS: usize = 16;
 
-    /// Visualization update interval in milliseconds
-    pub const VIS_UPDATE_MS: u64 = 30;
-
     /// VU meter decay factor (0.0-1.0, higher = slower decay)
     pub const VU_DECAY: f32 = 0.7;
 }
@@ -49,12 +46,6 @@ pub mod timeouts {
 
     /// Time without receiving audio data before considering stream dead
     pub const STREAM_STALL_TIMEOUT_SECS: u64 = 5;
-
-    /// Interval for health check pings in seconds
-    pub const HEALTH_CHECK_INTERVAL_SECS: u64 = 5;
-
-    /// Number of retries before giving up on a stream
-    pub const MAX_RETRIES: usize = 3;
 
     /// Base delay between retries in seconds (exponential backoff: 2^n * base)
     pub const RETRY_BASE_DELAY_SECS: u64 = 2;
