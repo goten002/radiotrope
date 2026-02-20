@@ -2,7 +2,7 @@
 name = "radiotrope-cli"
 version = "0.1.0-dev"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.80"
 description = "Terminal internet radio player"
 license = "MIT"
 authors = ["George Alexiou <goten002@gmail.com>"]

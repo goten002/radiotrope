@@ -38,7 +38,10 @@ fn friendly_network_error(e: &reqwest::Error) -> String {
     }
     if e.is_connect() {
         if let Some(url) = e.url() {
-            return format!("Could not connect to {}", url.host_str().unwrap_or("server"));
+            return format!(
+                "Could not connect to {}",
+                url.host_str().unwrap_or("server")
+            );
         }
         return "Could not connect to server".to_string();
     }

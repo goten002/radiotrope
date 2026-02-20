@@ -247,7 +247,6 @@ impl StreamBuffer {
             }
         }
     }
-
 }
 
 /// Consumer side: implements Read + Seek, passed to symphonia.

@@ -170,16 +170,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZero;
     use crate::config::audio::{FFT_SIZE, SPECTRUM_BANDS};
     use rodio::buffer::SamplesBuffer;
+    use std::num::NonZero;
 
     // --- Passthrough behavior ---
 
     #[test]
     fn passthrough_samples_mono() {
         let input: Vec<f32> = (0..100).map(|i| i as f32 / 100.0).collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input.clone());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input.clone(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -190,7 +194,11 @@ mod tests {
     #[test]
     fn passthrough_samples_stereo() {
         let input: Vec<f32> = (0..200).map(|i| (i as f32 - 100.0) / 100.0).collect();
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input.clone());
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input.clone(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -200,7 +208,11 @@ mod tests {
 
     #[test]
     fn passthrough_empty_source() {
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), Vec::<f32>::new());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            Vec::<f32>::new(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -211,7 +223,11 @@ mod tests {
     #[test]
     fn passthrough_single_sample() {
         let input = vec![0.5f32];
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input.clone());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input.clone(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -223,7 +239,11 @@ mod tests {
     fn passthrough_exact_fft_size() {
         // Exactly FFT_SIZE mono samples should trigger processing once
         let input: Vec<f32> = (0..FFT_SIZE).map(|i| (i as f32 * 0.01).sin()).collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input.clone());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input.clone(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -237,7 +257,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.02).sin() * 0.5)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input.clone());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input.clone(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -253,7 +277,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.9)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let analyzing = AnalyzingSource::new(source, analysis);
@@ -275,7 +303,11 @@ mod tests {
     fn vu_near_zero_for_silence() {
         let num_samples = FFT_SIZE * 2;
         let input: Vec<f32> = vec![0.0; num_samples];
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let analyzing = AnalyzingSource::new(source, analysis);
@@ -300,7 +332,11 @@ mod tests {
             .collect();
         let analysis_quiet = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_quiet_ref = analysis_quiet.clone();
-        let source_quiet = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), quiet);
+        let source_quiet = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            quiet,
+        );
         let _: Vec<f32> = AnalyzingSource::new(source_quiet, analysis_quiet).collect();
 
         // Loud signal
@@ -309,7 +345,8 @@ mod tests {
             .collect();
         let analysis_loud = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_loud_ref = analysis_loud.clone();
-        let source_loud = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), loud);
+        let source_loud =
+            SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), loud);
         let _: Vec<f32> = AnalyzingSource::new(source_loud, analysis_loud).collect();
 
         let quiet_vu = analysis_quiet_ref.lock().unwrap().vu_left;
@@ -328,7 +365,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.5)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -350,7 +391,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.001)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -373,7 +418,11 @@ mod tests {
             input.push((i as f32 * 0.1).sin() * 0.9); // left: loud
             input.push(0.0); // right: silent
         }
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -395,7 +444,11 @@ mod tests {
             input.push(0.0); // left: silent
             input.push((i as f32 * 0.1).sin() * 0.9); // right: loud
         }
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -418,7 +471,11 @@ mod tests {
             input.push(s); // left
             input.push(s); // right (same)
         }
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -441,7 +498,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 44100.0).sin() * 0.9)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -458,7 +519,11 @@ mod tests {
     fn spectrum_zero_for_silence() {
         let num_samples = FFT_SIZE * 2;
         let input: Vec<f32> = vec![0.0; num_samples];
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -474,7 +539,11 @@ mod tests {
     fn spectrum_has_correct_band_count() {
         let num_samples = FFT_SIZE * 2;
         let input: Vec<f32> = (0..num_samples).map(|i| (i as f32 * 0.1).sin()).collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -490,7 +559,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 1.0)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -506,7 +579,11 @@ mod tests {
 
     #[test]
     fn source_properties_preserved_mono() {
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(22050).unwrap(), vec![0.0f32; 100]);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(22050).unwrap(),
+            vec![0.0f32; 100],
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -516,7 +593,11 @@ mod tests {
 
     #[test]
     fn source_properties_preserved_stereo() {
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(48000).unwrap(), vec![0.0f32; 100]);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(48000).unwrap(),
+            vec![0.0f32; 100],
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -526,7 +607,11 @@ mod tests {
 
     #[test]
     fn source_properties_preserved_high_sample_rate() {
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(96000).unwrap(), vec![0.0f32; 100]);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(96000).unwrap(),
+            vec![0.0f32; 100],
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
 
@@ -535,7 +620,11 @@ mod tests {
 
     #[test]
     fn total_duration_is_none() {
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), vec![0.0f32; 100]);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            vec![0.0f32; 100],
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analyzing = AnalyzingSource::new(source, analysis);
         // SamplesBuffer has a known duration
@@ -552,7 +641,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.9)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -569,7 +662,11 @@ mod tests {
         let input: Vec<f32> = (0..FFT_SIZE)
             .map(|i| (i as f32 * 0.1).sin() * 0.9)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -591,7 +688,11 @@ mod tests {
             input.push((i as f32 * 0.1).sin() * 0.9);
             input.push((i as f32 * 0.1).sin() * 0.9);
         }
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -612,7 +713,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.9)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -639,7 +744,11 @@ mod tests {
             input.push(0.0);
         }
 
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -662,7 +771,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.5)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
 
         // Clone before passing to ensure we can read after
@@ -680,7 +793,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.1).sin() * 0.5)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -693,7 +810,11 @@ mod tests {
 
     #[test]
     fn sample_count_zero_for_empty_source() {
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), Vec::<f32>::new());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            Vec::<f32>::new(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -707,7 +828,11 @@ mod tests {
         // Fewer than FFT_SIZE samples means process_buffers never runs
         let num_samples = FFT_SIZE - 1;
         let input: Vec<f32> = vec![0.5; num_samples];
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -719,7 +844,11 @@ mod tests {
 
     #[test]
     fn analysis_not_mutated_for_empty_source() {
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), Vec::<f32>::new());
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            Vec::<f32>::new(),
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -742,7 +871,11 @@ mod tests {
             input.push((i as f32 * 0.1).cos() * 0.5); // R
         }
         let total_samples = input.len();
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -759,7 +892,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.05).sin() * 0.7)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -772,7 +909,11 @@ mod tests {
     fn sample_count_exact_fft_size_boundary() {
         // Exactly one FFT window
         let input: Vec<f32> = (0..FFT_SIZE).map(|i| (i as f32 * 0.1).sin()).collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -785,7 +926,11 @@ mod tests {
     fn sample_count_exact_two_fft_size() {
         let num_samples = FFT_SIZE * 2;
         let input: Vec<f32> = (0..num_samples).map(|i| (i as f32 * 0.1).sin()).collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -800,7 +945,11 @@ mod tests {
         // the +1 sample increments local_sample_count but no flush
         let num_samples = FFT_SIZE + 1;
         let input: Vec<f32> = vec![0.5; num_samples];
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -817,7 +966,11 @@ mod tests {
         let input: Vec<f32> = (0..num_samples)
             .map(|i| (i as f32 * 0.02).sin() * 0.3)
             .collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -829,7 +982,11 @@ mod tests {
     #[test]
     fn sample_count_single_sample() {
         let input = vec![0.42f32];
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -849,7 +1006,11 @@ mod tests {
             input.push((i as f32 * 0.1).sin());
             input.push((i as f32 * 0.1).cos());
         }
-        let source = SamplesBuffer::new(NonZero::new(2).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
@@ -865,7 +1026,11 @@ mod tests {
         // but flushed count may lag. Verify flushed count <= total iterated.
         let num_samples = FFT_SIZE * 3 + 42; // not a multiple of FFT_SIZE
         let input: Vec<f32> = (0..num_samples).map(|i| (i as f32 * 0.1).sin()).collect();
-        let source = SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), input);
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44100).unwrap(),
+            input,
+        );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
         let output: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
