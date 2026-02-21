@@ -25,7 +25,7 @@ component SpectrumBar inherits Rectangle {
     background: transparent;
     clip: true;
 
-    if root.level > 0.01: Rectangle {
+    Rectangle {
         x: 0;
         width: parent.width;
         height: clamp(root.level, 0, 1) * parent.height;
@@ -162,7 +162,7 @@ export component Visualization inherits Rectangle {
             clip: true;
 
             // Top half (grows upward from center)
-            if val > 0.01: Rectangle {
+            Rectangle {
                 x: 0;
                 width: parent.width;
                 height: clamp(val, 0, 1) * parent.height / 2;
@@ -172,7 +172,7 @@ export component Visualization inherits Rectangle {
             }
 
             // Bottom half (grows downward from center)
-            if val > 0.01: Rectangle {
+            Rectangle {
                 x: 0;
                 width: parent.width;
                 height: clamp(val, 0, 1) * parent.height / 2;

@@ -530,12 +530,16 @@ impl AudioEngine {
                         let _ = event_tx.send(AudioEvent::Stopped);
                     }
 
+                    // Read sample_count once — used by both stats update and health monitoring.
+                    // Done BEFORE locking shared_stats to avoid lock ordering issues with the UI viz timer.
+                    let sample_count = if state == PlaybackState::Playing {
+                        analysis.lock().map(|a| a.sample_count).unwrap_or(0)
+                    } else {
+                        0
+                    };
+
                     // Update shared stats on tick when playing
                     if state == PlaybackState::Playing {
-                        // Read analysis + buffer status BEFORE locking shared_stats
-                        // to avoid lock ordering issues with the UI viz timer.
-                        let sample_count =
-                            analysis.lock().map(|a| a.sample_count).unwrap_or(0);
                         let buf_snapshot = current_buffer_status.as_ref().and_then(|bs| {
                             bs.lock().ok().map(|buf| {
                                 (
@@ -652,8 +656,8 @@ impl AudioEngine {
                     // The sink.empty() check remains as the ultimate safety net.
                     if state == PlaybackState::Playing && !was_buffering {
                         if let Some(ref mut monitor) = health_monitor {
-                            let count = analysis.lock().map(|a| a.sample_count).unwrap_or(0);
-                            if let Some(failure) = monitor.update(count) {
+                            // Reuse sample_count read above (line 537) — avoids second analysis lock
+                            if let Some(failure) = monitor.update(sample_count) {
                                 match failure {
                                     FailureReason::StreamStall => {
                                         // Transient stall — emit event but keep stream alive.
