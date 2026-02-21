@@ -3,7 +3,7 @@ import { Theme } from "theme.slint";
 component VolumeSlider inherits Rectangle {
     in-out property <float> value: 50;  // 0–100
     out property <bool> touch-pressed: touch.pressed;
-    callback changed(float);
+    callback value-changed(float);
 
     width: 120px;
     height: 20px;
@@ -46,18 +46,18 @@ component VolumeSlider inherits Rectangle {
         moved => {
             if (self.pressed) {
                 root.value = Math.clamp(self.mouse-x / root.width * 100, 0, 100);
-                root.changed(root.value);
+                root.value-changed(root.value);
             }
         }
 
         clicked => {
             root.value = Math.clamp(self.mouse-x / root.width * 100, 0, 100);
-            root.changed(root.value);
+            root.value-changed(root.value);
         }
 
         scroll-event(e) => {
             root.value = Math.clamp(root.value + (e.delta-y / 1px / 24), 0, 100);
-            root.changed(root.value);
+            root.value-changed(root.value);
             return accept;
         }
     }
@@ -178,12 +178,12 @@ export component Controls inherits Rectangle {
                         height: 20px;
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
-                        source: root.is-muted ? @image-url("icons/volume-xmark.svg")
+                        source: root.is-muted ? @image-url("icons/volume-slash.svg")
                             : root.volume < 0.01 ? @image-url("icons/volume-off.svg")
                             : root.volume < 0.33 ? @image-url("icons/volume-low.svg")
                             : root.volume < 0.66 ? @image-url("icons/volume-medium.svg")
                             : @image-url("icons/volume-high.svg");
-                        colorize: Theme.text-secondary;
+                        colorize: root.is-muted ? #e05555 : Theme.text-secondary;
                     }
 
                     mute-touch := TouchArea {
@@ -200,7 +200,7 @@ export component Controls inherits Rectangle {
                 alignment: center;
                 vol-slider := VolumeSlider {
                     value: root.volume * 100;
-                    changed(val) => {
+                    value-changed(val) => {
                         root.volume = val / 100;
                         root.volume-changed(val / 100);
                     }

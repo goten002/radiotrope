@@ -12,8 +12,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use rodio::{DeviceSinkBuilder, Player};
 
-use crate::config::buffer::HIGH_WATERMARK_BYTES;
-use crate::config::timeouts::PROBE_TIMEOUT_SECS;
+use crate::config::timeouts::{BUFFERING_STALL_THRESHOLD_SECS, PROBE_TIMEOUT_SECS};
 use crate::error::RadioError;
 use crate::stream::buffer::{SharedBufferStatus, StreamBuffer};
 
@@ -225,6 +224,8 @@ impl AudioEngine {
         let mut current_segments_downloaded: Option<Arc<AtomicU64>> = None;
         let mut current_buffer_status: Option<SharedBufferStatus> = None;
         let mut was_buffering = false;
+        let mut buffering_since: Option<Instant> = None;
+        let mut prolonged_buffering_stall = false;
         let mut producer_stop_flag: Option<Arc<AtomicBool>> = None;
         let mut analysis_active: Option<Arc<AtomicBool>> = None;
         let mut _producer_probing_flag: Option<Arc<AtomicBool>> = None;
@@ -397,6 +398,8 @@ impl AudioEngine {
                                         current_segments_downloaded = p.segments_downloaded;
                                         current_buffer_status = Some(p.buf_status);
                                         was_buffering = false;
+                                        buffering_since = None;
+                                        prolonged_buffering_stall = false;
                                         last_throughput_bytes = 0;
                                         last_throughput_time = Instant::now();
                                         analysis_active = Some(active_flag);
@@ -558,7 +561,9 @@ impl AudioEngine {
                                 stats.sample_count = a.sample_count;
                             }
                             // Health state
-                            if let Some(ref monitor) = health_monitor {
+                            if prolonged_buffering_stall {
+                                stats.health_state = HealthState::Stalled;
+                            } else if let Some(ref monitor) = health_monitor {
                                 stats.health_state = *monitor.state();
                             }
                             // Buffer status
@@ -568,6 +573,7 @@ impl AudioEngine {
                                     stats.buffer_capacity_bytes = buf.capacity_bytes;
                                     stats.is_buffering = buf.is_buffering;
                                     stats.underrun_count = buf.underrun_count;
+                                    stats.effective_watermark = buf.effective_watermark;
                                 }
                             }
                         }
@@ -577,28 +583,46 @@ impl AudioEngine {
                             if let Some(ref bs) = current_buffer_status {
                                 if let Ok(buf) = bs.lock() {
                                     if buf.is_buffering {
-                                        // Emit progressive percentage on every tick
-                                        let pct = if HIGH_WATERMARK_BYTES > 0 {
-                                            ((buf.level_bytes as f64 / HIGH_WATERMARK_BYTES as f64)
-                                                * 100.0)
-                                                .min(99.0)
-                                                as u8
-                                        } else {
-                                            0
-                                        };
-                                        let _ = event_tx.send(AudioEvent::Buffering(pct));
-
-                                        // Reset stall timer once on transition TO buffering
                                         if !was_buffering {
-                                            if let Some(ref mut monitor) = health_monitor {
-                                                monitor.reset_stall_timer();
-                                            }
+                                            buffering_since = Some(Instant::now());
                                         }
+
+                                        let stalled = buffering_since
+                                            .map(|since| since.elapsed().as_secs() >= BUFFERING_STALL_THRESHOLD_SECS)
+                                            .unwrap_or(false);
+
+                                        if stalled && buf.level_bytes == 0 {
+                                            // Prolonged buffering with no progress — genuine stall
+                                            let _ = event_tx.send(AudioEvent::StreamStalled);
+                                            prolonged_buffering_stall = true;
+                                        } else {
+                                            // Normal buffering or recovery in progress
+                                            let pct = if buf.effective_watermark > 0 {
+                                                ((buf.level_bytes as f64
+                                                    / buf.effective_watermark as f64)
+                                                    * 100.0)
+                                                    .min(99.0)
+                                                    as u8
+                                            } else {
+                                                0
+                                            };
+                                            let _ = event_tx.send(AudioEvent::Buffering(pct));
+                                            prolonged_buffering_stall = false;
+                                        }
+
                                         was_buffering = true;
                                     } else if was_buffering {
                                         // Recovered from buffering → signal 100%
                                         let _ = event_tx.send(AudioEvent::Buffering(100));
+                                        // Reset health monitor: the stream just refilled the buffer,
+                                        // proving it can deliver data. Clear any Stalled state that
+                                        // accumulated during the (possibly long) buffering window.
+                                        if let Some(ref mut monitor) = health_monitor {
+                                            monitor.reset_to_healthy();
+                                        }
                                         was_buffering = false;
+                                        buffering_since = None;
+                                        prolonged_buffering_stall = false;
                                     }
                                 }
                             }
@@ -606,7 +630,10 @@ impl AudioEngine {
                     }
 
                     // Health monitoring: check sample flow
-                    if state == PlaybackState::Playing {
+                    // Skip during active buffering — sample_count is frozen while consumer
+                    // blocks symphonia, so stall detection would give false positives.
+                    // The sink.empty() check remains as the ultimate safety net.
+                    if state == PlaybackState::Playing && !was_buffering {
                         if let Some(ref mut monitor) = health_monitor {
                             let count = analysis.lock().map(|a| a.sample_count).unwrap_or(0);
                             if let Some(failure) = monitor.update(count) {

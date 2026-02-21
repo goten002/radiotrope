@@ -137,6 +137,16 @@ impl StreamHealthMonitor {
         self.state_entered = Instant::now();
     }
 
+    /// Reset to Healthy state with a fresh timer.
+    /// Used when buffering completes — the stream just proved it can deliver data,
+    /// so any prior Stalled state from the buffering window is no longer relevant.
+    pub fn reset_to_healthy(&mut self) {
+        if !self.is_failed() {
+            self.state = HealthState::Healthy;
+            self.state_entered = Instant::now();
+        }
+    }
+
     fn transition(&mut self, new_state: HealthState, now: Instant) {
         self.state = new_state;
         self.state_entered = now;
@@ -758,5 +768,67 @@ mod tests {
 
         // Still Healthy because the timer was continuously reset
         assert_eq!(*monitor.state(), HealthState::Healthy);
+    }
+
+    // --- reset_to_healthy ---
+
+    #[test]
+    fn reset_to_healthy_from_stalled() {
+        let mut monitor = short_monitor();
+        monitor.update(100); // → Healthy
+        thread::sleep(Duration::from_millis(150));
+        monitor.update(100); // → Stalled
+        assert_eq!(*monitor.state(), HealthState::Stalled);
+
+        monitor.reset_to_healthy();
+        assert_eq!(*monitor.state(), HealthState::Healthy);
+    }
+
+    #[test]
+    fn reset_to_healthy_from_waiting() {
+        let mut monitor = short_monitor();
+        assert_eq!(*monitor.state(), HealthState::WaitingForAudio);
+
+        monitor.reset_to_healthy();
+        assert_eq!(*monitor.state(), HealthState::Healthy);
+    }
+
+    #[test]
+    fn reset_to_healthy_preserves_failed() {
+        let mut monitor = short_monitor();
+        thread::sleep(Duration::from_millis(150));
+        monitor.update(0); // → Failed(NoAudioOutput)
+        assert!(monitor.is_failed());
+
+        monitor.reset_to_healthy();
+        // Should stay Failed — terminal state is preserved
+        assert!(monitor.is_failed());
+        assert_eq!(
+            *monitor.state(),
+            HealthState::Failed(FailureReason::NoAudioOutput)
+        );
+    }
+
+    #[test]
+    fn reset_to_healthy_resets_timer() {
+        let mut monitor = short_monitor();
+        monitor.update(100); // → Healthy
+        thread::sleep(Duration::from_millis(150));
+        monitor.update(100); // → Stalled
+        assert_eq!(*monitor.state(), HealthState::Stalled);
+
+        // Reset to healthy — should get a fresh 100ms stall timer
+        monitor.reset_to_healthy();
+        assert_eq!(*monitor.state(), HealthState::Healthy);
+
+        // Wait 80ms — should still be Healthy (within fresh timer)
+        thread::sleep(Duration::from_millis(80));
+        monitor.update(100); // same count, but within timeout
+        assert_eq!(*monitor.state(), HealthState::Healthy);
+
+        // Wait another 150ms — now stall timeout should fire
+        thread::sleep(Duration::from_millis(150));
+        monitor.update(100);
+        assert_eq!(*monitor.state(), HealthState::Stalled);
     }
 }

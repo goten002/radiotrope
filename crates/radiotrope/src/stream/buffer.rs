@@ -21,7 +21,9 @@ use std::time::{Duration, Instant};
 use crate::audio::types::ReadSeek;
 use crate::config::buffer::{
     COMPACTION_SAFETY_MARGIN, COMPACTION_THRESHOLD, CONSUMER_WAIT_TIMEOUT_MS, EMA_ALPHA_JITTER,
-    EMA_ALPHA_THROUGHPUT, HIGH_WATERMARK_BYTES, MAX_BUFFER_SIZE, PRODUCER_CHUNK_SIZE,
+    EMA_ALPHA_THROUGHPUT, ESCALATION_DECAY_SECS, HIGH_WATERMARK_BYTES, MAX_BUFFER_SIZE,
+    MAX_WATERMARK_BYTES, MIN_THROUGHPUT_INTERVAL_MS, PRODUCER_CHUNK_SIZE, TARGET_BUFFER_SECONDS,
+    WATERMARK_STEP_BYTES,
 };
 
 /// Network throughput and jitter metrics (EMA-smoothed)
@@ -32,6 +34,8 @@ pub struct NetworkMetrics {
     last_chunk_interval_ms: f64,
     total_bytes: u64,
     underrun_count: u32,
+    /// Bytes accumulated since last EMA update (filters burst reads)
+    pending_bytes: usize,
 }
 
 impl NetworkMetrics {
@@ -43,16 +47,25 @@ impl NetworkMetrics {
             last_chunk_interval_ms: 0.0,
             total_bytes: 0,
             underrun_count: 0,
+            pending_bytes: 0,
         }
     }
 
-    /// Record a successful chunk read
+    /// Record a successful chunk read.
+    ///
+    /// Accumulates bytes and only updates the throughput EMA when enough time
+    /// has passed (`MIN_THROUGHPUT_INTERVAL_MS`). This prevents burst reads
+    /// after reconnection from spiking the EMA to unrealistic values.
     fn record_chunk(&mut self, bytes: usize) {
+        self.total_bytes += bytes as u64;
+        self.pending_bytes += bytes;
+
         let now = Instant::now();
         let elapsed_ms = now.duration_since(self.last_chunk_time).as_secs_f64() * 1000.0;
 
-        if elapsed_ms > 0.0 {
-            let throughput = (bytes as f64 / elapsed_ms) * 1000.0; // bytes/sec
+        // Only update EMA when enough time has passed to get a meaningful measurement.
+        if elapsed_ms >= MIN_THROUGHPUT_INTERVAL_MS {
+            let throughput = (self.pending_bytes as f64 / elapsed_ms) * 1000.0; // bytes/sec
             if self.throughput_ema == 0.0 {
                 self.throughput_ema = throughput;
             } else {
@@ -67,10 +80,10 @@ impl NetworkMetrics {
                     EMA_ALPHA_JITTER * jitter + (1.0 - EMA_ALPHA_JITTER) * self.jitter_ema;
             }
             self.last_chunk_interval_ms = elapsed_ms;
-        }
 
-        self.total_bytes += bytes as u64;
-        self.last_chunk_time = now;
+            self.pending_bytes = 0;
+            self.last_chunk_time = now;
+        }
     }
 
     fn record_underrun(&mut self) {
@@ -90,6 +103,7 @@ pub struct BufferStatus {
     pub is_buffering: bool,
     pub throughput_kbps: f64,
     pub underrun_count: u32,
+    pub effective_watermark: usize,
 }
 
 impl Default for BufferStatus {
@@ -100,6 +114,7 @@ impl Default for BufferStatus {
             is_buffering: false,
             throughput_kbps: 0.0,
             underrun_count: 0,
+            effective_watermark: HIGH_WATERMARK_BYTES,
         }
     }
 }
@@ -175,6 +190,9 @@ impl StreamBuffer {
             read_pos: 0,
             probing_flag,
             buffering_active: false,
+            underrun_escalations: 0,
+            buffering_start: None,
+            escalation_decay_secs: ESCALATION_DECAY_SECS,
         };
 
         (consumer, handle, stop_flag)
@@ -260,6 +278,12 @@ pub struct StreamBufferReader {
     probing_flag: Arc<AtomicBool>,
     /// Hysteresis flag: true while waiting for buffer to refill to HIGH_WATERMARK
     buffering_active: bool,
+    /// Number of times the buffer has underrun — escalates the effective watermark
+    underrun_escalations: u32,
+    /// When buffering started (for escalation decay timing)
+    buffering_start: Option<Instant>,
+    /// Configurable decay threshold (seconds). Default: ESCALATION_DECAY_SECS.
+    escalation_decay_secs: u64,
 }
 
 impl StreamBufferReader {
@@ -284,6 +308,22 @@ impl StreamBufferReader {
         }
     }
 
+    /// Compute the effective watermark based on escalation count and throughput.
+    ///
+    /// Each underrun escalates the watermark by `WATERMARK_STEP_BYTES`.
+    /// The throughput-based floor ensures at least `TARGET_BUFFER_SECONDS` of audio.
+    /// Result is capped at `MAX_WATERMARK_BYTES`.
+    fn effective_watermark(&self, metrics: &NetworkMetrics) -> usize {
+        let escalated =
+            HIGH_WATERMARK_BYTES + (self.underrun_escalations as usize * WATERMARK_STEP_BYTES);
+        let throughput_floor = if metrics.throughput_ema > 0.0 {
+            (metrics.throughput_ema * TARGET_BUFFER_SECONDS) as usize
+        } else {
+            0
+        };
+        escalated.max(throughput_floor).min(MAX_WATERMARK_BYTES)
+    }
+
     /// Update the shared status snapshot with current buffer state.
     fn update_status(&self, inner: &BufferInner) {
         if let Ok(mut s) = self.status.lock() {
@@ -295,6 +335,7 @@ impl StreamBufferReader {
             s.throughput_kbps = inner.metrics.throughput_kbps();
             s.underrun_count = inner.metrics.underrun_count;
             s.is_buffering = self.buffering_active;
+            s.effective_watermark = self.effective_watermark(&inner.metrics);
         }
     }
 }
@@ -314,10 +355,26 @@ impl Read for StreamBufferReader {
             let available = inner.write_pos.saturating_sub(local_read);
 
             if self.buffering_active {
-                // Hysteresis: keep blocking until buffer refills to HIGH_WATERMARK
-                // or the producer finishes (EOF/error).
-                if available >= HIGH_WATERMARK_BYTES || inner.producer_done {
+                // Track buffering start time
+                if self.buffering_start.is_none() {
+                    self.buffering_start = Some(Instant::now());
+                }
+
+                // Decay escalations after prolonged buffering (outage, not jitter)
+                if let Some(start) = self.buffering_start {
+                    if start.elapsed().as_secs() >= self.escalation_decay_secs
+                        && self.underrun_escalations > 0
+                    {
+                        self.underrun_escalations = 0;
+                    }
+                }
+
+                // Hysteresis: keep blocking until buffer refills to effective watermark
+                // (escalates with each underrun) or the producer finishes (EOF/error).
+                let watermark = self.effective_watermark(&inner.metrics);
+                if available >= watermark || inner.producer_done {
                     self.buffering_active = false;
+                    self.buffering_start = None;
                     self.update_status(&inner);
                     // Fall through to normal read logic below
                 } else {
@@ -350,6 +407,7 @@ impl Read for StreamBufferReader {
                 if remaining == 0 && !inner.producer_done {
                     self.buffering_active = true;
                     inner.metrics.record_underrun();
+                    self.underrun_escalations += 1;
                 }
 
                 self.update_status(&inner);
@@ -373,6 +431,7 @@ impl Read for StreamBufferReader {
             // Buffer is empty and producer is still running — enter buffering
             self.buffering_active = true;
             inner.metrics.record_underrun();
+            self.underrun_escalations += 1;
             self.update_status(&inner);
 
             // Wait for producer to write more data
@@ -480,7 +539,8 @@ mod tests {
     #[test]
     fn metrics_record_chunk_updates_throughput() {
         let mut m = NetworkMetrics::new();
-        std::thread::sleep(Duration::from_millis(10));
+        // Sleep >= MIN_THROUGHPUT_INTERVAL_MS (100ms) so the EMA actually updates
+        std::thread::sleep(Duration::from_millis(110));
         m.record_chunk(1024);
         assert!(m.throughput_ema > 0.0);
         assert_eq!(m.total_bytes, 1024);
@@ -503,12 +563,17 @@ mod tests {
     #[test]
     fn metrics_multiple_chunks_accumulate() {
         let mut m = NetworkMetrics::new();
+        // First chunk within MIN_THROUGHPUT_INTERVAL_MS — accumulates pending_bytes
         std::thread::sleep(Duration::from_millis(5));
         m.record_chunk(100);
-        std::thread::sleep(Duration::from_millis(5));
+        assert_eq!(m.total_bytes, 100);
+        assert_eq!(m.pending_bytes, 100);
+        // Second chunk after enough time for EMA update
+        std::thread::sleep(Duration::from_millis(110));
         m.record_chunk(200);
         assert_eq!(m.total_bytes, 300);
         assert!(m.throughput_ema > 0.0);
+        assert_eq!(m.pending_bytes, 0); // Reset after EMA update
     }
 
     // --- BufferStatus ---
@@ -521,6 +586,7 @@ mod tests {
         assert!(!s.is_buffering);
         assert_eq!(s.throughput_kbps, 0.0);
         assert_eq!(s.underrun_count, 0);
+        assert_eq!(s.effective_watermark, HIGH_WATERMARK_BYTES);
     }
 
     #[test]
@@ -531,6 +597,7 @@ mod tests {
             is_buffering: true,
             throughput_kbps: 128.0,
             underrun_count: 3,
+            effective_watermark: HIGH_WATERMARK_BYTES,
         };
         let c = s.clone();
         assert_eq!(c.level_bytes, 1024);
@@ -1107,15 +1174,17 @@ mod tests {
 
     #[test]
     fn slow_producer_status_shows_buffering_state() {
-        // With slow producer and data >> HIGH_WATERMARK, consumer should observe
+        // With slow producer and data >> MAX_WATERMARK_BYTES, consumer should observe
         // is_buffering=true after draining the initial watermark fill.
-        let data = vec![0u8; 500_000];
+        // Data must exceed MAX_WATERMARK_BYTES (512KB) because the adaptive watermark
+        // can escalate up to that cap via the throughput floor.
+        let data = vec![0u8; 2_000_000];
         let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
         let mut saw_buffering = false;
         let mut buf = [0u8; 8192];
-        for _ in 0..20 {
+        for _ in 0..100 {
             let _ = reader.read(&mut buf);
             if let Ok(s) = status.lock() {
                 if s.is_buffering {
@@ -1652,9 +1721,10 @@ mod tests {
 
     #[test]
     fn hysteresis_blocks_until_high_watermark() {
-        // After buffer empties, consumer should NOT get data until HIGH_WATERMARK is reached.
-        // Use a slow producer so we can observe the blocking behavior.
-        let data: Vec<u8> = (0..200_000).map(|i| (i % 256) as u8).collect();
+        // After buffer empties, consumer should NOT get data until the effective
+        // watermark is reached. Use a slow producer with data >> MAX_WATERMARK_BYTES
+        // so the adaptive watermark can be satisfied even after escalation.
+        let data: Vec<u8> = (0..2_000_000).map(|i| (i % 256) as u8).collect();
         let sim = SimulatedNetworkReader::new(data.clone()).with_latency(Duration::from_millis(1));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
@@ -1663,7 +1733,7 @@ mod tests {
         assert!(drained > 0);
         assert!(status.lock().unwrap().is_buffering, "Should be buffering");
 
-        // Now read again — this should block until HIGH_WATERMARK is reached.
+        // Now read again — this should block until the effective watermark is reached.
         // The read should succeed with data once the watermark is met.
         let mut buf = [0u8; 8192];
         let n = reader.read(&mut buf).unwrap();
@@ -1776,10 +1846,11 @@ mod tests {
 
     #[test]
     fn buffering_percentage_progresses() {
-        // During buffering, level_bytes should grow toward HIGH_WATERMARK.
+        // During buffering, level_bytes should grow toward the effective watermark.
         // Status is only updated inside read() calls, so we need a reader
         // thread blocked in the buffering condvar loop to observe progress.
-        let data: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+        // Data must exceed MAX_WATERMARK_BYTES so the adaptive watermark can be met.
+        let data: Vec<u8> = (0..2_000_000).map(|i| (i % 256) as u8).collect();
         let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
@@ -1797,7 +1868,7 @@ mod tests {
 
         // Poll level_bytes from main thread while reader is blocked in buffering
         let mut levels = Vec::new();
-        for _ in 0..50 {
+        for _ in 0..100 {
             thread::sleep(Duration::from_millis(5));
             let level = status.lock().unwrap().level_bytes;
             levels.push(level);
@@ -1833,7 +1904,10 @@ mod tests {
     #[test]
     fn multiple_buffering_cycles() {
         // Verify hysteresis works correctly across multiple drain→refill cycles.
-        let data: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+        // Data must far exceed MAX_WATERMARK_BYTES (512KB) because the adaptive
+        // watermark escalates with each underrun. 3MB ensures enough data for
+        // multiple cycles even with watermark escalation up to the cap.
+        let data: Vec<u8> = (0..3_000_000).map(|i| (i % 256) as u8).collect();
         let sim = SimulatedNetworkReader::new(data.clone()).with_latency(Duration::from_millis(1));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
@@ -1918,5 +1992,331 @@ mod tests {
         );
 
         handle.join().unwrap();
+    }
+
+    // =========================================================================
+    // Adaptive watermark tests
+    // =========================================================================
+
+    #[test]
+    fn effective_watermark_initial() {
+        // 0 escalations, 0 throughput → returns HIGH_WATERMARK_BYTES
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (reader, _handle, stop) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
+        let metrics = NetworkMetrics::new();
+        assert_eq!(reader.effective_watermark(&metrics), HIGH_WATERMARK_BYTES);
+        stop.store(true, Ordering::Relaxed);
+        _handle.join().unwrap();
+    }
+
+    #[test]
+    fn effective_watermark_escalates() {
+        // 3 escalations → HIGH_WATERMARK + 3 * STEP
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (mut reader, _handle, stop) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
+        reader.underrun_escalations = 3;
+        let metrics = NetworkMetrics::new();
+        assert_eq!(
+            reader.effective_watermark(&metrics),
+            HIGH_WATERMARK_BYTES + 3 * WATERMARK_STEP_BYTES
+        );
+        stop.store(true, Ordering::Relaxed);
+        _handle.join().unwrap();
+    }
+
+    #[test]
+    fn effective_watermark_caps_at_max() {
+        // 100 escalations → capped at MAX_WATERMARK_BYTES
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (mut reader, _handle, stop) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
+        reader.underrun_escalations = 100;
+        let metrics = NetworkMetrics::new();
+        assert_eq!(reader.effective_watermark(&metrics), MAX_WATERMARK_BYTES);
+        stop.store(true, Ordering::Relaxed);
+        _handle.join().unwrap();
+    }
+
+    #[test]
+    fn effective_watermark_throughput_floor() {
+        // High throughput_ema → throughput floor wins over low escalation
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (reader, _handle, stop) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
+        let mut metrics = NetworkMetrics::new();
+        // 16000 bytes/sec (128kbps) × 5s = 80KB floor
+        metrics.throughput_ema = 16000.0;
+        let watermark = reader.effective_watermark(&metrics);
+        // Throughput floor = 80000, base = 64KB = 65536
+        // max(65536, 80000) = 80000
+        assert_eq!(watermark, 80000);
+        stop.store(true, Ordering::Relaxed);
+        _handle.join().unwrap();
+    }
+
+    #[test]
+    fn adaptive_watermark_stabilizes_underruns() {
+        // With periodic stalls, after escalation the watermark grows large enough
+        // to absorb stalls, so underrun count should stabilize rather than grow
+        // linearly with data consumed.
+        let data = vec![0u8; 300_000];
+        let sim = SimulatedNetworkReader::new(data)
+            .with_latency(Duration::from_millis(1))
+            .with_periodic_stall(5, Duration::from_millis(30));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        // Read in two phases and compare underrun growth rate
+        let mut buf = [0u8; 8192];
+        for _ in 0..15 {
+            let _ = reader.read(&mut buf);
+        }
+        let underruns_phase1 = status.lock().unwrap().underrun_count;
+
+        for _ in 0..15 {
+            let _ = reader.read(&mut buf);
+        }
+        let underruns_phase2 = status.lock().unwrap().underrun_count;
+        let delta = underruns_phase2 - underruns_phase1;
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+
+        // After escalation, the watermark is larger so fewer underruns occur
+        // in phase 2 compared to phase 1. At minimum, the delta should not
+        // exceed the initial count (growth is sub-linear).
+        assert!(
+            delta <= underruns_phase1 + 1,
+            "Underruns should stabilize: phase1={}, delta={}",
+            underruns_phase1,
+            delta
+        );
+    }
+
+    #[test]
+    fn status_reports_effective_watermark() {
+        // Verify BufferStatus.effective_watermark updates after underruns
+        let data = vec![0u8; 200_000];
+        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        // Initial watermark should be the base
+        let initial_wm = status.lock().unwrap().effective_watermark;
+        assert_eq!(initial_wm, HIGH_WATERMARK_BYTES);
+
+        // Read rapidly to trigger underruns and escalation
+        let mut buf = [0u8; 8192];
+        for _ in 0..20 {
+            let _ = reader.read(&mut buf);
+        }
+
+        let final_wm = status.lock().unwrap().effective_watermark;
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+
+        // After underruns, the effective watermark should have grown
+        assert!(
+            final_wm > HIGH_WATERMARK_BYTES,
+            "Expected watermark to escalate from {}, got {}",
+            HIGH_WATERMARK_BYTES,
+            final_wm
+        );
+    }
+
+    #[test]
+    fn escalation_resets_per_stream() {
+        // Two sequential StreamBuffers both start at 0 escalations
+        let status1 = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing1 = Arc::new(AtomicBool::new(false));
+        let (reader1, handle1, stop1) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status1, probing1);
+        assert_eq!(reader1.underrun_escalations, 0);
+        stop1.store(true, Ordering::Relaxed);
+        drop(reader1);
+        handle1.join().unwrap();
+
+        let status2 = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing2 = Arc::new(AtomicBool::new(false));
+        let (reader2, handle2, stop2) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status2, probing2);
+        assert_eq!(reader2.underrun_escalations, 0);
+        stop2.store(true, Ordering::Relaxed);
+        drop(reader2);
+        handle2.join().unwrap();
+    }
+
+    // =========================================================================
+    // Escalation decay tests
+    // =========================================================================
+
+    #[test]
+    fn escalation_decay_after_prolonged_buffering() {
+        // After buffering longer than escalation_decay_secs, escalations reset to 0.
+        // Set up state directly: pretend we've been buffering for 2s with escalations,
+        // then call read() which enters the buffering path and triggers decay.
+        let data = vec![0u8; 200_000];
+        let (mut reader, handle, stop, _status) = buffer_with_status(data);
+
+        // Let fast producer fill the buffer completely
+        thread::sleep(Duration::from_millis(50));
+
+        // Read one chunk to advance read_pos
+        let mut buf = [0u8; 8192];
+        reader.read(&mut buf).unwrap();
+
+        // Set up escalated buffering state as if we've been in a prolonged outage
+        reader.underrun_escalations = 3;
+        reader.escalation_decay_secs = 1;
+        reader.buffering_active = true;
+        reader.buffering_start = Some(Instant::now() - Duration::from_secs(2));
+
+        // Next read() enters buffering path, sees decay threshold exceeded,
+        // resets escalations to 0, then exits (producer_done or data available)
+        let n = reader.read(&mut buf).unwrap();
+        assert!(n > 0, "Should get data after decay");
+        assert_eq!(
+            reader.underrun_escalations, 0,
+            "Escalations should decay to 0 after prolonged buffering"
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn no_decay_during_short_buffering() {
+        // Buffering < decay threshold → escalations preserved.
+        let data = vec![0u8; 200_000];
+        let (mut reader, handle, stop, _status) = buffer_with_status(data);
+
+        // Let fast producer fill the buffer completely
+        thread::sleep(Duration::from_millis(50));
+
+        // Read one chunk
+        let mut buf = [0u8; 8192];
+        reader.read(&mut buf).unwrap();
+
+        // Set up buffering state with escalations, but buffering_start is recent
+        reader.underrun_escalations = 3;
+        reader.escalation_decay_secs = 60; // Very long, won't trigger
+        reader.buffering_active = true;
+        reader.buffering_start = Some(Instant::now()); // Just started
+
+        // Next read() enters buffering path, sees decay NOT exceeded (0s < 60s),
+        // preserves escalations, then exits (producer_done or data available)
+        let n = reader.read(&mut buf).unwrap();
+        assert!(n > 0, "Should get data");
+        assert_eq!(
+            reader.underrun_escalations, 3,
+            "Escalations should be preserved during short buffering"
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn effective_watermark_drops_after_decay() {
+        // Verify that watermark recalculation after escalation reset produces a lower value.
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (mut reader, _handle, stop) =
+            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
+
+        // Simulate escalated state
+        reader.underrun_escalations = 3;
+        let metrics = NetworkMetrics::new();
+        let watermark_before = reader.effective_watermark(&metrics);
+        assert_eq!(
+            watermark_before,
+            HIGH_WATERMARK_BYTES + 3 * WATERMARK_STEP_BYTES
+        );
+
+        // Simulate decay
+        reader.underrun_escalations = 0;
+        let watermark_after = reader.effective_watermark(&metrics);
+        assert_eq!(watermark_after, HIGH_WATERMARK_BYTES);
+
+        assert!(
+            watermark_after < watermark_before,
+            "Watermark should drop after escalation decay: before={}, after={}",
+            watermark_before,
+            watermark_after
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        _handle.join().unwrap();
+    }
+
+    // =========================================================================
+    // Throughput EMA burst spike prevention tests
+    // =========================================================================
+
+    #[test]
+    fn throughput_ema_no_burst_spike() {
+        // Simulate reconnection scenario: long gap followed by rapid burst reads.
+        // The EMA should NOT spike to unrealistic values.
+        let mut m = NetworkMetrics::new();
+
+        // Initial chunk after 200ms (normal first read)
+        std::thread::sleep(Duration::from_millis(200));
+        m.record_chunk(8192);
+        let initial_ema = m.throughput_ema;
+        assert!(initial_ema > 0.0, "Should have initial throughput");
+
+        // Simulate burst: many rapid chunks within MIN_THROUGHPUT_INTERVAL_MS.
+        // These should accumulate pending_bytes without updating the EMA.
+        for _ in 0..10 {
+            m.record_chunk(8192);
+        }
+
+        // EMA should not have changed during the burst (elapsed < MIN_THROUGHPUT_INTERVAL_MS)
+        assert_eq!(
+            m.throughput_ema, initial_ema,
+            "EMA should not spike during burst reads"
+        );
+        assert_eq!(
+            m.pending_bytes,
+            8192 * 10,
+            "Pending bytes should accumulate"
+        );
+
+        // After enough time, the next chunk triggers a batched EMA update
+        std::thread::sleep(Duration::from_millis(110));
+        m.record_chunk(8192);
+
+        // The batched throughput should be reasonable (not 82 MB/s)
+        // 11 chunks * 8KB = 88KB in ~110ms ≈ 800 KB/s — well below the 82 MB/s spike
+        assert!(
+            m.throughput_ema < 2_000_000.0,
+            "EMA should be reasonable after batch update, got {} bytes/sec",
+            m.throughput_ema
+        );
+    }
+
+    #[test]
+    fn throughput_accumulates_pending_bytes() {
+        let mut m = NetworkMetrics::new();
+
+        // Record several chunks within MIN_THROUGHPUT_INTERVAL_MS
+        m.record_chunk(100);
+        m.record_chunk(200);
+        m.record_chunk(300);
+
+        // total_bytes always accumulates
+        assert_eq!(m.total_bytes, 600);
+        // pending_bytes accumulates until EMA update fires
+        assert_eq!(m.pending_bytes, 600);
+        // EMA should not have updated (elapsed < MIN_THROUGHPUT_INTERVAL_MS)
+        assert_eq!(
+            m.throughput_ema, 0.0,
+            "EMA should stay at 0 until enough time passes"
+        );
     }
 }

@@ -51,7 +51,16 @@ pub mod timeouts {
     pub const RETRY_BASE_DELAY_SECS: u64 = 2;
 
     /// Maximum backoff delay in seconds (cap for exponential backoff)
-    pub const MAX_BACKOFF_SECS: u64 = 30;
+    pub const MAX_BACKOFF_SECS: u64 = 10;
+
+    /// Connect timeout for reconnection attempts (seconds).
+    /// Shorter than the initial connect timeout to speed up recovery.
+    pub const CONNECT_TIMEOUT_SECS: u64 = 5;
+
+    /// Buffering duration before the engine signals a stall to the UI (seconds).
+    /// Short enough to give timely feedback, long enough to avoid false alarms
+    /// from normal buffering events (HLS gaps, brief hiccups).
+    pub const BUFFERING_STALL_THRESHOLD_SECS: u64 = 10;
 }
 
 /// Stream buffer configuration (producer-consumer architecture)
@@ -75,4 +84,23 @@ pub mod buffer {
     /// until the buffer refills to this level before delivering data again.
     /// 64KB provides ~2-4 seconds of buffer for typical radio streams (128-256 kbps).
     pub const HIGH_WATERMARK_BYTES: usize = 64 * 1024;
+    /// Escalation step per underrun (bytes) — each buffer underrun increases the
+    /// effective watermark by this amount to prevent repeated buffering cycles.
+    pub const WATERMARK_STEP_BYTES: usize = 64 * 1024;
+    /// Maximum effective watermark (bytes) — caps escalation to prevent excessive
+    /// buffering delay. 512KB covers ~32s at 128kbps, enough for max ICY backoff.
+    pub const MAX_WATERMARK_BYTES: usize = 512 * 1024;
+    /// Target buffer duration (seconds) — throughput-based floor for the effective
+    /// watermark. Ensures at least this many seconds of audio are buffered based
+    /// on the measured throughput EMA.
+    pub const TARGET_BUFFER_SECONDS: f64 = 5.0;
+
+    /// Minimum interval between throughput EMA updates (milliseconds).
+    /// Prevents burst reads after reconnection from spiking the EMA.
+    pub const MIN_THROUGHPUT_INTERVAL_MS: f64 = 100.0;
+
+    /// Time of continuous buffering before resetting watermark escalations (seconds).
+    /// After this duration, the outage is considered a network event (not jitter),
+    /// and the watermark returns to baseline for faster recovery on reconnection.
+    pub const ESCALATION_DECAY_SECS: u64 = 15;
 }

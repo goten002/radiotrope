@@ -12,10 +12,11 @@ use std::time::Duration;
 use crossbeam_channel::{bounded, Receiver, Sender};
 
 use crate::config::network::{READ_TIMEOUT_SECS, USER_AGENT};
+use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
 use crate::error::{RadioError, Result};
 use crate::stream::metadata::{extract_icy_title, StreamMetadata};
 
-use super::backoff_delay;
+use super::backoff_sleep;
 
 const AUDIO_CHANNEL_BOUND: usize = 32;
 
@@ -318,6 +319,9 @@ fn read_icy_stream(
                     if stop_flag.load(Ordering::SeqCst) {
                         return;
                     }
+                    if !backoff_sleep(consecutive_failures, &stop_flag) {
+                        return; // Stopped during sleep
+                    }
                     if try_reconnect(
                         url,
                         &mut response,
@@ -424,8 +428,9 @@ fn read_chunk_with_meta(
     ReadResult::Ok
 }
 
-/// Attempt to reconnect to the ICY stream with exponential backoff.
-/// Returns true if reconnection succeeded, false if we should give up.
+/// Attempt to reconnect to the ICY stream.
+/// Backoff sleep is handled by the caller via `backoff_sleep()`.
+/// Returns true if reconnection succeeded, false if we should retry.
 fn try_reconnect(
     url: &str,
     response: &mut reqwest::blocking::Response,
@@ -434,15 +439,13 @@ fn try_reconnect(
     consecutive_failures: &mut u32,
     stop_flag: &Arc<AtomicBool>,
 ) -> bool {
-    let delay = backoff_delay(*consecutive_failures);
-    thread::sleep(delay);
-
     if stop_flag.load(Ordering::SeqCst) {
         return false;
     }
 
     let client = match reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
         .build()
     {

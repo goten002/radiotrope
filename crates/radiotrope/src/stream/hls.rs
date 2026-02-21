@@ -16,6 +16,7 @@ use mpeg2ts::ts::{ReadTsPacket, TsPacketReader, TsPayload};
 
 use crate::config::hls::{SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS};
 use crate::config::network::USER_AGENT;
+use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
 use crate::error::{RadioError, Result};
 use crate::stream::playlist::{get_base_url, make_absolute_url};
 
@@ -371,7 +372,7 @@ fn resolve_hls_recursive(
     }
 }
 
-use super::backoff_delay;
+use super::backoff_sleep;
 
 /// Background segment downloader
 ///
@@ -389,6 +390,7 @@ fn segment_downloader(
 ) -> std::result::Result<(), String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS * 2))
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
@@ -410,14 +412,18 @@ fn segment_downloader(
             Ok(r) => r,
             Err(_) => {
                 consecutive_failures += 1;
-                thread::sleep(backoff_delay(consecutive_failures));
+                if !backoff_sleep(consecutive_failures, &stop_flag) {
+                    return Ok(());
+                }
                 continue;
             }
         };
 
         if !response.status().is_success() {
             consecutive_failures += 1;
-            thread::sleep(backoff_delay(consecutive_failures));
+            if !backoff_sleep(consecutive_failures, &stop_flag) {
+                return Ok(());
+            }
             continue;
         }
 
@@ -425,7 +431,9 @@ fn segment_downloader(
             Ok(b) => b,
             Err(_) => {
                 consecutive_failures += 1;
-                thread::sleep(backoff_delay(consecutive_failures));
+                if !backoff_sleep(consecutive_failures, &stop_flag) {
+                    return Ok(());
+                }
                 continue;
             }
         };
@@ -435,7 +443,9 @@ fn segment_downloader(
             Ok(_) => return Err("Expected media playlist".to_string()),
             Err(_) => {
                 consecutive_failures += 1;
-                thread::sleep(backoff_delay(consecutive_failures));
+                if !backoff_sleep(consecutive_failures, &stop_flag) {
+                    return Ok(());
+                }
                 continue;
             }
         };
@@ -592,6 +602,7 @@ fn segment_downloader(
 mod tests {
     use super::*;
     use crate::config::timeouts::{MAX_BACKOFF_SECS, RETRY_BASE_DELAY_SECS};
+    use crate::stream::backoff_delay;
 
     // --- backoff_delay ---
 
@@ -602,16 +613,16 @@ mod tests {
 
     #[test]
     fn backoff_exponential_growth() {
-        // base=2: 2, 4, 8, 16, 30(capped), 30, ...
+        // base=2: 2, 4, 8, 10(capped), 10, ...
         assert_eq!(backoff_delay(1), Duration::from_secs(2));
         assert_eq!(backoff_delay(2), Duration::from_secs(4));
         assert_eq!(backoff_delay(3), Duration::from_secs(8));
-        assert_eq!(backoff_delay(4), Duration::from_secs(16));
+        assert_eq!(backoff_delay(4), Duration::from_secs(MAX_BACKOFF_SECS));
     }
 
     #[test]
     fn backoff_caps_at_max() {
-        // 2^5 * 2 = 64, but capped at MAX_BACKOFF_SECS (30)
+        // 2^5 * 2 = 64, but capped at MAX_BACKOFF_SECS (10)
         assert_eq!(backoff_delay(6), Duration::from_secs(MAX_BACKOFF_SECS));
         assert_eq!(backoff_delay(10), Duration::from_secs(MAX_BACKOFF_SECS));
         assert_eq!(backoff_delay(100), Duration::from_secs(MAX_BACKOFF_SECS));

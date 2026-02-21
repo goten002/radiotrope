@@ -2,4 +2,34 @@ import { Theme } from "theme.slint";
 
 export component Favorites inherits Rectangle {
     background: Theme.surface;
+
+    // Empty state — shown when no favorites exist
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+
+        HorizontalLayout {
+            alignment: center;
+            Image {
+                source: @image-url("icons/book-heart.svg");
+                width: 48px;
+                height: 48px;
+                colorize: Theme.text-secondary;
+            }
+        }
+
+        Text {
+            text: "No favorites yet";
+            font-size: 14px;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Stations you favorite will appear here";
+            font-size: 11px;
+            color: Theme.text-secondary;
+            horizontal-alignment: center;
+        }
+    }
 }

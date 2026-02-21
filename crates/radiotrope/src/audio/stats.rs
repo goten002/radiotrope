@@ -34,6 +34,7 @@ pub struct StreamStats {
     pub is_buffering: bool,
     pub throughput_kbps: f64,
     pub underrun_count: u32,
+    pub effective_watermark: usize,
 
     pub play_started_at: Option<Instant>,
 }
@@ -55,6 +56,7 @@ impl Default for StreamStats {
             is_buffering: false,
             throughput_kbps: 0.0,
             underrun_count: 0,
+            effective_watermark: 0,
             play_started_at: None,
         }
     }
