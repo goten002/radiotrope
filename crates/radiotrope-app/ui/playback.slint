@@ -57,14 +57,15 @@ export component Playback inherits Rectangle {
             Text {
                 text: root.codec-info;
                 color: Theme.text-secondary;
-                font-size: 13px;
+                font-size: 12px;
                 overflow: elide;
             }
 
             Text {
                 text: root.status-text;
                 color: root.is-error ? #e05555 : Theme.accent-text;
-                font-size: 11px;
+                font-size: 14px;
+                overflow: elide;
             }
         }
 
