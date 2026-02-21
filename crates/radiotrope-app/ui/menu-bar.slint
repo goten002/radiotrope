@@ -73,6 +73,8 @@ export component MenuBar inherits Rectangle {
     background: Theme.panel;
 
     callback open-network-stream();
+    callback open-station-search();
+    callback open-country-picker();
     callback open-statistics();
 
     HorizontalLayout {
@@ -90,6 +92,24 @@ export component MenuBar inherits Rectangle {
 
             open-label := Text {
                 text: "Open";
+                color: Theme.menu-text;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            width: stations-label.preferred-width + 20px;
+            height: 32px;
+            background: stations-touch.has-hover ? Theme.menu-bar-hover : transparent;
+
+            stations-touch := TouchArea {
+                clicked => { stations-popup.show(); }
+            }
+
+            stations-label := Text {
+                text: "Stations";
                 color: Theme.menu-text;
                 font-size: 13px;
                 horizontal-alignment: center;
@@ -159,8 +179,40 @@ export component MenuBar inherits Rectangle {
         }
     }
 
-    view-popup := PopupWindow {
+    stations-popup := PopupWindow {
         x: 4px + open-label.preferred-width + 20px;
+        y: 32px;
+        width: stations-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: #00000033;
+            drop-shadow-offset-y: 2px;
+
+            stations-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "Search Stations...";
+                    clicked => {
+                        stations-popup.close();
+                        root.open-station-search();
+                    }
+                }
+                MenuItem {
+                    label: "By Country...";
+                    clicked => {
+                        stations-popup.close();
+                        root.open-country-picker();
+                    }
+                }
+            }
+        }
+    }
+
+    view-popup := PopupWindow {
+        x: 4px + open-label.preferred-width + 20px + stations-label.preferred-width + 20px;
         y: 32px;
         width: view-popup-layout.preferred-width;
 
@@ -194,7 +246,7 @@ export component MenuBar inherits Rectangle {
     }
 
     tools-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px + view-label.preferred-width + 20px;
+        x: 4px + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px;
         y: 32px;
         width: tools-popup-layout.preferred-width;
 

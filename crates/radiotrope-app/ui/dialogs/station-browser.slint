@@ -1,0 +1,431 @@
+import { Theme } from "../theme.slint";
+
+export struct BrowseStation {
+    name: string,
+    url: string,
+    logo-url: string,
+    country: string,
+    codec: string,
+    bitrate: int,
+}
+
+component StyledLineEdit inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text;
+    in property <bool> enabled: true;
+    callback accepted(string);
+
+    height: 36px;
+    border-radius: 4px;
+    background: Theme.surface;
+    clip: true;
+
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        width: parent.width;
+        background: input.has-focus ? Theme.accent : transparent;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+
+        if input.text == "" && !input.has-focus: Text {
+            text: root.placeholder-text;
+            color: Theme.text-secondary;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        input := TextInput {
+            text <=> root.text;
+            color: Theme.text-primary;
+            font-size: 13px;
+            vertical-alignment: center;
+            accepted => { root.accepted(root.text); }
+        }
+    }
+
+    touch := TouchArea {
+        clicked => { input.focus(); }
+    }
+}
+
+component AccentButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 32px;
+    width: btn-text.preferred-width + 32px;
+    border-radius: 4px;
+    background: !root.enabled ? Theme.disabled-bg
+                : touch.pressed ? Theme.accent-hover
+                : touch.has-hover ? Theme.accent-hover
+                : Theme.accent;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+        mouse-cursor: root.enabled ? pointer : default;
+    }
+
+    btn-text := Text {
+        text: root.label;
+        color: root.enabled ? Theme.button-text : Theme.disabled-text;
+        font-size: 13px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component SecondaryButton inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    height: 32px;
+    width: btn-text.preferred-width + 32px;
+    border-radius: 4px;
+    background: touch.pressed ? Theme.menu-hover
+                : touch.has-hover ? Theme.menu-bar-hover
+                : Theme.surface;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    btn-text := Text {
+        text: root.label;
+        color: Theme.text-secondary;
+        font-size: 13px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component StationRow inherits Rectangle {
+    in property <string> name;
+    in property <string> country;
+    in property <string> codec;
+    in property <int> bitrate;
+    callback clicked();
+
+    height: 52px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.menu-hover : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: stretch;
+
+        // Station name + country
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.name;
+                color: Theme.text-primary;
+                font-size: 13px;
+                overflow: elide;
+            }
+
+            Text {
+                text: root.country;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                overflow: elide;
+            }
+        }
+
+        // Codec badge
+        VerticalLayout {
+            alignment: center;
+            width: 40px;
+
+            Text {
+                text: root.codec;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                horizontal-alignment: center;
+            }
+        }
+
+        // Bitrate
+        VerticalLayout {
+            alignment: center;
+            width: 60px;
+
+            Text {
+                text: root.bitrate > 0 ? "\{root.bitrate} kbps" : "";
+                color: Theme.text-secondary;
+                font-size: 11px;
+                horizontal-alignment: right;
+            }
+        }
+
+        // Play button
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: 4px;
+                background: play-touch.has-hover ? Theme.accent-hover : Theme.accent;
+
+                play-touch := TouchArea {
+                    clicked => { root.clicked(); }
+                    mouse-cursor: pointer;
+                }
+
+                Image {
+                    width: 14px;
+                    height: 14px;
+                    source: @image-url("../icons/play.svg");
+                    colorize: Theme.button-text;
+                }
+            }
+        }
+    }
+}
+
+export component StationBrowserDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in-out property <string> search-mode: "search";
+    // Clear search query when switching to country mode
+    changed search-mode => {
+        if root.search-mode == "country" {
+            root.search-query = "";
+        }
+    }
+    in-out property <bool> search-loading: false;
+    in-out property <bool> search-loading-more: false;
+    in-out property <string> search-error: "";
+    in-out property <[BrowseStation]> search-results: [];
+    in-out property <bool> has-more: false;
+    in-out property <string> country-name: "";
+    property <string> search-query: "";
+
+    callback search-stations(string);
+    callback search-by-country(string);
+    callback load-more();
+    callback station-selected(BrowseStation);
+
+    if show-dialog: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000aa;
+
+        TouchArea {
+            clicked => {
+                root.show-dialog = false;
+            }
+        }
+
+        // Dialog card — scales with window, with min/max constraints
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: min(max(parent.width - 80px, 420px), 700px);
+            height: min(max(parent.height - 80px, 360px), 640px);
+            background: Theme.panel;
+            border-radius: 8px;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+
+                // Header row: title left, "radio-browser.info" right
+                HorizontalLayout {
+                    height: 28px;
+
+                    Text {
+                        text: root.search-mode == "country"
+                            ? "Stations in \{root.country-name}"
+                            : "Search Radio Stations";
+                        color: Theme.text-primary;
+                        font-size: 16px;
+                        font-weight: 600;
+                        overflow: elide;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    Text {
+                        text: "radio-browser.info";
+                        color: Theme.text-secondary;
+                        font-size: 10px;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Search input (search mode only)
+                if root.search-mode == "search": HorizontalLayout {
+                    spacing: 8px;
+                    height: 36px;
+
+                    search-input := StyledLineEdit {
+                        horizontal-stretch: 1;
+                        placeholder-text: "Search by station name...";
+                        text <=> root.search-query;
+                        accepted(query) => {
+                            if root.search-query != "" {
+                                root.search-loading = true;
+                                root.search-stations(root.search-query);
+                            }
+                        }
+                    }
+
+                    AccentButton {
+                        label: "Search";
+                        enabled: root.search-query != "";
+                        clicked => {
+                            if root.search-query != "" {
+                                root.search-loading = true;
+                                root.search-stations(root.search-query);
+                            }
+                        }
+                    }
+                }
+
+                // Results area
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+                    border-radius: 4px;
+                    background: Theme.surface;
+
+                    // Loading state
+                    if root.search-loading && root.search-results.length == 0: Text {
+                        text: "Loading...";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Error state
+                    if root.search-error != "" && !root.search-loading: Text {
+                        text: root.search-error;
+                        color: #e05555;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Empty state (search mode, no query, not loading)
+                    if root.search-mode == "search" && root.search-results.length == 0
+                        && !root.search-loading && root.search-error == ""
+                        && root.search-query == "": Text {
+                        text: "Top stations loaded automatically";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Empty state (search mode, with query, no results)
+                    if root.search-mode == "search" && root.search-results.length == 0
+                        && !root.search-loading && root.search-error == ""
+                        && root.search-query != "": Text {
+                        text: "No stations found";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Empty state (country mode)
+                    if root.search-mode == "country" && root.search-results.length == 0
+                        && !root.search-loading && root.search-error == "": Text {
+                        text: "No stations found in \{root.country-name}";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Results list
+                    if root.search-results.length > 0: Flickable {
+                        viewport-height: results-layout.preferred-height;
+
+                        results-layout := VerticalLayout {
+                            padding: 4px;
+
+                            for station[idx] in root.search-results: StationRow {
+                                name: station.name;
+                                country: station.country;
+                                codec: station.codec;
+                                bitrate: station.bitrate;
+                                clicked => { root.station-selected(station); }
+                            }
+
+                            // Load More button
+                            if root.has-more: Rectangle {
+                                height: 44px;
+                                border-radius: 4px;
+                                background: load-more-touch.has-hover && !root.search-loading-more
+                                    ? Theme.menu-hover : transparent;
+
+                                load-more-touch := TouchArea {
+                                    enabled: !root.search-loading-more;
+                                    clicked => {
+                                        root.search-loading-more = true;
+                                        root.load-more();
+                                    }
+                                    mouse-cursor: root.search-loading-more ? default : pointer;
+                                }
+
+                                Text {
+                                    text: root.search-loading-more ? "Loading..." : "Load More Stations";
+                                    color: root.search-loading-more ? Theme.text-secondary : Theme.accent;
+                                    font-size: 13px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Footer
+                HorizontalLayout {
+                    height: 32px;
+                    alignment: stretch;
+
+                    Text {
+                        text: root.search-results.length > 0
+                            ? "\{root.search-results.length} stations"
+                            : "";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    SecondaryButton {
+                        label: "Close";
+                        clicked => { root.show-dialog = false; }
+                    }
+                }
+            }
+        }
+    }
+}

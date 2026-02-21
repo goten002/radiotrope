@@ -10,6 +10,7 @@ export component Playback inherits Rectangle {
     in property <[float]> spectrum;
     in property <bool> is-loading;
     in property <bool> is-error;
+    in property <image> station-logo;
     in-out property <string> viz-mode <=> viz.viz-mode;
 
     height: 100px;
@@ -20,7 +21,7 @@ export component Playback inherits Rectangle {
         spacing: 12px;
         alignment: stretch;
 
-        // Logo placeholder
+        // Station logo / placeholder
         VerticalLayout {
             alignment: center;
             Rectangle {
@@ -28,8 +29,16 @@ export component Playback inherits Rectangle {
                 height: 70px;
                 background: Theme.surface;
                 border-radius: 4px;
+                clip: true;
 
-                Image {
+                if root.station-logo.width > 0: Image {
+                    source: root.station-logo;
+                    width: 70px;
+                    height: 70px;
+                    image-fit: contain;
+                }
+
+                if root.station-logo.width == 0: Image {
                     source: @image-url("icons/music-note.svg");
                     width: 30px;
                     height: 30px;

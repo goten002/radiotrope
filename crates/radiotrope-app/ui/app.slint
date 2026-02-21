@@ -7,6 +7,9 @@ import { Controls } from "controls.slint";
 import { Theme } from "theme.slint";
 import { NetworkStreamDialog } from "dialogs/network-stream.slint";
 import { StatisticsDialog } from "dialogs/statistics.slint";
+import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
+import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint";
+export { BrowseStation, CountryEntry }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -14,13 +17,19 @@ export component App inherits Window {
     background: Theme.surface;
     min-width: 640px;
     min-height: 480px;
-    preferred-width: 640px;
-    preferred-height: 480px;
+    preferred-width: 800px;
+    preferred-height: 600px;
 
     callback play-url(string);
     callback stop-clicked();
     callback volume-changed(float);
     callback mute-clicked();
+    callback search-stations(string);
+    callback browse-country(string);
+    callback load-more-stations();
+    callback play-station(BrowseStation);
+    callback load-top-stations();
+    callback load-countries();
 
     in-out property <string> station-name;
     in-out property <string> codec-info;
@@ -36,7 +45,20 @@ export component App inherits Window {
     in-out property <float> volume: 1.0;
     in-out property <bool> is-muted;
     in-out property <string> station-url;
+    in-out property <image> current-logo;
     out property <bool> volume-dragging: controls.volume-dragging;
+
+    // Station browser proxy properties (for Rust access)
+    in-out property <[BrowseStation]> search-results <=> browser-dialog.search-results;
+    in-out property <bool> search-loading <=> browser-dialog.search-loading;
+    in-out property <bool> search-loading-more <=> browser-dialog.search-loading-more;
+    in-out property <string> search-error <=> browser-dialog.search-error;
+    in-out property <bool> has-more <=> browser-dialog.has-more;
+
+    // Country picker proxy properties (for Rust access)
+    in-out property <[CountryEntry]> countries <=> picker-dialog.countries;
+    in-out property <bool> country-loading <=> picker-dialog.loading;
+    in-out property <string> country-error <=> picker-dialog.error;
 
     in-out property <string> stat-health;
     in-out property <string> stat-uptime;
@@ -58,6 +80,20 @@ export component App inherits Window {
             open-network-stream => {
                 stream-dialog.show-dialog = true;
             }
+            open-station-search => {
+                browser-dialog.search-mode = "search";
+                browser-dialog.show-dialog = true;
+                // Only load top stations on first open (no existing results)
+                if browser-dialog.search-results.length == 0 {
+                    browser-dialog.search-loading = true;
+                    root.load-top-stations();
+                }
+            }
+            open-country-picker => {
+                picker-dialog.loading = true;
+                picker-dialog.show-dialog = true;
+                root.load-countries();
+            }
             open-statistics => {
                 stats-dialog.show-dialog = true;
             }
@@ -71,6 +107,7 @@ export component App inherits Window {
             spectrum: root.spectrum;
             is-loading: root.is-loading;
             is-error: root.is-error;
+            station-logo: root.current-logo;
         }
         Favorites { vertical-stretch: 1; }
         controls := Controls {
@@ -106,5 +143,26 @@ export component App inherits Window {
         stat-frames-played: root.stat-frames-played;
         stat-decode-errors: root.stat-decode-errors;
         stat-underruns: root.stat-underruns;
+    }
+
+    browser-dialog := StationBrowserDialog {
+        search-stations(query) => { root.search-stations(query); }
+        search-by-country(country) => { root.browse-country(country); }
+        load-more() => { root.load-more-stations(); }
+        station-selected(station) => { root.play-station(station); }
+    }
+
+    picker-dialog := CountryPickerDialog {
+        country-selected(country) => {
+            browser-dialog.search-mode = "country";
+            browser-dialog.country-name = country;
+            browser-dialog.search-results = [];
+            browser-dialog.search-error = "";
+            browser-dialog.has-more = false;
+            browser-dialog.search-loading = true;
+            browser-dialog.show-dialog = true;
+            root.browse-country(country);
+        }
+        load-countries() => { root.load-countries(); }
     }
 }

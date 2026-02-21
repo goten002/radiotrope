@@ -1,0 +1,159 @@
+import { Theme } from "../theme.slint";
+
+export struct CountryEntry {
+    name: string,
+    station-count: int,
+}
+
+component CountryRow inherits Rectangle {
+    in property <string> name;
+    in property <int> station-count;
+    callback clicked();
+
+    height: 32px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.menu-hover : transparent;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: stretch;
+
+        Text {
+            text: root.name;
+            color: Theme.text-primary;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        Text {
+            text: root.station-count > 0 ? "\{root.station-count}" : "";
+            color: Theme.text-secondary;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            width: 50px;
+        }
+    }
+}
+
+export component CountryPickerDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in-out property <bool> loading: false;
+    in-out property <string> error: "";
+    in-out property <[CountryEntry]> countries: [];
+
+    callback country-selected(string);
+    callback load-countries();
+
+    if show-dialog: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000aa;
+
+        TouchArea {
+            clicked => { root.show-dialog = false; }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 320px;
+            height: min(max(parent.height - 80px, 360px), 640px);
+            background: Theme.panel;
+            border-radius: 8px;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+
+            TouchArea {}
+
+            VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+
+                // Header
+                HorizontalLayout {
+                    height: 28px;
+
+                    Text {
+                        text: "Select Country";
+                        color: Theme.text-primary;
+                        font-size: 16px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 4px;
+                        background: close-touch.has-hover ? Theme.menu-hover : transparent;
+
+                        close-touch := TouchArea {
+                            clicked => { root.show-dialog = false; }
+                        }
+
+                        Image {
+                            width: 12px;
+                            height: 12px;
+                            source: @image-url("../icons/xmark.svg");
+                            colorize: close-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        }
+                    }
+                }
+
+                // Content area
+                Rectangle {
+                    vertical-stretch: 1;
+                    clip: true;
+                    border-radius: 4px;
+                    background: Theme.surface;
+
+                    // Loading state
+                    if root.loading: Text {
+                        text: "Loading countries...";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Error state
+                    if root.error != "" && !root.loading: Text {
+                        text: root.error;
+                        color: #e05555;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    // Country list
+                    if root.countries.length > 0 && !root.loading: Flickable {
+                        viewport-height: country-layout.preferred-height;
+
+                        country-layout := VerticalLayout {
+                            padding: 4px;
+
+                            for entry[idx] in root.countries: CountryRow {
+                                name: entry.name;
+                                station-count: entry.station-count;
+                                clicked => {
+                                    root.show-dialog = false;
+                                    root.country-selected(entry.name);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

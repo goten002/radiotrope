@@ -107,8 +107,8 @@ impl AppController {
         match cmd {
             AppCommand::Shutdown => return true,
 
-            AppCommand::Play(url) => {
-                self.start_stream(&url);
+            AppCommand::Play { url, name } => {
+                self.start_stream(&url, name);
             }
             AppCommand::Stop => {
                 if let Some(engine) = &self.engine {
@@ -191,7 +191,7 @@ impl AppController {
     ///
     /// Each call increments `resolve_generation`; stale results from earlier
     /// calls are discarded in `handle_stream_resolved`.
-    fn start_stream(&mut self, url: &str) {
+    fn start_stream(&mut self, url: &str, name: Option<String>) {
         // Stop any current playback first
         if let Some(engine) = &self.engine {
             engine.stop();
@@ -205,7 +205,7 @@ impl AppController {
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.station_url = Some(url.to_string());
-            state.station_name = None;
+            state.station_name = name;
             state.title.clear();
             state.artist.clear();
             state.last_error = None;
@@ -267,7 +267,10 @@ impl AppController {
             Ok(resolved) => {
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    state.station_name = resolved.info.station_name.clone();
+                    // Prefer stream-provided name, but keep pre-set name from Play command
+                    if resolved.info.station_name.is_some() {
+                        state.station_name = resolved.info.station_name.clone();
+                    }
                     state.is_resolving = false;
                     state.stream_type = match resolved.info.stream_type {
                         StreamType::Direct => "ICY".to_string(),

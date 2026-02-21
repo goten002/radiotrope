@@ -10,7 +10,7 @@ use radiotrope::audio::PlaybackState;
 /// Commands sent by any frontend (GUI, MCP, tray)
 pub enum AppCommand {
     // Playback
-    Play(String),
+    Play { url: String, name: Option<String> },
     Stop,
     #[allow(dead_code)] // planned: pause/resume from MCP
     Pause,
