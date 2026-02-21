@@ -64,6 +64,13 @@ Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*,
 | WAV/PCM | symphonia |
 | Opus | libopus (bundled) |
 
+### Metadata
+
+| Format | Status | Description |
+|--------|--------|-------------|
+| ICY (Icecast/Shoutcast) | Supported | Artist/title extraction from in-band ICY metadata blocks |
+| ID3v1/ID3v2 | Planned | Embedded tags in MP3 streams (artist, title, album, genre, etc.) |
+
 ## Architecture
 
 The project is a Cargo workspace with three crates:
@@ -141,8 +148,9 @@ radiotrope-cli <URL>
 ## Roadmap
 
 - [ ] Favorites management
+- [x] Station search and browsing (Radio Browser API)
+- [ ] ID3 tag metadata extraction (MP3 streams)
 - [ ] System tray integration
-- [ ] Station search and browsing (Radio Browser API)
 - [ ] Audio recording to file
 - [ ] Equalizer and audio effects (DSP chain)
 

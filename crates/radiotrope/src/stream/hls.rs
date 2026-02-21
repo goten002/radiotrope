@@ -488,6 +488,13 @@ fn segment_downloader(
         } else {
             0
         };
+        // Mark skipped segments as "already seen" to prevent out-of-order
+        // delivery on subsequent fetches when start_idx returns to 0
+        for segment in playlist.segments.iter().take(start_idx) {
+            if is_valid_segment_uri(&segment.uri) {
+                downloaded_urls.insert(make_absolute_url(&segment.uri, base_url));
+            }
+        }
         first_fetch = false;
 
         let mut fetched_new = false;
