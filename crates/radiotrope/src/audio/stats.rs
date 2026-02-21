@@ -24,6 +24,7 @@ pub struct StreamStats {
     pub frames_played: u64,
     pub decode_errors: u64,
     pub bytes_received: u64,
+    pub segments_downloaded: u64,
     pub sample_count: u64,
 
     pub health_state: HealthState,
@@ -46,6 +47,7 @@ impl Default for StreamStats {
             frames_played: 0,
             decode_errors: 0,
             bytes_received: 0,
+            segments_downloaded: 0,
             sample_count: 0,
             health_state: HealthState::WaitingForAudio,
             buffer_level_bytes: 0,

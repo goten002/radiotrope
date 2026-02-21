@@ -226,6 +226,12 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
 
     // Network section
     ui.set_stat_received(format_bytes(s.bytes_received).into());
+    let segments_str = if s.segments_downloaded > 0 {
+        format_number(s.segments_downloaded)
+    } else {
+        "--".into()
+    };
+    ui.set_stat_segments(segments_str.into());
     ui.set_stat_throughput(format!("{:.0} kbps", s.throughput_kbps).into());
 
     // Buffer section

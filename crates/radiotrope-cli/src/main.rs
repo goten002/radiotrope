@@ -120,6 +120,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         format_hint,
         bitrate,
         resolved.bytes_received,
+        resolved.segments_downloaded,
     );
     app.status = "Buffering...".to_string();
 

@@ -285,6 +285,7 @@ impl AppController {
                         resolved.info.format_hint,
                         resolved.info.bitrate,
                         resolved.bytes_received,
+                        resolved.segments_downloaded,
                     );
                 }
             }

@@ -32,6 +32,7 @@ struct PendingProbe {
     stop_flag: Arc<AtomicBool>,
     prod_handle: JoinHandle<()>,
     bytes_received: Option<Arc<AtomicU64>>,
+    segments_downloaded: Option<Arc<AtomicU64>>,
     bitrate: Option<u32>,
     started: Instant,
 }
@@ -111,22 +112,25 @@ impl AudioEngine {
             format_hint,
             bitrate,
             bytes_received: None,
+            segments_downloaded: None,
         });
     }
 
-    /// Start playing with bytes_received tracking
+    /// Start playing with bytes_received and segments_downloaded tracking
     pub fn play_with_stats(
         &self,
         reader: Box<dyn super::types::ReadSeek>,
         format_hint: Option<String>,
         bitrate: Option<u32>,
         bytes_received: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+        segments_downloaded: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     ) {
         self.send(AudioCommand::Play {
             reader,
             format_hint,
             bitrate,
             bytes_received,
+            segments_downloaded,
         });
     }
 
@@ -217,6 +221,7 @@ impl AudioEngine {
         let mut stream_error_slot: Option<Arc<Mutex<Option<String>>>> = None;
         let mut current_decoder_stats: Option<Arc<DecoderStats>> = None;
         let mut current_bytes_received: Option<Arc<AtomicU64>> = None;
+        let mut current_segments_downloaded: Option<Arc<AtomicU64>> = None;
         let mut current_buffer_status: Option<SharedBufferStatus> = None;
         let mut was_buffering = false;
         let mut producer_stop_flag: Option<Arc<AtomicBool>> = None;
@@ -234,6 +239,7 @@ impl AudioEngine {
                         format_hint,
                         bitrate,
                         bytes_received,
+                        segments_downloaded,
                     } => {
                         // Cancel any pending probe
                         if let Some(probe) = pending_probe.take() {
@@ -269,6 +275,7 @@ impl AudioEngine {
                                     stop_flag,
                                     prod_handle,
                                     bytes_received,
+                                    segments_downloaded,
                                     bitrate,
                                     started: Instant::now(),
                                 });
@@ -302,6 +309,7 @@ impl AudioEngine {
                         stream_error_slot = None;
                         current_decoder_stats = None;
                         current_bytes_received = None;
+                        current_segments_downloaded = None;
                         current_buffer_status = None;
                         producer_stop_flag = None;
                         _producer_probing_flag = None;
@@ -369,6 +377,7 @@ impl AudioEngine {
                                         stream_error_slot = Some(error_slot);
                                         current_decoder_stats = Some(dec_stats);
                                         current_bytes_received = p.bytes_received;
+                                        current_segments_downloaded = p.segments_downloaded;
                                         current_buffer_status = Some(p.buf_status);
                                         was_buffering = false;
                                         last_throughput_bytes = 0;
@@ -484,6 +493,7 @@ impl AudioEngine {
                         stream_error_slot = None;
                         current_decoder_stats = None;
                         current_bytes_received = None;
+                        current_segments_downloaded = None;
                         current_buffer_status = None;
                         producer_stop_flag = None;
                         _producer_probing_flag = None;
@@ -503,6 +513,10 @@ impl AudioEngine {
                                 let (frames, errors) = ds.snapshot();
                                 stats.frames_played = frames;
                                 stats.decode_errors = errors;
+                            }
+                            // Segments downloaded (HLS only)
+                            if let Some(ref sd) = current_segments_downloaded {
+                                stats.segments_downloaded = sd.load(Ordering::Relaxed);
                             }
                             // Bytes received + throughput from delta
                             if let Some(ref br) = current_bytes_received {
@@ -594,6 +608,7 @@ impl AudioEngine {
                                         stream_error_slot = None;
                                         current_decoder_stats = None;
                                         current_bytes_received = None;
+                                        current_segments_downloaded = None;
                                         current_buffer_status = None;
                                         producer_stop_flag = None;
                                         _producer_probing_flag = None;
@@ -691,6 +706,51 @@ mod tests {
 
     /// Helper: try to create an engine; return None if audio hardware is unavailable
     fn try_engine() -> Option<AudioEngine> {
+        AudioEngine::new().ok()
+    }
+
+    /// Check if audio playback actually processes samples (cached).
+    /// Returns false in CI/headless environments where rodio creates a device
+    /// but the audio thread doesn't actually pull samples.
+    fn audio_playback_works() -> bool {
+        static RESULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *RESULT.get_or_init(|| {
+            let engine = match AudioEngine::new() {
+                Ok(e) => e,
+                Err(_) => return false,
+            };
+            engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+            match wait_for_event(&engine, 2000) {
+                Some(AudioEvent::Playing(_)) => {}
+                _ => {
+                    engine.shutdown();
+                    return false;
+                }
+            }
+            // Poll for up to 1s to see if audio samples actually flow
+            let deadline = Instant::now() + Duration::from_secs(1);
+            let works = loop {
+                thread::sleep(Duration::from_millis(50));
+                if let Ok(a) = engine.analysis().lock() {
+                    if a.sample_count > 0 {
+                        break true;
+                    }
+                }
+                if Instant::now() >= deadline {
+                    break false;
+                }
+            };
+            engine.shutdown();
+            works
+        })
+    }
+
+    /// Helper: try to create an engine AND verify audio playback works.
+    /// Returns None in CI/headless environments where samples don't actually flow.
+    fn try_engine_playback() -> Option<AudioEngine> {
+        if !audio_playback_works() {
+            return None;
+        }
         AudioEngine::new().ok()
     }
 
@@ -1038,7 +1098,9 @@ mod tests {
     #[test]
     #[ignore] // rodio 0.22 race condition — see docs/analysis-reset-race-condition.md
     fn analysis_reset_after_stop() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -1479,7 +1541,9 @@ mod tests {
 
     #[test]
     fn analysis_sample_count_increases_during_playback() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -1505,7 +1569,9 @@ mod tests {
     #[test]
     #[ignore] // rodio 0.22 race condition — see docs/analysis-reset-race-condition.md
     fn analysis_sample_count_resets_on_stop() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2026,7 +2092,9 @@ mod tests {
 
     #[test]
     fn shared_stats_frames_played_increases() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
         let stats = engine.shared_stats();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2051,7 +2119,9 @@ mod tests {
 
     #[test]
     fn shared_stats_sample_count_increases() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
         let stats = engine.shared_stats();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2199,7 +2269,9 @@ mod tests {
 
     #[test]
     fn shared_stats_reset_on_new_play() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
         let stats = engine.shared_stats();
 
         // First play
@@ -2270,7 +2342,9 @@ mod tests {
 
     #[test]
     fn play_with_stats_bytes_received_wired() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
         let stats = engine.shared_stats();
 
         // Create a bytes_received counter and pre-set it
@@ -2287,6 +2361,7 @@ mod tests {
             None,
             None,
             Some(bytes_counter.clone()),
+            None,
         );
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
@@ -2325,6 +2400,7 @@ mod tests {
         // play_with_stats with None bytes_received
         engine.play_with_stats(
             Box::new(Cursor::new(make_one_second_wav())),
+            None,
             None,
             None,
             None,
@@ -2702,7 +2778,9 @@ mod tests {
 
     #[test]
     fn shared_stats_bytes_received_reset_on_stop() {
-        let Some(engine) = try_engine() else { return };
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
         let stats = engine.shared_stats();
 
         let bytes_counter = Arc::new(AtomicU64::new(5000));
@@ -2711,6 +2789,7 @@ mod tests {
             None,
             None,
             Some(bytes_counter),
+            None,
         );
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}

@@ -40,6 +40,8 @@ pub enum AudioCommand {
         bitrate: Option<u32>,
         /// Atomic counter tracking bytes received from network (optional)
         bytes_received: Option<Arc<AtomicU64>>,
+        /// Atomic counter tracking HLS segments downloaded (optional)
+        segments_downloaded: Option<Arc<AtomicU64>>,
     },
     /// Stop playback
     Stop,
@@ -60,12 +62,14 @@ impl fmt::Debug for AudioCommand {
                 format_hint,
                 bitrate,
                 bytes_received,
+                segments_downloaded,
                 ..
             } => f
                 .debug_struct("Play")
                 .field("format_hint", format_hint)
                 .field("bitrate", bitrate)
                 .field("has_bytes_received", &bytes_received.is_some())
+                .field("has_segments_downloaded", &segments_downloaded.is_some())
                 .finish(),
             AudioCommand::Stop => write!(f, "Stop"),
             AudioCommand::Pause => write!(f, "Pause"),
@@ -224,6 +228,7 @@ mod tests {
             format_hint: Some("aac".to_string()),
             bitrate: None,
             bytes_received: None,
+            segments_downloaded: None,
         };
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("Play"));
@@ -237,6 +242,7 @@ mod tests {
             format_hint: None,
             bitrate: None,
             bytes_received: None,
+            segments_downloaded: None,
         };
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("Play"));
