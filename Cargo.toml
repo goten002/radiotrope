@@ -27,7 +27,7 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 
 ## GUI
-slint = { version = "1.15", default-features = true }
+slint = { version = "1.15", default-features = false, features = ["std", "compat-1-2", "renderer-skia", "backend-winit"] }
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 use crossbeam_channel::bounded;
-use slint::{ModelRc, VecModel};
+use slint::{Model, ModelRc, VecModel};
 
 use radiotrope::audio::health::HealthState;
 use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
@@ -105,17 +105,25 @@ fn main() {
     let _viz_timer = slint::Timer::default();
     if let Some(analysis) = analysis {
         let ui_weak = ui.as_weak();
+        // Pre-allocate the spectrum model once; update in-place each tick
+        let spectrum_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; radiotrope::config::audio::SPECTRUM_BANDS]));
+        let spectrum_rc = ModelRc::from(spectrum_model.clone());
+        ui.set_spectrum(spectrum_rc);
         _viz_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(30),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
-                let a = analysis.lock().unwrap_or_else(|e| e.into_inner());
-                ui.set_vu_left(a.vu_left);
-                ui.set_vu_right(a.vu_right);
-                let spectrum_vec: Vec<f32> = a.spectrum.to_vec();
+                // try_lock: skip this tick if engine/analyzer holds the lock
+                let Ok(a) = analysis.try_lock() else { return };
+                let (vu_l, vu_r, spectrum) = (a.vu_left, a.vu_right, a.spectrum);
                 drop(a);
-                ui.set_spectrum(ModelRc::new(VecModel::from(spectrum_vec)));
+                ui.set_vu_left(vu_l);
+                ui.set_vu_right(vu_r);
+                // Update model in-place — no allocation
+                for (i, &val) in spectrum.iter().enumerate() {
+                    spectrum_model.set_row_data(i, val);
+                }
             },
         );
     }
@@ -129,8 +137,11 @@ fn main() {
             Duration::from_millis(200),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
-                let s = shared_stats.lock().unwrap_or_else(|e| e.into_inner());
-                update_stats_ui(&ui, &s);
+                // try_lock: skip this tick if engine holds shared_stats
+                let Ok(s) = shared_stats.try_lock() else { return };
+                let stats_copy = s.clone();
+                drop(s);
+                update_stats_ui(&ui, &stats_copy);
             },
         );
     }
@@ -144,40 +155,45 @@ fn main() {
         Duration::from_millis(200),
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let s = poll_state.lock().unwrap_or_else(|e| e.into_inner());
-            ui.set_station_name(s.station_name.as_deref().unwrap_or("Radiotrope").into());
-            ui.set_codec_info(format_codec_line(&s).into());
-            ui.set_status_text(s.status_text.as_ref().into());
-            ui.set_is_error(s.is_error);
+            // try_lock: skip this tick if controller holds the lock
+            let Ok(s) = poll_state.try_lock() else { return };
+            // Copy all data under lock, then drop before touching UI
+            let station_name: slint::SharedString =
+                s.station_name.as_deref().unwrap_or("Radiotrope").into();
+            let codec_info: slint::SharedString = format_codec_line(&s).into();
+            let status_text: slint::SharedString = s.status_text.as_ref().into();
+            let is_error = s.is_error;
             let is_loading = s.is_resolving || s.status_text == "Connecting...";
-
-            // Playback state
-            ui.set_is_playing(s.playback == PlaybackState::Playing);
-
-            // Now-playing title from ICY metadata
-            let now_playing = if !s.title.is_empty() {
+            let is_playing = s.playback == PlaybackState::Playing;
+            let now_playing: slint::SharedString = if !s.title.is_empty() {
                 if !s.artist.is_empty() {
-                    format!("{} - {}", s.artist, s.title)
+                    format!("{} - {}", s.artist, s.title).into()
                 } else {
-                    s.title.clone()
+                    s.title.as_str().into()
                 }
             } else {
-                String::new()
+                Default::default()
             };
-            ui.set_now_playing_title(now_playing.into());
-
-            // Volume & mute — controller is source of truth; skip volume during drag
-            if !ui.get_volume_dragging() {
-                ui.set_volume(s.volume);
-            }
-            ui.set_is_muted(s.is_muted);
-
-            // Remember station URL for play-clicked
-            if let Some(ref url) = s.station_url {
-                ui.set_station_url(url.as_str().into());
-            }
-
+            let volume = s.volume;
+            let is_muted = s.is_muted;
+            let station_url: Option<slint::SharedString> =
+                s.station_url.as_deref().map(Into::into);
             drop(s);
+
+            // Set UI properties without holding any lock
+            ui.set_station_name(station_name);
+            ui.set_codec_info(codec_info);
+            ui.set_status_text(status_text);
+            ui.set_is_error(is_error);
+            ui.set_is_playing(is_playing);
+            ui.set_now_playing_title(now_playing);
+            if !ui.get_volume_dragging() {
+                ui.set_volume(volume);
+            }
+            ui.set_is_muted(is_muted);
+            if let Some(url) = station_url {
+                ui.set_station_url(url);
+            }
             ui.set_is_loading(is_loading);
         },
     );

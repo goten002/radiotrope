@@ -532,6 +532,22 @@ impl AudioEngine {
 
                     // Update shared stats on tick when playing
                     if state == PlaybackState::Playing {
+                        // Read analysis + buffer status BEFORE locking shared_stats
+                        // to avoid lock ordering issues with the UI viz timer.
+                        let sample_count =
+                            analysis.lock().map(|a| a.sample_count).unwrap_or(0);
+                        let buf_snapshot = current_buffer_status.as_ref().and_then(|bs| {
+                            bs.lock().ok().map(|buf| {
+                                (
+                                    buf.level_bytes,
+                                    buf.capacity_bytes,
+                                    buf.is_buffering,
+                                    buf.underrun_count,
+                                    buf.effective_watermark,
+                                )
+                            })
+                        });
+
                         if let Ok(mut stats) = shared_stats.lock() {
                             // Decoder stats
                             if let Some(ref ds) = current_decoder_stats {
@@ -556,25 +572,23 @@ impl AudioEngine {
                                     last_throughput_time = Instant::now();
                                 }
                             }
-                            // Analysis data (sample count)
-                            if let Ok(a) = analysis.lock() {
-                                stats.sample_count = a.sample_count;
-                            }
+                            // Analysis data (sample count) — read above, no nested lock
+                            stats.sample_count = sample_count;
                             // Health state
                             if prolonged_buffering_stall {
                                 stats.health_state = HealthState::Stalled;
                             } else if let Some(ref monitor) = health_monitor {
                                 stats.health_state = *monitor.state();
                             }
-                            // Buffer status
-                            if let Some(ref bs) = current_buffer_status {
-                                if let Ok(buf) = bs.lock() {
-                                    stats.buffer_level_bytes = buf.level_bytes;
-                                    stats.buffer_capacity_bytes = buf.capacity_bytes;
-                                    stats.is_buffering = buf.is_buffering;
-                                    stats.underrun_count = buf.underrun_count;
-                                    stats.effective_watermark = buf.effective_watermark;
-                                }
+                            // Buffer status — read above, no nested lock
+                            if let Some((level, capacity, buffering, underruns, watermark)) =
+                                buf_snapshot
+                            {
+                                stats.buffer_level_bytes = level;
+                                stats.buffer_capacity_bytes = capacity;
+                                stats.is_buffering = buffering;
+                                stats.underrun_count = underruns;
+                                stats.effective_watermark = watermark;
                             }
                         }
 
