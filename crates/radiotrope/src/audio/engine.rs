@@ -1647,8 +1647,11 @@ mod tests {
             Some(AudioEvent::Stopped) => {}
             _ => {}
         }
-        // Give the player time to fully drain after stop
-        thread::sleep(Duration::from_millis(100));
+        // Give the player time to fully drain after stop.
+        // The span-based processing in rodio may still be mid-span when stop
+        // fires, so we need enough time for the audio thread to finish and
+        // for the active flag to prevent further writes.
+        thread::sleep(Duration::from_millis(300));
 
         let data = engine.analysis();
         let analysis = data.lock().unwrap();

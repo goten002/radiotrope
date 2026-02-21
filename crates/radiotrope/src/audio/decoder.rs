@@ -306,7 +306,14 @@ impl Iterator for SymphoniaSource {
 
 impl Source for SymphoniaSource {
     fn current_span_len(&self) -> Option<usize> {
-        None
+        // Return the remaining samples in the current decoded packet.
+        // This creates span boundaries between packets, allowing rodio to
+        // re-query sample_rate()/channels() and reconfigure its resampler.
+        // Critical for codecs like HE-AAC where FDK AAC may change the
+        // output sample rate after SBR processing kicks in.
+        self.sample_buf
+            .as_ref()
+            .map(|buf| buf.samples().len().saturating_sub(self.sample_idx))
     }
 
     fn channels(&self) -> NonZero<u16> {
@@ -645,10 +652,13 @@ mod tests {
     // --- Source trait ---
 
     #[test]
-    fn current_span_len_is_none() {
+    fn current_span_len_returns_remaining_samples() {
         let wav = make_wav(44100, 1, &[0; 100]);
         let source = SymphoniaSource::new(Cursor::new(wav)).unwrap();
-        assert!(source.current_span_len().is_none());
+        // After pre-decode, span length is the remaining samples in the decoded buffer
+        let span = source.current_span_len();
+        assert!(span.is_some(), "Should have a span after pre-decode");
+        assert!(span.unwrap() > 0, "Span should be non-empty");
     }
 
     #[test]

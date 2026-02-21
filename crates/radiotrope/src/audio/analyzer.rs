@@ -24,7 +24,6 @@ pub struct AnalyzingSource<S> {
     buffer_left: Vec<f32>,
     buffer_right: Vec<f32>,
     channels: NonZero<u16>,
-    sample_rate: NonZero<u32>,
     fft_planner: FftPlanner<f32>,
     local_sample_count: u64,
 }
@@ -40,7 +39,6 @@ where
     /// thread from overwriting a reset.
     pub fn new(source: S, analysis: Arc<Mutex<AudioAnalysis>>, active: Arc<AtomicBool>) -> Self {
         let channels = source.channels();
-        let sample_rate = source.sample_rate();
         Self {
             inner: source,
             analysis,
@@ -48,7 +46,6 @@ where
             buffer_left: Vec::with_capacity(FFT_SIZE),
             buffer_right: Vec::with_capacity(FFT_SIZE),
             channels,
-            sample_rate,
             fft_planner: FftPlanner::new(),
             local_sample_count: 0,
         }
@@ -169,11 +166,11 @@ where
     }
 
     fn channels(&self) -> NonZero<u16> {
-        self.channels
+        self.inner.channels()
     }
 
     fn sample_rate(&self) -> NonZero<u32> {
-        self.sample_rate
+        self.inner.sample_rate()
     }
 
     fn total_duration(&self) -> Option<Duration> {
