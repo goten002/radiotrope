@@ -128,9 +128,10 @@ impl FavoritesManager {
 
     /// Remove a favorite by ID
     pub fn remove(&mut self, id: &str) -> Result<Favorite> {
-        let favorite = self.favorites.remove(id).ok_or_else(|| {
-            AppError::Config(format!("Favorite with ID '{}' not found", id))
-        })?;
+        let favorite = self
+            .favorites
+            .remove(id)
+            .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
 
         self.dirty = true;
         Ok(favorite)
@@ -188,9 +189,10 @@ impl FavoritesManager {
             }
 
             // Remove old, update, insert with new key
-            let mut favorite = self.favorites.remove(id).ok_or_else(|| {
-                AppError::Config(format!("Favorite with ID '{}' not found", id))
-            })?;
+            let mut favorite = self
+                .favorites
+                .remove(id)
+                .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
 
             update.apply_to(&mut favorite);
             // ID is computed from URL, so after applying update with new URL,
@@ -198,9 +200,10 @@ impl FavoritesManager {
             self.favorites.insert(favorite.id(), favorite);
         } else {
             // No URL change, just update in place
-            let favorite = self.favorites.get_mut(id).ok_or_else(|| {
-                AppError::Config(format!("Favorite with ID '{}' not found", id))
-            })?;
+            let favorite = self
+                .favorites
+                .get_mut(id)
+                .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
             update.apply_to(favorite);
         }
 
@@ -210,7 +213,12 @@ impl FavoritesManager {
 
     /// Toggle favorite status for a URL
     /// Returns Some(id) if added, None if removed
-    pub fn toggle(&mut self, name: &str, url: &str, logo_url: Option<&str>) -> Result<Option<String>> {
+    pub fn toggle(
+        &mut self,
+        name: &str,
+        url: &str,
+        logo_url: Option<&str>,
+    ) -> Result<Option<String>> {
         let id = url_to_id(url);
 
         if self.favorites.contains_key(&id) {
@@ -352,9 +360,10 @@ impl FavoritesManager {
 
     /// Record a play session for a favorite
     pub fn record_play(&mut self, id: &str, duration_secs: u64) -> Result<()> {
-        let favorite = self.favorites.get_mut(id).ok_or_else(|| {
-            AppError::Config(format!("Favorite with ID '{}' not found", id))
-        })?;
+        let favorite = self
+            .favorites
+            .get_mut(id)
+            .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
         favorite.record_play(duration_secs);
         self.dirty = true;
         Ok(())
@@ -459,7 +468,9 @@ mod tests {
     fn test_duplicate_url() {
         let mut manager = empty_manager();
 
-        manager.add(Favorite::new("Test 1", "http://test.com")).unwrap();
+        manager
+            .add(Favorite::new("Test 1", "http://test.com"))
+            .unwrap();
         let result = manager.add(Favorite::new("Test 2", "http://test.com"));
 
         assert!(result.is_err());
@@ -484,7 +495,9 @@ mod tests {
     fn test_get_by_url() {
         let mut manager = empty_manager();
 
-        manager.add(Favorite::new("Test Radio", "http://test.com")).unwrap();
+        manager
+            .add(Favorite::new("Test Radio", "http://test.com"))
+            .unwrap();
 
         let fav = manager.get_by_url("http://test.com");
         assert!(fav.is_some());
@@ -502,7 +515,9 @@ mod tests {
         let id = fav.id();
         manager.add(fav).unwrap();
 
-        manager.update(&id, FavoriteUpdate::new().name("New Name")).unwrap();
+        manager
+            .update(&id, FavoriteUpdate::new().name("New Name"))
+            .unwrap();
 
         assert_eq!(manager.get(&id).unwrap().name(), "New Name");
     }
@@ -553,7 +568,9 @@ mod tests {
         let mut manager = empty_manager();
         assert!(!manager.is_dirty());
 
-        manager.add(Favorite::new("Test", "http://test.com")).unwrap();
+        manager
+            .add(Favorite::new("Test", "http://test.com"))
+            .unwrap();
         assert!(manager.is_dirty());
     }
 
@@ -568,8 +585,12 @@ mod tests {
         // Create and save
         {
             let mut manager = FavoritesManager::new();
-            manager.add(Favorite::new("Station 1", "http://station1.com")).unwrap();
-            manager.add(Favorite::new("Station 2", "http://station2.com")).unwrap();
+            manager
+                .add(Favorite::new("Station 1", "http://station1.com"))
+                .unwrap();
+            manager
+                .add(Favorite::new("Station 2", "http://station2.com"))
+                .unwrap();
             manager.save_to(&path).unwrap();
         }
 
@@ -579,7 +600,10 @@ mod tests {
             assert_eq!(manager.count(), 2);
             assert!(manager.is_favorite("http://station1.com"));
             assert!(manager.is_favorite("http://station2.com"));
-            assert_eq!(manager.get_by_url("http://station1.com").unwrap().name(), "Station 1");
+            assert_eq!(
+                manager.get_by_url("http://station1.com").unwrap().name(),
+                "Station 1"
+            );
         }
 
         // Cleanup
@@ -603,7 +627,9 @@ mod tests {
         assert!(!path.exists());
 
         // Make dirty
-        manager.add(Favorite::new("Test", "http://test.com")).unwrap();
+        manager
+            .add(Favorite::new("Test", "http://test.com"))
+            .unwrap();
         manager.save_to(&path).unwrap();
         assert!(path.exists());
 
@@ -615,7 +641,9 @@ mod tests {
         let path = temp_path();
 
         let mut manager = FavoritesManager::new();
-        manager.add(Favorite::new("Test", "http://test.com")).unwrap();
+        manager
+            .add(Favorite::new("Test", "http://test.com"))
+            .unwrap();
         manager.save_to(&path).unwrap(); // Clear dirty flag
 
         assert!(!manager.is_dirty());
@@ -661,7 +689,10 @@ mod tests {
             let fav = manager.get_by_url(url).unwrap();
 
             assert_eq!(fav.name(), "Full Station");
-            assert_eq!(fav.station.logo_url, Some("http://logo.com/img.png".to_string()));
+            assert_eq!(
+                fav.station.logo_url,
+                Some("http://logo.com/img.png".to_string())
+            );
             assert_eq!(fav.station.provider, "radio-browser");
             assert_eq!(fav.station.provider_id, Some("uuid-123".to_string()));
             assert_eq!(fav.station.country, Some("US".to_string()));
@@ -695,7 +726,9 @@ mod tests {
         {
             let mut manager = FavoritesManager::load_from(&path).unwrap();
             let id = manager.get_id_for_url(url);
-            manager.update(&id, FavoriteUpdate::new().name("Modified")).unwrap();
+            manager
+                .update(&id, FavoriteUpdate::new().name("Modified"))
+                .unwrap();
             manager.save_to(&path).unwrap();
         }
 
@@ -715,8 +748,12 @@ mod tests {
         // Create with two favorites
         {
             let mut manager = FavoritesManager::new();
-            manager.add(Favorite::new("Keep", "http://keep.com")).unwrap();
-            manager.add(Favorite::new("Remove", "http://remove.com")).unwrap();
+            manager
+                .add(Favorite::new("Keep", "http://keep.com"))
+                .unwrap();
+            manager
+                .add(Favorite::new("Remove", "http://remove.com"))
+                .unwrap();
             manager.save_to(&path).unwrap();
         }
 

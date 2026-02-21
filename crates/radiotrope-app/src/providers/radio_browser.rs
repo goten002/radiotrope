@@ -5,8 +5,8 @@
 
 use crate::config::providers::RADIO_BROWSER_DEFAULT_SERVER;
 use crate::data::types::Station;
-use crate::network::HttpClient;
 use crate::error::Result;
+use crate::network::HttpClient;
 
 use super::traits::StationProvider;
 use super::types::{Category, CategoryType, SearchResults};
@@ -322,7 +322,10 @@ mod tests {
     #[test]
     fn test_rb_station_logo() {
         let station: Station = sample_rb_station().into();
-        assert_eq!(station.logo_url, Some("http://test.com/logo.png".to_string()));
+        assert_eq!(
+            station.logo_url,
+            Some("http://test.com/logo.png".to_string())
+        );
     }
 
     #[test]
@@ -531,7 +534,10 @@ mod tests {
     #[test]
     fn test_provider_url_building() {
         let provider = RadioBrowserProvider::with_base_url("https://api.example.com").unwrap();
-        assert_eq!(provider.url("/json/tags"), "https://api.example.com/json/tags");
+        assert_eq!(
+            provider.url("/json/tags"),
+            "https://api.example.com/json/tags"
+        );
     }
 
     // ---- RbStation JSON deserialization ----
@@ -655,9 +661,15 @@ mod tests {
         let categories = provider.browse_categories().unwrap();
         assert!(!categories.is_empty());
         // Should have genres, countries, and languages
-        assert!(categories.iter().any(|c| c.category_type == CategoryType::Genre));
-        assert!(categories.iter().any(|c| c.category_type == CategoryType::Country));
-        assert!(categories.iter().any(|c| c.category_type == CategoryType::Language));
+        assert!(categories
+            .iter()
+            .any(|c| c.category_type == CategoryType::Genre));
+        assert!(categories
+            .iter()
+            .any(|c| c.category_type == CategoryType::Country));
+        assert!(categories
+            .iter()
+            .any(|c| c.category_type == CategoryType::Language));
     }
 
     #[test]
@@ -688,7 +700,9 @@ mod tests {
     #[ignore]
     fn test_integration_get_station_not_found() {
         let provider = RadioBrowserProvider::new().unwrap();
-        let result = provider.get_station("00000000-0000-0000-0000-000000000000").unwrap();
+        let result = provider
+            .get_station("00000000-0000-0000-0000-000000000000")
+            .unwrap();
         assert!(result.is_none());
     }
 

@@ -67,7 +67,10 @@ fn main() {
         if let Some(ui) = play_url_weak.upgrade() {
             ui.set_current_logo(Default::default());
         }
-        let _ = play_tx.send(app::state::AppCommand::Play { url: url.to_string(), name: None });
+        let _ = play_tx.send(app::state::AppCommand::Play {
+            url: url.to_string(),
+            name: None,
+        });
     });
 
     let stop_tx = cmd_tx.clone();
@@ -130,9 +133,9 @@ fn main() {
                                 let items: Vec<BrowseStation> =
                                     stations.iter().map(station_to_browse).collect();
                                 let has_more = items.len() >= SEARCH_PAGE_SIZE;
-                                ui.set_search_results(ModelRc::from(
-                                    std::rc::Rc::new(VecModel::from(items)),
-                                ));
+                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(items),
+                                )));
                                 ui.set_has_more(has_more);
                                 ui.set_search_error(Default::default());
                             }
@@ -167,9 +170,11 @@ fn main() {
                 .spawn(move || {
                     let results = ProviderRegistry::with_defaults().and_then(|r| {
                         r.get("radio-browser")
-                            .ok_or_else(|| radiotrope_app::error::AppError::NotFound(
-                                "radio-browser provider not found".into(),
-                            ))
+                            .ok_or_else(|| {
+                                radiotrope_app::error::AppError::NotFound(
+                                    "radio-browser provider not found".into(),
+                                )
+                            })
                             .and_then(|p| p.get_popular(SEARCH_PAGE_SIZE))
                     });
                     let _ = slint::invoke_from_event_loop(move || {
@@ -179,9 +184,9 @@ fn main() {
                                 let items: Vec<BrowseStation> =
                                     stations.iter().map(station_to_browse).collect();
                                 let has_more = items.len() >= SEARCH_PAGE_SIZE;
-                                ui.set_search_results(ModelRc::from(
-                                    std::rc::Rc::new(VecModel::from(items)),
-                                ));
+                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(items),
+                                )));
                                 ui.set_has_more(has_more);
                                 ui.set_search_error(Default::default());
                             }
@@ -220,21 +225,26 @@ fn main() {
                     let results = ProviderRegistry::with_defaults().and_then(|r| {
                         let cat = Category::new(&country_str, &country_str, CategoryType::Country);
                         r.get("radio-browser")
-                            .ok_or_else(|| radiotrope_app::error::AppError::NotFound(
-                                "radio-browser provider not found".into(),
-                            ))
+                            .ok_or_else(|| {
+                                radiotrope_app::error::AppError::NotFound(
+                                    "radio-browser provider not found".into(),
+                                )
+                            })
                             .and_then(|p| p.browse_category(&cat, SEARCH_PAGE_SIZE, 0))
                     });
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
                             Ok(search_results) => {
-                                let items: Vec<BrowseStation> =
-                                    search_results.stations.iter().map(station_to_browse).collect();
+                                let items: Vec<BrowseStation> = search_results
+                                    .stations
+                                    .iter()
+                                    .map(station_to_browse)
+                                    .collect();
                                 let has_more = search_results.has_more;
-                                ui.set_search_results(ModelRc::from(
-                                    std::rc::Rc::new(VecModel::from(items)),
-                                ));
+                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(items),
+                                )));
                                 ui.set_has_more(has_more);
                                 ui.set_search_error(Default::default());
                             }
@@ -271,11 +281,14 @@ fn main() {
                 .spawn(move || {
                     let results = if is_country {
                         ProviderRegistry::with_defaults().and_then(|r| {
-                            let cat = Category::new(&country_str, &country_str, CategoryType::Country);
+                            let cat =
+                                Category::new(&country_str, &country_str, CategoryType::Country);
                             r.get("radio-browser")
-                                .ok_or_else(|| radiotrope_app::error::AppError::NotFound(
-                                    "radio-browser provider not found".into(),
-                                ))
+                                .ok_or_else(|| {
+                                    radiotrope_app::error::AppError::NotFound(
+                                        "radio-browser provider not found".into(),
+                                    )
+                                })
                                 .and_then(|p| {
                                     p.browse_category(&cat, SEARCH_PAGE_SIZE, current_offset)
                                 })
@@ -283,9 +296,11 @@ fn main() {
                     } else {
                         ProviderRegistry::with_defaults().and_then(|r| {
                             r.get("radio-browser")
-                                .ok_or_else(|| radiotrope_app::error::AppError::NotFound(
-                                    "radio-browser provider not found".into(),
-                                ))
+                                .ok_or_else(|| {
+                                    radiotrope_app::error::AppError::NotFound(
+                                        "radio-browser provider not found".into(),
+                                    )
+                                })
                                 .and_then(|p| {
                                     p.search(&query_str, SEARCH_PAGE_SIZE, current_offset)
                                 })
@@ -295,8 +310,11 @@ fn main() {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
                             Ok(search_results) => {
-                                let new_items: Vec<BrowseStation> =
-                                    search_results.stations.iter().map(station_to_browse).collect();
+                                let new_items: Vec<BrowseStation> = search_results
+                                    .stations
+                                    .iter()
+                                    .map(station_to_browse)
+                                    .collect();
                                 let has_more = search_results.has_more;
                                 // Append to existing model
                                 let existing = ui.get_search_results();
@@ -304,9 +322,9 @@ fn main() {
                                     .map(|i| existing.row_data(i).unwrap())
                                     .collect();
                                 all.extend(new_items);
-                                ui.set_search_results(ModelRc::from(
-                                    std::rc::Rc::new(VecModel::from(all)),
-                                ));
+                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(all),
+                                )));
                                 ui.set_has_more(has_more);
                             }
                             Err(e) => {
@@ -330,9 +348,11 @@ fn main() {
                 .spawn(move || {
                     let results = ProviderRegistry::with_defaults().and_then(|r| {
                         r.get("radio-browser")
-                            .ok_or_else(|| radiotrope_app::error::AppError::NotFound(
-                                "radio-browser provider not found".into(),
-                            ))
+                            .ok_or_else(|| {
+                                radiotrope_app::error::AppError::NotFound(
+                                    "radio-browser provider not found".into(),
+                                )
+                            })
                             .and_then(|p| p.browse_categories())
                     });
                     let _ = slint::invoke_from_event_loop(move || {
@@ -347,10 +367,12 @@ fn main() {
                                         station_count: c.station_count.unwrap_or(0) as i32,
                                     })
                                     .collect();
-                                countries.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-                                ui.set_countries(ModelRc::from(
-                                    std::rc::Rc::new(VecModel::from(countries)),
-                                ));
+                                countries.sort_by(|a, b| {
+                                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                });
+                                ui.set_countries(ModelRc::from(std::rc::Rc::new(VecModel::from(
+                                    countries,
+                                ))));
                                 ui.set_country_error(Default::default());
                             }
                             Err(e) => {
@@ -390,14 +412,17 @@ fn main() {
                 std::thread::Builder::new()
                     .name("logo-fetch".into())
                     .spawn(move || {
-                        let Ok(logo_svc) = LogoService::new() else { return };
+                        let Ok(logo_svc) = LogoService::new() else {
+                            return;
+                        };
                         let tmp_station = Station::new(&name, &url_clone).with_logo(&logo_url);
                         if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
                             let _ = slint::invoke_from_event_loop(move || {
                                 let Some(ui) = ui_weak.upgrade() else { return };
-                                let pixel_buf = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                    &rgba, width, height,
-                                );
+                                let pixel_buf =
+                                    SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                        &rgba, width, height,
+                                    );
                                 let image = slint::Image::from_rgba8(pixel_buf);
                                 ui.set_current_logo(image);
                             });
@@ -430,7 +455,9 @@ fn main() {
     if let Some(analysis) = analysis {
         let ui_weak = ui.as_weak();
         // Pre-allocate the spectrum model once; update in-place each tick
-        let spectrum_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; radiotrope::config::audio::SPECTRUM_BANDS]));
+        let spectrum_model = std::rc::Rc::new(VecModel::from(
+            vec![0.0f32; radiotrope::config::audio::SPECTRUM_BANDS],
+        ));
         let spectrum_rc = ModelRc::from(spectrum_model.clone());
         ui.set_spectrum(spectrum_rc);
         _viz_timer.start(
@@ -462,7 +489,9 @@ fn main() {
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
                 // try_lock: skip this tick if engine holds shared_stats
-                let Ok(s) = shared_stats.try_lock() else { return };
+                let Ok(s) = shared_stats.try_lock() else {
+                    return;
+                };
                 let stats_copy = s.clone();
                 drop(s);
                 update_stats_ui(&ui, &stats_copy);
@@ -500,8 +529,7 @@ fn main() {
             };
             let volume = s.volume;
             let is_muted = s.is_muted;
-            let station_url: Option<slint::SharedString> =
-                s.station_url.as_deref().map(Into::into);
+            let station_url: Option<slint::SharedString> = s.station_url.as_deref().map(Into::into);
             drop(s);
 
             // Set UI properties without holding any lock

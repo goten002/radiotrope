@@ -316,10 +316,8 @@ mod tests {
         }
 
         fn search(&self, _query: &str, limit: usize, _offset: usize) -> Result<SearchResults> {
-            let stations: Vec<Station> = vec![
-                Station::new("Extra FM", "http://extra.fm/stream")
-                    .with_provider("mock-2", Some("10".to_string())),
-            ]
+            let stations: Vec<Station> = vec![Station::new("Extra FM", "http://extra.fm/stream")
+                .with_provider("mock-2", Some("10".to_string()))]
             .into_iter()
             .take(limit)
             .collect();

@@ -20,14 +20,12 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", 
 /// - macOS: `~/Library/Caches/radiotrope/`
 /// - Windows: `C:\Users\<User>\AppData\Local\radiotrope\cache\`
 pub fn cache_dir() -> Result<PathBuf> {
-    dirs::cache_dir()
-        .map(|p| p.join(NAME))
-        .ok_or_else(|| {
-            AppError::Config(
-                "Could not determine cache directory. HOME environment variable may not be set."
-                    .to_string(),
-            )
-        })
+    dirs::cache_dir().map(|p| p.join(NAME)).ok_or_else(|| {
+        AppError::Config(
+            "Could not determine cache directory. HOME environment variable may not be set."
+                .to_string(),
+        )
+    })
 }
 
 /// Ensure the cache directory exists
@@ -54,7 +52,10 @@ impl ImageCache {
     /// Create a new image cache with a custom directory (for testing)
     pub fn with_dir(cache_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&cache_dir).map_err(|e| {
-            AppError::Config(format!("Failed to create cache directory {:?}: {}", cache_dir, e))
+            AppError::Config(format!(
+                "Failed to create cache directory {:?}: {}",
+                cache_dir, e
+            ))
         })?;
         Ok(Self { cache_dir })
     }
@@ -211,9 +212,8 @@ impl ImageCache {
 
     /// Clear all cached images
     pub fn clear(&self) -> Result<usize> {
-        let entries = fs::read_dir(&self.cache_dir).map_err(|e| {
-            AppError::Config(format!("Failed to read cache directory: {}", e))
-        })?;
+        let entries = fs::read_dir(&self.cache_dir)
+            .map_err(|e| AppError::Config(format!("Failed to read cache directory: {}", e)))?;
 
         let mut removed = 0;
         for entry in entries.flatten() {
@@ -474,8 +474,9 @@ mod tests {
         cache.put("orphan2", &data, Some("d.png")).unwrap();
 
         // Only keep1 and keep2 are valid
-        let valid_ids: HashSet<String> =
-            ["keep1".to_string(), "keep2".to_string()].into_iter().collect();
+        let valid_ids: HashSet<String> = ["keep1".to_string(), "keep2".to_string()]
+            .into_iter()
+            .collect();
 
         let removed = cache.cleanup_orphaned(&valid_ids);
         assert_eq!(removed, 2);
@@ -780,7 +781,11 @@ mod tests {
 
         let data = vec![0, 0, 0, 0, 0, 0, 0, 0];
         let path = cache
-            .put("query_test", &data, Some("http://example.com/logo.webp?size=large&v=2"))
+            .put(
+                "query_test",
+                &data,
+                Some("http://example.com/logo.webp?size=large&v=2"),
+            )
             .unwrap();
         assert!(path.to_string_lossy().ends_with(".webp"));
 
@@ -794,7 +799,11 @@ mod tests {
 
         let data = vec![0, 0, 0, 0, 0, 0, 0, 0];
         let path = cache
-            .put("fragment_test", &data, Some("http://example.com/logo.gif#section"))
+            .put(
+                "fragment_test",
+                &data,
+                Some("http://example.com/logo.gif#section"),
+            )
             .unwrap();
         assert!(path.to_string_lossy().ends_with(".gif"));
 

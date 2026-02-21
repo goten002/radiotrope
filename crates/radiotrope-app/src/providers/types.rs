@@ -117,8 +117,8 @@ mod tests {
 
     #[test]
     fn test_category_with_station_count() {
-        let cat = Category::new("us", "United States", CategoryType::Country)
-            .with_station_count(5000);
+        let cat =
+            Category::new("us", "United States", CategoryType::Country).with_station_count(5000);
         assert_eq!(cat.station_count, Some(5000));
     }
 

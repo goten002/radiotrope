@@ -5,8 +5,8 @@
 
 use crate::data::cache::ImageCache;
 use crate::data::types::HasLogo;
-use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
 use crate::error::{AppError, Result};
+use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -109,9 +109,9 @@ impl LogoService {
         }
 
         // Get URL
-        let url = item.logo_url().ok_or_else(|| {
-            AppError::NotFound("Item has no logo URL".to_string())
-        })?;
+        let url = item
+            .logo_url()
+            .ok_or_else(|| AppError::NotFound("Item has no logo URL".to_string()))?;
 
         // Fetch and cache
         let data = self.fetch_raw(url)?;
@@ -293,8 +293,8 @@ mod tests {
         let cache = temp_cache();
         let service = LogoService::with_cache(cache).unwrap();
 
-        let station = Station::new("Test", "http://test.com/stream")
-            .with_logo("http://test.com/logo.png");
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
 
         // Manually put data in cache
         let data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3];
@@ -313,8 +313,8 @@ mod tests {
         let cache = temp_cache();
         let service = LogoService::with_cache(cache).unwrap();
 
-        let station = Station::new("Test", "http://test.com/stream")
-            .with_logo("http://test.com/logo.png");
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
 
         // Add to cache
         let data = vec![1, 2, 3, 4];
@@ -347,8 +347,8 @@ mod tests {
         let cache = temp_cache();
         let service = LogoService::with_cache(cache).unwrap();
 
-        let station = Station::new("Test", "http://test.com/stream")
-            .with_logo("http://test.com/logo.png");
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
 
         // Pre-cache
         let data = vec![1, 2, 3, 4];
@@ -366,7 +366,8 @@ mod tests {
 
         // Create a minimal 1x1 PNG using the image crate
         use image::{ImageBuffer, Rgba};
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(1, 1, Rgba([255, 0, 0, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(1, 1, Rgba([255, 0, 0, 255]));
 
         let mut png_data = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut png_data);
@@ -397,8 +398,8 @@ mod tests {
         let cache = temp_cache();
         let service = LogoService::with_cache(cache).unwrap();
 
-        let station = Station::new("Test", "http://test.com/stream")
-            .with_logo("http://test.com/logo.png");
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
 
         // Not cached
         assert!(service.get_cached_path(&station).is_none());
@@ -418,15 +419,16 @@ mod tests {
         let cache = temp_cache();
         let service = LogoService::with_cache(cache).unwrap();
 
-        let station = Station::new("Test", "http://test.com/stream")
-            .with_logo("http://test.com/logo.png");
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
 
         // Not cached
         assert!(service.get_cached_rgba(&station).is_none());
 
         // Cache a valid PNG
         use image::{ImageBuffer, Rgba};
-        let img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::from_pixel(2, 2, Rgba([0, 255, 0, 255]));
+        let img: ImageBuffer<Rgba<u8>, Vec<u8>> =
+            ImageBuffer::from_pixel(2, 2, Rgba([0, 255, 0, 255]));
         let mut png_data = Vec::new();
         let mut cursor = std::io::Cursor::new(&mut png_data);
         img.write_to(&mut cursor, image::ImageFormat::Png).unwrap();
@@ -480,8 +482,8 @@ mod tests {
         let cache = temp_cache();
         let service = LogoService::with_cache(cache).unwrap();
 
-        let station = Station::new("Test", "http://test.com/stream")
-            .with_logo("http://test.com/logo.png");
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
 
         // Pre-cache
         let data = vec![1, 2, 3, 4];

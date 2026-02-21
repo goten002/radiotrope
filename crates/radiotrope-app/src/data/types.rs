@@ -122,7 +122,11 @@ impl Station {
     }
 
     /// Set provider info
-    pub fn with_provider(mut self, provider: impl Into<String>, provider_id: Option<String>) -> Self {
+    pub fn with_provider(
+        mut self,
+        provider: impl Into<String>,
+        provider_id: Option<String>,
+    ) -> Self {
         self.provider = provider.into();
         self.provider_id = provider_id;
         self
@@ -254,7 +258,11 @@ impl Favorite {
     }
 
     /// Set provider info
-    pub fn with_provider(mut self, provider: impl Into<String>, provider_id: Option<String>) -> Self {
+    pub fn with_provider(
+        mut self,
+        provider: impl Into<String>,
+        provider_id: Option<String>,
+    ) -> Self {
         self.station = self.station.with_provider(provider, provider_id);
         self
     }
@@ -507,7 +515,10 @@ mod tests {
             .with_audio_info(Some("MP3".to_string()), Some(128))
             .with_homepage("http://test.com");
 
-        assert_eq!(station.logo_url, Some("http://test.com/logo.png".to_string()));
+        assert_eq!(
+            station.logo_url,
+            Some("http://test.com/logo.png".to_string())
+        );
         assert_eq!(station.provider, "radio-browser");
         assert_eq!(station.provider_id, Some("abc123".to_string()));
         assert_eq!(station.country, Some("US".to_string()));
@@ -526,7 +537,10 @@ mod tests {
 
         assert_eq!(favorite.station.name, "Test Radio");
         assert_eq!(favorite.station.url, "http://example.com/stream");
-        assert_eq!(favorite.station.logo_url, Some("http://example.com/logo.png".to_string()));
+        assert_eq!(
+            favorite.station.logo_url,
+            Some("http://example.com/logo.png".to_string())
+        );
         assert_eq!(favorite.play_count, 0);
         assert!(favorite.added_at > 0);
     }
@@ -551,7 +565,10 @@ mod tests {
                 HashSet::from(["Rock".to_string(), "Pop".to_string()]),
             );
 
-        assert_eq!(fav.station.logo_url, Some("http://test.com/logo.png".to_string()));
+        assert_eq!(
+            fav.station.logo_url,
+            Some("http://test.com/logo.png".to_string())
+        );
         assert_eq!(fav.station.provider, "radio-browser");
         assert_eq!(fav.station.provider_id, Some("abc123".to_string()));
         assert_eq!(fav.station.country, Some("US".to_string()));
@@ -562,9 +579,7 @@ mod tests {
     fn test_favorite_update() {
         let mut fav = Favorite::new("Old Name", "http://old.url");
 
-        let update = FavoriteUpdate::new()
-            .name("New Name")
-            .sort_order(5);
+        let update = FavoriteUpdate::new().name("New Name").sort_order(5);
 
         update.apply_to(&mut fav);
 

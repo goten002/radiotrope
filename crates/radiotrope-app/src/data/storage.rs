@@ -11,11 +11,12 @@ use std::path::{Path, PathBuf};
 
 /// Get the application config directory path
 pub fn config_dir() -> Result<PathBuf> {
-    dirs::config_dir()
-        .map(|p| p.join(NAME))
-        .ok_or_else(|| AppError::Config(
-            "Could not determine config directory. HOME environment variable may not be set.".to_string()
-        ))
+    dirs::config_dir().map(|p| p.join(NAME)).ok_or_else(|| {
+        AppError::Config(
+            "Could not determine config directory. HOME environment variable may not be set."
+                .to_string(),
+        )
+    })
 }
 
 /// Ensure the config directory exists, creating it if necessary
@@ -44,7 +45,10 @@ fn create_dir_if_needed(path: &Path) -> Result<()> {
                     format!("Permission denied: cannot create directory {:?}", path)
                 }
                 ErrorKind::NotFound => {
-                    format!("Cannot create directory {:?}: parent path does not exist", path)
+                    format!(
+                        "Cannot create directory {:?}: parent path does not exist",
+                        path
+                    )
                 }
                 _ => {
                     format!("Failed to create directory {:?}: {}", path, e)
@@ -59,21 +63,17 @@ fn create_dir_if_needed(path: &Path) -> Result<()> {
 fn read_file(path: &Path) -> Result<Option<String>> {
     match fs::read_to_string(path) {
         Ok(content) => Ok(Some(content)),
-        Err(e) => {
-            match e.kind() {
-                ErrorKind::NotFound => Ok(None),
-                ErrorKind::PermissionDenied => {
-                    Err(AppError::Config(format!(
-                        "Permission denied: cannot read {:?}", path
-                    )))
-                }
-                _ => {
-                    Err(AppError::Config(format!(
-                        "Failed to read {:?}: {}", path, e
-                    )))
-                }
-            }
-        }
+        Err(e) => match e.kind() {
+            ErrorKind::NotFound => Ok(None),
+            ErrorKind::PermissionDenied => Err(AppError::Config(format!(
+                "Permission denied: cannot read {:?}",
+                path
+            ))),
+            _ => Err(AppError::Config(format!(
+                "Failed to read {:?}: {}",
+                path, e
+            ))),
+        },
     }
 }
 
@@ -87,7 +87,10 @@ fn write_file(path: &Path, content: &str) -> Result<()> {
                     format!("Permission denied: cannot write to {:?}", path)
                 }
                 ErrorKind::NotFound => {
-                    format!("Cannot write to {:?}: parent directory does not exist", path)
+                    format!(
+                        "Cannot write to {:?}: parent directory does not exist",
+                        path
+                    )
                 }
                 ErrorKind::ReadOnlyFilesystem => {
                     format!("Cannot write to {:?}: filesystem is read-only", path)
@@ -116,9 +119,8 @@ pub fn load_from<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         return Ok(None);
     }
 
-    let data = serde_json::from_str(&content).map_err(|e| {
-        AppError::Config(format!("Failed to parse {:?}: {}", path, e))
-    })?;
+    let data = serde_json::from_str(&content)
+        .map_err(|e| AppError::Config(format!("Failed to parse {:?}: {}", path, e)))?;
 
     Ok(Some(data))
 }
@@ -134,9 +136,8 @@ pub fn save_to<T: Serialize>(path: &Path, data: &T) -> Result<()> {
         }
     }
 
-    let content = serde_json::to_string_pretty(data).map_err(|e| {
-        AppError::Config(format!("Failed to serialize data: {}", e))
-    })?;
+    let content = serde_json::to_string_pretty(data)
+        .map_err(|e| AppError::Config(format!("Failed to serialize data: {}", e)))?;
 
     write_file(path, &content)
 }
@@ -148,16 +149,14 @@ pub fn delete_at(path: &Path) -> Result<()> {
         Err(e) => {
             match e.kind() {
                 ErrorKind::NotFound => Ok(()), // Already gone, that's fine
-                ErrorKind::PermissionDenied => {
-                    Err(AppError::Config(format!(
-                        "Permission denied: cannot delete {:?}", path
-                    )))
-                }
-                _ => {
-                    Err(AppError::Config(format!(
-                        "Failed to delete {:?}: {}", path, e
-                    )))
-                }
+                ErrorKind::PermissionDenied => Err(AppError::Config(format!(
+                    "Permission denied: cannot delete {:?}",
+                    path
+                ))),
+                _ => Err(AppError::Config(format!(
+                    "Failed to delete {:?}: {}",
+                    path, e
+                ))),
             }
         }
     }
@@ -299,7 +298,10 @@ mod tests {
     #[test]
     fn test_creates_parent_dirs() {
         let path = temp_dir()
-            .join(format!("radiotrope_test_{}", TEST_COUNTER.fetch_add(1, Ordering::SeqCst)))
+            .join(format!(
+                "radiotrope_test_{}",
+                TEST_COUNTER.fetch_add(1, Ordering::SeqCst)
+            ))
             .join("subdir")
             .join("data.json");
 

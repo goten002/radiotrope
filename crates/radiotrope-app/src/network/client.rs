@@ -3,8 +3,8 @@
 //! Thin wrapper around `reqwest::blocking::Client` that centralizes
 //! USER_AGENT and timeout configuration.
 
-use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
 use crate::error::Result;
+use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
 use serde::de::DeserializeOwned;
 use std::time::Duration;
 

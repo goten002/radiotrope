@@ -193,7 +193,12 @@ impl Settings {
 
     /// Get window geometry if available
     pub fn window_geometry(&self) -> Option<(i32, i32, u32, u32)> {
-        match (self.window_x, self.window_y, self.window_width, self.window_height) {
+        match (
+            self.window_x,
+            self.window_y,
+            self.window_width,
+            self.window_height,
+        ) {
             (Some(x), Some(y), Some(w), Some(h)) => Some((x, y, w, h)),
             _ => None,
         }
@@ -560,7 +565,10 @@ mod tests {
         let loaded = Settings::load_from(&path).unwrap();
         assert!(loaded.last_station.is_some());
         let station = loaded.last_station.unwrap();
-        assert_eq!(station.url, "http://example.com/stream?param=value&other=123#anchor");
+        assert_eq!(
+            station.url,
+            "http://example.com/stream?param=value&other=123#anchor"
+        );
 
         let _ = fs::remove_file(&path);
     }
@@ -741,7 +749,10 @@ mod tests {
         let station = loaded.last_station.as_ref().unwrap();
         assert_eq!(station.url, "http://stream.example.com/live");
         assert_eq!(station.name, "Example Radio");
-        assert_eq!(station.logo_url, Some("http://example.com/logo.png".to_string()));
+        assert_eq!(
+            station.logo_url,
+            Some("http://example.com/logo.png".to_string())
+        );
 
         let _ = fs::remove_file(&path);
     }
