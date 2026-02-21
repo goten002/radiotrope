@@ -118,6 +118,7 @@ impl AppController {
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.playback = PlaybackState::Stopped;
                 state.status_text = "Ready".into();
+                state.is_error = false;
                 state.title.clear();
                 state.artist.clear();
             }
@@ -215,6 +216,7 @@ impl AppController {
             state.channels = 0;
             state.bitrate = None;
             state.status_text = "Resolving...".into();
+            state.is_error = false;
         }
 
         let url: Arc<str> = Arc::from(url);
@@ -273,6 +275,7 @@ impl AppController {
                     };
                     state.bitrate = resolved.info.bitrate;
                     state.status_text = "Connecting...".into();
+                    state.is_error = false;
                 }
 
                 // Store metadata receiver for polling
@@ -297,6 +300,7 @@ impl AppController {
                 state.last_error = Some(e.clone());
                 state.is_resolving = false;
                 state.status_text = format!("Error: {e}").into();
+                state.is_error = true;
             }
         }
     }
@@ -337,6 +341,7 @@ impl AppController {
                     state.bitrate = codec_info.bitrate;
                 }
                 state.status_text = "Playing".into();
+                state.is_error = false;
             }
             AudioEvent::Stopped => {
                 // Don't overwrite "Resolving..." when stopping the old stream
@@ -344,20 +349,24 @@ impl AppController {
                 if !state.is_resolving {
                     state.playback = PlaybackState::Stopped;
                     state.status_text = "Ready".into();
+                    state.is_error = false;
                 }
             }
             AudioEvent::Paused => {
                 state.playback = PlaybackState::Paused;
                 state.status_text = "Paused".into();
+                state.is_error = false;
             }
             AudioEvent::Resumed => {
                 state.playback = PlaybackState::Playing;
                 state.status_text = "Playing".into();
+                state.is_error = false;
             }
             AudioEvent::Error(ref e) => {
                 eprintln!("Engine error: {e}");
                 state.last_error = Some(e.clone());
                 state.status_text = format!("Error: {e}").into();
+                state.is_error = true;
             }
             AudioEvent::MetadataUpdate { title, artist } => {
                 state.title = title;
@@ -369,15 +378,19 @@ impl AppController {
                 } else {
                     "Playing".into()
                 };
+                state.is_error = false;
             }
             AudioEvent::StreamStalled => {
                 state.status_text = "Stalled".into();
+                state.is_error = true;
             }
             AudioEvent::ProbeTimeout => {
                 state.status_text = "Probe timeout".into();
+                state.is_error = true;
             }
             AudioEvent::NoAudioTimeout => {
                 state.status_text = "No audio".into();
+                state.is_error = true;
             }
         }
     }

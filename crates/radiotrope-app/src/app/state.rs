@@ -69,6 +69,8 @@ pub struct AppSnapshot {
     pub channels: u16,
     pub bitrate: Option<u32>,
     pub status_text: Cow<'static, str>,
+    /// True when status_text represents an error/warning state (for red UI text)
+    pub is_error: bool,
 }
 
 impl Default for AppSnapshot {
@@ -89,6 +91,7 @@ impl Default for AppSnapshot {
             channels: 0,
             bitrate: None,
             status_text: Cow::Borrowed("Ready"),
+            is_error: false,
         }
     }
 }

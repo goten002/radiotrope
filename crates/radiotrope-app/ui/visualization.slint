@@ -15,7 +15,7 @@ component VuBar inherits Rectangle {
         height: clamp(root.level, 0, 1) * (parent.height - 4px);
         y: parent.height - 2px - self.height;
         border-radius: 2px;
-        background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+        background: Theme.accent;
     }
 }
 
@@ -31,7 +31,7 @@ component SpectrumBar inherits Rectangle {
         height: clamp(root.level, 0, 1) * parent.height;
         y: parent.height - self.height;
         border-radius: 1px;
-        background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+        background: Theme.accent;
     }
 }
 
@@ -51,11 +51,11 @@ export component Visualization inherits Rectangle {
     // Click to cycle viz mode
     TouchArea {
         clicked => {
-            if root.viz-mode == "mirror" {
+            if (root.viz-mode == "mirror") {
                 root.viz-mode = "vu";
-            } else if root.viz-mode == "vu" {
+            } else if (root.viz-mode == "vu") {
                 root.viz-mode = "spectrum";
-            } else if root.viz-mode == "spectrum" {
+            } else if (root.viz-mode == "spectrum") {
                 root.viz-mode = "hbars";
             } else {
                 root.viz-mode = "mirror";
@@ -131,7 +131,7 @@ export component Visualization inherits Rectangle {
                 width: clamp(root.vu-left, 0, 1) * (parent.width - 4px);
                 height: parent.height - 4px;
                 border-radius: 2px;
-                background: @linear-gradient(90deg, Theme.accent.darker(0.50) 0%, Theme.accent.darker(0.25) 50%, Theme.accent 100%);
+                background: Theme.accent;
             }
         }
 
@@ -146,7 +146,7 @@ export component Visualization inherits Rectangle {
                 width: clamp(root.vu-right, 0, 1) * (parent.width - 4px);
                 height: parent.height - 4px;
                 border-radius: 2px;
-                background: @linear-gradient(90deg, Theme.accent.darker(0.50) 0%, Theme.accent.darker(0.25) 50%, Theme.accent 100%);
+                background: Theme.accent;
             }
         }
     }
@@ -168,7 +168,7 @@ export component Visualization inherits Rectangle {
                 height: clamp(val, 0, 1) * parent.height / 2;
                 y: parent.height / 2 - self.height;
                 border-radius: 1px;
-                background: @linear-gradient(180deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+                background: Theme.accent;
             }
 
             // Bottom half (grows downward from center)
@@ -178,7 +178,7 @@ export component Visualization inherits Rectangle {
                 height: clamp(val, 0, 1) * parent.height / 2;
                 y: parent.height / 2;
                 border-radius: 1px;
-                background: @linear-gradient(0deg, Theme.accent 0%, Theme.accent.darker(0.25) 50%, Theme.accent.darker(0.50) 100%);
+                background: Theme.accent;
             }
         }
     }

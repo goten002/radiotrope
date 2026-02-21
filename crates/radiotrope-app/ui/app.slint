@@ -29,6 +29,7 @@ export component App inherits Window {
     in-out property <float> vu-right;
     in-out property <[float]> spectrum;
     in-out property <bool> is-loading;
+    in-out property <bool> is-error;
     in-out property <string> viz-mode <=> playback.viz-mode;
     in-out property <bool> is-playing;
     in-out property <string> now-playing-title;
@@ -69,6 +70,7 @@ export component App inherits Window {
             vu-right: root.vu-right;
             spectrum: root.spectrum;
             is-loading: root.is-loading;
+            is-error: root.is-error;
         }
         Favorites { vertical-stretch: 1; }
         controls := Controls {

@@ -588,7 +588,10 @@ impl AudioEngine {
                                         }
 
                                         let stalled = buffering_since
-                                            .map(|since| since.elapsed().as_secs() >= BUFFERING_STALL_THRESHOLD_SECS)
+                                            .map(|since| {
+                                                since.elapsed().as_secs()
+                                                    >= BUFFERING_STALL_THRESHOLD_SECS
+                                            })
                                             .unwrap_or(false);
 
                                         if stalled && buf.level_bytes == 0 {

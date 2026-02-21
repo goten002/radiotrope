@@ -9,6 +9,7 @@ export component Playback inherits Rectangle {
     in property <float> vu-right;
     in property <[float]> spectrum;
     in property <bool> is-loading;
+    in property <bool> is-error;
     in-out property <string> viz-mode <=> viz.viz-mode;
 
     height: 100px;
@@ -62,7 +63,7 @@ export component Playback inherits Rectangle {
 
             Text {
                 text: root.status-text;
-                color: Theme.accent-text;
+                color: root.is-error ? #e05555 : Theme.accent-text;
                 font-size: 11px;
             }
         }

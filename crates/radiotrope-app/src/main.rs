@@ -148,6 +148,7 @@ fn main() {
             ui.set_station_name(s.station_name.as_deref().unwrap_or("Radiotrope").into());
             ui.set_codec_info(format_codec_line(&s).into());
             ui.set_status_text(s.status_text.as_ref().into());
+            ui.set_is_error(s.is_error);
             let is_loading = s.is_resolving || s.status_text == "Connecting...";
 
             // Playback state
