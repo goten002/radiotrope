@@ -4,6 +4,7 @@
 //! levels and FFT spectrum data, writing results to shared `AudioAnalysis` state.
 
 use std::num::NonZero;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -18,6 +19,8 @@ use super::types::AudioAnalysis;
 pub struct AnalyzingSource<S> {
     inner: S,
     analysis: Arc<Mutex<AudioAnalysis>>,
+    /// When false, analysis writes are suppressed (prevents race on stop/reset)
+    active: Arc<AtomicBool>,
     buffer_left: Vec<f32>,
     buffer_right: Vec<f32>,
     channels: NonZero<u16>,
@@ -30,13 +33,18 @@ impl<S> AnalyzingSource<S>
 where
     S: Source<Item = f32>,
 {
-    /// Create a new analyzing wrapper around the given source
-    pub fn new(source: S, analysis: Arc<Mutex<AudioAnalysis>>) -> Self {
+    /// Create a new analyzing wrapper around the given source.
+    ///
+    /// The `active` flag controls whether analysis data is written to the shared
+    /// state. Set it to `false` before stopping playback to prevent the audio
+    /// thread from overwriting a reset.
+    pub fn new(source: S, analysis: Arc<Mutex<AudioAnalysis>>, active: Arc<AtomicBool>) -> Self {
         let channels = source.channels();
         let sample_rate = source.sample_rate();
         Self {
             inner: source,
             analysis,
+            active,
             buffer_left: Vec::with_capacity(FFT_SIZE),
             buffer_right: Vec::with_capacity(FFT_SIZE),
             channels,
@@ -127,19 +135,25 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let sample = self.inner.next()?;
-        self.local_sample_count += 1;
 
-        if self.channels.get() == 1 {
-            self.buffer_left.push(sample);
-            self.buffer_right.push(sample);
-        } else if self.buffer_left.len() == self.buffer_right.len() {
-            self.buffer_left.push(sample);
-        } else {
-            self.buffer_right.push(sample);
-        }
+        // Only accumulate analysis data while active. Samples still pass through
+        // so rodio can drain the source, but we skip the expensive FFT and
+        // avoid writing to the shared analysis after a stop/reset.
+        if self.active.load(Ordering::Relaxed) {
+            self.local_sample_count += 1;
 
-        if self.buffer_left.len() >= FFT_SIZE && self.buffer_right.len() >= FFT_SIZE {
-            self.process_buffers();
+            if self.channels.get() == 1 {
+                self.buffer_left.push(sample);
+                self.buffer_right.push(sample);
+            } else if self.buffer_left.len() == self.buffer_right.len() {
+                self.buffer_left.push(sample);
+            } else {
+                self.buffer_right.push(sample);
+            }
+
+            if self.buffer_left.len() >= FFT_SIZE && self.buffer_right.len() >= FFT_SIZE {
+                self.process_buffers();
+            }
         }
 
         Some(sample)
@@ -174,6 +188,11 @@ mod tests {
     use rodio::buffer::SamplesBuffer;
     use std::num::NonZero;
 
+    /// Helper: create an active flag (set to true) for test AnalyzingSource instances
+    fn active_flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(true))
+    }
+
     // --- Passthrough behavior ---
 
     #[test]
@@ -185,7 +204,7 @@ mod tests {
             input.clone(),
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let output: Vec<f32> = analyzing.collect();
         assert_eq!(output, input);
@@ -200,7 +219,7 @@ mod tests {
             input.clone(),
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let output: Vec<f32> = analyzing.collect();
         assert_eq!(output, input);
@@ -214,7 +233,7 @@ mod tests {
             Vec::<f32>::new(),
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let output: Vec<f32> = analyzing.collect();
         assert!(output.is_empty());
@@ -229,7 +248,7 @@ mod tests {
             input.clone(),
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let output: Vec<f32> = analyzing.collect();
         assert_eq!(output, input);
@@ -245,7 +264,7 @@ mod tests {
             input.clone(),
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let output: Vec<f32> = analyzing.collect();
         assert_eq!(output, input);
@@ -263,7 +282,7 @@ mod tests {
             input.clone(),
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let output: Vec<f32> = analyzing.collect();
         assert_eq!(output, input);
@@ -284,7 +303,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let _: Vec<f32> = analyzing.collect();
 
@@ -310,7 +329,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         let _: Vec<f32> = analyzing.collect();
 
@@ -337,7 +356,8 @@ mod tests {
             NonZero::new(44100).unwrap(),
             quiet,
         );
-        let _: Vec<f32> = AnalyzingSource::new(source_quiet, analysis_quiet).collect();
+        let _: Vec<f32> =
+            AnalyzingSource::new(source_quiet, analysis_quiet, active_flag()).collect();
 
         // Loud signal
         let loud: Vec<f32> = (0..num_samples)
@@ -347,7 +367,7 @@ mod tests {
         let analysis_loud_ref = analysis_loud.clone();
         let source_loud =
             SamplesBuffer::new(NonZero::new(1).unwrap(), NonZero::new(44100).unwrap(), loud);
-        let _: Vec<f32> = AnalyzingSource::new(source_loud, analysis_loud).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source_loud, analysis_loud, active_flag()).collect();
 
         let quiet_vu = analysis_quiet_ref.lock().unwrap().vu_left;
         let loud_vu = analysis_loud_ref.lock().unwrap().vu_left;
@@ -372,7 +392,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // For mono, left and right should be equal
@@ -398,7 +418,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // Should be very small but possibly nonzero
@@ -425,7 +445,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert!(
@@ -451,7 +471,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert!(
@@ -478,7 +498,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert!(
@@ -505,7 +525,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // At least one spectrum band should be nonzero
@@ -526,7 +546,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert!(
@@ -546,7 +566,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.spectrum.len(), SPECTRUM_BANDS);
@@ -566,7 +586,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         for (i, &v) in data.spectrum.iter().enumerate() {
@@ -585,7 +605,7 @@ mod tests {
             vec![0.0f32; 100],
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         assert_eq!(analyzing.channels().get(), 1);
         assert_eq!(analyzing.sample_rate().get(), 22050);
@@ -599,7 +619,7 @@ mod tests {
             vec![0.0f32; 100],
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         assert_eq!(analyzing.channels().get(), 2);
         assert_eq!(analyzing.sample_rate().get(), 48000);
@@ -613,7 +633,7 @@ mod tests {
             vec![0.0f32; 100],
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
 
         assert_eq!(analyzing.sample_rate().get(), 96000);
     }
@@ -626,7 +646,7 @@ mod tests {
             vec![0.0f32; 100],
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
-        let analyzing = AnalyzingSource::new(source, analysis);
+        let analyzing = AnalyzingSource::new(source, analysis, active_flag());
         // SamplesBuffer has a known duration
         // AnalyzingSource should pass through whatever the inner source says
         let _ = analyzing.total_duration();
@@ -648,7 +668,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // Should still be at defaults since buffer never reached FFT_SIZE
@@ -669,7 +689,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert!(
@@ -695,7 +715,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(
@@ -720,7 +740,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // After 8 windows of loud signal, VU should be well above zero
@@ -751,7 +771,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // After silence, VU should have decayed toward zero
@@ -780,7 +800,7 @@ mod tests {
 
         // Clone before passing to ensure we can read after
         let analysis_read = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         // Read from the cloned Arc
         let data = analysis_read.lock().unwrap();
@@ -800,7 +820,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // sample_count is flushed during process_buffers, which runs at FFT_SIZE boundaries
@@ -817,7 +837,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.sample_count, 0);
@@ -835,7 +855,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // sample_count is only flushed in process_buffers, so it stays 0
@@ -851,7 +871,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.vu_left, 0.0);
@@ -878,7 +898,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // sample_count counts every call to next(), which is every interleaved sample
@@ -899,7 +919,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.sample_count, num_samples as u64);
@@ -916,7 +936,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.sample_count, FFT_SIZE as u64);
@@ -933,7 +953,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.sample_count, num_samples as u64);
@@ -952,7 +972,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // Only flushed once at FFT_SIZE, the +1 wasn't flushed
@@ -973,7 +993,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(data.sample_count, num_samples as u64);
@@ -989,7 +1009,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // 1 sample < FFT_SIZE, so process_buffers never runs, count stays 0
@@ -1013,7 +1033,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let _: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         // Not enough frames for process_buffers to run
@@ -1033,7 +1053,7 @@ mod tests {
         );
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
         let analysis_ref = analysis.clone();
-        let output: Vec<f32> = AnalyzingSource::new(source, analysis).collect();
+        let output: Vec<f32> = AnalyzingSource::new(source, analysis, active_flag()).collect();
 
         let data = analysis_ref.lock().unwrap();
         assert_eq!(output.len(), num_samples);

@@ -226,6 +226,7 @@ impl AudioEngine {
         let mut current_buffer_status: Option<SharedBufferStatus> = None;
         let mut was_buffering = false;
         let mut producer_stop_flag: Option<Arc<AtomicBool>> = None;
+        let mut analysis_active: Option<Arc<AtomicBool>> = None;
         let mut _producer_probing_flag: Option<Arc<AtomicBool>> = None;
         let mut _producer_handle: Option<JoinHandle<()>> = None;
         let mut last_throughput_bytes: u64 = 0;
@@ -247,11 +248,15 @@ impl AudioEngine {
                             probe.stop_flag.store(true, Ordering::SeqCst);
                         }
                         // Stop any current playback (including producer thread)
+                        if let Some(ref flag) = analysis_active {
+                            flag.store(false, Ordering::SeqCst);
+                        }
                         if let Some(ref flag) = producer_stop_flag {
                             flag.store(true, Ordering::SeqCst);
                         }
                         sink.stop();
                         // Drop old producer resources before creating new ones
+                        drop(analysis_active.take());
                         drop(producer_stop_flag.take());
                         drop(_producer_probing_flag.take());
                         drop(_producer_handle.take());
@@ -299,6 +304,9 @@ impl AudioEngine {
                         if let Some(probe) = pending_probe.take() {
                             probe.stop_flag.store(true, Ordering::SeqCst);
                         }
+                        if let Some(ref flag) = analysis_active {
+                            flag.store(false, Ordering::SeqCst);
+                        }
                         if let Some(ref flag) = producer_stop_flag {
                             flag.store(true, Ordering::SeqCst);
                         }
@@ -312,6 +320,7 @@ impl AudioEngine {
                         current_bytes_received = None;
                         current_segments_downloaded = None;
                         current_buffer_status = None;
+                        analysis_active = None;
                         producer_stop_flag = None;
                         _producer_probing_flag = None;
                         _producer_handle = None;
@@ -346,6 +355,9 @@ impl AudioEngine {
                         if let Some(probe) = pending_probe.take() {
                             probe.stop_flag.store(true, Ordering::SeqCst);
                         }
+                        if let Some(ref flag) = analysis_active {
+                            flag.store(false, Ordering::SeqCst);
+                        }
                         if let Some(ref flag) = producer_stop_flag {
                             flag.store(true, Ordering::SeqCst);
                         }
@@ -368,8 +380,12 @@ impl AudioEngine {
                                         codec_info.bitrate = p.bitrate;
                                         let error_slot = source.error_slot();
                                         let dec_stats = source.decoder_stats();
-                                        let analyzing =
-                                            AnalyzingSource::new(source, analysis.clone());
+                                        let active_flag = Arc::new(AtomicBool::new(true));
+                                        let analyzing = AnalyzingSource::new(
+                                            source,
+                                            analysis.clone(),
+                                            active_flag.clone(),
+                                        );
                                         sink.append(analyzing);
                                         sink.set_volume(current_volume);
                                         sink.play();
@@ -383,6 +399,7 @@ impl AudioEngine {
                                         was_buffering = false;
                                         last_throughput_bytes = 0;
                                         last_throughput_time = Instant::now();
+                                        analysis_active = Some(active_flag);
                                         producer_stop_flag = Some(p.stop_flag);
                                         _producer_probing_flag = Some(p.probing_flag);
                                         _producer_handle = Some(p.prod_handle);
@@ -473,6 +490,9 @@ impl AudioEngine {
 
                     // Check if playback ended (naturally or due to error)
                     if state == PlaybackState::Playing && sink.empty() {
+                        if let Some(ref flag) = analysis_active {
+                            flag.store(false, Ordering::SeqCst);
+                        }
                         if let Some(ref flag) = producer_stop_flag {
                             flag.store(true, Ordering::SeqCst);
                         }
@@ -496,6 +516,7 @@ impl AudioEngine {
                         current_bytes_received = None;
                         current_segments_downloaded = None;
                         current_buffer_status = None;
+                        analysis_active = None;
                         producer_stop_flag = None;
                         _producer_probing_flag = None;
                         _producer_handle = None;
@@ -599,6 +620,9 @@ impl AudioEngine {
                                     FailureReason::NoAudioOutput => {
                                         // Fundamental failure — tear down
                                         let _ = event_tx.send(AudioEvent::NoAudioTimeout);
+                                        if let Some(ref flag) = analysis_active {
+                                            flag.store(false, Ordering::SeqCst);
+                                        }
                                         if let Some(ref flag) = producer_stop_flag {
                                             flag.store(true, Ordering::SeqCst);
                                         }
@@ -613,6 +637,7 @@ impl AudioEngine {
                                         current_bytes_received = None;
                                         current_segments_downloaded = None;
                                         current_buffer_status = None;
+                                        analysis_active = None;
                                         producer_stop_flag = None;
                                         _producer_probing_flag = None;
                                         _producer_handle = None;
@@ -1099,7 +1124,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // rodio 0.22 race condition — see docs/analysis-reset-race-condition.md
     fn analysis_reset_after_stop() {
         let Some(engine) = try_engine_playback() else {
             return;
@@ -1571,7 +1595,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // rodio 0.22 race condition — see docs/analysis-reset-race-condition.md
     fn analysis_sample_count_resets_on_stop() {
         let Some(engine) = try_engine_playback() else {
             return;
