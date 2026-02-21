@@ -201,6 +201,7 @@ export component Controls inherits Rectangle {
                 vol-slider := VolumeSlider {
                     value: root.volume * 100;
                     changed(val) => {
+                        root.volume = val / 100;
                         root.volume-changed(val / 100);
                     }
                 }
@@ -211,7 +212,9 @@ export component Controls inherits Rectangle {
                 alignment: center;
                 Text {
                     width: 32px;
-                    text: root.is-muted ? "0%" : Math.round(root.volume * 100) + "%";
+                    text: root.is-muted ? "0%"
+                        : vol-slider.touch-pressed ? Math.round(vol-slider.value) + "%"
+                        : Math.round(root.volume * 100) + "%";
                     font-size: 11px;
                     color: Theme.text-secondary;
                     horizontal-alignment: right;
