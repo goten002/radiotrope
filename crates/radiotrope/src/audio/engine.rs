@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
 use rodio::{DeviceSinkBuilder, Player};
 
+use crate::config::buffer::HIGH_WATERMARK_BYTES;
 use crate::config::timeouts::PROBE_TIMEOUT_SECS;
 use crate::error::RadioError;
 use crate::stream::buffer::{SharedBufferStatus, StreamBuffer};
@@ -550,31 +551,33 @@ impl AudioEngine {
                             }
                         }
 
-                        // Emit buffering event on state change (only while sink has data)
+                        // Emit buffering events (progressive percentage while buffering)
                         if !sink.empty() {
                             if let Some(ref bs) = current_buffer_status {
                                 if let Ok(buf) = bs.lock() {
-                                    if buf.is_buffering != was_buffering {
-                                        let pct = if !buf.is_buffering {
-                                            // Recovered from buffering → signal 100% to clear status
-                                            100
-                                        } else if buf.capacity_bytes > 0 {
-                                            ((buf.level_bytes as f64 / buf.capacity_bytes as f64)
+                                    if buf.is_buffering {
+                                        // Emit progressive percentage on every tick
+                                        let pct = if HIGH_WATERMARK_BYTES > 0 {
+                                            ((buf.level_bytes as f64 / HIGH_WATERMARK_BYTES as f64)
                                                 * 100.0)
+                                                .min(99.0)
                                                 as u8
                                         } else {
                                             0
                                         };
                                         let _ = event_tx.send(AudioEvent::Buffering(pct));
-                                        was_buffering = buf.is_buffering;
 
                                         // Reset stall timer once on transition TO buffering
-                                        // (grace period for brief adaptive rebuffering)
-                                        if was_buffering {
+                                        if !was_buffering {
                                             if let Some(ref mut monitor) = health_monitor {
                                                 monitor.reset_stall_timer();
                                             }
                                         }
+                                        was_buffering = true;
+                                    } else if was_buffering {
+                                        // Recovered from buffering → signal 100%
+                                        let _ = event_tx.send(AudioEvent::Buffering(100));
+                                        was_buffering = false;
                                     }
                                 }
                             }

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use crate::audio::types::ReadSeek;
 use crate::config::buffer::{
     COMPACTION_SAFETY_MARGIN, COMPACTION_THRESHOLD, CONSUMER_WAIT_TIMEOUT_MS, EMA_ALPHA_JITTER,
-    EMA_ALPHA_THROUGHPUT, MAX_BUFFER_SIZE, PRODUCER_CHUNK_SIZE,
+    EMA_ALPHA_THROUGHPUT, HIGH_WATERMARK_BYTES, MAX_BUFFER_SIZE, PRODUCER_CHUNK_SIZE,
 };
 
 /// Network throughput and jitter metrics (EMA-smoothed)
@@ -174,6 +174,7 @@ impl StreamBuffer {
             status,
             read_pos: 0,
             probing_flag,
+            buffering_active: false,
         };
 
         (consumer, handle, stop_flag)
@@ -257,6 +258,8 @@ pub struct StreamBufferReader {
     read_pos: u64,
     /// When true, inhibits compaction (symphonia may seek back during probe)
     probing_flag: Arc<AtomicBool>,
+    /// Hysteresis flag: true while waiting for buffer to refill to HIGH_WATERMARK
+    buffering_active: bool,
 }
 
 impl StreamBufferReader {
@@ -291,7 +294,7 @@ impl StreamBufferReader {
             s.capacity_bytes = inner.data.len();
             s.throughput_kbps = inner.metrics.throughput_kbps();
             s.underrun_count = inner.metrics.underrun_count;
-            s.is_buffering = available == 0 && !inner.producer_done;
+            s.is_buffering = self.buffering_active;
         }
     }
 }
@@ -310,11 +313,45 @@ impl Read for StreamBufferReader {
             let local_read = (self.read_pos - inner.base_offset) as usize;
             let available = inner.write_pos.saturating_sub(local_read);
 
+            if self.buffering_active {
+                // Hysteresis: keep blocking until buffer refills to HIGH_WATERMARK
+                // or the producer finishes (EOF/error).
+                if available >= HIGH_WATERMARK_BYTES || inner.producer_done {
+                    self.buffering_active = false;
+                    self.update_status(&inner);
+                    // Fall through to normal read logic below
+                } else {
+                    // Still buffering — update status so UI sees progress, then wait
+                    self.update_status(&inner);
+                    let result = self.state.data_available.wait_timeout(inner, timeout);
+                    match result {
+                        Ok((guard, _)) => {
+                            inner = guard;
+                            continue;
+                        }
+                        Err(e) => return Err(io::Error::other(e.to_string())),
+                    }
+                }
+            }
+
+            // Re-compute available after potential buffering exit
+            let local_read = (self.read_pos - inner.base_offset) as usize;
+            let available = inner.write_pos.saturating_sub(local_read);
+
             if available > 0 {
                 // Data available — copy to caller's buffer
                 let to_copy = available.min(buf.len());
                 buf[..to_copy].copy_from_slice(&inner.data[local_read..local_read + to_copy]);
                 self.read_pos += to_copy as u64;
+
+                // Check if buffer just emptied — enter buffering with hysteresis
+                let new_local_read = (self.read_pos - inner.base_offset) as usize;
+                let remaining = inner.write_pos.saturating_sub(new_local_read);
+                if remaining == 0 && !inner.producer_done {
+                    self.buffering_active = true;
+                    inner.metrics.record_underrun();
+                }
+
                 self.update_status(&inner);
                 drop(inner);
 
@@ -333,15 +370,16 @@ impl Read for StreamBufferReader {
                 return Ok(0);
             }
 
-            // Wait for producer to write more data
+            // Buffer is empty and producer is still running — enter buffering
+            self.buffering_active = true;
             inner.metrics.record_underrun();
             self.update_status(&inner);
 
+            // Wait for producer to write more data
             let result = self.state.data_available.wait_timeout(inner, timeout);
             match result {
                 Ok((guard, _timeout_result)) => {
-                    // Loop back to re-check: either data is now available,
-                    // or producer_done is set, or we wait again.
+                    // Loop back to re-check via hysteresis logic at top of loop.
                     // We must NOT return Ok(0) here — symphonia treats that
                     // as EOF and stops decoding. For HLS, the producer can
                     // block for seconds between segments, so we keep waiting.
@@ -1069,14 +1107,15 @@ mod tests {
 
     #[test]
     fn slow_producer_status_shows_buffering_state() {
-        // With slow producer, consumer should observe is_buffering=true at some point
-        let data = vec![0u8; 50_000];
-        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(5));
+        // With slow producer and data >> HIGH_WATERMARK, consumer should observe
+        // is_buffering=true after draining the initial watermark fill.
+        let data = vec![0u8; 500_000];
+        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
         let mut saw_buffering = false;
         let mut buf = [0u8; 8192];
-        for _ in 0..10 {
+        for _ in 0..20 {
             let _ = reader.read(&mut buf);
             if let Ok(s) = status.lock() {
                 if s.is_buffering {
@@ -1088,8 +1127,8 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
         handle.join().unwrap();
 
-        // With 5ms latency per 8KB chunk vs instant consumer reads,
-        // the consumer should outrun the producer at least once
+        // After the initial watermark fill, the consumer drains buffer faster
+        // than the slow producer can refill it, triggering buffering
         assert!(
             saw_buffering,
             "Expected consumer to observe buffering state"
@@ -1586,6 +1625,297 @@ mod tests {
         let mut one = [0u8; 1];
         reader.read_exact(&mut one).unwrap();
         assert_eq!(one[0], data[target as usize]);
+
+        handle.join().unwrap();
+    }
+
+    // =========================================================================
+    // Buffering hysteresis tests
+    // =========================================================================
+
+    /// Helper: read until status shows is_buffering == true, then return total bytes read.
+    fn read_until_buffering(reader: &mut StreamBufferReader, status: &SharedBufferStatus) -> usize {
+        let mut buf = [0u8; 8192];
+        let mut total = 0;
+        loop {
+            let n = reader.read(&mut buf).unwrap();
+            total += n;
+            if status.lock().unwrap().is_buffering {
+                break;
+            }
+            if n == 0 {
+                break;
+            }
+        }
+        total
+    }
+
+    #[test]
+    fn hysteresis_blocks_until_high_watermark() {
+        // After buffer empties, consumer should NOT get data until HIGH_WATERMARK is reached.
+        // Use a slow producer so we can observe the blocking behavior.
+        let data: Vec<u8> = (0..200_000).map(|i| (i % 256) as u8).collect();
+        let sim = SimulatedNetworkReader::new(data.clone()).with_latency(Duration::from_millis(1));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        // Drain rapidly until buffering activates
+        let drained = read_until_buffering(&mut reader, &status);
+        assert!(drained > 0);
+        assert!(status.lock().unwrap().is_buffering, "Should be buffering");
+
+        // Now read again — this should block until HIGH_WATERMARK is reached.
+        // The read should succeed with data once the watermark is met.
+        let mut buf = [0u8; 8192];
+        let n = reader.read(&mut buf).unwrap();
+        assert!(n > 0, "Should eventually get data after watermark fill");
+
+        // After the read, buffering should be resolved
+        assert!(
+            !status.lock().unwrap().is_buffering,
+            "Should exit buffering after watermark reached"
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn hysteresis_exits_on_producer_done() {
+        // If producer finishes (EOF) while in buffering mode, consumer gets remaining
+        // data without waiting for HIGH_WATERMARK.
+        let data = vec![42u8; 1024]; // Small: 1KB < HIGH_WATERMARK (64KB)
+        let sim = SimulatedNetworkReader::new(data.clone()).with_latency(Duration::from_millis(2));
+        let (mut reader, handle, _stop, _status) = buffer_from_sim(sim);
+
+        // Drain all data — will eventually trigger buffering then producer finishes
+        let (result, err) = drain_reader(&mut reader);
+        assert!(err.is_none(), "Should not error");
+        assert_eq!(
+            result, data,
+            "All data should be received despite being < HIGH_WATERMARK"
+        );
+
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn underrun_count_per_event_not_per_wait() {
+        // Verify underrun counter increments once per buffer-empty event,
+        // not once per condvar wait. With a slow producer, a single buffering
+        // event involves many condvar waits.
+        let data = vec![0u8; 100_000];
+        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(3));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        // Read rapidly to trigger buffering, then let it recover, repeat
+        let mut buf = [0u8; 8192];
+        let mut buffering_transitions = 0u32;
+        let mut was_buffering = false;
+        for _ in 0..30 {
+            let _ = reader.read(&mut buf);
+            let is_buf = status.lock().unwrap().is_buffering;
+            if is_buf && !was_buffering {
+                buffering_transitions += 1;
+            }
+            was_buffering = is_buf;
+        }
+
+        let underruns = status.lock().unwrap().underrun_count;
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+
+        // Underrun count should be close to the number of buffering transitions,
+        // not inflated by many condvar waits per event.
+        // Allow some slack: underruns <= transitions * 2 (a read that empties
+        // the buffer also counts, so there can be at most 2 per cycle).
+        if buffering_transitions > 0 {
+            assert!(
+                underruns <= buffering_transitions * 2,
+                "Underruns ({}) should not be much larger than buffering transitions ({})",
+                underruns,
+                buffering_transitions
+            );
+        }
+    }
+
+    #[test]
+    fn fast_producer_never_enters_buffering() {
+        // With instant in-memory producer, buffering should never activate
+        // once the producer has had time to fill the buffer.
+        let data: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+        let (mut reader, handle, _stop, status) = buffer_with_status(data.clone());
+
+        // Let the fast producer fill the buffer before we start reading.
+        // Without this, the consumer's first read() can race with the
+        // producer thread startup and find an empty buffer.
+        thread::sleep(Duration::from_millis(50));
+
+        let mut buf = [0u8; 4096];
+        let mut saw_buffering = false;
+        loop {
+            let n = reader.read(&mut buf).unwrap();
+            if n == 0 {
+                break;
+            }
+            if status.lock().unwrap().is_buffering {
+                saw_buffering = true;
+            }
+        }
+
+        let s = status.lock().unwrap();
+        assert!(
+            !saw_buffering,
+            "Fast producer should never trigger buffering"
+        );
+        assert_eq!(s.underrun_count, 0, "No underruns with fast producer");
+
+        drop(s);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn buffering_percentage_progresses() {
+        // During buffering, level_bytes should grow toward HIGH_WATERMARK.
+        // Status is only updated inside read() calls, so we need a reader
+        // thread blocked in the buffering condvar loop to observe progress.
+        let data: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        // Drain until buffering activates
+        read_until_buffering(&mut reader, &status);
+        assert!(status.lock().unwrap().is_buffering);
+
+        // Spawn reader thread: read() will block in the buffering condvar loop,
+        // calling update_status() on each wakeup so level_bytes progresses.
+        let reader_thread = thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            let _ = reader.read(&mut buf);
+            reader
+        });
+
+        // Poll level_bytes from main thread while reader is blocked in buffering
+        let mut levels = Vec::new();
+        for _ in 0..50 {
+            thread::sleep(Duration::from_millis(5));
+            let level = status.lock().unwrap().level_bytes;
+            levels.push(level);
+        }
+
+        let _reader = reader_thread.join().unwrap();
+
+        // Filter to distinct increasing values
+        let mut distinct: Vec<usize> = Vec::new();
+        for &l in &levels {
+            if distinct.is_empty() || l > *distinct.last().unwrap() {
+                distinct.push(l);
+            }
+        }
+
+        assert!(
+            distinct.len() >= 3,
+            "Expected at least 3 distinct increasing level values, got {:?}",
+            distinct
+        );
+
+        // Final level should be approaching or past HIGH_WATERMARK
+        assert!(
+            *distinct.last().unwrap() > HIGH_WATERMARK_BYTES / 2,
+            "Expected level to grow significantly toward watermark, got {:?}",
+            distinct
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn multiple_buffering_cycles() {
+        // Verify hysteresis works correctly across multiple drain→refill cycles.
+        let data: Vec<u8> = (0..500_000).map(|i| (i % 256) as u8).collect();
+        let sim = SimulatedNetworkReader::new(data.clone()).with_latency(Duration::from_millis(1));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        let mut all_data = Vec::new();
+        let mut cycle_count = 0;
+
+        for _ in 0..3 {
+            // Drain rapidly until buffering activates
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = reader.read(&mut buf).unwrap();
+                if n == 0 {
+                    break;
+                }
+                all_data.extend_from_slice(&buf[..n]);
+                if status.lock().unwrap().is_buffering {
+                    cycle_count += 1;
+                    break;
+                }
+            }
+
+            if status.lock().unwrap().is_buffering {
+                // Read once more — blocks until watermark, then delivers data
+                let n = reader.read(&mut buf).unwrap();
+                if n > 0 {
+                    all_data.extend_from_slice(&buf[..n]);
+                }
+            }
+        }
+
+        // Verify data integrity for what we read
+        assert_eq!(
+            &all_data[..],
+            &data[..all_data.len()],
+            "Data mismatch during multi-cycle buffering"
+        );
+
+        assert!(
+            cycle_count >= 2,
+            "Expected at least 2 buffering cycles, got {}",
+            cycle_count
+        );
+
+        // Underrun count should match cycle count (not be wildly inflated)
+        let underruns = status.lock().unwrap().underrun_count;
+        assert!(
+            underruns <= (cycle_count as u32) * 2,
+            "Underruns ({}) too high relative to cycles ({})",
+            underruns,
+            cycle_count
+        );
+
+        stop.store(true, Ordering::Relaxed);
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn buffering_with_periodic_stalls_absorbs_hiccups() {
+        // Verify the watermark system handles HLS-like periodic stalls.
+        let data: Vec<u8> = (0..100_000).map(|i| (i % 256) as u8).collect();
+        let sim = SimulatedNetworkReader::new(data.clone())
+            .with_periodic_stall(3, Duration::from_millis(50));
+        let (mut reader, handle, _stop, status) = buffer_from_sim(sim);
+
+        // Let producer fill buffer first (absorb initial stalls)
+        thread::sleep(Duration::from_millis(200));
+
+        let (result, err) = drain_reader(&mut reader);
+        assert!(err.is_none());
+        assert_eq!(
+            result, data,
+            "All data should arrive correctly despite periodic stalls"
+        );
+
+        // Underruns should be relatively low — buffer absorbs most stalls
+        let underruns = status.lock().unwrap().underrun_count;
+        // The buffer should absorb stalls; allow some underruns but not excessive
+        assert!(
+            underruns < 20,
+            "Expected low underrun count with pre-filled buffer, got {}",
+            underruns
+        );
 
         handle.join().unwrap();
     }
