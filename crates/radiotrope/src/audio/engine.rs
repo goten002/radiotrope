@@ -295,9 +295,8 @@ impl AudioEngine {
                                     stats.health_state =
                                         HealthState::Failed(FailureReason::ProbeFailed);
                                 }
-                                let _ = event_tx
-                                    .send(AudioEvent::Error(format!("Decode error: {}", e)));
-                                event_bus.emit(StreamEvent::Error(format!("Decode error: {}", e)));
+                                let _ = event_tx.send(AudioEvent::Error(e.to_string()));
+                                event_bus.emit(StreamEvent::Error(e.to_string()));
                             }
                         }
                     }
@@ -430,14 +429,8 @@ impl AudioEngine {
                                             stats.health_state =
                                                 HealthState::Failed(FailureReason::ProbeFailed);
                                         }
-                                        let _ = event_tx.send(AudioEvent::Error(format!(
-                                            "Decode error: {}",
-                                            e
-                                        )));
-                                        event_bus.emit(StreamEvent::Error(format!(
-                                            "Decode error: {}",
-                                            e
-                                        )));
+                                        let _ = event_tx.send(AudioEvent::Error(e.to_string()));
+                                        event_bus.emit(StreamEvent::Error(e.to_string()));
                                     }
                                 }
                             }
@@ -450,9 +443,8 @@ impl AudioEngine {
                                     stats.health_state =
                                         HealthState::Failed(FailureReason::ProbeFailed);
                                 }
-                                let _ = event_tx
-                                    .send(AudioEvent::Error(format!("Decode error: {}", e)));
-                                event_bus.emit(StreamEvent::Error(format!("Decode error: {}", e)));
+                                let _ = event_tx.send(AudioEvent::Error(e.to_string()));
+                                event_bus.emit(StreamEvent::Error(e.to_string()));
                             }
                             Err(TryRecvError::Empty) => {
                                 // Still probing — check for timeout

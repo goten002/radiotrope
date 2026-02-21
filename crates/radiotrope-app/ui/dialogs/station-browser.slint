@@ -176,29 +176,6 @@ component StationRow inherits Rectangle {
             }
         }
 
-        // Play button
-        VerticalLayout {
-            alignment: center;
-
-            Rectangle {
-                width: 32px;
-                height: 32px;
-                border-radius: 4px;
-                background: play-touch.has-hover ? Theme.accent-hover : Theme.accent;
-
-                play-touch := TouchArea {
-                    clicked => { root.clicked(); }
-                    mouse-cursor: pointer;
-                }
-
-                Image {
-                    width: 14px;
-                    height: 14px;
-                    source: @image-url("../icons/play.svg");
-                    colorize: Theme.button-text;
-                }
-            }
-        }
     }
 }
 
@@ -207,7 +184,7 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <string> search-mode: "search";
     // Clear search query when switching to country mode
     changed search-mode => {
-        if root.search-mode == "country" {
+        if (root.search-mode == "country") {
             root.search-query = "";
         }
     }
@@ -286,7 +263,7 @@ export component StationBrowserDialog inherits Rectangle {
                         placeholder-text: "Search by station name...";
                         text <=> root.search-query;
                         accepted(query) => {
-                            if root.search-query != "" {
+                            if (root.search-query != "") {
                                 root.search-loading = true;
                                 root.search-stations(root.search-query);
                             }
@@ -297,7 +274,7 @@ export component StationBrowserDialog inherits Rectangle {
                         label: "Search";
                         enabled: root.search-query != "";
                         clicked => {
-                            if root.search-query != "" {
+                            if (root.search-query != "") {
                                 root.search-loading = true;
                                 root.search-stations(root.search-query);
                             }

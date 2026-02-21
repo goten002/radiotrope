@@ -156,14 +156,14 @@ impl SymphoniaSource {
         let track_id = track.id;
         let codec_params = track.codec_params.clone();
 
+        let codec_name = codec_type_to_name(codec_params.codec);
         let decoder = registry
             .make(&codec_params, &DecoderOptions::default())
-            .map_err(|e| RadioError::Decode(format!("Decoder creation error: {}", e)))?;
+            .map_err(|_| RadioError::Decode(format!("Unsupported codec: {codec_name}")))?;
 
         let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
         let sample_rate = codec_params.sample_rate.unwrap_or(44100);
         let bits_per_sample = codec_params.bits_per_sample;
-        let codec_name = codec_type_to_name(codec_params.codec);
 
         let mut source = Self {
             decoder,

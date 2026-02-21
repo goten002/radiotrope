@@ -9,11 +9,11 @@ An AI agent-enabled internet radio player built with Rust and [Slint](https://sl
 
 ## Features
 
-- **MCP server** — AI agents (Claude, etc.) can play stations, control volume, and query status through natural language
-- **Desktop GUI** — built with Slint, dark/light themes, real-time spectrum visualization, stream statistics
-- **Terminal player** — lightweight TUI with ratatui for headless/SSH use
-- **Resilient streaming** — automatic reconnection with exponential backoff, stall detection, health monitoring
-- **Wide format support** — MP3, AAC, HE-AAC, Vorbis, Opus, FLAC over ICY, HLS, and HTTP
+- **MCP server** - AI agents (Claude, etc.) can play stations, control volume, and query status through natural language
+- **Desktop GUI** - built with Slint, dark/light themes, real-time spectrum visualization, stream statistics
+- **Terminal player** - lightweight TUI with ratatui for headless/SSH use
+- **Resilient streaming** - automatic reconnection with exponential backoff, stall detection, health monitoring
+- **Wide format support** - MP3, AAC, HE-AAC, Vorbis, Opus, FLAC over ICY, HLS, and HTTP
 
 ## MCP Integration
 
@@ -38,8 +38,9 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 | `stop` | Stop playback |
 | `set_volume` | Set volume (0-100) |
 | `get_status` | Get playback state, track info, and volume |
+| `search_stations` | Search for radio stations by name |
 
-Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*, *"set volume to 50"*, or *"what's currently playing?"*.
+Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*, *"search for jazz stations"*, *"set volume to 50"*, or *"what's currently playing?"*.
 
 ## Supported Formats
 

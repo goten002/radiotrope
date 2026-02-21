@@ -33,6 +33,8 @@ struct RbStation {
     #[serde(default)]
     country: String,
     #[serde(default)]
+    state: String,
+    #[serde(default)]
     language: String,
     #[serde(default)]
     codec: String,
@@ -96,10 +98,18 @@ impl From<RbStation> for Station {
             Some(rb.bitrate)
         };
 
+        // Combine country + state (e.g. "United States, California")
+        let country = match (non_empty(&rb.country), non_empty(&rb.state)) {
+            (Some(c), Some(s)) => Some(format!("{c}, {s}")),
+            (Some(c), None) => Some(c),
+            (None, Some(s)) => Some(s),
+            (None, None) => None,
+        };
+
         Station::new(rb.name, stream_url)
             .with_provider("radio-browser", Some(rb.stationuuid))
             .with_logo_opt(non_empty(&rb.favicon))
-            .with_metadata(non_empty(&rb.country), non_empty(&rb.language), genres)
+            .with_metadata(country, non_empty(&rb.language), genres)
             .with_audio_info(non_empty(&rb.codec), bitrate)
             .with_homepage_opt(non_empty(&rb.homepage))
     }
@@ -290,6 +300,7 @@ mod tests {
             favicon: "http://test.com/logo.png".to_string(),
             tags: "rock,pop,indie".to_string(),
             country: "Germany".to_string(),
+            state: String::new(),
             language: "german".to_string(),
             codec: "MP3".to_string(),
             bitrate: 128,
@@ -372,6 +383,27 @@ mod tests {
     }
 
     #[test]
+    fn test_rb_station_country_with_state() {
+        let mut rb = sample_rb_station();
+        rb.country = "United States".to_string();
+        rb.state = "California".to_string();
+        let station: Station = rb.into();
+        assert_eq!(
+            station.country,
+            Some("United States, California".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rb_station_state_only() {
+        let mut rb = sample_rb_station();
+        rb.country = String::new();
+        rb.state = "Bavaria".to_string();
+        let station: Station = rb.into();
+        assert_eq!(station.country, Some("Bavaria".to_string()));
+    }
+
+    #[test]
     fn test_rb_station_empty_country() {
         let mut rb = sample_rb_station();
         rb.country = String::new();
@@ -439,6 +471,7 @@ mod tests {
             favicon: String::new(),
             tags: String::new(),
             country: String::new(),
+            state: String::new(),
             language: String::new(),
             codec: String::new(),
             bitrate: 0,
@@ -468,6 +501,7 @@ mod tests {
             favicon: "  ".to_string(),
             tags: " , , ".to_string(),
             country: "  ".to_string(),
+            state: "  ".to_string(),
             language: "  ".to_string(),
             codec: "  ".to_string(),
             bitrate: 0,
