@@ -376,10 +376,10 @@ use super::backoff_sleep;
 
 /// Background segment downloader
 ///
-/// Uses media sequence numbers to ensure segments are processed in the correct
-/// order. Each segment in an HLS playlist has a sequence number derived from
-/// `EXT-X-MEDIA-SEQUENCE` + its index. We track `next_sequence` — the next
-/// sequence we expect to download — and only process segments in order.
+/// Uses URL-based deduplication to track which segments have been downloaded.
+/// This handles both compliant and non-compliant HLS servers — some servers
+/// keep `EXT-X-MEDIA-SEQUENCE` at 0 across playlist refreshes even as they
+/// rotate segment URLs, which breaks sequence-number-based dedup.
 fn segment_downloader(
     media_url: &str,
     base_url: &str,
@@ -395,8 +395,9 @@ fn segment_downloader(
         .build()
         .map_err(|e| format!("HTTP client error: {}", e))?;
 
-    // Track ordering by media sequence number, not URLs
-    let mut next_sequence: Option<u64> = None;
+    // URL-based dedup: tracks already-downloaded segment URLs
+    let mut downloaded_urls: HashSet<String> = HashSet::new();
+    let mut first_fetch = true;
     let mut sent_first = false;
     let mut init_segment: Option<Vec<u8>> = None;
     let mut init_segment_url: Option<String> = None;
@@ -455,7 +456,6 @@ fn segment_downloader(
 
         let is_live = !playlist.end_list;
         let target_duration = playlist.target_duration as u64;
-        let media_seq = playlist.media_sequence;
 
         // Handle fMP4 init segment (EXT-X-MAP)
         if init_segment.is_none() {
@@ -482,46 +482,42 @@ fn segment_downloader(
         // and new segments only arrive each playlist refresh — buffer starves.
         // Starting SEGMENT_BUFFER_SIZE back fills the bounded channel immediately.
         // For VOD: start from the beginning.
-        if next_sequence.is_none() {
-            if is_live {
-                let start_back = SEGMENT_BUFFER_SIZE.min(playlist.segments.len());
-                let start_idx = playlist.segments.len().saturating_sub(start_back) as u64;
-                next_sequence = Some(media_seq + start_idx);
-            } else {
-                next_sequence = Some(media_seq);
-            }
-        }
+        let start_idx = if first_fetch && is_live {
+            let start_back = SEGMENT_BUFFER_SIZE.min(playlist.segments.len());
+            playlist.segments.len().saturating_sub(start_back)
+        } else {
+            0
+        };
+        first_fetch = false;
 
-        let next_seq = next_sequence.unwrap();
         let mut fetched_new = false;
 
-        // Process segments strictly in sequence order
-        for (i, segment) in playlist.segments.iter().enumerate() {
-            let seg_seq = media_seq + i as u64;
-
-            // Skip segments we've already downloaded
-            if seg_seq < next_seq {
-                continue;
-            }
-
+        // Process segments, skipping already-downloaded URLs
+        for segment in playlist.segments.iter().skip(start_idx) {
             if stop_flag.load(Ordering::SeqCst) {
                 return Ok(());
             }
 
             if !is_valid_segment_uri(&segment.uri) {
-                // Invalid URI — advance past it to maintain ordering
-                next_sequence = Some(seg_seq + 1);
                 continue;
             }
 
             let segment_url = make_absolute_url(&segment.uri, base_url);
 
+            // URL-based dedup: skip segments we've already downloaded
+            if downloaded_urls.contains(&segment_url) {
+                continue;
+            }
+
             match client.get(&segment_url).send() {
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(data) = resp.bytes() {
                         bytes_received.fetch_add(data.len() as u64, Ordering::Relaxed);
+                        fetched_new = true;
+
                         let is_fmp4 =
                             segment_url.ends_with(".m4s") || segment_url.contains(".m4s?");
+                        downloaded_urls.insert(segment_url);
 
                         let audio_data = if !data.is_empty() && data[0] == 0x47 {
                             // MPEG-TS: demux to extract audio
@@ -544,10 +540,6 @@ fn segment_downloader(
                             data.to_vec()
                         };
 
-                        // Advance sequence even for empty audio (e.g. silent segments)
-                        next_sequence = Some(seg_seq + 1);
-                        fetched_new = true;
-
                         if audio_data.is_empty() {
                             continue;
                         }
@@ -560,23 +552,40 @@ fn segment_downloader(
                             return Ok(());
                         }
                         segments_downloaded.fetch_add(1, Ordering::Relaxed);
-                        sent_first = true;
+                        if !sent_first {
+                            sent_first = true;
+                            // Init segment only needed for first fMP4 segment — free it
+                            init_segment = None;
+                            init_segment_url = None;
+                        }
                     }
                 }
                 Ok(_) | Err(_) => {
                     // Segment failed (404, network error, etc.)
-                    // Skip it and advance to maintain ordering — the content is
-                    // time-sensitive and going back would cause a glitch anyway.
-                    next_sequence = Some(seg_seq + 1);
+                    // Mark as downloaded to skip on next refresh — the content is
+                    // time-sensitive and retrying would cause a glitch anyway.
+                    downloaded_urls.insert(segment_url);
                     fetched_new = true;
                 }
             }
         }
 
-        // VOD: done after processing all segments
+        // Bound the HashSet: keep only URLs still in the current playlist.
+        // Old URLs that scrolled off the live window are removed.
+        let current_urls: HashSet<String> = playlist
+            .segments
+            .iter()
+            .map(|s| make_absolute_url(&s.uri, base_url))
+            .collect();
+        downloaded_urls.retain(|url| current_urls.contains(url));
+
+        // VOD: done after all segments downloaded
         if !is_live {
-            let last_seq = media_seq + playlist.segments.len() as u64;
-            if next_sequence.unwrap_or(0) >= last_seq {
+            let all_done = playlist
+                .segments
+                .iter()
+                .all(|s| downloaded_urls.contains(&make_absolute_url(&s.uri, base_url)));
+            if all_done {
                 return Ok(());
             }
         }
