@@ -20,8 +20,12 @@ radiotrope = { path = "../radiotrope" }
 slint = { workspace = true }
 crossbeam-channel = { workspace = true }
 clap = { workspace = true }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "6.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
 
 [build-dependencies]
 slint-build = "1.15"
