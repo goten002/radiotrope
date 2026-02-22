@@ -106,8 +106,8 @@ cargo build --release
 ```
 
 Binaries will be at:
-- `target/release/radiotrope` — Desktop GUI + MCP server
-- `target/release/radiotrope-cli` — Terminal player
+- `target/release/radiotrope` - Desktop GUI + MCP server
+- `target/release/radiotrope-cli` - Terminal player
 
 ### Dependencies (Linux)
 

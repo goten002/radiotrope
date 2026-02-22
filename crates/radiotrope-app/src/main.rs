@@ -462,9 +462,20 @@ fn main() {
         ui.set_spectrum(spectrum_rc);
         _viz_timer.start(
             slint::TimerMode::Repeated,
-            Duration::from_millis(30),
+            Duration::from_millis(33),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
+                // Skip polling when not playing — zero out once on stop transition
+                if !ui.get_is_playing() {
+                    if ui.get_vu_left() != 0.0 || ui.get_vu_right() != 0.0 {
+                        ui.set_vu_left(0.0);
+                        ui.set_vu_right(0.0);
+                        for i in 0..spectrum_model.row_count() {
+                            spectrum_model.set_row_data(i, 0.0);
+                        }
+                    }
+                    return;
+                }
                 // try_lock: skip this tick if engine/analyzer holds the lock
                 let Ok(a) = analysis.try_lock() else { return };
                 let (vu_l, vu_r, spectrum) = (a.vu_left, a.vu_right, a.spectrum);
@@ -488,6 +499,10 @@ fn main() {
             Duration::from_millis(200),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
+                // Skip polling when not playing — stats are stale anyway
+                if !ui.get_is_playing() {
+                    return;
+                }
                 // try_lock: skip this tick if engine holds shared_stats
                 let Ok(s) = shared_stats.try_lock() else {
                     return;
