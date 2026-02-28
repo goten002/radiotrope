@@ -97,6 +97,8 @@ pub enum AudioEvent {
     MetadataUpdate { title: String, artist: String },
     /// Stream stalled — no audio data received for too long
     StreamStalled,
+    /// Stream recovered from a stall — audio samples flowing again
+    StreamRecovered,
     /// Format probe timed out (e.g., MPEG-2 ADTS hang)
     ProbeTimeout,
     /// Probe succeeded but no audio samples were produced

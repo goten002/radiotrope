@@ -387,6 +387,10 @@ impl AppController {
                 state.status_text = "Stalled".into();
                 state.is_error = true;
             }
+            AudioEvent::StreamRecovered => {
+                state.status_text = "Playing".into();
+                state.is_error = false;
+            }
             AudioEvent::ProbeTimeout => {
                 state.status_text = "Probe timeout".into();
                 state.is_error = true;

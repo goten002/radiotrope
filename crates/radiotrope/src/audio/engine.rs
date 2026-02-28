@@ -648,6 +648,8 @@ impl AudioEngine {
                     // The sink.empty() check remains as the ultimate safety net.
                     if state == PlaybackState::Playing && !was_buffering {
                         if let Some(ref mut monitor) = health_monitor {
+                            let was_stalled =
+                                matches!(monitor.state(), &HealthState::Stalled);
                             // Reuse sample_count read above (line 537) — avoids second analysis lock
                             if let Some(failure) = monitor.update(sample_count) {
                                 match failure {
@@ -691,6 +693,11 @@ impl AudioEngine {
                                         unreachable!("health monitor never emits ProbeFailed")
                                     }
                                 }
+                            } else if was_stalled
+                                && matches!(monitor.state(), &HealthState::Healthy)
+                            {
+                                // Stalled → Healthy: stream recovered, clear UI error
+                                let _ = event_tx.send(AudioEvent::StreamRecovered);
                             }
                         }
                     }
