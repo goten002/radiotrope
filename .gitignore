@@ -19,3 +19,6 @@ target/
 
 # MCP server config (contains absolute paths)
 .mcp.json
+
+PKGBUILD
+assets/icons

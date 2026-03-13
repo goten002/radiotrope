@@ -36,9 +36,12 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 |------|-------------|
 | `play_station` | Play a radio station by URL |
 | `stop` | Stop playback |
-| `set_volume` | Set volume (0-100) |
-| `get_status` | Get playback state, track info, and volume |
-| `search_stations` | Search for radio stations by name |
+| `set_volume` | Set volume 0-100 |
+| `get_status` | Get playback state, track info, volume, and errors |
+| `search_stations` | Search for radio stations by name via radio-browser.info |
+| `list_favorites` | List all saved favorite stations |
+| `add_favorite` | Add a station to favorites by URL and name |
+| `remove_favorite` | Remove a station from favorites by URL |
 
 Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*, *"search for jazz stations"*, *"set volume to 50"*, or *"what's currently playing?"*.
 
@@ -148,10 +151,10 @@ radiotrope-cli <URL>
 
 ## Roadmap
 
-- [ ] Favorites management
+- [x] Favorites management
 - [x] Station search and browsing (Radio Browser API)
-- [ ] ID3 tag metadata extraction (MP3 streams)
 - [ ] System tray integration
+- [ ] ID3 tag metadata extraction (MP3 streams)
 - [ ] Audio recording to file
 - [ ] Equalizer and audio effects (DSP chain)
 

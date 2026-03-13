@@ -31,7 +31,7 @@ slint = { version = "1.15", default-features = false, features = [
     "std",
     "compat-1-2",
     "backend-default",
-    "renderer-skia",
+    "renderer-femtovg",
     "renderer-software",
     "accessibility",
     "image-default-formats"
