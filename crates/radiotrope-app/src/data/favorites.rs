@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 /// Favorites data file name
-const FAVORITES_FILE: &str = "favorites2.json";
+const FAVORITES_FILE: &str = "favorites.json";
 
 /// Favorites file format version for migrations
 const FAVORITES_VERSION: u32 = 1;
@@ -39,6 +39,8 @@ pub struct FavoritesManager {
     favorites: HashMap<String, Favorite>,
     /// Whether there are unsaved changes
     dirty: bool,
+    /// Monotonically increasing generation counter, bumped on every mutation
+    generation: u64,
 }
 
 impl FavoritesManager {
@@ -47,7 +49,13 @@ impl FavoritesManager {
         Self {
             favorites: HashMap::new(),
             dirty: false,
+            generation: 0,
         }
+    }
+
+    /// Current generation counter (incremented on every mutation)
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Load favorites from default storage location
@@ -121,8 +129,19 @@ impl FavoritesManager {
             )));
         }
 
+        // Place at end of list: sort_order = max + 1
+        let max_order = self
+            .favorites
+            .values()
+            .map(|f| f.sort_order)
+            .max()
+            .unwrap_or(-1);
+        let mut favorite = favorite;
+        favorite.sort_order = max_order + 1;
+
         self.favorites.insert(id, favorite);
         self.dirty = true;
+        self.generation += 1;
         Ok(())
     }
 
@@ -134,6 +153,7 @@ impl FavoritesManager {
             .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
 
         self.dirty = true;
+        self.generation += 1;
         Ok(favorite)
     }
 
@@ -151,6 +171,7 @@ impl FavoritesManager {
     /// Get a mutable favorite by ID
     pub fn get_mut(&mut self, id: &str) -> Option<&mut Favorite> {
         self.dirty = true; // Assume modification
+        self.generation += 1;
         self.favorites.get_mut(id)
     }
 
@@ -158,6 +179,26 @@ impl FavoritesManager {
     pub fn get_by_url(&self, url: &str) -> Option<&Favorite> {
         let id = url_to_id(url);
         self.favorites.get(&id)
+    }
+
+    /// Enrich optional metadata from a matching favorite.
+    /// Favorite name always wins; logo_url and country fill in gaps only.
+    /// Returns (name, logo_url, country) with favorite data merged in.
+    pub fn enrich_metadata(
+        &self,
+        url: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    ) -> (Option<String>, Option<String>, Option<String>) {
+        if let Some(fav) = self.get_by_url(url) {
+            let name = Some(fav.name().to_string());
+            let logo_url = logo_url.or_else(|| fav.station.logo_url.clone());
+            let country = country.or_else(|| fav.station.country.clone());
+            (name, logo_url, country)
+        } else {
+            (name, logo_url, country)
+        }
     }
 
     /// Check if a URL is favorited (O(1))
@@ -208,6 +249,7 @@ impl FavoritesManager {
         }
 
         self.dirty = true;
+        self.generation += 1;
         Ok(())
     }
 
@@ -366,6 +408,7 @@ impl FavoritesManager {
             .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
         favorite.record_play(duration_secs);
         self.dirty = true;
+        self.generation += 1;
         Ok(())
     }
 
@@ -388,6 +431,7 @@ impl FavoritesManager {
             }
         }
         self.dirty = true;
+        self.generation += 1;
         Ok(())
     }
 
@@ -413,6 +457,7 @@ impl FavoritesManager {
 
         if added > 0 {
             self.dirty = true;
+            self.generation += 1;
         }
 
         (added, skipped)
@@ -677,9 +722,11 @@ mod tests {
             fav.station.homepage = Some("http://station.com".to_string());
             fav.play_count = 42;
             fav.total_listen_time_secs = 3600;
-            fav.sort_order = 5;
 
+            let id = fav.id();
             manager.add(fav).unwrap();
+            // Set sort_order after add (add() auto-assigns order)
+            manager.get_mut(&id).unwrap().sort_order = 5;
             manager.save_to(&path).unwrap();
         }
 

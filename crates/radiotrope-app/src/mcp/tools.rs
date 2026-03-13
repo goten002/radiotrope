@@ -4,10 +4,14 @@
 
 use std::sync::{Arc, Mutex};
 
+use std::collections::HashSet;
+
 use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
+use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::types::Favorite;
 use radiotrope_app::providers::ProviderRegistry;
 
 use crate::app::state::{AppCommand, AppSnapshot};
@@ -17,6 +21,15 @@ use super::types::{ToolDefinition, ToolResult};
 /// Maximum number of results returned by the search tool.
 /// Capped below SEARCH_PAGE_SIZE to keep MCP responses concise.
 const MCP_SEARCH_LIMIT: usize = 20;
+
+/// Extract a numeric value from a JSON argument, accepting both numbers and string
+/// representations. MCP clients frequently send integers as strings (e.g. `"45"`
+/// instead of `45`), so we must handle both forms.
+fn arg_as_f64(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| value.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+}
 
 /// Return all tool definitions for tools/list
 pub fn list_tools() -> Vec<ToolDefinition> {
@@ -30,6 +43,10 @@ pub fn list_tools() -> Vec<ToolDefinition> {
                     "query": {
                         "type": "string",
                         "description": "Station URL"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional display name for the station"
                     }
                 },
                 "required": ["query"]
@@ -82,6 +99,47 @@ pub fn list_tools() -> Vec<ToolDefinition> {
                 "required": ["query"]
             }),
         },
+        ToolDefinition {
+            name: "list_favorites",
+            description: "List all saved favorite stations",
+            input_schema: json!({ "type": "object", "properties": {} }),
+        },
+        ToolDefinition {
+            name: "add_favorite",
+            description: "Add a station to favorites",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Station stream URL"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Station display name"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "Optional country name"
+                    }
+                },
+                "required": ["url", "name"]
+            }),
+        },
+        ToolDefinition {
+            name: "remove_favorite",
+            description: "Remove a station from favorites by URL",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Station stream URL to remove"
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
     ]
 }
 
@@ -91,29 +149,44 @@ pub fn call_tool(
     args: &Value,
     cmd_tx: &Sender<AppCommand>,
     state: &Arc<Mutex<AppSnapshot>>,
+    favorites: &Arc<Mutex<FavoritesManager>>,
 ) -> ToolResult {
     match name {
-        "play_station" => handle_play(args, cmd_tx),
+        "play_station" => handle_play(args, cmd_tx, favorites),
         "stop" => handle_stop(cmd_tx),
         "set_volume" => handle_set_volume(args, cmd_tx, state),
         "get_status" => handle_get_status(state),
         "search_stations" => handle_search(args),
+        "list_favorites" => handle_list_favorites(favorites),
+        "add_favorite" => handle_add_favorite(args, favorites),
+        "remove_favorite" => handle_remove_favorite(args, favorites),
         _ => ToolResult::error(format!("Unknown tool: {name}")),
     }
 }
 
-fn handle_play(args: &Value, cmd_tx: &Sender<AppCommand>) -> ToolResult {
-    let query = match args.get("query").and_then(|v| v.as_str()) {
+fn handle_play(
+    args: &Value,
+    cmd_tx: &Sender<AppCommand>,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+) -> ToolResult {
+    let url = match args.get("query").and_then(|v| v.as_str()) {
         Some(q) => q,
         None => return ToolResult::error("Missing required parameter: query"),
     };
+    let name = args.get("name").and_then(|v| v.as_str()).map(String::from);
+    // Enrich from favorites using the same logic as the UI path
+    let name = favorites
+        .lock()
+        .ok()
+        .map(|f| f.enrich_metadata(url, name.clone(), None, None).0)
+        .unwrap_or(name);
     cmd_tx
         .send(AppCommand::Play {
-            url: query.to_string(),
-            name: None,
+            url: url.to_string(),
+            name,
         })
         .ok();
-    ToolResult::text(format!("Resolving stream: {query}"))
+    ToolResult::text(format!("Resolving stream: {url}"))
 }
 
 fn handle_stop(cmd_tx: &Sender<AppCommand>) -> ToolResult {
@@ -126,11 +199,22 @@ fn handle_set_volume(
     cmd_tx: &Sender<AppCommand>,
     state: &Arc<Mutex<AppSnapshot>>,
 ) -> ToolResult {
-    let volume = match args.get("volume").and_then(|v| v.as_f64()) {
+    let volume = match args.get("volume").and_then(arg_as_f64) {
         Some(v) => (v as f32).clamp(0.0, 100.0) / 100.0,
-        None => return ToolResult::error("Missing required parameter: volume"),
+        None => {
+            return ToolResult::error("Missing required parameter: volume (expected number 0-100)")
+        }
     };
-    let was_muted = state.lock().unwrap_or_else(|e| e.into_inner()).is_muted;
+    let was_muted = {
+        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+        let muted = s.is_muted;
+        // Pre-set volume in shared state so the UI poll timer reflects it immediately
+        s.volume = volume;
+        if muted && volume > 0.0 {
+            s.is_muted = false;
+        }
+        muted
+    };
     cmd_tx.send(AppCommand::SetVolume(volume)).ok();
     let display = (volume * 100.0) as u8;
     if was_muted && volume > 0.0 {
@@ -172,7 +256,7 @@ fn handle_search(args: &Value) -> ToolResult {
 
     let limit = args
         .get("limit")
-        .and_then(|v| v.as_u64())
+        .and_then(arg_as_f64)
         .map(|v| (v as usize).clamp(1, SEARCH_PAGE_SIZE))
         .unwrap_or(MCP_SEARCH_LIMIT);
 
@@ -208,4 +292,71 @@ fn handle_search(args: &Value) -> ToolResult {
     });
 
     ToolResult::text(serde_json::to_string_pretty(&response).unwrap_or_default())
+}
+
+fn handle_list_favorites(favorites: &Arc<Mutex<FavoritesManager>>) -> ToolResult {
+    let f = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    if f.is_empty() {
+        return ToolResult::text("No favorites saved");
+    }
+    let sorted = f.sorted(radiotrope_app::data::types::FavoriteSort::Manual);
+    let items: Vec<Value> = sorted
+        .iter()
+        .map(|fav| {
+            json!({
+                "id": fav.id(),
+                "name": fav.name(),
+                "url": fav.url(),
+                "country": fav.station.country.as_deref().unwrap_or(""),
+            })
+        })
+        .collect();
+    ToolResult::text(serde_json::to_string_pretty(&items).unwrap_or_default())
+}
+
+fn handle_add_favorite(args: &Value, favorites: &Arc<Mutex<FavoritesManager>>) -> ToolResult {
+    let url = match args.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.trim().is_empty() => u.trim(),
+        _ => return ToolResult::error("Missing required parameter: url"),
+    };
+    let name = match args.get("name").and_then(|v| v.as_str()) {
+        Some(n) if !n.trim().is_empty() => n.trim(),
+        _ => return ToolResult::error("Missing required parameter: name"),
+    };
+    let country = args
+        .get("country")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+
+    let mut fav = Favorite::new(name, url);
+    if country.is_some() {
+        fav = fav.with_metadata(country, None, HashSet::new());
+    }
+
+    let mut f = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = f.add(fav) {
+        return ToolResult::error(format!("{e}"));
+    }
+    if let Err(e) = f.save() {
+        return ToolResult::error(format!("Failed to save: {e}"));
+    }
+    ToolResult::text(format!("Added \"{}\" to favorites", name))
+}
+
+fn handle_remove_favorite(args: &Value, favorites: &Arc<Mutex<FavoritesManager>>) -> ToolResult {
+    let url = match args.get("url").and_then(|v| v.as_str()) {
+        Some(u) if !u.trim().is_empty() => u.trim(),
+        _ => return ToolResult::error("Missing required parameter: url"),
+    };
+
+    let mut f = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    match f.remove_by_url(url) {
+        Ok(removed) => {
+            if let Err(e) = f.save() {
+                return ToolResult::error(format!("Removed but failed to save: {e}"));
+            }
+            ToolResult::text(format!("Removed \"{}\" from favorites", removed.name()))
+        }
+        Err(e) => ToolResult::error(format!("{e}")),
+    }
 }

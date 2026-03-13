@@ -10,6 +10,7 @@ use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
 use crate::app::state::{AppCommand, AppSnapshot};
+use radiotrope_app::data::favorites::FavoritesManager;
 
 use super::tools;
 use super::types::{
@@ -21,7 +22,11 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
 /// Run the MCP stdio server (blocking — call from a dedicated thread)
-pub fn run(cmd_tx: Sender<AppCommand>, state: Arc<Mutex<AppSnapshot>>) {
+pub fn run(
+    cmd_tx: Sender<AppCommand>,
+    state: Arc<Mutex<AppSnapshot>>,
+    favorites: Arc<Mutex<FavoritesManager>>,
+) {
     let stdin = io::stdin();
     let stdout = io::stdout();
 
@@ -44,7 +49,7 @@ pub fn run(cmd_tx: Sender<AppCommand>, state: Arc<Mutex<AppSnapshot>>) {
             }
         };
 
-        let response = handle_request(&request, &cmd_tx, &state);
+        let response = handle_request(&request, &cmd_tx, &state, &favorites);
         write_response(&stdout, &response);
     }
 }
@@ -53,6 +58,7 @@ fn handle_request(
     req: &JsonRpcRequest,
     cmd_tx: &Sender<AppCommand>,
     state: &Arc<Mutex<AppSnapshot>>,
+    favorites: &Arc<Mutex<FavoritesManager>>,
 ) -> JsonRpcResponse {
     match req.method.as_str() {
         "initialize" => handle_initialize(req.id.clone()),
@@ -66,7 +72,7 @@ fn handle_request(
             }
         }
         "tools/list" => handle_tools_list(req.id.clone()),
-        "tools/call" => handle_tools_call(req.id.clone(), &req.params, cmd_tx, state),
+        "tools/call" => handle_tools_call(req.id.clone(), &req.params, cmd_tx, state, favorites),
         "ping" => JsonRpcResponse::success(req.id.clone(), json!({})),
         _ => JsonRpcResponse::error(
             req.id.clone(),
@@ -102,6 +108,7 @@ fn handle_tools_call(
     params: &Value,
     cmd_tx: &Sender<AppCommand>,
     state: &Arc<Mutex<AppSnapshot>>,
+    favorites: &Arc<Mutex<FavoritesManager>>,
 ) -> JsonRpcResponse {
     let call_params: ToolCallParams = match serde_json::from_value(params.clone()) {
         Ok(p) => p,
@@ -110,7 +117,13 @@ fn handle_tools_call(
         }
     };
 
-    let result = tools::call_tool(&call_params.name, &call_params.arguments, cmd_tx, state);
+    let result = tools::call_tool(
+        &call_params.name,
+        &call_params.arguments,
+        cmd_tx,
+        state,
+        favorites,
+    );
 
     JsonRpcResponse::success(
         id,
