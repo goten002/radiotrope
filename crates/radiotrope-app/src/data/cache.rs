@@ -43,9 +43,15 @@ pub struct ImageCache {
 }
 
 impl ImageCache {
-    /// Create a new image cache using the default cache directory
+    /// Create a new image cache using the default cache directory (`logos/` subfolder)
     pub fn new() -> Result<Self> {
-        let cache_dir = ensure_cache_dir()?;
+        let cache_dir = ensure_cache_dir()?.join("logos");
+        fs::create_dir_all(&cache_dir).map_err(|e| {
+            AppError::Config(format!(
+                "Failed to create logos cache directory {:?}: {}",
+                cache_dir, e
+            ))
+        })?;
         Ok(Self { cache_dir })
     }
 

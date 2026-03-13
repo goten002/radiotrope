@@ -23,19 +23,6 @@ pub enum AppCommand {
     Mute,
     Unmute,
 
-    // Favorites (planned)
-    #[allow(dead_code)]
-    AddFavorite {
-        name: String,
-        url: String,
-    },
-    #[allow(dead_code)]
-    RemoveFavorite(String),
-
-    // Search (planned)
-    #[allow(dead_code)]
-    Search(String),
-
     // State query (MCP reads shared_state directly)
     #[allow(dead_code)]
     GetState,

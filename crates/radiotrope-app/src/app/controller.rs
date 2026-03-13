@@ -117,7 +117,7 @@ impl AppController {
                 self.metadata_rx = None;
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.playback = PlaybackState::Stopped;
-                state.status_text = "Ready".into();
+                state.status_text = "Stopped".into();
                 state.is_error = false;
                 state.title.clear();
                 state.artist.clear();
@@ -164,18 +164,6 @@ impl AppController {
                 if let Some(engine) = &self.engine {
                     engine.set_volume(vol);
                 }
-            }
-            AppCommand::AddFavorite { name, url } => {
-                let _ = (name, url);
-                // TODO: add to favorites manager
-            }
-            AppCommand::RemoveFavorite(id) => {
-                let _ = id;
-                // TODO: remove from favorites manager
-            }
-            AppCommand::Search(query) => {
-                let _ = query;
-                // TODO: search via provider registry
             }
             AppCommand::GetState => {
                 // No-op: MCP reads shared_state directly via Arc<Mutex<>>
@@ -267,8 +255,8 @@ impl AppController {
             Ok(resolved) => {
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    // Prefer stream-provided name, but keep pre-set name from Play command
-                    if resolved.info.station_name.is_some() {
+                    // Keep API name from Play command; fall back to stream-provided name
+                    if state.station_name.is_none() {
                         state.station_name = resolved.info.station_name.clone();
                     }
                     state.is_resolving = false;
@@ -351,7 +339,7 @@ impl AppController {
                 // before a new one starts
                 if !state.is_resolving {
                     state.playback = PlaybackState::Stopped;
-                    state.status_text = "Ready".into();
+                    state.status_text = "Stopped".into();
                     state.is_error = false;
                 }
             }

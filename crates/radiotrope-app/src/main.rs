@@ -3,6 +3,7 @@ mod mcp;
 
 slint::include_modules!();
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -15,7 +16,8 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::types::Station;
+use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::types::{FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType};
 use radiotrope_app::providers::ProviderRegistry;
@@ -45,14 +47,21 @@ fn main() {
     // Channel for the engine's SharedStats (one-shot handshake)
     let (stats_tx, stats_rx) = bounded::<SharedStats>(1);
 
+    // Favorites manager + shared logo service (created early so MCP can use them)
+    let favorites = Arc::new(Mutex::new(
+        FavoritesManager::load().unwrap_or_else(|_| FavoritesManager::new()),
+    ));
+    let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
+
     // If --mcp, spawn MCP stdio server on a background thread
     if args.mcp {
         let mcp_tx = cmd_tx.clone();
         let mcp_state = shared_state.clone();
+        let mcp_favs = favorites.clone();
         std::thread::Builder::new()
             .name("mcp-stdio".into())
             .spawn(move || {
-                mcp::server::run(mcp_tx, mcp_state);
+                mcp::server::run(mcp_tx, mcp_state, mcp_favs);
             })
             .expect("Failed to spawn MCP thread");
     }
@@ -60,17 +69,66 @@ fn main() {
     // Create Slint UI
     let ui = App::new().unwrap();
 
+    // Initial load of favorites into UI model
+    refresh_favorites(&ui, &favorites, &logo_service);
+
+    // Background: prefetch uncached logos for favorites
+    {
+        let logo_svc = logo_service.clone();
+        let fav_clone = favorites.clone();
+        let ui_weak = ui.as_weak();
+        std::thread::Builder::new()
+            .name("fav-logo-prefetch".into())
+            .spawn(move || {
+                let favs = fav_clone.lock().unwrap_or_else(|e| e.into_inner());
+                let all: Vec<_> = favs
+                    .sorted(FavoriteSort::Manual)
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                drop(favs);
+
+                // Clean up cached logos not belonging to any current favorite
+                let valid_ids: std::collections::HashSet<String> =
+                    all.iter().map(|f| f.id()).collect();
+                let removed = logo_svc.cache().cleanup_orphaned(&valid_ids);
+                if removed > 0 {
+                    eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
+                }
+
+                let fetched = logo_svc.prefetch(&all);
+                if fetched > 0 {
+                    let logo_svc2 = logo_svc.clone();
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            refresh_favorites(&ui, &fav_clone, &logo_svc2);
+                        }
+                    });
+                }
+            })
+            .ok();
+    }
+
     // Wire Slint callbacks → cmd_tx
     let play_tx = cmd_tx.clone();
     let play_url_weak = ui.as_weak();
+    let play_url_favs = favorites.clone();
+    let play_url_logo_svc = logo_service.clone();
     ui.on_play_url(move |url| {
         if let Some(ui) = play_url_weak.upgrade() {
-            ui.set_current_logo(Default::default());
+            play_station_with_metadata(
+                &ui,
+                &play_tx,
+                &play_url_favs,
+                &play_url_logo_svc,
+                PlayRequest {
+                    url: url.to_string(),
+                    name: None,
+                    logo_url: None,
+                    country: None,
+                },
+            );
         }
-        let _ = play_tx.send(app::state::AppCommand::Play {
-            url: url.to_string(),
-            name: None,
-        });
     });
 
     let stop_tx = cmd_tx.clone();
@@ -96,6 +154,261 @@ fn main() {
             let _ = mute_tx.send(app::state::AppCommand::Mute);
         }
     });
+
+    // toggle-favorite callback
+    {
+        let favs = favorites.clone();
+        let logo_svc = logo_service.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_toggle_favorite(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let url = ui.get_station_url().to_string();
+            if url.is_empty() {
+                return;
+            }
+            let name = ui.get_station_name().to_string();
+            let logo_url = ui.get_station_logo_url().to_string();
+            let country = ui.get_station_country().to_string();
+
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            if f.is_favorite(&url) {
+                let _ = f.remove_by_url(&url);
+            } else {
+                use radiotrope_app::data::types::Favorite;
+                use std::collections::HashSet;
+                let mut fav = Favorite::new(&name, &url);
+                if !logo_url.is_empty() {
+                    fav = fav.with_logo(&logo_url);
+                }
+                let country_opt = if country.is_empty() {
+                    None
+                } else {
+                    Some(country)
+                };
+                fav = fav.with_metadata(country_opt, None, HashSet::new());
+                let _ = f.add(fav);
+            }
+            let _ = f.save();
+            let is_fav = f.is_favorite(&url);
+            drop(f);
+
+            ui.set_is_station_favorited(is_fav);
+            refresh_favorites(&ui, &favs, &logo_svc);
+        });
+    }
+
+    // play-favorite callback
+    {
+        let play_tx = cmd_tx.clone();
+        let logo_svc = logo_service.clone();
+        let favs = favorites.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_play_favorite(move |station| {
+            if let Some(ui) = ui_weak.upgrade() {
+                let logo_url = station.logo_url.to_string();
+                let country = station.country.to_string();
+                play_station_with_metadata(
+                    &ui,
+                    &play_tx,
+                    &favs,
+                    &logo_svc,
+                    PlayRequest {
+                        url: station.url.to_string(),
+                        name: Some(station.name.to_string()),
+                        logo_url: if logo_url.is_empty() {
+                            None
+                        } else {
+                            Some(logo_url)
+                        },
+                        country: if country.is_empty() {
+                            None
+                        } else {
+                            Some(country)
+                        },
+                    },
+                );
+            }
+        });
+    }
+
+    // edit-favorite callback
+    {
+        let favs = favorites.clone();
+        let logo_svc = logo_service.clone();
+        let ui_weak = ui.as_weak();
+        let edit_shared_state = shared_state.clone();
+        ui.on_edit_favorite(move |station| {
+            let id = station.id.to_string();
+            let name = station.name.to_string();
+            let url = station.url.to_string();
+            let logo_url = station.logo_url.to_string();
+            let country = station.country.to_string();
+
+            // Invalidate old cached logo before updating (cache key = station id = url hash)
+            {
+                let f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(old_fav) = f.get(&id) {
+                    logo_svc.delete(old_fav);
+                }
+                drop(f);
+            }
+            invalidate_logo_image(&id);
+
+            let mut update = radiotrope_app::data::types::FavoriteUpdate::new()
+                .name(name.clone())
+                .url(url.clone());
+            update.logo_url = Some(if logo_url.is_empty() {
+                None
+            } else {
+                Some(logo_url.clone())
+            });
+            update.country = Some(if country.is_empty() {
+                None
+            } else {
+                Some(country.clone())
+            });
+
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = f.update(&id, update);
+            let _ = f.save();
+            drop(f);
+
+            // Update playback UI if this is the currently playing station
+            if let Some(ui) = ui_weak.upgrade() {
+                let current_url = ui.get_station_url().to_string();
+                // Check both old URL (by id match) and new URL
+                let is_current = current_url == url
+                    || radiotrope_app::data::types::url_to_id(&current_url) == id;
+                if is_current {
+                    ui.set_station_name(name.as_str().into());
+                    ui.set_station_logo_url(logo_url.as_str().into());
+                    ui.set_station_country(country.as_str().into());
+                    ui.set_station_url(url.as_str().into());
+                    // Also update shared_state so the 200ms poll timer doesn't overwrite
+                    let mut s = edit_shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    s.station_name = Some(name.clone());
+                    s.station_url = Some(url.clone());
+                }
+
+                // Refresh favorites list immediately (logos will show placeholders for new URLs)
+                refresh_favorites(&ui, &favs, &logo_svc);
+            }
+
+            // Fetch the new logo on a background thread, then refresh UI
+            if !logo_url.is_empty() {
+                let logo_svc = logo_svc.clone();
+                let favs = favs.clone();
+                let ui_weak = ui_weak.clone();
+                let url = url.clone();
+                std::thread::Builder::new()
+                    .name("edit-logo-fetch".into())
+                    .spawn(move || {
+                        let tmp_station = Station::new(&name, &url).with_logo(&logo_url);
+                        if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                let Some(ui) = ui_weak.upgrade() else { return };
+                                // Update playback logo if this is the current station
+                                let current_url = ui.get_station_url().to_string();
+                                if current_url == url {
+                                    let pixel_buf =
+                                        SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                            &rgba, width, height,
+                                        );
+                                    ui.set_current_logo(slint::Image::from_rgba8(pixel_buf));
+                                }
+                                // Refresh favorites list with the now-cached logo
+                                refresh_favorites(&ui, &favs, &logo_svc);
+                            });
+                        }
+                    })
+                    .ok();
+            }
+        });
+    }
+
+    // delete-favorite callback
+    {
+        let favs = favorites.clone();
+        let logo_svc = logo_service.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_delete_favorite(move |station| {
+            let id = station.id.to_string();
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = f.remove(&id);
+            let _ = f.save();
+            drop(f);
+            invalidate_logo_image(&id);
+
+            if let Some(ui) = ui_weak.upgrade() {
+                let current_url = ui.get_station_url().to_string();
+                if station.url == current_url {
+                    ui.set_is_station_favorited(false);
+                }
+                refresh_favorites(&ui, &favs, &logo_svc);
+            }
+        });
+    }
+
+    // reorder-favorites callback
+    {
+        let favs = favorites.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_reorder_favorites(move |from, to| {
+            let from = from as usize;
+            let to = to as usize;
+
+            // Update data model
+            {
+                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                let mut sorted: Vec<String> = f
+                    .sorted(FavoriteSort::Manual)
+                    .iter()
+                    .map(|fav| fav.id())
+                    .collect();
+
+                if from < sorted.len() && to < sorted.len() {
+                    let id = sorted.remove(from);
+                    sorted.insert(to, id);
+                    let id_refs: Vec<&str> = sorted.iter().map(|s| s.as_str()).collect();
+                    let _ = f.reorder(&id_refs);
+                }
+            }
+
+            // Shuffle existing UI model data (no disk I/O or image decoding)
+            if let Some(ui) = ui_weak.upgrade() {
+                let model = ui.get_favorites_list();
+                let logos_model = ui.get_favorite_logos();
+                let mut items: Vec<FavoriteStation> = (0..model.row_count())
+                    .filter_map(|i| model.row_data(i))
+                    .collect();
+                let mut logos: Vec<slint::Image> = (0..logos_model.row_count())
+                    .filter_map(|i| logos_model.row_data(i))
+                    .collect();
+
+                if from < items.len() && to < items.len() {
+                    let item = items.remove(from);
+                    items.insert(to, item);
+                    if from < logos.len() && to < logos.len() {
+                        let logo = logos.remove(from);
+                        logos.insert(to, logo);
+                    }
+                }
+
+                ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
+                ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
+            }
+
+            // Save to disk in background
+            let favs_bg = favs.clone();
+            std::thread::Builder::new()
+                .name("fav-save".into())
+                .spawn(move || {
+                    let mut f = favs_bg.lock().unwrap_or_else(|e| e.into_inner());
+                    let _ = f.save();
+                })
+                .ok();
+        });
+    }
 
     // Pagination state for station browser
     let search_offset = Arc::new(Mutex::new(0usize));
@@ -389,46 +702,33 @@ fn main() {
     // play-station callback
     {
         let play_tx = cmd_tx.clone();
+        let logo_svc = logo_service.clone();
+        let favs = favorites.clone();
         let ui_weak = ui.as_weak();
         ui.on_play_station(move |station| {
-            let url = station.url.to_string();
-            let name = station.name.to_string();
-            let logo_url = station.logo_url.to_string();
-
-            // Clear old logo immediately
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_current_logo(Default::default());
-            }
-
-            let _ = play_tx.send(app::state::AppCommand::Play {
-                url: url.clone(),
-                name: Some(name.clone()),
-            });
-
-            // Fetch logo on background thread
-            if !logo_url.is_empty() {
-                let ui_weak = ui_weak.clone();
-                let url_clone = url.clone();
-                std::thread::Builder::new()
-                    .name("logo-fetch".into())
-                    .spawn(move || {
-                        let Ok(logo_svc) = LogoService::new() else {
-                            return;
-                        };
-                        let tmp_station = Station::new(&name, &url_clone).with_logo(&logo_url);
-                        if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
-                            let _ = slint::invoke_from_event_loop(move || {
-                                let Some(ui) = ui_weak.upgrade() else { return };
-                                let pixel_buf =
-                                    SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                        &rgba, width, height,
-                                    );
-                                let image = slint::Image::from_rgba8(pixel_buf);
-                                ui.set_current_logo(image);
-                            });
-                        }
-                    })
-                    .ok();
+                let logo_url = station.logo_url.to_string();
+                let country = station.country.to_string();
+                play_station_with_metadata(
+                    &ui,
+                    &play_tx,
+                    &favs,
+                    &logo_svc,
+                    PlayRequest {
+                        url: station.url.to_string(),
+                        name: Some(station.name.to_string()),
+                        logo_url: if logo_url.is_empty() {
+                            None
+                        } else {
+                            Some(logo_url)
+                        },
+                        country: if country.is_empty() {
+                            None
+                        } else {
+                            Some(country)
+                        },
+                    },
+                );
             }
         });
     }
@@ -517,12 +817,32 @@ fn main() {
     // Poll shared state → Slint properties (runs on UI thread via Timer)
     let ui_weak = ui.as_weak();
     let poll_state = shared_state.clone();
+    let poll_favs = favorites.clone();
+    let poll_logo_svc = logo_service.clone();
+    let last_fav_generation = std::cell::Cell::new(
+        favorites
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .generation(),
+    );
+    let last_poll_url = std::cell::RefCell::new(String::new());
     let _timer = slint::Timer::default();
     _timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(200),
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+
+            // Check for external favorites changes (e.g. from MCP)
+            if let Ok(f) = poll_favs.try_lock() {
+                let gen = f.generation();
+                drop(f);
+                if gen != last_fav_generation.get() {
+                    last_fav_generation.set(gen);
+                    refresh_favorites(&ui, &poll_favs, &poll_logo_svc);
+                }
+            }
+
             // try_lock: skip this tick if controller holds the lock
             let Ok(s) = poll_state.try_lock() else { return };
             // Copy all data under lock, then drop before touching UI
@@ -559,7 +879,70 @@ fn main() {
             }
             ui.set_is_muted(is_muted);
             if let Some(url) = station_url {
-                ui.set_station_url(url);
+                let url_changed = {
+                    let last = last_poll_url.borrow();
+                    *last != url.as_str()
+                };
+                ui.set_station_url(url.clone());
+                // Update favorite star based on current station
+                let is_fav = poll_favs
+                    .lock()
+                    .map(|f| f.is_favorite(url.as_str()))
+                    .unwrap_or(false);
+                ui.set_is_station_favorited(is_fav);
+
+                // When station URL changes (e.g. MCP play), update logo
+                if url_changed {
+                    *last_poll_url.borrow_mut() = url.to_string();
+
+                    // Try cached logo first (works even without logo_url on favorite)
+                    let tmp_station = Station::new(
+                        ui.get_station_name().as_str(),
+                        url.as_str(),
+                    );
+                    if let Some((rgba, w, h)) = poll_logo_svc.get_cached_rgba(&tmp_station) {
+                        let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+                        ui.set_current_logo(slint::Image::from_rgba8(pb));
+                    } else {
+                        // Clear stale logo only when no cached replacement is available
+                        ui.set_current_logo(Default::default());
+                        // Not cached — look up logo URL from favorites and fetch
+                        let logo_url = poll_favs
+                            .lock()
+                            .ok()
+                            .and_then(|f| {
+                                f.get_by_url(url.as_str())
+                                    .and_then(|fav| fav.station.logo_url.clone())
+                            });
+                        if let Some(logo) = logo_url {
+                            if !logo.is_empty() {
+                                ui.set_station_logo_url(logo.as_str().into());
+                                let logo_svc = poll_logo_svc.clone();
+                                let ui_weak2 = ui.as_weak();
+                                let station_name = ui.get_station_name().to_string();
+                                let station_url = url.to_string();
+                                std::thread::Builder::new()
+                                    .name("poll-logo-fetch".into())
+                                    .spawn(move || {
+                                        let tmp = Station::new(&station_name, &station_url)
+                                            .with_logo(&logo);
+                                        if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
+                                            let _ = slint::invoke_from_event_loop(move || {
+                                                let Some(ui) = ui_weak2.upgrade() else { return };
+                                                if ui.get_station_url() == station_url.as_str() {
+                                                    let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+                                                    ui.set_current_logo(slint::Image::from_rgba8(pb));
+                                                }
+                                            });
+                                        }
+                                    })
+                                    .ok();
+                            }
+                        } else {
+                            ui.set_station_logo_url(Default::default());
+                        }
+                    }
+                }
             }
             ui.set_is_loading(is_loading);
         },
@@ -570,6 +953,102 @@ fn main() {
 
     // UI closed — tell controller to shut down
     let _ = cmd_tx.send(app::state::AppCommand::Shutdown);
+}
+
+/// All the data needed to start playing a station.
+struct PlayRequest {
+    url: String,
+    name: Option<String>,
+    logo_url: Option<String>,
+    country: Option<String>,
+}
+
+impl PlayRequest {
+    /// Override metadata from favorites if the station is favorited.
+    fn enrich_from_favorites(mut self, favorites: &Arc<Mutex<FavoritesManager>>) -> Self {
+        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+        (self.name, self.logo_url, self.country) =
+            favs.enrich_metadata(&self.url, self.name, self.logo_url, self.country);
+        self
+    }
+}
+
+/// Shared helper for all play actions. Enriches metadata from favorites if available,
+/// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
+fn play_station_with_metadata(
+    ui: &App,
+    cmd_tx: &crossbeam_channel::Sender<app::state::AppCommand>,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+    logo_service: &Arc<LogoService>,
+    req: PlayRequest,
+) {
+    let PlayRequest {
+        url,
+        name,
+        logo_url,
+        country,
+    } = req.enrich_from_favorites(favorites);
+
+    // Set UI metadata properties
+    ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
+    ui.set_station_country(country.as_deref().unwrap_or("").into());
+
+    // Try cached logo first to avoid placeholder flash
+    let cache_hit = if let Some(ref logo) = logo_url {
+        if !logo.is_empty() {
+            let tmp = Station::new(name.as_deref().unwrap_or(""), &url).with_logo(logo);
+            if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
+                let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+                ui.set_current_logo(slint::Image::from_rgba8(pb));
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+    if !cache_hit {
+        ui.set_current_logo(Default::default());
+    }
+
+    // Send play command
+    let _ = cmd_tx.send(app::state::AppCommand::Play {
+        url: url.clone(),
+        name: name.clone(),
+    });
+
+    // Fetch logo on background thread (only if not already cached)
+    if !cache_hit {
+        if let Some(ref logo) = logo_url {
+            if !logo.is_empty() {
+                let ui_weak = ui.as_weak();
+                let logo_svc = logo_service.clone();
+                let play_name = name.unwrap_or_default();
+                let play_url = url;
+                let play_logo = logo.clone();
+                std::thread::Builder::new()
+                    .name("logo-fetch".into())
+                    .spawn(move || {
+                        let tmp_station = Station::new(&play_name, &play_url).with_logo(&play_logo);
+                        if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                let Some(ui) = ui_weak.upgrade() else { return };
+                                let pixel_buf =
+                                    SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                        &rgba, width, height,
+                                    );
+                                let image = slint::Image::from_rgba8(pixel_buf);
+                                ui.set_current_logo(image);
+                            });
+                        }
+                    })
+                    .ok();
+            }
+        }
+    }
 }
 
 fn update_stats_ui(ui: &App, s: &StreamStats) {
@@ -682,6 +1161,70 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         codec: s.codec.as_deref().unwrap_or("").into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
     }
+}
+
+fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStation {
+    FavoriteStation {
+        id: f.id().into(),
+        name: f.name().into(),
+        url: f.url().into(),
+        logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
+        country: f.station.country.as_deref().unwrap_or("").into(),
+    }
+}
+
+// In-memory cache of decoded slint::Image keyed by favorite ID.
+// All callers run on the Slint event-loop thread, so thread_local is safe and avoids
+// threading slint::Image (which is !Send) through closures.
+thread_local! {
+    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Remove a cached logo image, forcing re-decode on next refresh.
+fn invalidate_logo_image(id: &str) {
+    LOGO_IMAGE_CACHE.with(|cache| {
+        cache.borrow_mut().remove(id);
+    });
+}
+
+fn refresh_favorites(
+    ui: &App,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+    logo_service: &Arc<LogoService>,
+) {
+    let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    let sorted = favs.sorted(FavoriteSort::Manual);
+    let items: Vec<FavoriteStation> = sorted.iter().map(|f| favorite_to_slint(f)).collect();
+
+    // Build parallel logos model, using in-memory cache to avoid re-decoding
+    let logos: Vec<slint::Image> = LOGO_IMAGE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        sorted
+            .iter()
+            .map(|f| {
+                let key = f.id();
+                if let Some(img) = cache.get(&key) {
+                    return img.clone();
+                }
+                if let Some((rgba, width, height)) = logo_service.get_cached_rgba(*f) {
+                    let pixel_buf = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                        &rgba, width, height,
+                    );
+                    let img = slint::Image::from_rgba8(pixel_buf);
+                    cache.insert(key, img.clone());
+                    img
+                } else {
+                    Default::default()
+                }
+            })
+            .collect()
+    });
+
+    drop(favs);
+
+    ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
+    ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
 }
 
 fn format_codec_line(s: &AppSnapshot) -> String {
