@@ -846,7 +846,7 @@ mod tests {
         let (mut reader, _stop) = HlsReader::from_test_channel(rx, vec![1, 2]);
 
         let mut buf = [0u8; 2];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         tx.send(vec![3, 4, 5]).unwrap();
         let mut buf2 = [0u8; 3];
@@ -862,7 +862,7 @@ mod tests {
 
         // Read all
         let mut buf = [0u8; 5];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         // Seek back
         let pos = reader.seek(SeekFrom::Start(2)).unwrap();
@@ -1128,7 +1128,7 @@ mod tests {
         let (mut reader, _stop) = HlsReader::from_test_channel(rx, vec![1, 2]);
 
         let mut buf = [0u8; 2];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [1, 2]);
 
         // Send multiple segments
@@ -1136,11 +1136,11 @@ mod tests {
         tx.send(vec![5, 6]).unwrap();
 
         // Read first segment
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [3, 4]);
 
         // Read second segment
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [5, 6]);
     }
 
@@ -1190,7 +1190,7 @@ mod tests {
         let (mut reader, _stop) = HlsReader::from_test_channel(rx, vec![1, 2]);
 
         let mut buf = [0u8; 2];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [1, 2]);
 
         // Send one more and disconnect
@@ -1198,7 +1198,7 @@ mod tests {
         drop(tx);
 
         // Should still read pending data
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [3, 4]);
     }
 }

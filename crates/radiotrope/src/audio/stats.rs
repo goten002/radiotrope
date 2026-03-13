@@ -184,9 +184,11 @@ mod tests {
 
     #[test]
     fn stream_stats_clone() {
-        let mut stats = StreamStats::default();
-        stats.frames_played = 42;
-        stats.bytes_received = 1024;
+        let stats = StreamStats {
+            frames_played: 42,
+            bytes_received: 1024,
+            ..StreamStats::default()
+        };
         let cloned = stats.clone();
         assert_eq!(cloned.frames_played, 42);
         assert_eq!(cloned.bytes_received, 1024);

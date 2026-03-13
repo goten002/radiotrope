@@ -487,7 +487,12 @@ mod tests {
 
         let decoded: Vec<f32> = source.collect();
         for (i, &s) in decoded.iter().enumerate() {
-            assert!(s >= -1.0 && s <= 1.0, "Sample {} out of range: {}", i, s);
+            assert!(
+                (-1.0..=1.0).contains(&s),
+                "Sample {} out of range: {}",
+                i,
+                s
+            );
         }
     }
 
@@ -1210,11 +1215,11 @@ mod tests {
         assert_eq!(decoded.len(), 200);
 
         // Check alternating pattern is preserved
-        for i in 0..decoded.len() {
+        for (i, &sample) in decoded.iter().enumerate() {
             if i % 2 == 0 {
-                assert!(decoded[i] > 0.0, "Even sample {} should be positive", i);
+                assert!(sample > 0.0, "Even sample {} should be positive", i);
             } else {
-                assert!(decoded[i] < 0.0, "Odd sample {} should be negative", i);
+                assert!(sample < 0.0, "Odd sample {} should be negative", i);
             }
         }
     }

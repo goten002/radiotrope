@@ -752,7 +752,7 @@ mod tests {
 
         // Read a small amount
         let mut buf = [0u8; 100];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         // Signal stop
         stop.store(true, Ordering::Relaxed);
@@ -791,7 +791,7 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(10));
         let mut buf = [0u8; 4096];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         let s = status.lock().unwrap();
         // After reading, there should be some level tracked
@@ -1284,10 +1284,9 @@ mod tests {
         let mut instant_reads = 0;
         for _ in 0..20 {
             let start = Instant::now();
-            if reader.read(&mut buf).unwrap_or(0) > 0 {
-                if start.elapsed() < Duration::from_millis(5) {
-                    instant_reads += 1;
-                }
+            if reader.read(&mut buf).unwrap_or(0) > 0 && start.elapsed() < Duration::from_millis(5)
+            {
+                instant_reads += 1;
             }
         }
 
@@ -1400,7 +1399,7 @@ mod tests {
 
         // Read a little
         let mut buf = [0u8; 1024];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         // Signal stop
         stop.store(true, Ordering::Relaxed);
@@ -1518,7 +1517,7 @@ mod tests {
 
         // Read a chunk
         let mut buf = [0u8; 8192];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         let level_after = status.lock().unwrap().level_bytes;
 
@@ -2168,7 +2167,7 @@ mod tests {
 
         // Read one chunk to advance read_pos
         let mut buf = [0u8; 8192];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         // Set up escalated buffering state as if we've been in a prolonged outage
         reader.underrun_escalations = 3;
@@ -2200,7 +2199,7 @@ mod tests {
 
         // Read one chunk
         let mut buf = [0u8; 8192];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         // Set up buffering state with escalations, but buffering_start is recent
         reader.underrun_escalations = 3;

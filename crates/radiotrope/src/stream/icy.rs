@@ -544,7 +544,7 @@ mod tests {
 
         // Read 3 bytes (partial consumption)
         let mut buf = [0u8; 3];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [1, 2, 3]);
 
         // Seek back to start of current chunk
@@ -580,7 +580,7 @@ mod tests {
 
         // Read 4 bytes
         let mut buf = [0u8; 4];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
 
         // Seek back 2
         let pos = reader.seek(SeekFrom::Current(-2)).unwrap();
@@ -759,11 +759,11 @@ mod tests {
 
         reader.seek(SeekFrom::Start(3)).unwrap();
         reader.seek(SeekFrom::Current(-1)).unwrap();
-        let pos = reader.seek(SeekFrom::Current(0)).unwrap();
+        let pos = reader.stream_position().unwrap();
         assert_eq!(pos, 2);
 
         let mut buf = [0u8; 1];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf[0], 3);
     }
 
@@ -805,7 +805,7 @@ mod tests {
 
         // Read 3 of 5 bytes (chunk still held)
         let mut buf = [0u8; 3];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [1, 2, 3]);
 
         // Seek back to start of current chunk, re-read
@@ -843,15 +843,15 @@ mod tests {
         let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2]);
 
         let mut buf = [0u8; 2];
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [1, 2]);
 
         tx.send(vec![3, 4]).unwrap();
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [3, 4]);
 
         tx.send(vec![5, 6]).unwrap();
-        reader.read(&mut buf).unwrap();
+        reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [5, 6]);
     }
 

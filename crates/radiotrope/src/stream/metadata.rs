@@ -399,7 +399,7 @@ mod tests {
         let raw = "StreamTitle='ΠΑΝΟΣ ΚΙΑΜΟΣ - ΘΑ ΜΕ ΖΗΤΑΣ - 2022';";
         let mut block = raw.as_bytes().to_vec();
         // Pad to next multiple of 16
-        let padded_len = ((block.len() + 15) / 16) * 16;
+        let padded_len = block.len().div_ceil(16) * 16;
         block.resize(padded_len, 0);
         assert_eq!(
             extract_icy_title(&block),

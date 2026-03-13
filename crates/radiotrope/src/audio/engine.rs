@@ -648,8 +648,7 @@ impl AudioEngine {
                     // The sink.empty() check remains as the ultimate safety net.
                     if state == PlaybackState::Playing && !was_buffering {
                         if let Some(ref mut monitor) = health_monitor {
-                            let was_stalled =
-                                matches!(monitor.state(), &HealthState::Stalled);
+                            let was_stalled = matches!(monitor.state(), &HealthState::Stalled);
                             // Reuse sample_count read above (line 537) — avoids second analysis lock
                             if let Some(failure) = monitor.update(sample_count) {
                                 match failure {
@@ -1189,10 +1188,7 @@ mod tests {
         thread::sleep(Duration::from_millis(200));
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
         // Give the player time to fully drain after stop
         thread::sleep(Duration::from_millis(100));
 
@@ -1660,10 +1656,7 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
         // Give the player time to fully drain after stop.
         // The span-based processing in rodio may still be mid-span when stop
         // fires, so we need enough time for the audio thread to finish and
@@ -1815,10 +1808,7 @@ mod tests {
         }
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
 
         // Wait longer than the health timeout to verify monitor was cleared
         // (If it wasn't cleared, we'd potentially get false health events)
@@ -1856,10 +1846,7 @@ mod tests {
         }
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
 
         // Second playback — should create a fresh health monitor
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2265,10 +2252,7 @@ mod tests {
         thread::sleep(Duration::from_millis(300));
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
 
         let s = stats.lock().unwrap();
         assert!(
@@ -2555,10 +2539,7 @@ mod tests {
         let _ = rx.recv_timeout(Duration::from_secs(1));
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
 
         let evt = rx.recv_timeout(Duration::from_secs(1));
         assert!(
@@ -2734,10 +2715,7 @@ mod tests {
         }
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
 
         // Second play
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2888,10 +2866,7 @@ mod tests {
         }
 
         engine.stop();
-        match wait_for_event(&engine, 2000) {
-            Some(AudioEvent::Stopped) => {}
-            _ => {}
-        }
+        let _ = wait_for_event(&engine, 2000);
 
         let s = stats.lock().unwrap();
         assert_eq!(

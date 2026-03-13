@@ -671,7 +671,7 @@ mod tests {
     fn failure_reason_copy_and_clone() {
         let reason = FailureReason::NoAudioOutput;
         let copied = reason; // Copy
-        let cloned = reason.clone();
+        let cloned = reason;
         assert_eq!(reason, copied);
         assert_eq!(reason, cloned);
     }
@@ -680,7 +680,7 @@ mod tests {
     fn health_state_copy_and_clone() {
         let state = HealthState::Healthy;
         let copied = state; // Copy
-        let cloned = state.clone();
+        let cloned = state;
         assert_eq!(state, copied);
         assert_eq!(state, cloned);
 

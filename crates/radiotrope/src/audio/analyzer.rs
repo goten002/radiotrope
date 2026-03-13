@@ -757,9 +757,7 @@ mod tests {
         for i in 0..loud_samples {
             input.push((i as f32 * 0.1).sin() * 0.9);
         }
-        for _ in 0..silent_samples {
-            input.push(0.0);
-        }
+        input.resize(loud_samples + silent_samples, 0.0);
 
         let source = SamplesBuffer::new(
             NonZero::new(1).unwrap(),

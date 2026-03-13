@@ -252,7 +252,7 @@ mod tests {
 
         // Read first 3 bytes
         let mut buf = [0u8; 3];
-        stream.reader.read(&mut buf).unwrap();
+        stream.reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [10, 20, 30]);
 
         // Seek back to start
@@ -260,7 +260,7 @@ mod tests {
         assert_eq!(pos, 0);
 
         // Re-read
-        stream.reader.read(&mut buf).unwrap();
+        stream.reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [10, 20, 30]);
     }
 
