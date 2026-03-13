@@ -11,6 +11,9 @@ export component Playback inherits Rectangle {
     in property <bool> is-loading;
     in property <bool> is-error;
     in property <image> station-logo;
+    in property <bool> is-station-favorited;
+    in property <bool> has-station;
+    callback toggle-favorite();
     in-out property <string> viz-mode <=> viz.viz-mode;
 
     height: 100px;
@@ -42,7 +45,7 @@ export component Playback inherits Rectangle {
                     source: @image-url("icons/music-note.svg");
                     width: 30px;
                     height: 30px;
-                    colorize: Theme.text-secondary;
+                    colorize: Theme.accent;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                 }
@@ -75,6 +78,33 @@ export component Playback inherits Rectangle {
                 color: root.is-error ? #e05555 : Theme.accent-text;
                 font-size: 14px;
                 overflow: elide;
+            }
+        }
+
+        // Star (favorite) button
+        if root.has-station: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: 4px;
+                background: star-touch.has-hover ? Theme.surface : transparent;
+
+                star-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.toggle-favorite();
+                    }
+                }
+
+                Image {
+                    source: @image-url("icons/star.svg");
+                    width: 20px;
+                    height: 20px;
+                    colorize: root.is-station-favorited ? Theme.accent : Theme.text-secondary;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
             }
         }
 

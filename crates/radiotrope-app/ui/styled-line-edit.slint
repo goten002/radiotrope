@@ -1,0 +1,67 @@
+import { Theme } from "theme.slint";
+
+export component StyledLineEdit inherits Rectangle {
+    in property <string> placeholder-text;
+    in-out property <string> text;
+    in property <bool> enabled: true;
+    callback accepted(string);
+
+    property <length> margin: 10px;
+
+    height: 36px;
+    border-radius: 4px;
+    background: Theme.surface;
+    clip: true;
+
+    // Bottom accent line — visible only when focused
+    Rectangle {
+        y: parent.height - 2px;
+        height: 2px;
+        width: parent.width;
+        background: input.has-focus ? Theme.accent : transparent;
+    }
+
+    // Placeholder
+    if input.text == "" && !input.has-focus: Text {
+        text: root.placeholder-text;
+        color: Theme.text-secondary;
+        font-size: 13px;
+        vertical-alignment: center;
+        x: root.margin;
+        width: root.width - root.margin * 2;
+        height: root.height;
+    }
+
+    input := TextInput {
+        property <length> computed-x;
+
+        x: min(root.margin, max(root.width - root.margin - self.width - self.text-cursor-width,
+               self.computed-x + root.margin));
+        width: max(root.width - root.margin * 2, self.preferred-width);
+        height: root.height;
+        text <=> root.text;
+        color: Theme.text-primary;
+        font-size: 13px;
+        vertical-alignment: center;
+        single-line: true;
+        enabled: root.enabled;
+
+        cursor-position-changed(cursor-position) => {
+            if cursor-position.x + self.computed-x < root.margin {
+                self.computed-x = -cursor-position.x + root.margin;
+            } else if cursor-position.x + self.computed-x > root.width - root.margin - self.text-cursor-width {
+                self.computed-x = root.width - cursor-position.x - root.margin - self.text-cursor-width;
+            }
+        }
+
+        accepted => { root.accepted(root.text); }
+    }
+
+    public function select-all() {
+        input.select-all();
+    }
+
+    public function focus-input() {
+        input.focus();
+    }
+}

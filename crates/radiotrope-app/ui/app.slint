@@ -2,14 +2,15 @@ import "fonts/Inter/static/Inter_18pt-Regular.ttf";
 import "fonts/Inter/static/Inter_18pt-SemiBold.ttf";
 import { MenuBar } from "menu-bar.slint";
 import { Playback } from "playback.slint";
-import { Favorites } from "favorites.slint";
+import { Favorites, FavoriteStation } from "favorites.slint";
 import { Controls } from "controls.slint";
 import { Theme } from "theme.slint";
 import { NetworkStreamDialog } from "dialogs/network-stream.slint";
 import { StatisticsDialog } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
 import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint";
-export { BrowseStation, CountryEntry }
+import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
+export { BrowseStation, CountryEntry, FavoriteStation }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -28,6 +29,11 @@ export component App inherits Window {
     callback browse-country(string);
     callback load-more-stations();
     callback play-station(BrowseStation);
+    callback toggle-favorite();
+    callback play-favorite(FavoriteStation);
+    callback delete-favorite(FavoriteStation);
+    callback edit-favorite(FavoriteStation);
+    callback reorder-favorites(/* from */ int, /* to */ int);
     callback load-top-stations();
     callback load-countries();
 
@@ -46,6 +52,11 @@ export component App inherits Window {
     in-out property <bool> is-muted;
     in-out property <string> station-url;
     in-out property <image> current-logo;
+    in-out property <bool> is-station-favorited;
+    in-out property <string> station-logo-url;
+    in-out property <string> station-country;
+    in-out property <[FavoriteStation]> favorites-list;
+    in-out property <[image]> favorite-logos;
     out property <bool> volume-dragging: controls.volume-dragging;
 
     // Station browser proxy properties (for Rust access)
@@ -108,8 +119,19 @@ export component App inherits Window {
             is-loading: root.is-loading;
             is-error: root.is-error;
             station-logo: root.current-logo;
+            is-station-favorited: root.is-station-favorited;
+            has-station: root.station-url != "";
+            toggle-favorite => { root.toggle-favorite(); }
         }
-        Favorites { vertical-stretch: 1; }
+        Favorites {
+            vertical-stretch: 1;
+            favorites: root.favorites-list;
+            favorite-logos: root.favorite-logos;
+            current-station-url: root.station-url;
+            favorite-clicked(station) => { root.play-favorite(station); }
+            favorite-edit-requested(station) => { edit-dialog.open(station); }
+            favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
+        }
         controls := Controls {
             is-playing: root.is-playing;
             now-playing-title: root.now-playing-title;
@@ -150,6 +172,15 @@ export component App inherits Window {
         search-by-country(country) => { root.browse-country(country); }
         load-more() => { root.load-more-stations(); }
         station-selected(station) => { root.play-station(station); }
+    }
+
+    edit-dialog := EditFavoriteDialog {
+        accepted(station) => {
+            root.edit-favorite(station);
+        }
+        deleted(station) => {
+            root.delete-favorite(station);
+        }
     }
 
     picker-dialog := CountryPickerDialog {

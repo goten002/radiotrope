@@ -1,4 +1,6 @@
 import { Theme } from "../theme.slint";
+import { StyledLineEdit } from "../styled-line-edit.slint";
+import { AccentButton, SecondaryButton } from "../buttons.slint";
 
 export struct BrowseStation {
     name: string,
@@ -7,104 +9,6 @@ export struct BrowseStation {
     country: string,
     codec: string,
     bitrate: int,
-}
-
-component StyledLineEdit inherits Rectangle {
-    in property <string> placeholder-text;
-    in-out property <string> text;
-    in property <bool> enabled: true;
-    callback accepted(string);
-
-    height: 36px;
-    border-radius: 4px;
-    background: Theme.surface;
-    clip: true;
-
-    Rectangle {
-        y: parent.height - 2px;
-        height: 2px;
-        width: parent.width;
-        background: input.has-focus ? Theme.accent : transparent;
-    }
-
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-
-        if input.text == "" && !input.has-focus: Text {
-            text: root.placeholder-text;
-            color: Theme.text-secondary;
-            font-size: 13px;
-            vertical-alignment: center;
-        }
-
-        input := TextInput {
-            text <=> root.text;
-            color: Theme.text-primary;
-            font-size: 13px;
-            vertical-alignment: center;
-            accepted => { root.accepted(root.text); }
-        }
-    }
-
-    touch := TouchArea {
-        clicked => { input.focus(); }
-    }
-}
-
-component AccentButton inherits Rectangle {
-    in property <string> label;
-    in property <bool> enabled: true;
-    callback clicked();
-
-    height: 32px;
-    width: btn-text.preferred-width + 32px;
-    border-radius: 4px;
-    background: !root.enabled ? Theme.disabled-bg
-                : touch.pressed ? Theme.accent-hover
-                : touch.has-hover ? Theme.accent-hover
-                : Theme.accent;
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-        mouse-cursor: root.enabled ? pointer : default;
-    }
-
-    btn-text := Text {
-        text: root.label;
-        color: root.enabled ? Theme.button-text : Theme.disabled-text;
-        font-size: 13px;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
-}
-
-component SecondaryButton inherits Rectangle {
-    in property <string> label;
-    callback clicked();
-
-    height: 32px;
-    width: btn-text.preferred-width + 32px;
-    border-radius: 4px;
-    background: touch.pressed ? Theme.menu-hover
-                : touch.has-hover ? Theme.menu-bar-hover
-                : Theme.surface;
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-        mouse-cursor: pointer;
-    }
-
-    btn-text := Text {
-        text: root.label;
-        color: Theme.text-secondary;
-        font-size: 13px;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-    }
 }
 
 component StationRow inherits Rectangle {

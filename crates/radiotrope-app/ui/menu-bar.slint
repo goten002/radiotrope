@@ -226,7 +226,7 @@ export component MenuBar inherits Rectangle {
                 padding: 4px;
 
                 CheckMenuItem {
-                    label: "Dark";
+                    label: "Dark Theme";
                     checked: Theme.dark-mode;
                     clicked => {
                         view-popup.close();
@@ -234,7 +234,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    label: "Light";
+                    label: "Light Theme";
                     checked: !Theme.dark-mode;
                     clicked => {
                         view-popup.close();
