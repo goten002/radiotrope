@@ -53,6 +53,17 @@ pub enum AudioCommand {
     SetVolume(f32),
     /// Shut down the engine thread
     Shutdown,
+    /// Set a single EQ band gain
+    SetEqBand { band: usize, gain_db: f32 },
+    /// Set all EQ band gains (optionally from a preset)
+    SetEqGains {
+        gains: [f32; 10],
+        preset_name: Option<String>,
+    },
+    /// Set EQ preamp gain
+    SetEqPreamp(f32),
+    /// Enable/disable EQ
+    SetEqEnabled(bool),
 }
 
 impl fmt::Debug for AudioCommand {
@@ -76,6 +87,14 @@ impl fmt::Debug for AudioCommand {
             AudioCommand::Resume => write!(f, "Resume"),
             AudioCommand::SetVolume(v) => write!(f, "SetVolume({})", v),
             AudioCommand::Shutdown => write!(f, "Shutdown"),
+            AudioCommand::SetEqBand { band, gain_db } => {
+                write!(f, "SetEqBand({}, {}dB)", band, gain_db)
+            }
+            AudioCommand::SetEqGains { preset_name, .. } => {
+                write!(f, "SetEqGains(preset={:?})", preset_name)
+            }
+            AudioCommand::SetEqPreamp(db) => write!(f, "SetEqPreamp({}dB)", db),
+            AudioCommand::SetEqEnabled(on) => write!(f, "SetEqEnabled({})", on),
         }
     }
 }

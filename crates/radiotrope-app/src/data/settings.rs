@@ -8,7 +8,7 @@ use crate::error::Result;
 use serde::{Deserialize, Serialize};
 
 /// Settings data file name
-const SETTINGS_FILE: &str = "settings2.json";
+const SETTINGS_FILE: &str = "settings.json";
 
 /// Settings file format version for migrations
 const SETTINGS_VERSION: u32 = 1;
@@ -90,6 +90,19 @@ pub struct Settings {
     /// Number of search results per page
     #[serde(default = "default_search_limit")]
     pub search_limit: u32,
+
+    // === Equalizer ===
+    #[serde(default)]
+    pub eq_gains: [f32; 10],
+
+    #[serde(default)]
+    pub eq_preamp: f32,
+
+    #[serde(default)]
+    pub eq_enabled: bool,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eq_preset_name: Option<String>,
 }
 
 fn default_version() -> u32 {
@@ -128,6 +141,10 @@ impl Default for Settings {
             show_notifications: true,
             default_provider: String::new(),
             search_limit: default_search_limit(),
+            eq_gains: [0.0; 10],
+            eq_preamp: 0.0,
+            eq_enabled: false,
+            eq_preset_name: Some("Flat".to_string()),
         }
     }
 }

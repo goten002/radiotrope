@@ -76,6 +76,7 @@ export component MenuBar inherits Rectangle {
     callback open-station-search();
     callback open-country-picker();
     callback open-statistics();
+    callback open-equalizer();
 
     HorizontalLayout {
         padding-left: 4px;
@@ -259,6 +260,13 @@ export component MenuBar inherits Rectangle {
             tools-popup-layout := VerticalLayout {
                 padding: 4px;
 
+                MenuItem {
+                    label: "Equalizer";
+                    clicked => {
+                        tools-popup.close();
+                        root.open-equalizer();
+                    }
+                }
                 MenuItem {
                     label: "Statistics";
                     clicked => {

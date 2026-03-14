@@ -18,6 +18,7 @@ use crate::stream::buffer::{SharedBufferStatus, StreamBuffer};
 
 use super::analyzer::AnalyzingSource;
 use super::decoder::{start_probe, SymphoniaSource};
+use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::stats::{
     new_shared_stats, DecoderStats, EventBus, SharedStats, StreamEvent, StreamStats,
@@ -45,6 +46,7 @@ pub struct AudioEngine {
     thread: Option<JoinHandle<()>>,
     shared_stats: SharedStats,
     event_bus: Arc<EventBus>,
+    eq_params: SharedEqParams,
 }
 
 impl AudioEngine {
@@ -63,6 +65,8 @@ impl AudioEngine {
         let shared_stats_thread = shared_stats.clone();
         let event_bus = Arc::new(EventBus::new());
         let event_bus_thread = event_bus.clone();
+        let eq_params = EqParams::new_shared();
+        let eq_params_thread = eq_params.clone();
 
         let thread = thread::Builder::new()
             .name("audio-engine".to_string())
@@ -74,6 +78,7 @@ impl AudioEngine {
                     analysis_thread,
                     shared_stats_thread,
                     event_bus_thread,
+                    eq_params_thread,
                 );
             })
             .map_err(|e| RadioError::Audio(format!("Failed to spawn audio thread: {}", e)))?;
@@ -92,6 +97,7 @@ impl AudioEngine {
             thread: Some(thread),
             shared_stats,
             event_bus,
+            eq_params,
         })
     }
 
@@ -154,6 +160,31 @@ impl AudioEngine {
         self.send(AudioCommand::SetVolume(volume));
     }
 
+    /// Set a single EQ band gain
+    pub fn set_eq_band(&self, band: usize, gain_db: f32) {
+        self.send(AudioCommand::SetEqBand { band, gain_db });
+    }
+
+    /// Set all EQ band gains at once (optionally from a preset)
+    pub fn set_eq_gains(&self, gains: [f32; 10], preset_name: Option<String>) {
+        self.send(AudioCommand::SetEqGains { gains, preset_name });
+    }
+
+    /// Set EQ preamp gain
+    pub fn set_eq_preamp(&self, db: f32) {
+        self.send(AudioCommand::SetEqPreamp(db));
+    }
+
+    /// Enable or disable the EQ
+    pub fn set_eq_enabled(&self, enabled: bool) {
+        self.send(AudioCommand::SetEqEnabled(enabled));
+    }
+
+    /// Get a handle to the shared EQ parameters
+    pub fn eq_params(&self) -> SharedEqParams {
+        self.eq_params.clone()
+    }
+
     /// Non-blocking poll for the next event
     pub fn try_recv_event(&self) -> Option<AudioEvent> {
         self.event_rx.try_recv().ok()
@@ -199,6 +230,7 @@ impl AudioEngine {
         analysis: Arc<Mutex<AudioAnalysis>>,
         shared_stats: SharedStats,
         event_bus: Arc<EventBus>,
+        eq_params: SharedEqParams,
     ) {
         // Create audio output on this thread (cpal streams may be !Send)
         let mut stream = match DeviceSinkBuilder::open_default_sink() {
@@ -351,6 +383,26 @@ impl AudioEngine {
                         current_volume = vol.clamp(0.0, 2.0);
                         sink.set_volume(current_volume);
                     }
+                    AudioCommand::SetEqBand { band, gain_db } => {
+                        if let Ok(mut p) = eq_params.lock() {
+                            p.set_band(band, gain_db);
+                        }
+                    }
+                    AudioCommand::SetEqGains { gains, preset_name } => {
+                        if let Ok(mut p) = eq_params.lock() {
+                            p.set_gains(gains, preset_name);
+                        }
+                    }
+                    AudioCommand::SetEqPreamp(db) => {
+                        if let Ok(mut p) = eq_params.lock() {
+                            p.set_preamp(db);
+                        }
+                    }
+                    AudioCommand::SetEqEnabled(on) => {
+                        if let Ok(mut p) = eq_params.lock() {
+                            p.set_enabled(on);
+                        }
+                    }
                     AudioCommand::Shutdown => {
                         if let Some(probe) = pending_probe.take() {
                             probe.stop_flag.store(true, Ordering::SeqCst);
@@ -381,8 +433,9 @@ impl AudioEngine {
                                         let error_slot = source.error_slot();
                                         let dec_stats = source.decoder_stats();
                                         let active_flag = Arc::new(AtomicBool::new(true));
+                                        let eq_source = EqSource::new(source, eq_params.clone());
                                         let analyzing = AnalyzingSource::new(
-                                            source,
+                                            eq_source,
                                             analysis.clone(),
                                             active_flag.clone(),
                                         );

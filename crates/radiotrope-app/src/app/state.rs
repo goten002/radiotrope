@@ -30,6 +30,16 @@ pub enum AppCommand {
     // Shutdown the app
     Shutdown,
 
+    // Equalizer
+    SetEqBand {
+        band: usize,
+        gain_db: f32,
+    },
+    SetEqPreset(String),
+    SetEqGains([f32; 10]),
+    SetEqPreamp(f32),
+    SetEqEnabled(bool),
+
     // Internal: stream resolved on worker thread (not sent by frontends)
     InternalStreamResolved {
         generation: u64,
@@ -61,6 +71,12 @@ pub struct AppSnapshot {
     pub status_text: Cow<'static, str>,
     /// True when status_text represents an error/warning state (for red UI text)
     pub is_error: bool,
+
+    // Equalizer
+    pub eq_gains: [f32; 10],
+    pub eq_preamp: f32,
+    pub eq_enabled: bool,
+    pub eq_preset_name: Option<String>,
 }
 
 impl Default for AppSnapshot {
@@ -82,6 +98,10 @@ impl Default for AppSnapshot {
             bitrate: None,
             status_text: Cow::Borrowed("Ready"),
             is_error: false,
+            eq_gains: [0.0; 10],
+            eq_preamp: 0.0,
+            eq_enabled: false,
+            eq_preset_name: Some("Flat".to_string()),
         }
     }
 }

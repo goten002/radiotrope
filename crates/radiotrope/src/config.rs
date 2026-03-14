@@ -63,6 +63,31 @@ pub mod timeouts {
     pub const BUFFERING_STALL_THRESHOLD_SECS: u64 = 10;
 }
 
+/// Equalizer configuration
+pub mod eq {
+    /// Number of EQ bands
+    pub const NUM_BANDS: usize = 10;
+
+    /// Center frequencies for each band (Hz)
+    pub const CENTER_FREQUENCIES: [f32; 10] = [
+        31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+    ];
+
+    /// Display labels for each band
+    pub const FREQ_LABELS: [&str; 10] = [
+        "32", "64", "125", "250", "500", "1K", "2K", "4K", "8K", "16K",
+    ];
+
+    /// Minimum gain per band (dB)
+    pub const MIN_GAIN_DB: f32 = -12.0;
+
+    /// Maximum gain per band (dB)
+    pub const MAX_GAIN_DB: f32 = 12.0;
+
+    /// Default Q factor for peaking EQ filters
+    pub const DEFAULT_Q: f32 = 1.414;
+}
+
 /// Stream buffer configuration (producer-consumer architecture)
 pub mod buffer {
     /// Maximum buffer size (bytes) — hard cap to prevent unbounded memory growth

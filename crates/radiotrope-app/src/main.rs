@@ -66,6 +66,18 @@ fn main() {
             .expect("Failed to spawn MCP thread");
     }
 
+    // Load settings
+    let settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    {
+        let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        state.volume = settings.volume;
+        state.is_muted = settings.muted;
+        state.eq_gains = settings.eq_gains;
+        state.eq_preamp = settings.eq_preamp;
+        state.eq_enabled = settings.eq_enabled;
+        state.eq_preset_name = settings.eq_preset_name.clone();
+    }
+
     // Create Slint UI
     let ui = App::new().unwrap();
 
@@ -107,6 +119,34 @@ fn main() {
                 }
             })
             .ok();
+    }
+
+    // Apply initial settings to UI
+    ui.set_volume(settings.volume);
+    ui.set_is_muted(settings.muted);
+    ui.set_eq_enabled(settings.eq_enabled);
+    ui.set_eq_preset_name(settings.eq_preset_name.as_deref().unwrap_or("").into());
+    ui.set_eq_preamp(settings.eq_preamp);
+    ui.set_eq_band0(settings.eq_gains[0]);
+    ui.set_eq_band1(settings.eq_gains[1]);
+    ui.set_eq_band2(settings.eq_gains[2]);
+    ui.set_eq_band3(settings.eq_gains[3]);
+    ui.set_eq_band4(settings.eq_gains[4]);
+    ui.set_eq_band5(settings.eq_gains[5]);
+    ui.set_eq_band6(settings.eq_gains[6]);
+    ui.set_eq_band7(settings.eq_gains[7]);
+    ui.set_eq_band8(settings.eq_gains[8]);
+    ui.set_eq_band9(settings.eq_gains[9]);
+
+    // Send initial EQ state to controller (which will forward to engine once started)
+    {
+        let _ = cmd_tx.send(app::state::AppCommand::SetEqEnabled(settings.eq_enabled));
+        if let Some(ref preset_name) = settings.eq_preset_name {
+            let _ = cmd_tx.send(app::state::AppCommand::SetEqPreset(preset_name.clone()));
+        } else {
+            let _ = cmd_tx.send(app::state::AppCommand::SetEqGains(settings.eq_gains));
+        }
+        let _ = cmd_tx.send(app::state::AppCommand::SetEqPreamp(settings.eq_preamp));
     }
 
     // Wire Slint callbacks → cmd_tx
@@ -407,6 +447,35 @@ fn main() {
                     let _ = f.save();
                 })
                 .ok();
+        });
+    }
+
+    // EQ callbacks
+    {
+        let tx = cmd_tx.clone();
+        ui.on_eq_band_changed(move |band, gain| {
+            let _ = tx.send(app::state::AppCommand::SetEqBand {
+                band: band as usize,
+                gain_db: gain,
+            });
+        });
+    }
+    {
+        let tx = cmd_tx.clone();
+        ui.on_eq_preamp_changed(move |val| {
+            let _ = tx.send(app::state::AppCommand::SetEqPreamp(val));
+        });
+    }
+    {
+        let tx = cmd_tx.clone();
+        ui.on_eq_preset_selected(move |name| {
+            let _ = tx.send(app::state::AppCommand::SetEqPreset(name.to_string()));
+        });
+    }
+    {
+        let tx = cmd_tx.clone();
+        ui.on_eq_enabled_toggled(move |val| {
+            let _ = tx.send(app::state::AppCommand::SetEqEnabled(val));
         });
     }
 
@@ -865,6 +934,14 @@ fn main() {
             let volume = s.volume;
             let is_muted = s.is_muted;
             let station_url: Option<slint::SharedString> = s.station_url.as_deref().map(Into::into);
+            let eq_gains = s.eq_gains;
+            let eq_preamp = s.eq_preamp;
+            let eq_enabled = s.eq_enabled;
+            let eq_preset: slint::SharedString = s
+                .eq_preset_name
+                .as_deref()
+                .unwrap_or("")
+                .into();
             drop(s);
 
             // Set UI properties without holding any lock
@@ -945,11 +1022,40 @@ fn main() {
                 }
             }
             ui.set_is_loading(is_loading);
+
+            // Sync EQ state (for MCP-driven changes)
+            ui.set_eq_enabled(eq_enabled);
+            ui.set_eq_preset_name(eq_preset);
+            ui.set_eq_preamp(eq_preamp);
+            ui.set_eq_band0(eq_gains[0]);
+            ui.set_eq_band1(eq_gains[1]);
+            ui.set_eq_band2(eq_gains[2]);
+            ui.set_eq_band3(eq_gains[3]);
+            ui.set_eq_band4(eq_gains[4]);
+            ui.set_eq_band5(eq_gains[5]);
+            ui.set_eq_band6(eq_gains[6]);
+            ui.set_eq_band7(eq_gains[7]);
+            ui.set_eq_band8(eq_gains[8]);
+            ui.set_eq_band9(eq_gains[9]);
         },
     );
 
     // Run Slint event loop (blocks main thread)
     ui.run().unwrap();
+
+    // Save settings before shutdown
+    {
+        let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+        settings.volume = s.volume;
+        settings.muted = s.is_muted;
+        settings.eq_gains = s.eq_gains;
+        settings.eq_preamp = s.eq_preamp;
+        settings.eq_enabled = s.eq_enabled;
+        settings.eq_preset_name = s.eq_preset_name.clone();
+        drop(s);
+        let _ = settings.save();
+    }
 
     // UI closed — tell controller to shut down
     let _ = cmd_tx.send(app::state::AppCommand::Shutdown);

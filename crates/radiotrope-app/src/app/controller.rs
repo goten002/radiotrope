@@ -165,6 +165,48 @@ impl AppController {
                     engine.set_volume(vol);
                 }
             }
+            AppCommand::SetEqBand { band, gain_db } => {
+                if let Some(engine) = &self.engine {
+                    engine.set_eq_band(band, gain_db);
+                }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                if band < 10 {
+                    state.eq_gains[band] = gain_db;
+                }
+                state.eq_preset_name = None;
+            }
+            AppCommand::SetEqPreset(ref name) => {
+                if let Some(preset) = radiotrope::audio::find_preset(name) {
+                    if let Some(engine) = &self.engine {
+                        engine.set_eq_gains(preset.gains, Some(preset.name.to_string()));
+                    }
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.eq_gains = preset.gains;
+                    state.eq_preset_name = Some(preset.name.to_string());
+                }
+            }
+            AppCommand::SetEqGains(gains) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_eq_gains(gains, None);
+                }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.eq_gains = gains;
+                state.eq_preset_name = None;
+            }
+            AppCommand::SetEqPreamp(db) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_eq_preamp(db);
+                }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.eq_preamp = db;
+            }
+            AppCommand::SetEqEnabled(on) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_eq_enabled(on);
+                }
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.eq_enabled = on;
+            }
             AppCommand::GetState => {
                 // No-op: MCP reads shared_state directly via Arc<Mutex<>>
             }

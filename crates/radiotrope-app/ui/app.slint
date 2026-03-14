@@ -10,6 +10,7 @@ import { StatisticsDialog } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
 import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint";
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
+import { EqualizerDialog } from "dialogs/equalizer.slint";
 export { BrowseStation, CountryEntry, FavoriteStation }
 
 export component App inherits Window {
@@ -36,6 +37,10 @@ export component App inherits Window {
     callback reorder-favorites(/* from */ int, /* to */ int);
     callback load-top-stations();
     callback load-countries();
+    callback eq-band-changed(int, float);
+    callback eq-preamp-changed(float);
+    callback eq-preset-selected(string);
+    callback eq-enabled-toggled(bool);
 
     in-out property <string> station-name;
     in-out property <string> codec-info;
@@ -70,6 +75,21 @@ export component App inherits Window {
     in-out property <[CountryEntry]> countries <=> picker-dialog.countries;
     in-out property <bool> country-loading <=> picker-dialog.loading;
     in-out property <string> country-error <=> picker-dialog.error;
+
+    // Equalizer proxy properties
+    in-out property <bool> eq-enabled <=> eq-dialog.eq-enabled;
+    in-out property <string> eq-preset-name <=> eq-dialog.preset-name;
+    in-out property <float> eq-preamp <=> eq-dialog.preamp-gain;
+    in-out property <float> eq-band0 <=> eq-dialog.band0;
+    in-out property <float> eq-band1 <=> eq-dialog.band1;
+    in-out property <float> eq-band2 <=> eq-dialog.band2;
+    in-out property <float> eq-band3 <=> eq-dialog.band3;
+    in-out property <float> eq-band4 <=> eq-dialog.band4;
+    in-out property <float> eq-band5 <=> eq-dialog.band5;
+    in-out property <float> eq-band6 <=> eq-dialog.band6;
+    in-out property <float> eq-band7 <=> eq-dialog.band7;
+    in-out property <float> eq-band8 <=> eq-dialog.band8;
+    in-out property <float> eq-band9 <=> eq-dialog.band9;
 
     in-out property <string> stat-health;
     in-out property <string> stat-uptime;
@@ -107,6 +127,9 @@ export component App inherits Window {
             }
             open-statistics => {
                 stats-dialog.show-dialog = true;
+            }
+            open-equalizer => {
+                eq-dialog.show-dialog = true;
             }
         }
         playback := Playback {
@@ -165,6 +188,13 @@ export component App inherits Window {
         stat-frames-played: root.stat-frames-played;
         stat-decode-errors: root.stat-decode-errors;
         stat-underruns: root.stat-underruns;
+    }
+
+    eq-dialog := EqualizerDialog {
+        enabled-toggled(val) => { root.eq-enabled-toggled(val); }
+        preset-selected(name) => { root.eq-preset-selected(name); }
+        preamp-changed(val) => { root.eq-preamp-changed(val); }
+        band-changed(band, gain) => { root.eq-band-changed(band, gain); }
     }
 
     browser-dialog := StationBrowserDialog {
