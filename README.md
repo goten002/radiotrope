@@ -10,6 +10,7 @@ An AI agent-enabled internet radio player built with Rust and [Slint](https://sl
 ## Features
 
 - **MCP server** - AI agents (Claude, etc.) can play stations, control volume, and query status through natural language
+- **10-band equalizer** - 14 presets, per-band gain control, preamp
 - **Desktop GUI** - built with Slint, dark/light themes, real-time spectrum visualization, stream statistics
 - **Terminal player** - lightweight TUI with ratatui for headless/SSH use
 - **Resilient streaming** - automatic reconnection with exponential backoff, stall detection, health monitoring
@@ -96,6 +97,7 @@ The engine is designed to be embedded in any Rust application. Both the GUI and 
 | Health monitoring | Stall detection, no-audio timeout, stream failure reporting |
 | Error recovery | Automatic reconnection with exponential backoff (ICY and HLS) |
 | Spectrum analyzer | Real-time FFT-based frequency analysis |
+| 10-band equalizer | Biquad IIR filters (LowShelf/PeakingEQ/HighShelf), 14 presets, live parameter updates |
 | Event system | Channel-based events for playback state, metadata, and health changes |
 
 ## Installation
@@ -151,12 +153,15 @@ radiotrope-cli <URL>
 
 ## Roadmap
 
-- [x] Favorites management
 - [x] Station search and browsing (Radio Browser API)
+- [x] Favorites management
+- [x] Equalizer and audio effects (DSP chain)
+- [ ] Persistent settings (window state, theme, EQ, preferences)
+- [ ] Export/import favorites
 - [ ] System tray integration
 - [ ] ID3 tag metadata extraction (MP3 streams)
 - [ ] Audio recording to file
-- [ ] Equalizer and audio effects (DSP chain)
+
 
 ## License
 
