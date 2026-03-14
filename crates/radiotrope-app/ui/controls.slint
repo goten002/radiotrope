@@ -79,11 +79,11 @@ export component Controls inherits Rectangle {
     height: 58px;
     background: Theme.panel;
 
-    // 1px top separator
+    // 1px top separator — shadow edge at bottom of favorites groove
     Rectangle {
         y: 0;
         height: 1px;
-        background: Theme.surface;
+        background: Theme.dark-mode ? #161718 : #c8c9ce;
     }
 
     HorizontalLayout {

@@ -19,6 +19,13 @@ export component Playback inherits Rectangle {
     height: 100px;
     background: Theme.panel;
 
+    // 1px bottom separator — shadow edge casting onto favorites
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: Theme.dark-mode ? #141516 : #c5c6cb;
+    }
+
     HorizontalLayout {
         padding: 12px;
         spacing: 12px;
