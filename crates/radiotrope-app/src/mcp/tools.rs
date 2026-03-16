@@ -35,21 +35,35 @@ fn arg_as_f64(value: &Value) -> Option<f64> {
 pub fn list_tools() -> Vec<ToolDefinition> {
     vec![
         ToolDefinition {
-            name: "play_station",
-            description: "Play a radio station by URL",
+            name: "play_url",
+            description: "Play a radio station by its stream URL",
             input_schema: json!({
                 "type": "object",
                 "properties": {
-                    "query": {
+                    "url": {
                         "type": "string",
-                        "description": "Station URL"
+                        "description": "Station stream URL (e.g. http://stream.example.com/radio)"
                     },
                     "name": {
                         "type": "string",
                         "description": "Optional display name for the station"
                     }
                 },
-                "required": ["query"]
+                "required": ["url"]
+            }),
+        },
+        ToolDefinition {
+            name: "play_favorite",
+            description: "Play a favorite station by its ID (use list_favorites to get IDs)",
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "id": {
+                        "type": "string",
+                        "description": "Favorite station ID (from list_favorites)"
+                    }
+                },
+                "required": ["id"]
             }),
         },
         ToolDefinition {
@@ -121,6 +135,10 @@ pub fn list_tools() -> Vec<ToolDefinition> {
                     "country": {
                         "type": "string",
                         "description": "Optional country name"
+                    },
+                    "logo_url": {
+                        "type": "string",
+                        "description": "Optional station logo/favicon URL"
                     }
                 },
                 "required": ["url", "name"]
@@ -152,7 +170,10 @@ pub fn call_tool(
     favorites: &Arc<Mutex<FavoritesManager>>,
 ) -> ToolResult {
     match name {
-        "play_station" => handle_play(args, cmd_tx, favorites),
+        "play_url" => handle_play_url(args, cmd_tx, favorites),
+        "play_favorite" => handle_play_favorite(args, cmd_tx, favorites),
+        // Keep old name as alias for backwards compatibility
+        "play_station" => handle_play_url(args, cmd_tx, favorites),
         "stop" => handle_stop(cmd_tx),
         "set_volume" => handle_set_volume(args, cmd_tx, state),
         "get_status" => handle_get_status(state),
@@ -164,14 +185,19 @@ pub fn call_tool(
     }
 }
 
-fn handle_play(
+fn handle_play_url(
     args: &Value,
     cmd_tx: &Sender<AppCommand>,
     favorites: &Arc<Mutex<FavoritesManager>>,
 ) -> ToolResult {
-    let url = match args.get("query").and_then(|v| v.as_str()) {
-        Some(q) => q,
-        None => return ToolResult::error("Missing required parameter: query"),
+    // Accept both "url" and legacy "query" param
+    let url = args
+        .get("url")
+        .or_else(|| args.get("query"))
+        .and_then(|v| v.as_str());
+    let url = match url {
+        Some(u) if !u.trim().is_empty() => u.trim(),
+        _ => return ToolResult::error("Missing required parameter: url"),
     };
     let name = args.get("name").and_then(|v| v.as_str()).map(String::from);
     // Enrich from favorites using the same logic as the UI path
@@ -187,6 +213,35 @@ fn handle_play(
         })
         .ok();
     ToolResult::text(format!("Resolving stream: {url}"))
+}
+
+fn handle_play_favorite(
+    args: &Value,
+    cmd_tx: &Sender<AppCommand>,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+) -> ToolResult {
+    let id = match args.get("id").and_then(|v| v.as_str()) {
+        Some(id) if !id.trim().is_empty() => id.trim(),
+        _ => return ToolResult::error("Missing required parameter: id"),
+    };
+
+    let f = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    let fav = match f.get(id) {
+        Some(fav) => fav,
+        None => return ToolResult::error(format!("No favorite found with ID: {id}")),
+    };
+
+    let url = fav.url().to_string();
+    let name = fav.name().to_string();
+    drop(f);
+
+    cmd_tx
+        .send(AppCommand::Play {
+            url: url.clone(),
+            name: Some(name.clone()),
+        })
+        .ok();
+    ToolResult::text(format!("Playing favorite: {name} ({url})"))
 }
 
 fn handle_stop(cmd_tx: &Sender<AppCommand>) -> ToolResult {
@@ -281,6 +336,7 @@ fn handle_search(args: &Value) -> ToolResult {
                 "name": s.name,
                 "url": s.url,
                 "country": s.country.as_deref().unwrap_or(""),
+                "logo_url": s.logo_url.as_deref().unwrap_or(""),
             })
         })
         .collect();
@@ -327,8 +383,15 @@ fn handle_add_favorite(args: &Value, favorites: &Arc<Mutex<FavoritesManager>>) -
         .get("country")
         .and_then(|v| v.as_str())
         .map(String::from);
+    let logo_url = args
+        .get("logo_url")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
 
     let mut fav = Favorite::new(name, url);
+    if let Some(logo) = logo_url {
+        fav = fav.with_logo(logo);
+    }
     if country.is_some() {
         fav = fav.with_metadata(country, None, HashSet::new());
     }
