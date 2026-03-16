@@ -144,6 +144,55 @@ fn main() {
         ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
     }
 
+    // Apply saved theme and viz mode
+    ui.set_dark_mode(settings.theme.is_dark());
+    ui.set_viz_mode(settings.viz_mode.as_str().into());
+
+    // Apply saved window size
+    if let (Some(w), Some(h)) = (settings.window_width, settings.window_height) {
+        ui.window()
+            .set_size(slint::LogicalSize::new(w as f32, h as f32));
+    }
+
+    // Restore last station to UI (so user can hit Play to resume)
+    if let Some(ref station) = settings.last_station {
+        ui.set_station_name(station.name.as_str().into());
+        ui.set_station_url(station.url.as_str().into());
+        if let Some(ref logo_url) = station.logo_url {
+            ui.set_station_logo_url(logo_url.as_str().into());
+        }
+        // Check if it's favorited
+        {
+            let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+            ui.set_is_station_favorited(favs.is_favorite(&station.url));
+        }
+        // Try to load cached logo
+        if let Some(ref logo_url) = station.logo_url {
+            if !logo_url.is_empty() {
+                let tmp = Station::new(&station.name, &station.url).with_logo(logo_url);
+                if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
+                    let pb =
+                        SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+                    ui.set_current_logo(slint::Image::from_rgba8(pb));
+                }
+            }
+        }
+        // Update shared state so controller knows about the last station
+        {
+            let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            s.station_name = Some(station.name.clone());
+            s.station_url = Some(station.url.clone());
+        }
+    }
+
+    // Send initial volume/mute to controller so engine starts at the correct level
+    {
+        let _ = cmd_tx.send(app::state::AppCommand::SetVolume(settings.volume));
+        if settings.muted {
+            let _ = cmd_tx.send(app::state::AppCommand::Mute);
+        }
+    }
+
     // Send initial EQ state to controller (which will forward to engine once started)
     {
         let _ = cmd_tx.send(app::state::AppCommand::SetEqEnabled(settings.eq_enabled));
@@ -1090,6 +1139,37 @@ fn main() {
         settings.eq_enabled = s.eq_enabled;
         settings.eq_preset_name = s.eq_preset_name.clone();
         settings.accent_color = s.accent_color.clone();
+
+        // Theme
+        settings.theme = if ui.get_dark_mode() {
+            radiotrope_app::data::settings::Theme::Dark
+        } else {
+            radiotrope_app::data::settings::Theme::Light
+        };
+
+        // Viz mode
+        settings.viz_mode = ui.get_viz_mode().to_string();
+
+        // Last station (include logo URL from UI for restore)
+        if let Some(ref url) = s.station_url {
+            if !url.is_empty() {
+                let name = s.station_name.as_deref().unwrap_or("Unknown");
+                let mut station = Station::new(name, url);
+                let logo_url = ui.get_station_logo_url().to_string();
+                if !logo_url.is_empty() {
+                    station = station.with_logo(&logo_url);
+                }
+                settings.last_station = Some(station);
+            }
+        }
+
+        // Window size
+        let size = ui.window().size();
+        if size.width > 0 && size.height > 0 {
+            settings.window_width = Some(size.width);
+            settings.window_height = Some(size.height);
+        }
+
         drop(s);
         let _ = settings.save();
     }

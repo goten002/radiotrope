@@ -157,7 +157,7 @@ radiotrope-cli <URL>
 - [x] Favorites management
 - [x] Equalizer and audio effects (DSP chain)
 - [x] User-selectable accent color (9 palette presets + custom hex)
-- [ ] Persistent settings (window state, theme, EQ, preferences)
+- [x] Persistent settings (window state, theme, EQ, preferences)
 - [ ] Export/import favorites
 - [ ] System tray integration
 - [ ] ID3 tag metadata extraction (MP3 streams)

@@ -65,6 +65,7 @@ component VolumeSlider inherits Rectangle {
 
 export component Controls inherits Rectangle {
     in property <bool> is-playing;
+    in property <bool> has-station;
     in property <string> now-playing-title;
     in-out property <float> volume: 1.0;   // 0.0–1.0
     in-out property <bool> is-muted;
@@ -97,10 +98,14 @@ export component Controls inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Rectangle {
+                property <bool> can-interact: root.is-playing || root.has-station;
+
                 width: 42px;
                 height: 42px;
                 border-radius: 6px;
-                background: play-touch.has-hover ? Theme.accent-hover : Theme.accent;
+                background: !can-interact ? Theme.disabled-bg
+                    : play-touch.has-hover ? Theme.accent-hover
+                    : Theme.accent;
 
                 Image {
                     width: 18px;
@@ -108,11 +113,12 @@ export component Controls inherits Rectangle {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                     source: root.is-playing ? @image-url("icons/stop.svg") : @image-url("icons/play.svg");
-                    colorize: Theme.button-text;
+                    colorize: can-interact ? Theme.button-text : Theme.disabled-text;
                 }
 
                 play-touch := TouchArea {
-                    mouse-cursor: pointer;
+                    enabled: can-interact;
+                    mouse-cursor: can-interact ? pointer : default;
                     clicked => {
                         if (root.is-playing) {
                             root.stop-clicked();

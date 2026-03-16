@@ -94,6 +94,9 @@ export component App inherits Window {
     in-out property <float> eq-band8 <=> eq-dialog.band8;
     in-out property <float> eq-band9 <=> eq-dialog.band9;
 
+    // Theme proxy — two-way bind to Theme global
+    in-out property <bool> dark-mode <=> Theme.dark-mode;
+
     // Accent color proxy — two-way bind to Theme global
     in-out property <color> accent-color <=> Theme.accent-base;
 
@@ -166,6 +169,7 @@ export component App inherits Window {
         }
         controls := Controls {
             is-playing: root.is-playing;
+            has-station: root.station-url != "";
             now-playing-title: root.now-playing-title;
             volume <=> root.volume;
             is-muted <=> root.is-muted;

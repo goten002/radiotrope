@@ -34,10 +34,6 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_station: Option<Station>,
 
-    /// Auto-play last station on startup
-    #[serde(default)]
-    pub auto_play: bool,
-
     // === Window ===
     /// Window width
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -46,18 +42,6 @@ pub struct Settings {
     /// Window height
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_height: Option<u32>,
-
-    /// Window X position
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_x: Option<i32>,
-
-    /// Window Y position
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_y: Option<i32>,
-
-    /// Window maximized state
-    #[serde(default)]
-    pub window_maximized: bool,
 
     // === Appearance ===
     /// Theme preference
@@ -82,14 +66,10 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub show_notifications: bool,
 
-    // === Search ===
-    /// Default search provider
-    #[serde(default)]
-    pub default_provider: String,
-
-    /// Number of search results per page
-    #[serde(default = "default_search_limit")]
-    pub search_limit: u32,
+    // === Visualization ===
+    /// Visualization mode (mirror, vu, spectrum, hbars)
+    #[serde(default = "default_viz_mode")]
+    pub viz_mode: String,
 
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
@@ -115,15 +95,15 @@ fn default_version() -> u32 {
 }
 
 fn default_volume() -> f32 {
-    0.8
+    1.0
+}
+
+fn default_viz_mode() -> String {
+    "mirror".to_string()
 }
 
 fn default_true() -> bool {
     true
-}
-
-fn default_search_limit() -> u32 {
-    100
 }
 
 impl Default for Settings {
@@ -133,19 +113,14 @@ impl Default for Settings {
             volume: default_volume(),
             muted: false,
             last_station: None,
-            auto_play: false,
             window_width: None,
             window_height: None,
-            window_x: None,
-            window_y: None,
-            window_maximized: false,
             theme: Theme::default(),
             show_tray_icon: true,
             minimize_to_tray: true,
             start_minimized: false,
             show_notifications: true,
-            default_provider: String::new(),
-            search_limit: default_search_limit(),
+            viz_mode: default_viz_mode(),
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
@@ -206,14 +181,6 @@ impl Settings {
         self.muted = !self.muted;
     }
 
-    /// Set window geometry
-    pub fn set_window_geometry(&mut self, x: i32, y: i32, width: u32, height: u32) {
-        self.window_x = Some(x);
-        self.window_y = Some(y);
-        self.window_width = Some(width);
-        self.window_height = Some(height);
-    }
-
     /// Parse accent color hex string to RGB components
     pub fn accent_color_rgb(&self) -> Option<(u8, u8, u8)> {
         let hex = self.accent_color.as_ref()?;
@@ -227,18 +194,6 @@ impl Settings {
         Some((r, g, b))
     }
 
-    /// Get window geometry if available
-    pub fn window_geometry(&self) -> Option<(i32, i32, u32, u32)> {
-        match (
-            self.window_x,
-            self.window_y,
-            self.window_width,
-            self.window_height,
-        ) {
-            (Some(x), Some(y), Some(w), Some(h)) => Some((x, y, w, h)),
-            _ => None,
-        }
-    }
 }
 
 /// Theme preference
@@ -260,7 +215,7 @@ impl Theme {
         match self {
             Theme::Dark => true,
             Theme::Light => false,
-            Theme::System => false, // TODO: detect OS theme
+            Theme::System => true, // default to dark, matching Slint default
         }
     }
 }
@@ -282,9 +237,9 @@ mod tests {
     #[test]
     fn test_default_settings() {
         let settings = Settings::default();
-        assert_eq!(settings.volume, 0.8);
+        assert_eq!(settings.volume, 1.0);
         assert!(!settings.muted);
-        assert!(!settings.auto_play);
+
         assert!(settings.show_tray_icon);
         assert!(settings.minimize_to_tray);
         assert_eq!(settings.theme, Theme::System);
@@ -328,18 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn test_window_geometry() {
-        let mut settings = Settings::new();
-
-        // Initially none
-        assert!(settings.window_geometry().is_none());
-
-        // Set geometry
-        settings.set_window_geometry(100, 200, 800, 600);
-        assert_eq!(settings.window_geometry(), Some((100, 200, 800, 600)));
-    }
-
-    #[test]
     fn test_save_and_load_roundtrip() {
         let path = temp_path();
 
@@ -350,8 +293,9 @@ mod tests {
             settings.muted = true;
             settings.last_station = Some(Station::new("Test Station", "http://test.com/stream"));
             settings.theme = Theme::Dark;
-            settings.auto_play = true;
-            settings.set_window_geometry(50, 100, 1024, 768);
+
+            settings.window_width = Some(1024);
+            settings.window_height = Some(768);
             settings.save_to(&path).unwrap();
         }
 
@@ -365,8 +309,9 @@ mod tests {
             assert_eq!(station.url, "http://test.com/stream");
             assert_eq!(station.name, "Test Station");
             assert_eq!(settings.theme, Theme::Dark);
-            assert!(settings.auto_play);
-            assert_eq!(settings.window_geometry(), Some((50, 100, 1024, 768)));
+
+            assert_eq!(settings.window_width, Some(1024));
+            assert_eq!(settings.window_height, Some(768));
         }
 
         let _ = fs::remove_file(&path);
@@ -378,7 +323,7 @@ mod tests {
         let settings = Settings::load_from(&path).unwrap();
 
         // Should return defaults
-        assert_eq!(settings.volume, 0.8);
+        assert_eq!(settings.volume, 1.0);
         assert!(!settings.muted);
     }
 
@@ -399,19 +344,14 @@ mod tests {
             settings.volume = 0.3;
             settings.muted = true;
             settings.last_station = Some(Station::new("Test Station", "http://station.url"));
-            settings.auto_play = true;
+
             settings.window_width = Some(1920);
             settings.window_height = Some(1080);
-            settings.window_x = Some(-100);
-            settings.window_y = Some(50);
-            settings.window_maximized = true;
             settings.theme = Theme::Light;
             settings.show_tray_icon = false;
             settings.minimize_to_tray = false;
             settings.start_minimized = true;
             settings.show_notifications = false;
-            settings.default_provider = "custom".to_string();
-            settings.search_limit = 50;
             settings.accent_color = Some("#3584e4".to_string());
             settings.save_to(&path).unwrap();
         }
@@ -425,19 +365,14 @@ mod tests {
             let station = s.last_station.as_ref().unwrap();
             assert_eq!(station.url, "http://station.url");
             assert_eq!(station.name, "Test Station");
-            assert!(s.auto_play);
+
             assert_eq!(s.window_width, Some(1920));
             assert_eq!(s.window_height, Some(1080));
-            assert_eq!(s.window_x, Some(-100));
-            assert_eq!(s.window_y, Some(50));
-            assert!(s.window_maximized);
             assert_eq!(s.theme, Theme::Light);
             assert!(!s.show_tray_icon);
             assert!(!s.minimize_to_tray);
             assert!(s.start_minimized);
             assert!(!s.show_notifications);
-            assert_eq!(s.default_provider, "custom");
-            assert_eq!(s.search_limit, 50);
             assert_eq!(s.accent_color, Some("#3584e4".to_string()));
         }
 
@@ -466,7 +401,6 @@ mod tests {
         assert_eq!(settings.theme, Theme::System);
         assert!(settings.show_tray_icon);
         assert!(settings.minimize_to_tray);
-        assert_eq!(settings.search_limit, 100);
 
         let _ = fs::remove_file(&path);
     }
@@ -511,7 +445,7 @@ mod tests {
         fs::write(&path, "").unwrap();
 
         let settings = Settings::load_from(&path).unwrap();
-        assert_eq!(settings.volume, 0.8); // default
+        assert_eq!(settings.volume, 1.0); // default
 
         let _ = fs::remove_file(&path);
     }
@@ -523,7 +457,7 @@ mod tests {
         fs::write(&path, "   \n\t  \n  ").unwrap();
 
         let settings = Settings::load_from(&path).unwrap();
-        assert_eq!(settings.volume, 0.8); // default
+        assert_eq!(settings.volume, 1.0); // default
 
         let _ = fs::remove_file(&path);
     }
@@ -576,7 +510,6 @@ mod tests {
             "Ραδιοφωνικός σταθμός 电台",
             "http://example.com/日本語/стрим/ελληνικά",
         ));
-        settings.default_provider = "Ραδιόφωνο Ελλάδα 提供者".to_string();
         settings.save_to(&path).unwrap();
 
         let loaded = Settings::load_from(&path).unwrap();
@@ -584,7 +517,6 @@ mod tests {
         let station = loaded.last_station.unwrap();
         assert_eq!(station.url, "http://example.com/日本語/стрим/ελληνικά");
         assert_eq!(station.name, "Ραδιοφωνικός σταθμός 电台");
-        assert_eq!(loaded.default_provider, "Ραδιόφωνο Ελλάδα 提供者");
 
         let _ = fs::remove_file(&path);
     }
@@ -609,37 +541,6 @@ mod tests {
         );
 
         let _ = fs::remove_file(&path);
-    }
-
-    #[test]
-    fn test_window_geometry_negative_values() {
-        let mut settings = Settings::new();
-
-        // Negative positions are valid (multi-monitor setups)
-        settings.set_window_geometry(-500, -200, 800, 600);
-        assert_eq!(settings.window_geometry(), Some((-500, -200, 800, 600)));
-    }
-
-    #[test]
-    fn test_window_geometry_large_values() {
-        let mut settings = Settings::new();
-
-        // Large values for high-res displays
-        settings.set_window_geometry(0, 0, 7680, 4320); // 8K resolution
-        assert_eq!(settings.window_geometry(), Some((0, 0, 7680, 4320)));
-    }
-
-    #[test]
-    fn test_window_geometry_partial_none() {
-        let mut settings = Settings::new();
-
-        // Only some fields set
-        settings.window_x = Some(100);
-        settings.window_y = Some(200);
-        // width and height are None
-
-        // Should return None since not all fields are set
-        assert!(settings.window_geometry().is_none());
     }
 
     #[test]
@@ -709,20 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn test_search_limit_persists() {
-        let path = temp_path();
-
-        let mut settings = Settings::new();
-        settings.search_limit = 250;
-        settings.save_to(&path).unwrap();
-
-        let loaded = Settings::load_from(&path).unwrap();
-        assert_eq!(loaded.search_limit, 250);
-
-        let _ = fs::remove_file(&path);
-    }
-
-    #[test]
     fn test_optional_fields_skip_none() {
         let path = temp_path();
 
@@ -737,8 +624,6 @@ mod tests {
         assert!(!content.contains("last_station"));
         assert!(!content.contains("window_width"));
         assert!(!content.contains("window_height"));
-        assert!(!content.contains("window_x"));
-        assert!(!content.contains("window_y"));
         assert!(!content.contains("accent_color"));
 
         let _ = fs::remove_file(&path);
