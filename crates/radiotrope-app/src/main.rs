@@ -994,6 +994,31 @@ fn main() {
                 if gen != last_fav_generation.get() {
                     last_fav_generation.set(gen);
                     refresh_favorites(&ui, &poll_favs, &poll_logo_svc);
+
+                    // Prefetch missing logos on background thread, then refresh UI
+                    let prefetch_favs = poll_favs.clone();
+                    let prefetch_logo_svc = poll_logo_svc.clone();
+                    let prefetch_ui_weak = ui.as_weak();
+                    std::thread::Builder::new()
+                        .name("fav-logo-prefetch-poll".into())
+                        .spawn(move || {
+                            let favs = prefetch_favs.lock().unwrap_or_else(|e| e.into_inner());
+                            let all: Vec<_> = favs
+                                .sorted(FavoriteSort::Manual)
+                                .into_iter()
+                                .cloned()
+                                .collect();
+                            drop(favs);
+                            let fetched = prefetch_logo_svc.prefetch(&all);
+                            if fetched > 0 {
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = prefetch_ui_weak.upgrade() {
+                                        refresh_favorites(&ui, &prefetch_favs, &prefetch_logo_svc);
+                                    }
+                                });
+                            }
+                        })
+                        .ok();
                 }
             }
 
