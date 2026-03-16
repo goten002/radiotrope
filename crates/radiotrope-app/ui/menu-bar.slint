@@ -77,6 +77,7 @@ export component MenuBar inherits Rectangle {
     callback open-country-picker();
     callback open-statistics();
     callback open-equalizer();
+    callback open-accent-color();
 
     HorizontalLayout {
         padding-left: 4px;
@@ -240,6 +241,21 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         view-popup.close();
                         Theme.dark-mode = false;
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                MenuItem {
+                    label: "Accent Color...";
+                    clicked => {
+                        view-popup.close();
+                        root.open-accent-color();
                     }
                 }
             }

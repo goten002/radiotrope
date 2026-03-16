@@ -72,6 +72,9 @@ pub struct AppSnapshot {
     /// True when status_text represents an error/warning state (for red UI text)
     pub is_error: bool,
 
+    // Accent color
+    pub accent_color: Option<String>,
+
     // Equalizer
     pub eq_gains: [f32; 10],
     pub eq_preamp: f32,
@@ -98,6 +101,7 @@ impl Default for AppSnapshot {
             bitrate: None,
             status_text: Cow::Borrowed("Ready"),
             is_error: false,
+            accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
             eq_enabled: false,

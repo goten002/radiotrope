@@ -5,9 +5,10 @@ export global Theme {
 
     out property <color> panel: dark-mode ? #25272a : #d4d5da;
     out property <color> surface: dark-mode ? #191a1c : #f5f5f5;
-    out property <color> accent: #f7931e;
-    out property <color> accent-hover: #e5850f;
-    out property <color> accent-text: #f7931e;
+    in-out property <color> accent-base: #f7931e;
+    out property <color> accent: accent-base;
+    out property <color> accent-hover: accent-base.darker(0.15);
+    out property <color> accent-text: accent-base;
     out property <color> text-primary: dark-mode ? #ffffff : #1a1a1a;
     out property <color> text-secondary: dark-mode ? #a0a0a0 : #666666;
 

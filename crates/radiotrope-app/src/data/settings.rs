@@ -91,6 +91,11 @@ pub struct Settings {
     #[serde(default = "default_search_limit")]
     pub search_limit: u32,
 
+    // === Accent Color ===
+    /// Custom accent color as hex string (e.g. "#3584e4")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent_color: Option<String>,
+
     // === Equalizer ===
     #[serde(default)]
     pub eq_gains: [f32; 10],
@@ -141,6 +146,7 @@ impl Default for Settings {
             show_notifications: true,
             default_provider: String::new(),
             search_limit: default_search_limit(),
+            accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
             eq_enabled: false,
@@ -206,6 +212,19 @@ impl Settings {
         self.window_y = Some(y);
         self.window_width = Some(width);
         self.window_height = Some(height);
+    }
+
+    /// Parse accent color hex string to RGB components
+    pub fn accent_color_rgb(&self) -> Option<(u8, u8, u8)> {
+        let hex = self.accent_color.as_ref()?;
+        let hex = hex.strip_prefix('#').unwrap_or(hex);
+        if hex.len() != 6 {
+            return None;
+        }
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+        Some((r, g, b))
     }
 
     /// Get window geometry if available
@@ -393,6 +412,7 @@ mod tests {
             settings.show_notifications = false;
             settings.default_provider = "custom".to_string();
             settings.search_limit = 50;
+            settings.accent_color = Some("#3584e4".to_string());
             settings.save_to(&path).unwrap();
         }
 
@@ -418,6 +438,7 @@ mod tests {
             assert!(!s.show_notifications);
             assert_eq!(s.default_provider, "custom");
             assert_eq!(s.search_limit, 50);
+            assert_eq!(s.accent_color, Some("#3584e4".to_string()));
         }
 
         let _ = fs::remove_file(&path);
@@ -718,6 +739,7 @@ mod tests {
         assert!(!content.contains("window_height"));
         assert!(!content.contains("window_x"));
         assert!(!content.contains("window_y"));
+        assert!(!content.contains("accent_color"));
 
         let _ = fs::remove_file(&path);
     }
@@ -787,6 +809,83 @@ mod tests {
         assert!(content.contains("last_station"));
         assert!(content.contains("http://stream.example.com"));
         assert!(!content.contains("logo_url")); // Should be skipped when None
+
+        let _ = fs::remove_file(&path);
+    }
+
+    // =========================================================================
+    // Accent color tests
+    // =========================================================================
+
+    #[test]
+    fn test_accent_color_rgb_valid_with_hash() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some("#3584e4".to_string());
+        assert_eq!(settings.accent_color_rgb(), Some((0x35, 0x84, 0xe4)));
+    }
+
+    #[test]
+    fn test_accent_color_rgb_valid_without_hash() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some("3584e4".to_string());
+        assert_eq!(settings.accent_color_rgb(), Some((0x35, 0x84, 0xe4)));
+    }
+
+    #[test]
+    fn test_accent_color_rgb_none() {
+        let settings = Settings::new();
+        assert_eq!(settings.accent_color_rgb(), None);
+    }
+
+    #[test]
+    fn test_accent_color_rgb_too_short() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some("#fff".to_string());
+        assert_eq!(settings.accent_color_rgb(), None);
+    }
+
+    #[test]
+    fn test_accent_color_rgb_too_long() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some("#1234567".to_string());
+        assert_eq!(settings.accent_color_rgb(), None);
+    }
+
+    #[test]
+    fn test_accent_color_rgb_invalid_hex_chars() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some("#zzzzzz".to_string());
+        assert_eq!(settings.accent_color_rgb(), None);
+    }
+
+    #[test]
+    fn test_accent_color_rgb_empty_string() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some(String::new());
+        assert_eq!(settings.accent_color_rgb(), None);
+    }
+
+    #[test]
+    fn test_accent_color_rgb_boundary_values() {
+        let mut settings = Settings::new();
+        settings.accent_color = Some("#000000".to_string());
+        assert_eq!(settings.accent_color_rgb(), Some((0, 0, 0)));
+
+        settings.accent_color = Some("#ffffff".to_string());
+        assert_eq!(settings.accent_color_rgb(), Some((255, 255, 255)));
+    }
+
+    #[test]
+    fn test_accent_color_persists() {
+        let path = temp_path();
+
+        let mut settings = Settings::new();
+        settings.accent_color = Some("#e62d42".to_string());
+        settings.save_to(&path).unwrap();
+
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(loaded.accent_color, Some("#e62d42".to_string()));
+        assert_eq!(loaded.accent_color_rgb(), Some((0xe6, 0x2d, 0x42)));
 
         let _ = fs::remove_file(&path);
     }

@@ -76,6 +76,7 @@ fn main() {
         state.eq_preamp = settings.eq_preamp;
         state.eq_enabled = settings.eq_enabled;
         state.eq_preset_name = settings.eq_preset_name.clone();
+        state.accent_color = settings.accent_color.clone();
     }
 
     // Create Slint UI
@@ -137,6 +138,11 @@ fn main() {
     ui.set_eq_band7(settings.eq_gains[7]);
     ui.set_eq_band8(settings.eq_gains[8]);
     ui.set_eq_band9(settings.eq_gains[9]);
+
+    // Apply saved accent color
+    if let Some((r, g, b)) = settings.accent_color_rgb() {
+        ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
+    }
 
     // Send initial EQ state to controller (which will forward to engine once started)
     {
@@ -476,6 +482,36 @@ fn main() {
         let tx = cmd_tx.clone();
         ui.on_eq_enabled_toggled(move |val| {
             let _ = tx.send(app::state::AppCommand::SetEqEnabled(val));
+        });
+    }
+
+    // Accent color callbacks
+    {
+        let state = shared_state.clone();
+        ui.on_accent_color_changed(move |color| {
+            let hex = format!("#{:02x}{:02x}{:02x}", color.red(), color.green(), color.blue());
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            s.accent_color = Some(hex);
+        });
+    }
+    {
+        let state = shared_state.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_apply_custom_hex(move |hex_str| {
+            let hex = hex_str.trim().to_string();
+            let hex_clean = hex.strip_prefix('#').unwrap_or(&hex);
+            if hex_clean.len() != 6 {
+                return;
+            }
+            let Ok(r) = u8::from_str_radix(&hex_clean[0..2], 16) else { return };
+            let Ok(g) = u8::from_str_radix(&hex_clean[2..4], 16) else { return };
+            let Ok(b) = u8::from_str_radix(&hex_clean[4..6], 16) else { return };
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
+            }
+            let hex_with_hash = format!("#{:02x}{:02x}{:02x}", r, g, b);
+            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            s.accent_color = Some(hex_with_hash);
         });
     }
 
@@ -1053,6 +1089,7 @@ fn main() {
         settings.eq_preamp = s.eq_preamp;
         settings.eq_enabled = s.eq_enabled;
         settings.eq_preset_name = s.eq_preset_name.clone();
+        settings.accent_color = s.accent_color.clone();
         drop(s);
         let _ = settings.save();
     }
