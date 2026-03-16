@@ -171,8 +171,7 @@ fn main() {
             if !logo_url.is_empty() {
                 let tmp = Station::new(&station.name, &station.url).with_logo(logo_url);
                 if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
-                    let pb =
-                        SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+                    let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                     ui.set_current_logo(slint::Image::from_rgba8(pb));
                 }
             }
@@ -538,7 +537,12 @@ fn main() {
     {
         let state = shared_state.clone();
         ui.on_accent_color_changed(move |color| {
-            let hex = format!("#{:02x}{:02x}{:02x}", color.red(), color.green(), color.blue());
+            let hex = format!(
+                "#{:02x}{:02x}{:02x}",
+                color.red(),
+                color.green(),
+                color.blue()
+            );
             let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
             s.accent_color = Some(hex);
         });
@@ -552,9 +556,15 @@ fn main() {
             if hex_clean.len() != 6 {
                 return;
             }
-            let Ok(r) = u8::from_str_radix(&hex_clean[0..2], 16) else { return };
-            let Ok(g) = u8::from_str_radix(&hex_clean[2..4], 16) else { return };
-            let Ok(b) = u8::from_str_radix(&hex_clean[4..6], 16) else { return };
+            let Ok(r) = u8::from_str_radix(&hex_clean[0..2], 16) else {
+                return;
+            };
+            let Ok(g) = u8::from_str_radix(&hex_clean[2..4], 16) else {
+                return;
+            };
+            let Ok(b) = u8::from_str_radix(&hex_clean[4..6], 16) else {
+                return;
+            };
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
             }

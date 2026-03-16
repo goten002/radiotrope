@@ -193,7 +193,6 @@ impl Settings {
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
         Some((r, g, b))
     }
-
 }
 
 /// Theme preference
