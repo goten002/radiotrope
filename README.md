@@ -121,7 +121,7 @@ Radiotrope uses rodio for audio output, which requires ALSA on Linux:
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libasound2-dev
+sudo apt install libasound2-dev libfontconfig1-dev
 
 # Arch/Manjaro
 sudo pacman -S alsa-lib
