@@ -78,6 +78,9 @@ export component MenuBar inherits Rectangle {
     callback open-statistics();
     callback open-equalizer();
     callback open-accent-color();
+    callback open-wifi-settings();
+
+    in property <bool> show-wifi-option: false;
 
     HorizontalLayout {
         padding-left: 4px;
@@ -288,6 +291,23 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         tools-popup.close();
                         root.open-statistics();
+                    }
+                }
+                Rectangle {
+                    height: root.show-wifi-option ? 9px : 0px;
+                    visible: root.show-wifi-option;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                MenuItem {
+                    visible: root.show-wifi-option;
+                    label: "WiFi Settings...";
+                    clicked => {
+                        tools-popup.close();
+                        root.open-wifi-settings();
                     }
                 }
             }

@@ -26,6 +26,14 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "6.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
+libc = "0.2"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[features]
+default = ["desktop"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility"]
+embedded = ["slint/backend-linuxkms", "slint/renderer-software"]
 
 [build-dependencies]
 slint-build = "1.15"

@@ -12,7 +12,8 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
-export { BrowseStation, CountryEntry, FavoriteStation }
+import { WifiSettingsDialog, WifiNetworkEntry } from "dialogs/wifi-settings.slint";
+export { BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -45,6 +46,12 @@ export component App inherits Window {
     callback accent-color-changed(color);
     callback apply-custom-hex(string);
 
+    // WiFi (embedded only — connected from Rust when feature = "embedded")
+    callback wifi-scan-requested();
+    callback wifi-connect-requested(string, string); // object-path, password
+    callback wifi-disconnect-requested();
+    callback wifi-backspace(string) -> string;
+
     in-out property <string> station-name;
     in-out property <string> codec-info;
     in-out property <string> status-text;
@@ -69,6 +76,7 @@ export component App inherits Window {
 
     // Station browser proxy properties (for Rust access)
     in-out property <[BrowseStation]> search-results <=> browser-dialog.search-results;
+    in-out property <[image]> browse-logos <=> browser-dialog.browse-logos;
     in-out property <bool> search-loading <=> browser-dialog.search-loading;
     in-out property <bool> search-loading-more <=> browser-dialog.search-loading-more;
     in-out property <string> search-error <=> browser-dialog.search-error;
@@ -94,6 +102,14 @@ export component App inherits Window {
     in-out property <float> eq-band8 <=> eq-dialog.band8;
     in-out property <float> eq-band9 <=> eq-dialog.band9;
 
+    // WiFi proxy properties (embedded only)
+    in-out property <bool> show-wifi-settings: false;
+    in-out property <bool> wifi-embedded-mode: false; // set true from Rust on embedded
+    in-out property <[WifiNetworkEntry]> wifi-networks <=> wifi-dialog.networks;
+    in-out property <bool> wifi-scanning <=> wifi-dialog.is-scanning;
+    in-out property <string> wifi-current-ssid <=> wifi-dialog.current-ssid;
+    in-out property <string> wifi-connection-status <=> wifi-dialog.connection-status;
+
     // Theme proxy — two-way bind to Theme global
     in-out property <bool> dark-mode <=> Theme.dark-mode;
 
@@ -117,6 +133,11 @@ export component App inherits Window {
 
     VerticalLayout {
         MenuBar {
+            show-wifi-option: root.wifi-embedded-mode;
+            open-wifi-settings => {
+                root.show-wifi-settings = true;
+                root.wifi-scan-requested();
+            }
             open-network-stream => {
                 stream-dialog.show-dialog = true;
             }
@@ -236,6 +257,7 @@ export component App inherits Window {
             browser-dialog.search-mode = "country";
             browser-dialog.country-name = country;
             browser-dialog.search-results = [];
+            browser-dialog.browse-logos = [];
             browser-dialog.search-error = "";
             browser-dialog.has-more = false;
             browser-dialog.search-loading = true;
@@ -243,5 +265,15 @@ export component App inherits Window {
             root.browse-country(country);
         }
         load-countries() => { root.load-countries(); }
+    }
+
+    // WiFi settings dialog (visible only on embedded)
+    wifi-dialog := WifiSettingsDialog {
+        show-dialog <=> root.show-wifi-settings;
+        scan-requested() => { root.wifi-scan-requested(); }
+        connect-requested(path, password) => { root.wifi-connect-requested(path, password); }
+        disconnect-requested() => { root.wifi-disconnect-requested(); }
+        close-requested() => { root.show-wifi-settings = false; }
+        wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
     }
 }

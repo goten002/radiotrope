@@ -45,19 +45,16 @@ component VolumeSlider inherits Rectangle {
 
         moved => {
             if (self.pressed) {
-                root.value = Math.clamp(self.mouse-x / root.width * 100, 0, 100);
-                root.value-changed(root.value);
+                root.value-changed(Math.clamp(self.mouse-x / root.width * 100, 0, 100));
             }
         }
 
         clicked => {
-            root.value = Math.clamp(self.mouse-x / root.width * 100, 0, 100);
-            root.value-changed(root.value);
+            root.value-changed(Math.clamp(self.mouse-x / root.width * 100, 0, 100));
         }
 
         scroll-event(e) => {
-            root.value = Math.clamp(root.value + (e.delta-y / 1px / 24), 0, 100);
-            root.value-changed(root.value);
+            root.value-changed(Math.clamp(root.value + (e.delta-y / 1px / 24), 0, 100));
             return accept;
         }
     }
@@ -208,7 +205,7 @@ export component Controls inherits Rectangle {
                     value: root.volume * 100;
                     value-changed(val) => {
                         root.volume = val / 100;
-                        root.volume-changed(val / 100);
+                        root.volume-changed(root.volume);
                     }
                 }
             }

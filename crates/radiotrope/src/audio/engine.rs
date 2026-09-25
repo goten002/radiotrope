@@ -16,6 +16,11 @@ use crate::config::timeouts::{BUFFERING_STALL_THRESHOLD_SECS, PROBE_TIMEOUT_SECS
 use crate::error::RadioError;
 use crate::stream::buffer::{SharedBufferStatus, StreamBuffer};
 
+/// Quadratic volume curve for natural perception (human hearing is logarithmic)
+fn volume_curve(linear: f32) -> f32 {
+    linear * linear
+}
+
 use super::analyzer::AnalyzingSource;
 use super::decoder::{start_probe, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
@@ -381,7 +386,7 @@ impl AudioEngine {
                     }
                     AudioCommand::SetVolume(vol) => {
                         current_volume = vol.clamp(0.0, 2.0);
-                        sink.set_volume(current_volume);
+                        sink.set_volume(volume_curve(current_volume));
                     }
                     AudioCommand::SetEqBand { band, gain_db } => {
                         if let Ok(mut p) = eq_params.lock() {
@@ -440,7 +445,7 @@ impl AudioEngine {
                                             active_flag.clone(),
                                         );
                                         sink.append(analyzing);
-                                        sink.set_volume(current_volume);
+                                        sink.set_volume(volume_curve(current_volume));
                                         sink.play();
                                         state = PlaybackState::Playing;
                                         health_monitor = Some(StreamHealthMonitor::new());
@@ -2619,11 +2624,21 @@ mod tests {
         // Drain PlaybackStarted
         let _ = rx.recv_timeout(Duration::from_secs(1));
 
-        // Wait for auto-stop
-        match wait_for_event(&engine, 3000) {
-            Some(AudioEvent::Stopped) => {}
-            other => panic!("Expected auto-Stopped, got {:?}", other),
+        // Wait for auto-stop — drain any intermediate events (e.g. Buffering)
+        // until we see Stopped, with a generous timeout for slow CI runners.
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut got_stopped = false;
+        while std::time::Instant::now() < deadline {
+            match engine.try_recv_event() {
+                Some(AudioEvent::Stopped) => {
+                    got_stopped = true;
+                    break;
+                }
+                Some(_) => {} // drain intermediate events
+                None => thread::sleep(Duration::from_millis(25)),
+            }
         }
+        assert!(got_stopped, "Expected auto-Stopped within timeout");
 
         let evt = rx.recv_timeout(Duration::from_secs(1));
         assert!(

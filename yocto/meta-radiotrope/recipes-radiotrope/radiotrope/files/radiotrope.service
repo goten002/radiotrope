@@ -1,0 +1,19 @@
+[Unit]
+Description=Radiotrope Internet Radio
+After=sound.target seatd.service
+Wants=seatd.service
+
+[Service]
+Type=simple
+ExecStartPre=-/bin/systemctl stop radiotrope-splash
+ExecStartPre=-/usr/bin/psplash-write "QUIT"
+ExecStart=/usr/bin/radiotrope
+Environment=SLINT_BACKEND=linuxkms
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=5
+User=root
+SupplementaryGroups=audio video input render
+
+[Install]
+WantedBy=multi-user.target

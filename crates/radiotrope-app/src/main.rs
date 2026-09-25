@@ -4,6 +4,7 @@ mod mcp;
 slint::include_modules!();
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -17,7 +18,7 @@ use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::FavoritesManager;
-use radiotrope_app::data::types::{FavoriteSort, Station};
+use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType};
 use radiotrope_app::providers::ProviderRegistry;
@@ -52,6 +53,9 @@ fn main() {
         FavoritesManager::load().unwrap_or_else(|_| FavoritesManager::new()),
     ));
     let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
+
+    // Generation counter for browse logo fetches (to cancel stale requests)
+    let browse_logo_gen = Arc::new(AtomicU64::new(0));
 
     // If --mcp, spawn MCP stdio server on a background thread
     if args.mcp {
@@ -208,11 +212,13 @@ fn main() {
     let play_url_weak = ui.as_weak();
     let play_url_favs = favorites.clone();
     let play_url_logo_svc = logo_service.clone();
+    let play_url_state = shared_state.clone();
     ui.on_play_url(move |url| {
         if let Some(ui) = play_url_weak.upgrade() {
             play_station_with_metadata(
                 &ui,
                 &play_tx,
+                &play_url_state,
                 &play_url_favs,
                 &play_url_logo_svc,
                 PlayRequest {
@@ -296,6 +302,7 @@ fn main() {
         let play_tx = cmd_tx.clone();
         let logo_svc = logo_service.clone();
         let favs = favorites.clone();
+        let play_state = shared_state.clone();
         let ui_weak = ui.as_weak();
         ui.on_play_favorite(move |station| {
             if let Some(ui) = ui_weak.upgrade() {
@@ -304,6 +311,7 @@ fn main() {
                 play_station_with_metadata(
                     &ui,
                     &play_tx,
+                    &play_state,
                     &favs,
                     &logo_svc,
                     PlayRequest {
@@ -574,6 +582,14 @@ fn main() {
         });
     }
 
+    // WiFi settings (embedded only)
+    // TODO: gate with feature flag once #[cfg(feature = "embedded")] on function calls is verified
+    setup_wifi(&ui);
+
+    // Rotary encoder for volume control (GPIO 5=CLK, GPIO 6=DT, GPIO 13=SW)
+    // Disabled: embedded-only hardware, parked for now
+    // setup_rotary_encoder(&ui, cmd_tx.clone(), shared_state.clone());
+
     // Pagination state for station browser
     let search_offset = Arc::new(Mutex::new(0usize));
     let search_query = Arc::new(Mutex::new(String::new()));
@@ -586,23 +602,31 @@ fn main() {
         let offset = search_offset.clone();
         let query_store = search_query.clone();
         let mode_store = search_is_country_mode.clone();
+        let gen = browse_logo_gen.clone();
+        let logo_svc = logo_service.clone();
         ui.on_search_stations(move |query| {
             let query_str = query.to_string();
             *offset.lock().unwrap() = 0;
             *query_store.lock().unwrap() = query_str.clone();
             *mode_store.lock().unwrap() = false;
+            let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
             // Clear old results immediately
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_search_results(ModelRc::default());
+                ui.set_browse_logos(ModelRc::default());
                 ui.set_has_more(false);
                 ui.set_search_error(Default::default());
             }
             let ui_weak = ui_weak.clone();
+            let gen = gen.clone();
+            let logo_svc = logo_svc.clone();
             std::thread::Builder::new()
                 .name("station-search".into())
                 .spawn(move || {
                     let results = ProviderRegistry::with_defaults()
                         .and_then(|r| r.search_all(&query_str, SEARCH_PAGE_SIZE));
+                    let gen2 = gen.clone();
+                    let logo_svc2 = logo_svc.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
@@ -610,11 +634,22 @@ fn main() {
                                 let items: Vec<BrowseStation> =
                                     stations.iter().map(station_to_browse).collect();
                                 let has_more = items.len() >= SEARCH_PAGE_SIZE;
+                                let (logos, misses) = build_browse_logos_from_cache(&items, 0);
                                 ui.set_search_results(ModelRc::from(std::rc::Rc::new(
                                     VecModel::from(items),
                                 )));
+                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(logos),
+                                )));
                                 ui.set_has_more(has_more);
                                 ui.set_search_error(Default::default());
+                                spawn_browse_logo_fetch(
+                                    ui.as_weak(),
+                                    logo_svc2,
+                                    misses,
+                                    gen2,
+                                    my_gen,
+                                );
                             }
                             Err(e) => {
                                 ui.set_search_error(format!("{e}").into());
@@ -632,16 +667,22 @@ fn main() {
         let ui_weak = ui.as_weak();
         let offset = search_offset.clone();
         let mode_store = search_is_country_mode.clone();
+        let gen = browse_logo_gen.clone();
+        let logo_svc = logo_service.clone();
         ui.on_load_top_stations(move || {
             *offset.lock().unwrap() = 0;
             *mode_store.lock().unwrap() = false;
+            let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
             // Clear old results immediately
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_search_results(ModelRc::default());
+                ui.set_browse_logos(ModelRc::default());
                 ui.set_has_more(false);
                 ui.set_search_error(Default::default());
             }
             let ui_weak = ui_weak.clone();
+            let gen = gen.clone();
+            let logo_svc = logo_svc.clone();
             std::thread::Builder::new()
                 .name("top-stations".into())
                 .spawn(move || {
@@ -654,6 +695,8 @@ fn main() {
                             })
                             .and_then(|p| p.get_popular(SEARCH_PAGE_SIZE))
                     });
+                    let gen2 = gen.clone();
+                    let logo_svc2 = logo_svc.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
@@ -661,11 +704,22 @@ fn main() {
                                 let items: Vec<BrowseStation> =
                                     stations.iter().map(station_to_browse).collect();
                                 let has_more = items.len() >= SEARCH_PAGE_SIZE;
+                                let (logos, misses) = build_browse_logos_from_cache(&items, 0);
                                 ui.set_search_results(ModelRc::from(std::rc::Rc::new(
                                     VecModel::from(items),
                                 )));
+                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(logos),
+                                )));
                                 ui.set_has_more(has_more);
                                 ui.set_search_error(Default::default());
+                                spawn_browse_logo_fetch(
+                                    ui.as_weak(),
+                                    logo_svc2,
+                                    misses,
+                                    gen2,
+                                    my_gen,
+                                );
                             }
                             Err(e) => {
                                 ui.set_search_error(format!("{e}").into());
@@ -684,18 +738,24 @@ fn main() {
         let offset = search_offset.clone();
         let country_store = search_country.clone();
         let mode_store = search_is_country_mode.clone();
+        let gen = browse_logo_gen.clone();
+        let logo_svc = logo_service.clone();
         ui.on_browse_country(move |country| {
             let country_str = country.to_string();
             *offset.lock().unwrap() = 0;
             *country_store.lock().unwrap() = country_str.clone();
             *mode_store.lock().unwrap() = true;
+            let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
             // Clear old results immediately
             if let Some(ui) = ui_weak.upgrade() {
                 ui.set_search_results(ModelRc::default());
+                ui.set_browse_logos(ModelRc::default());
                 ui.set_has_more(false);
                 ui.set_search_error(Default::default());
             }
             let ui_weak = ui_weak.clone();
+            let gen = gen.clone();
+            let logo_svc = logo_svc.clone();
             std::thread::Builder::new()
                 .name("browse-country".into())
                 .spawn(move || {
@@ -709,6 +769,8 @@ fn main() {
                             })
                             .and_then(|p| p.browse_category(&cat, SEARCH_PAGE_SIZE, 0))
                     });
+                    let gen2 = gen.clone();
+                    let logo_svc2 = logo_svc.clone();
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
@@ -719,11 +781,22 @@ fn main() {
                                     .map(station_to_browse)
                                     .collect();
                                 let has_more = search_results.has_more;
+                                let (logos, misses) = build_browse_logos_from_cache(&items, 0);
                                 ui.set_search_results(ModelRc::from(std::rc::Rc::new(
                                     VecModel::from(items),
                                 )));
+                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(logos),
+                                )));
                                 ui.set_has_more(has_more);
                                 ui.set_search_error(Default::default());
+                                spawn_browse_logo_fetch(
+                                    ui.as_weak(),
+                                    logo_svc2,
+                                    misses,
+                                    gen2,
+                                    my_gen,
+                                );
                             }
                             Err(e) => {
                                 ui.set_search_error(format!("{e}").into());
@@ -743,6 +816,8 @@ fn main() {
         let query_store = search_query.clone();
         let country_store = search_country.clone();
         let mode_store = search_is_country_mode.clone();
+        let gen = browse_logo_gen.clone();
+        let logo_svc = logo_service.clone();
         ui.on_load_more_stations(move || {
             let current_offset = {
                 let mut o = offset.lock().unwrap();
@@ -753,6 +828,8 @@ fn main() {
             let query_str = query_store.lock().unwrap().clone();
             let country_str = country_store.lock().unwrap().clone();
             let ui_weak = ui_weak.clone();
+            let gen = gen.clone();
+            let logo_svc = logo_svc.clone();
             std::thread::Builder::new()
                 .name("load-more".into())
                 .spawn(move || {
@@ -783,6 +860,9 @@ fn main() {
                                 })
                         })
                     };
+                    let gen2 = gen.clone();
+                    let logo_svc2 = logo_svc.clone();
+                    let my_gen = gen.load(Ordering::Relaxed);
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
@@ -793,16 +873,36 @@ fn main() {
                                     .map(station_to_browse)
                                     .collect();
                                 let has_more = search_results.has_more;
-                                // Append to existing model
+                                // Append to existing results model
                                 let existing = ui.get_search_results();
                                 let mut all: Vec<BrowseStation> = (0..existing.row_count())
                                     .map(|i| existing.row_data(i).unwrap())
                                     .collect();
+                                let logo_offset = all.len();
+                                let (new_logos, misses) =
+                                    build_browse_logos_from_cache(&new_items, logo_offset);
                                 all.extend(new_items);
                                 ui.set_search_results(ModelRc::from(std::rc::Rc::new(
                                     VecModel::from(all),
                                 )));
+                                // Append cached/placeholder logos to existing logos model
+                                let existing_logos = ui.get_browse_logos();
+                                let mut all_logos: Vec<slint::Image> = (0..existing_logos
+                                    .row_count())
+                                    .map(|i| existing_logos.row_data(i).unwrap())
+                                    .collect();
+                                all_logos.extend(new_logos);
+                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
+                                    VecModel::from(all_logos),
+                                )));
                                 ui.set_has_more(has_more);
+                                spawn_browse_logo_fetch(
+                                    ui.as_weak(),
+                                    logo_svc2,
+                                    misses,
+                                    gen2,
+                                    my_gen,
+                                );
                             }
                             Err(e) => {
                                 ui.set_search_error(format!("{e}").into());
@@ -868,6 +968,7 @@ fn main() {
         let play_tx = cmd_tx.clone();
         let logo_svc = logo_service.clone();
         let favs = favorites.clone();
+        let play_state = shared_state.clone();
         let ui_weak = ui.as_weak();
         ui.on_play_station(move |station| {
             if let Some(ui) = ui_weak.upgrade() {
@@ -876,6 +977,7 @@ fn main() {
                 play_station_with_metadata(
                     &ui,
                     &play_tx,
+                    &play_state,
                     &favs,
                     &logo_svc,
                     PlayRequest {
@@ -1160,57 +1262,449 @@ fn main() {
         },
     );
 
-    // Run Slint event loop (blocks main thread)
-    ui.run().unwrap();
-
-    // Save settings before shutdown
+    // Handle SIGTERM/SIGINT gracefully so settings are saved on shutdown.
+    // systemd sends SIGTERM on stop/reboot — without this, the process is
+    // killed before the save-on-exit code below can run.
+    #[cfg(unix)]
     {
-        let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-        settings.volume = s.volume;
-        settings.muted = s.is_muted;
-        settings.eq_gains = s.eq_gains;
-        settings.eq_preamp = s.eq_preamp;
-        settings.eq_enabled = s.eq_enabled;
-        settings.eq_preset_name = s.eq_preset_name.clone();
-        settings.accent_color = s.accent_color.clone();
+        use std::sync::atomic::AtomicBool;
+        static QUIT_FLAG: AtomicBool = AtomicBool::new(false);
 
-        // Theme
-        settings.theme = if ui.get_dark_mode() {
-            radiotrope_app::data::settings::Theme::Dark
-        } else {
-            radiotrope_app::data::settings::Theme::Light
-        };
-
-        // Viz mode
-        settings.viz_mode = ui.get_viz_mode().to_string();
-
-        // Last station (include logo URL from UI for restore)
-        if let Some(ref url) = s.station_url {
-            if !url.is_empty() {
-                let name = s.station_name.as_deref().unwrap_or("Unknown");
-                let mut station = Station::new(name, url);
-                let logo_url = ui.get_station_logo_url().to_string();
-                if !logo_url.is_empty() {
-                    station = station.with_logo(&logo_url);
-                }
-                settings.last_station = Some(station);
+        unsafe {
+            for sig in [libc::SIGTERM, libc::SIGINT] {
+                libc::signal(sig, handle_quit_signal as *const () as libc::sighandler_t);
             }
         }
 
-        // Window size
-        let size = ui.window().size();
-        if size.width > 0 && size.height > 0 {
-            settings.window_width = Some(size.width);
-            settings.window_height = Some(size.height);
+        extern "C" fn handle_quit_signal(_sig: libc::c_int) {
+            QUIT_FLAG.store(true, Ordering::SeqCst);
+            let _ = slint::quit_event_loop();
         }
-
-        drop(s);
-        let _ = settings.save();
     }
+
+    // Run Slint event loop (blocks main thread)
+    ui.run().unwrap();
+
+    // Final save before shutdown
+    save_settings(&shared_state, &ui);
 
     // UI closed — tell controller to shut down
     let _ = cmd_tx.send(app::state::AppCommand::Shutdown);
+}
+
+/// Set up WiFi settings UI callbacks
+/// Rotary encoder for volume control (KY-040 on GPIO 5/6/13)
+/// Uses the kernel `rotary-encoder` driver via /dev/input/eventN for reliable
+/// quadrature decoding. Push button on GPIO 13 via gpiomon.
+#[allow(dead_code)] // embedded-only, currently disabled
+fn setup_rotary_encoder(
+    _ui: &App,
+    cmd_tx: crossbeam_channel::Sender<app::state::AppCommand>,
+    shared_state: Arc<Mutex<AppSnapshot>>,
+) {
+    // Push button thread (GPIO 13 via gpiomon — simple single pin, works fine)
+    {
+        let cmd_tx = cmd_tx.clone();
+        let state = shared_state.clone();
+        std::thread::Builder::new()
+            .name("rotary-sw".into())
+            .spawn(move || {
+                use std::process::{Command, Stdio};
+                let sw_pin = "13";
+                loop {
+                    let result = Command::new("gpiomon")
+                        .args(["-e", "falling", "-n", "1", "-c", "gpiochip0", sw_pin])
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status();
+
+                    if result.is_err() {
+                        return;
+                    }
+
+                    let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                    let is_playing = s.playback == radiotrope::audio::PlaybackState::Playing;
+                    let station_url = s.station_url.clone();
+                    let station_name = s.station_name.clone();
+                    drop(s);
+
+                    if is_playing {
+                        let _ = cmd_tx.send(app::state::AppCommand::Stop);
+                    } else if let Some(url) = station_url {
+                        let _ = cmd_tx.send(app::state::AppCommand::Play {
+                            url,
+                            name: station_name,
+                        });
+                    }
+
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            })
+            .ok();
+    }
+
+    // Rotary encoder thread — reads kernel input device
+    std::thread::Builder::new()
+        .name("rotary-encoder".into())
+        .spawn(move || {
+            use std::fs;
+            use std::io::Read;
+
+            // Velocity-sensitive volume step
+            fn velocity_step(elapsed_ms: u128) -> f32 {
+                if elapsed_ms < 50 {
+                    0.05
+                } else if elapsed_ms < 100 {
+                    0.03
+                } else if elapsed_ms < 200 {
+                    0.02
+                } else {
+                    0.01
+                }
+            }
+
+            // Find the rotary-encoder input device
+            let find_encoder_device = || -> Option<String> {
+                let input_dir = "/sys/class/input";
+                for entry in fs::read_dir(input_dir).ok()? {
+                    let entry = entry.ok()?;
+                    let name_path = entry.path().join("device/name");
+                    if let Ok(name) = fs::read_to_string(&name_path) {
+                        if name.trim() == "rotary-encoder" || name.trim().contains("rotary") {
+                            return Some(format!(
+                                "/dev/input/{}",
+                                entry.file_name().to_string_lossy()
+                            ));
+                        }
+                    }
+                }
+                None
+            };
+
+            // Wait for the device to appear (overlay may load after boot)
+            let dev_path;
+            loop {
+                if let Some(path) = find_encoder_device() {
+                    dev_path = path;
+                    break;
+                }
+                std::thread::sleep(Duration::from_secs(1));
+            }
+
+            eprintln!("rotary-encoder: using kernel input device {}", dev_path);
+
+            // Open the input device
+            let mut file = match fs::File::open(&dev_path) {
+                Ok(f) => f,
+                Err(e) => {
+                    eprintln!("rotary-encoder: failed to open {}: {}", dev_path, e);
+                    return;
+                }
+            };
+
+            // input_event struct: 16 bytes on 32-bit, 24 bytes on 64-bit
+            // struct input_event { struct timeval time; __u16 type; __u16 code; __s32 value; }
+            // On aarch64: timeval is 16 bytes (tv_sec: i64 + tv_usec: i64) + type: u16 + code: u16 + value: i32 = 24 bytes
+            const EVENT_SIZE: usize = 24;
+            let mut buf = [0u8; EVENT_SIZE];
+            let mut last_event = std::time::Instant::now();
+
+            loop {
+                // Read one input event (blocks until encoder moves)
+                if file.read_exact(&mut buf).is_err() {
+                    break;
+                }
+
+                // Parse the event: type at offset 16, code at 18, value at 20
+                let ev_type = u16::from_ne_bytes([buf[16], buf[17]]);
+                let _ev_code = u16::from_ne_bytes([buf[18], buf[19]]);
+                let ev_value = i32::from_ne_bytes([buf[20], buf[21], buf[22], buf[23]]);
+
+                // EV_REL = 2, REL_X = 0
+                if ev_type != 2 {
+                    continue;
+                }
+
+                // ev_value is +1 (clockwise) or -1 (counter-clockwise)
+                let elapsed = last_event.elapsed();
+                let elapsed_ms = elapsed.as_millis();
+                last_event = std::time::Instant::now();
+
+                let step = velocity_step(elapsed_ms);
+
+                let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let current_vol = s.volume;
+                drop(s);
+
+                let new_vol = if ev_value > 0 {
+                    (current_vol + step).min(1.0)
+                } else {
+                    (current_vol - step).max(0.0)
+                };
+
+                let _ = cmd_tx.send(app::state::AppCommand::SetVolume(new_vol));
+            }
+        })
+        .ok();
+}
+
+fn setup_wifi(ui: &App) {
+    // TODO: gate properly with feature flag
+    eprintln!("setup_wifi: enabling WiFi UI");
+    ui.set_wifi_embedded_mode(true);
+
+    // Backspace handler for virtual keyboard (Slint has no string substring)
+    ui.on_wifi_backspace(|text| {
+        let s = text.to_string();
+        let mut chars: Vec<char> = s.chars().collect();
+        chars.pop();
+        let result: String = chars.into_iter().collect();
+        result.into()
+    });
+
+    let wifi_mgr = Arc::new(radiotrope_app::wifi::WifiManager::new().ok());
+
+    // Scan callback
+    {
+        let mgr = wifi_mgr.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_scan_requested(move || {
+            let mgr = mgr.clone();
+            let ui_weak = ui_weak.clone();
+            std::thread::Builder::new()
+                .name("wifi-scan".into())
+                .spawn(move || {
+                    if let Some(ref mgr) = *mgr {
+                        let ui_weak2 = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                ui.set_wifi_scanning(true);
+                            }
+                        });
+
+                        let networks = mgr.scan().unwrap_or_default();
+                        let ui_weak2 = ui_weak.clone();
+                        let entries: Vec<_> = networks
+                            .iter()
+                            .map(|n| WifiNetworkEntry {
+                                ssid: n.ssid.clone().into(),
+                                signal_percent: n.signal_percent() as i32,
+                                security: n.security.to_string().into(),
+                                connected: n.connected,
+                                object_path: n.object_path.clone().into(),
+                            })
+                            .collect();
+
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                let model = std::rc::Rc::new(slint::VecModel::from(entries));
+                                ui.set_wifi_networks(slint::ModelRc::from(model));
+                                ui.set_wifi_scanning(false);
+                            }
+                        });
+                    }
+                })
+                .ok();
+        });
+    }
+
+    // Connect callback
+    {
+        let mgr = wifi_mgr.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_connect_requested(move |path, password| {
+            let mgr = mgr.clone();
+            let ui_weak = ui_weak.clone();
+            let path = path.to_string();
+            let password = password.to_string();
+            std::thread::Builder::new()
+                .name("wifi-connect".into())
+                .spawn(move || {
+                    if let Some(ref mgr) = *mgr {
+                        let pass = if password.is_empty() {
+                            None
+                        } else {
+                            Some(password.as_str())
+                        };
+
+                        // Show connecting status immediately
+                        let ui_weak2 = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                ui.set_wifi_connection_status("Connecting...".into());
+                            }
+                        });
+
+                        match mgr.connect(&path, pass) {
+                            Ok(()) => {
+                                // Wait for connection to establish
+                                std::thread::sleep(Duration::from_secs(3));
+                                let ssid = mgr.current_ssid().unwrap_or_default();
+
+                                // Rescan to refresh the list with connected state
+                                let networks = mgr.scan().unwrap_or_default();
+                                let entries: Vec<_> = networks
+                                    .iter()
+                                    .map(|n| WifiNetworkEntry {
+                                        ssid: n.ssid.clone().into(),
+                                        signal_percent: n.signal_percent() as i32,
+                                        security: n.security.to_string().into(),
+                                        connected: n.connected,
+                                        object_path: n.object_path.clone().into(),
+                                    })
+                                    .collect();
+
+                                let ui_weak2 = ui_weak.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak2.upgrade() {
+                                        if ssid.is_empty() {
+                                            ui.set_wifi_connection_status("Connected".into());
+                                        } else {
+                                            ui.set_wifi_connection_status(
+                                                format!("Connected to {}", ssid).into(),
+                                            );
+                                        }
+                                        ui.set_wifi_current_ssid(ssid.into());
+                                        let model =
+                                            std::rc::Rc::new(slint::VecModel::from(entries));
+                                        ui.set_wifi_networks(slint::ModelRc::from(model));
+                                    }
+                                });
+
+                                // Clear status after 5 seconds
+                                std::thread::sleep(Duration::from_secs(5));
+                                let ui_weak2 = ui_weak.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak2.upgrade() {
+                                        ui.set_wifi_connection_status("".into());
+                                    }
+                                });
+                            }
+                            Err(e) => {
+                                let ui_weak2 = ui_weak.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak2.upgrade() {
+                                        ui.set_wifi_connection_status(
+                                            format!("Failed: {}", e).into(),
+                                        );
+                                    }
+                                });
+
+                                // Clear error after 5 seconds
+                                std::thread::sleep(Duration::from_secs(5));
+                                let ui_weak2 = ui_weak.clone();
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    if let Some(ui) = ui_weak2.upgrade() {
+                                        ui.set_wifi_connection_status("".into());
+                                    }
+                                });
+                            }
+                        }
+                    }
+                })
+                .ok();
+        });
+    }
+
+    // Disconnect callback
+    {
+        let mgr = wifi_mgr.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_wifi_disconnect_requested(move || {
+            let mgr = mgr.clone();
+            let ui_weak = ui_weak.clone();
+            std::thread::Builder::new()
+                .name("wifi-disconnect".into())
+                .spawn(move || {
+                    if let Some(ref mgr) = *mgr {
+                        let _ = mgr.disconnect();
+
+                        // Show disconnected status
+                        let ui_weak2 = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                ui.set_wifi_connection_status("Disconnected".into());
+                                ui.set_wifi_current_ssid("".into());
+                            }
+                        });
+
+                        // Wait then rescan to refresh the list
+                        std::thread::sleep(Duration::from_secs(2));
+                        let networks = mgr.scan().unwrap_or_default();
+                        let entries: Vec<_> = networks
+                            .iter()
+                            .map(|n| WifiNetworkEntry {
+                                ssid: n.ssid.clone().into(),
+                                signal_percent: n.signal_percent() as i32,
+                                security: n.security.to_string().into(),
+                                connected: n.connected,
+                                object_path: n.object_path.clone().into(),
+                            })
+                            .collect();
+
+                        let ui_weak2 = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                let model = std::rc::Rc::new(slint::VecModel::from(entries));
+                                ui.set_wifi_networks(slint::ModelRc::from(model));
+                            }
+                        });
+
+                        // Clear status after 5 seconds
+                        std::thread::sleep(Duration::from_secs(5));
+                        let ui_weak2 = ui_weak.clone();
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = ui_weak2.upgrade() {
+                                ui.set_wifi_connection_status("".into());
+                            }
+                        });
+                    }
+                })
+                .ok();
+        });
+    }
+}
+
+/// Persist current app state to settings.json
+fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
+    let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    settings.volume = s.volume;
+    settings.muted = s.is_muted;
+    settings.eq_gains = s.eq_gains;
+    settings.eq_preamp = s.eq_preamp;
+    settings.eq_enabled = s.eq_enabled;
+    settings.eq_preset_name = s.eq_preset_name.clone();
+    settings.accent_color = s.accent_color.clone();
+
+    settings.theme = if ui.get_dark_mode() {
+        radiotrope_app::data::settings::Theme::Dark
+    } else {
+        radiotrope_app::data::settings::Theme::Light
+    };
+
+    settings.viz_mode = ui.get_viz_mode().to_string();
+
+    if let Some(ref url) = s.station_url {
+        if !url.is_empty() {
+            let name = s.station_name.as_deref().unwrap_or("Unknown");
+            let mut station = Station::new(name, url);
+            let logo_url = ui.get_station_logo_url().to_string();
+            if !logo_url.is_empty() {
+                station = station.with_logo(&logo_url);
+            }
+            settings.last_station = Some(station);
+        }
+    }
+
+    let size = ui.window().size();
+    if size.width > 0 && size.height > 0 {
+        settings.window_width = Some(size.width);
+        settings.window_height = Some(size.height);
+    }
+
+    drop(s);
+    let _ = settings.save();
 }
 
 /// All the data needed to start playing a station.
@@ -1236,6 +1730,7 @@ impl PlayRequest {
 fn play_station_with_metadata(
     ui: &App,
     cmd_tx: &crossbeam_channel::Sender<app::state::AppCommand>,
+    shared_state: &Arc<Mutex<AppSnapshot>>,
     favorites: &Arc<Mutex<FavoritesManager>>,
     logo_service: &Arc<LogoService>,
     req: PlayRequest,
@@ -1277,6 +1772,15 @@ fn play_station_with_metadata(
         url: url.clone(),
         name: name.clone(),
     });
+
+    // Save settings (persists last_station, volume, eq, etc.)
+    {
+        let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        s.station_url = Some(url.clone());
+        s.station_name = name.clone();
+        drop(s);
+        save_settings(shared_state, ui);
+    }
 
     // Fetch logo on background thread (only if not already cached)
     if !cache_hit {
@@ -1421,6 +1925,92 @@ fn station_to_browse(s: &Station) -> BrowseStation {
     }
 }
 
+/// Number of concurrent logo fetch threads
+const BROWSE_LOGO_WORKERS: usize = 6;
+
+/// Max logo thumbnail size (2x display size for HiDPI)
+const BROWSE_LOGO_SIZE: u32 = 64;
+
+/// Spawn background threads to fetch browse logos and progressively update the UI.
+///
+/// `work` contains only cache misses: `(model_idx, station_url, logo_url)`.
+fn spawn_browse_logo_fetch(
+    ui_weak: slint::Weak<App>,
+    logo_svc: Arc<LogoService>,
+    work: Vec<(usize, String, String)>,
+    gen: Arc<AtomicU64>,
+    my_gen: u64,
+) {
+    if work.is_empty() {
+        return;
+    }
+    // Shared work queue: each worker grabs the next item atomically
+    let next_idx = Arc::new(AtomicU64::new(0));
+    let work = Arc::new(work);
+    let worker_count = BROWSE_LOGO_WORKERS.min(work.len());
+
+    for w in 0..worker_count {
+        let ui_weak = ui_weak.clone();
+        let logo_svc = logo_svc.clone();
+        let work = work.clone();
+        let gen = gen.clone();
+        let next_idx = next_idx.clone();
+        std::thread::Builder::new()
+            .name(format!("browse-logo-{w}"))
+            .spawn(move || {
+                loop {
+                    if gen.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
+                    let i = next_idx.fetch_add(1, Ordering::Relaxed) as usize;
+                    if i >= work.len() {
+                        return;
+                    }
+                    let (idx, ref station_url, ref logo_url) = work[i];
+                    let data = logo_svc.fetch_raw(logo_url).ok();
+
+                    if gen.load(Ordering::Relaxed) != my_gen {
+                        return;
+                    }
+                    if let Some(data) = data {
+                        if let Ok(img) = image::load_from_memory(&data) {
+                            let thumb = if img.width() > BROWSE_LOGO_SIZE
+                                || img.height() > BROWSE_LOGO_SIZE
+                            {
+                                img.thumbnail(BROWSE_LOGO_SIZE, BROWSE_LOGO_SIZE)
+                            } else {
+                                img
+                            };
+                            let rgba = thumb.to_rgba8();
+                            let (w, h) = rgba.dimensions();
+                            let pixels = rgba.into_raw();
+
+                            let cache_key = url_to_id(station_url);
+                            let ui_weak = ui_weak.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                let Some(ui) = ui_weak.upgrade() else { return };
+                                let pixel_buf =
+                                    SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                        &pixels, w, h,
+                                    );
+                                let img = slint::Image::from_rgba8(pixel_buf);
+                                // Insert into in-memory cache for instant reuse
+                                BROWSE_IMAGE_CACHE.with(|cache| {
+                                    cache.borrow_mut().insert(cache_key, img.clone());
+                                });
+                                let model = ui.get_browse_logos();
+                                if idx < model.row_count() {
+                                    model.set_row_data(idx, img);
+                                }
+                            });
+                        }
+                    }
+                }
+            })
+            .ok();
+    }
+}
+
 fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStation {
     FavoriteStation {
         id: f.id().into(),
@@ -1437,6 +2027,36 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
 thread_local! {
     static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
         std::cell::RefCell::new(HashMap::new());
+
+    static BROWSE_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Build browse logos from in-memory cache, returning cached images and work items for misses.
+///
+/// `offset` is the starting index in the UI model (0 for fresh results, N for load-more).
+fn build_browse_logos_from_cache(
+    items: &[BrowseStation],
+    offset: usize,
+) -> (Vec<slint::Image>, Vec<(usize, String, String)>) {
+    BROWSE_IMAGE_CACHE.with(|cache| {
+        let cache = cache.borrow();
+        let mut logos = Vec::with_capacity(items.len());
+        let mut misses = Vec::new();
+        for (i, item) in items.iter().enumerate() {
+            let key = url_to_id(item.url.as_ref());
+            if let Some(img) = cache.get(&key) {
+                logos.push(img.clone());
+            } else {
+                logos.push(Default::default());
+                let logo_url = item.logo_url.to_string();
+                if !logo_url.is_empty() {
+                    misses.push((offset + i, item.url.to_string(), logo_url));
+                }
+            }
+        }
+        (logos, misses)
+    })
 }
 
 /// Remove a cached logo image, forcing re-decode on next refresh.

@@ -1,0 +1,337 @@
+import { Theme } from "../theme.slint";
+import { VirtualKeyboard } from "../virtual-keyboard.slint";
+
+export struct WifiNetworkEntry {
+    ssid: string,
+    signal-percent: int,
+    security: string,
+    connected: bool,
+    object-path: string,
+}
+
+export component WifiSettingsDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in property <bool> is-scanning: false;
+    in property <string> current-ssid: "";
+    in property <string> connection-status: "";
+    in property <[WifiNetworkEntry]> networks: [];
+
+    callback scan-requested();
+    callback connect-requested(string, string);
+    callback disconnect-requested();
+    callback close-requested();
+    callback wifi-backspace-requested(string) -> string;
+
+    property <bool> show-keyboard: false;
+    property <string> selected-network-path: "";
+    property <string> selected-network-ssid: "";
+
+    if show-dialog: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #000000aa;
+
+        TouchArea {
+            clicked => {
+                root.show-keyboard = false;
+                root.show-dialog = false;
+                root.close-requested();
+            }
+        }
+
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            width: 480px;
+            height: card-layout.preferred-height + 24px;
+            background: Theme.panel;
+            border-radius: 8px;
+            drop-shadow-blur: 16px;
+            drop-shadow-color: #00000080;
+
+            TouchArea {}
+
+            card-layout := VerticalLayout {
+                padding: 16px;
+                spacing: 8px;
+
+                // Title bar
+                HorizontalLayout {
+                    height: 28px;
+
+                    Text {
+                        text: "WiFi Settings";
+                        color: Theme.text-primary;
+                        font-size: 14px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    // Scan button
+                    Rectangle {
+                        width: 70px;
+                        height: 26px;
+                        border-radius: 4px;
+                        background: root.is-scanning ? Theme.surface :
+                                    scan-ta.has-hover ? Theme.accent-hover : Theme.accent;
+
+                        scan-ta := TouchArea {
+                            clicked => {
+                                if !root.is-scanning {
+                                    root.scan-requested();
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 4px;
+
+                            if root.is-scanning : Text {
+                                text: "Scanning";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                vertical-alignment: center;
+                            }
+
+                            if !root.is-scanning : Text {
+                                text: "Scan";
+                                color: Theme.button-text;
+                                font-size: 12px;
+                                font-weight: 600;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle { width: 8px; }
+
+                    // Close button
+                    Rectangle {
+                        width: 24px;
+                        height: 24px;
+                        border-radius: 4px;
+                        background: close-ta.has-hover ? Theme.menu-hover : transparent;
+
+                        close-ta := TouchArea {
+                            clicked => {
+                                root.show-keyboard = false;
+                                root.show-dialog = false;
+                                root.close-requested();
+                            }
+                        }
+
+                        Text {
+                            text: "X";
+                            color: close-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Status bar
+                if root.connection-status != "" : Rectangle {
+                    height: 28px;
+                    border-radius: 4px;
+                    background: root.connection-status == "Disconnected" ? Theme.surface :
+                                root.connection-status == "Connecting..." ? Theme.accent.with-alpha(0.1) :
+                                Theme.accent.with-alpha(0.15);
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        alignment: center;
+
+                        Text {
+                            text: root.connection-status;
+                            color: root.connection-status == "Disconnected" ? Theme.text-secondary :
+                                   root.connection-status == "Connecting..." ? Theme.accent-text :
+                                   Theme.accent-text;
+                            font-size: 12px;
+                            font-weight: 500;
+                            vertical-alignment: center;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+
+                // Network list (when keyboard is hidden)
+                if !root.show-keyboard : VerticalLayout {
+                    spacing: 2px;
+
+                    for network in root.networks : Rectangle {
+                        height: 40px;
+                        border-radius: 6px;
+                        background: net-ta.has-hover ? Theme.menu-hover :
+                                    network.connected ? Theme.accent.with-alpha(0.12) : transparent;
+
+                        net-ta := TouchArea {
+                            clicked => {
+                                if network.connected {
+                                    root.disconnect-requested();
+                                } else if network.security == "Open" {
+                                    root.connect-requested(network.object-path, "");
+                                } else {
+                                    root.selected-network-path = network.object-path;
+                                    root.selected-network-ssid = network.ssid;
+                                    root.show-keyboard = true;
+                                }
+                            }
+                        }
+
+                        // Use absolute positioning for badges to guarantee vertical centering
+                        // SSID text
+                        Text {
+                            x: 12px;
+                            y: 0;
+                            width: parent.width - 180px;
+                            height: parent.height;
+                            text: network.ssid;
+                            color: Theme.text-primary;
+                            font-size: 13px;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            overflow: elide;
+                        }
+
+                        // Connected badge
+                        Rectangle {
+                            visible: network.connected;
+                            x: parent.width - 164px;
+                            y: (parent.height - 22px) / 2;
+                            width: 68px;
+                            height: 22px;
+                            border-radius: 4px;
+                            background: Theme.accent.with-alpha(0.2);
+
+                            Text {
+                                text: "Connected";
+                                color: Theme.accent-text;
+                                font-size: 10px;
+                                font-weight: 600;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Security badge
+                        Rectangle {
+                            visible: network.security != "Open" && !network.connected;
+                            x: parent.width - 56px;
+                            y: (parent.height - 22px) / 2;
+                            width: 44px;
+                            height: 22px;
+                            border-radius: 4px;
+                            background: Theme.surface;
+
+                            Text {
+                                text: network.security;
+                                color: Theme.text-secondary;
+                                font-size: 9px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        // Disconnect button
+                        Rectangle {
+                            visible: network.connected;
+                            x: parent.width - 88px;
+                            y: (parent.height - 22px) / 2;
+                            width: 80px;
+                            height: 22px;
+                            border-radius: 4px;
+                            background: disc-ta.has-hover ? Theme.menu-hover : Theme.surface;
+
+                            disc-ta := TouchArea {
+                                clicked => { root.disconnect-requested(); }
+                            }
+
+                            Text {
+                                text: "Disconnect";
+                                color: Theme.text-secondary;
+                                font-size: 10px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Empty state
+                    if root.networks.length == 0 : Rectangle {
+                        height: 80px;
+
+                        VerticalLayout {
+                            alignment: center;
+                            spacing: 6px;
+
+                            if root.is-scanning : Text {
+                                text: "Scanning for networks...";
+                                color: Theme.accent-text;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                            }
+
+                            if !root.is-scanning : Text {
+                                text: "No networks found";
+                                color: Theme.text-primary;
+                                font-size: 13px;
+                                horizontal-alignment: center;
+                            }
+
+                            if !root.is-scanning : Text {
+                                text: "Tap Scan to search for WiFi networks";
+                                color: Theme.text-secondary;
+                                font-size: 11px;
+                                horizontal-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Password entry + keyboard
+                if root.show-keyboard : VerticalLayout {
+                    spacing: 6px;
+
+                    // Connection target
+                    Rectangle {
+                        height: 28px;
+                        border-radius: 4px;
+                        background: Theme.surface;
+
+                        Text {
+                            text: "Connect to " + root.selected-network-ssid;
+                            color: Theme.text-primary;
+                            font-size: 12px;
+                            font-weight: 500;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    keyboard := VirtualKeyboard {
+                        show-keyboard: true;
+
+                        submitted(password) => {
+                            root.show-keyboard = false;
+                            root.connect-requested(root.selected-network-path, password);
+                            keyboard.text = "";
+                        }
+
+                        backspace() => {
+                            keyboard.text = root.wifi-backspace-requested(keyboard.text);
+                        }
+
+                        cancelled() => {
+                            root.show-keyboard = false;
+                            keyboard.text = "";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

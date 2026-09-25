@@ -1,0 +1,11 @@
+[Match]
+Type=wlan
+
+[Network]
+DHCP=yes
+IgnoreCarrierLoss=3s
+
+[DHCP]
+UseMTU=yes
+RouteMetric=20
+ClientIdentifier=mac

@@ -1,0 +1,259 @@
+import { Theme } from "theme.slint";
+
+component KeyButton inherits Rectangle {
+    in property <string> key;
+    callback pressed();
+
+    height: 38px;
+    min-width: 28px;
+    border-radius: 4px;
+    background: ta.pressed ? Theme.accent : Theme.panel;
+
+    ta := TouchArea {
+        clicked => { root.pressed(); }
+    }
+
+    Text {
+        text: root.key;
+        color: Theme.text-primary;
+        font-size: 16px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component VirtualKeyboard inherits Rectangle {
+    in-out property <string> text: "";
+    in property <bool> show-keyboard: false;
+    callback submitted(string);
+    callback cancelled();
+    callback backspace();
+
+    public function set-text(t: string) {
+        self.text = t;
+    }
+
+    property <bool> shift-active: false;
+    property <bool> symbols-mode: false;
+
+    visible: show-keyboard;
+    background: Theme.surface;
+
+    VerticalLayout {
+        padding: 4px;
+        spacing: 3px;
+
+        // Text input field
+        Rectangle {
+            height: 36px;
+            border-radius: 6px;
+            background: Theme.panel;
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+
+                Text {
+                    text: root.text == "" ? "Enter password..." : root.text;
+                    color: root.text == "" ? Theme.text-secondary : Theme.text-primary;
+                    font-size: 14px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Row 1: Q W E R T Y U I O P
+        if !root.symbols-mode : HorizontalLayout {
+            spacing: 3px;
+            KeyButton { key: root.shift-active ? "Q" : "q"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "W" : "w"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "E" : "e"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "R" : "r"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "T" : "t"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "Y" : "y"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "U" : "u"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "I" : "i"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "O" : "o"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "P" : "p"; pressed => { root.text += self.key; root.shift-active = false; } }
+        }
+
+        // Row 1 symbols: 1 2 3 4 5 6 7 8 9 0
+        if root.symbols-mode : HorizontalLayout {
+            spacing: 3px;
+            KeyButton { key: "1"; pressed => { root.text += self.key; } }
+            KeyButton { key: "2"; pressed => { root.text += self.key; } }
+            KeyButton { key: "3"; pressed => { root.text += self.key; } }
+            KeyButton { key: "4"; pressed => { root.text += self.key; } }
+            KeyButton { key: "5"; pressed => { root.text += self.key; } }
+            KeyButton { key: "6"; pressed => { root.text += self.key; } }
+            KeyButton { key: "7"; pressed => { root.text += self.key; } }
+            KeyButton { key: "8"; pressed => { root.text += self.key; } }
+            KeyButton { key: "9"; pressed => { root.text += self.key; } }
+            KeyButton { key: "0"; pressed => { root.text += self.key; } }
+        }
+
+        // Row 2: A S D F G H J K L
+        if !root.symbols-mode : HorizontalLayout {
+            spacing: 3px;
+            padding-left: 14px;
+            padding-right: 14px;
+            KeyButton { key: root.shift-active ? "A" : "a"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "S" : "s"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "D" : "d"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "F" : "f"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "G" : "g"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "H" : "h"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "J" : "j"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "K" : "k"; pressed => { root.text += self.key; root.shift-active = false; } }
+            KeyButton { key: root.shift-active ? "L" : "l"; pressed => { root.text += self.key; root.shift-active = false; } }
+        }
+
+        // Row 2 symbols: ! @ # $ % ^ & * (
+        if root.symbols-mode : HorizontalLayout {
+            spacing: 3px;
+            padding-left: 14px;
+            padding-right: 14px;
+            KeyButton { key: "!"; pressed => { root.text += self.key; } }
+            KeyButton { key: "@"; pressed => { root.text += self.key; } }
+            KeyButton { key: "#"; pressed => { root.text += self.key; } }
+            KeyButton { key: "$"; pressed => { root.text += self.key; } }
+            KeyButton { key: "%"; pressed => { root.text += self.key; } }
+            KeyButton { key: "^"; pressed => { root.text += self.key; } }
+            KeyButton { key: "&"; pressed => { root.text += self.key; } }
+            KeyButton { key: "*"; pressed => { root.text += self.key; } }
+            KeyButton { key: "("; pressed => { root.text += self.key; } }
+        }
+
+        // Row 3: Shift + Z X C V B N M + Backspace
+        HorizontalLayout {
+            spacing: 3px;
+
+            // Shift / symbols key
+            Rectangle {
+                border-radius: 4px;
+                background: root.shift-active ? Theme.accent : Theme.panel;
+                min-width: 42px;
+                height: 38px;
+
+                TouchArea { clicked => { root.shift-active = !root.shift-active; } }
+
+                Text {
+                    text: "Shift";
+                    color: Theme.text-primary;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "Z" : "z"; pressed => { root.text += self.key; root.shift-active = false; } }
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "X" : "x"; pressed => { root.text += self.key; root.shift-active = false; } }
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "C" : "c"; pressed => { root.text += self.key; root.shift-active = false; } }
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "V" : "v"; pressed => { root.text += self.key; root.shift-active = false; } }
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "B" : "b"; pressed => { root.text += self.key; root.shift-active = false; } }
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "N" : "n"; pressed => { root.text += self.key; root.shift-active = false; } }
+            if !root.symbols-mode : KeyButton { key: root.shift-active ? "M" : "m"; pressed => { root.text += self.key; root.shift-active = false; } }
+
+            if root.symbols-mode : KeyButton { key: "-"; pressed => { root.text += self.key; } }
+            if root.symbols-mode : KeyButton { key: "_"; pressed => { root.text += self.key; } }
+            if root.symbols-mode : KeyButton { key: "="; pressed => { root.text += self.key; } }
+            if root.symbols-mode : KeyButton { key: "+"; pressed => { root.text += self.key; } }
+            if root.symbols-mode : KeyButton { key: "."; pressed => { root.text += self.key; } }
+            if root.symbols-mode : KeyButton { key: ","; pressed => { root.text += self.key; } }
+            if root.symbols-mode : KeyButton { key: "?"; pressed => { root.text += self.key; } }
+
+            // Backspace
+            Rectangle {
+                border-radius: 4px;
+                background: bksp-ta.pressed ? Theme.accent : Theme.panel;
+                min-width: 50px;
+                height: 38px;
+
+                bksp-ta := TouchArea {
+                    clicked => {
+                        root.backspace();
+                    }
+                }
+
+                Text {
+                    text: "Del";
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // Row 4: 123/ABC + Space + Done + Cancel
+        HorizontalLayout {
+            spacing: 3px;
+            height: 38px;
+
+            Rectangle {
+                border-radius: 4px;
+                background: sym-ta.pressed ? Theme.accent : Theme.panel;
+                min-width: 50px;
+
+                sym-ta := TouchArea { clicked => { root.symbols-mode = !root.symbols-mode; } }
+
+                Text {
+                    text: root.symbols-mode ? "ABC" : "123";
+                    color: Theme.text-primary;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                border-radius: 4px;
+                background: space-ta.pressed ? Theme.accent : Theme.panel;
+                horizontal-stretch: 1;
+
+                space-ta := TouchArea { clicked => { root.text += " "; } }
+
+                Text {
+                    text: "space";
+                    color: Theme.text-secondary;
+                    font-size: 14px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                border-radius: 4px;
+                background: done-ta.pressed ? Theme.accent-hover : Theme.accent;
+                min-width: 60px;
+
+                done-ta := TouchArea { clicked => { root.submitted(root.text); } }
+
+                Text {
+                    text: "Done";
+                    color: Theme.button-text;
+                    font-size: 14px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                border-radius: 4px;
+                background: cancel-ta.pressed ? Theme.accent : Theme.panel;
+                min-width: 54px;
+
+                cancel-ta := TouchArea { clicked => { root.cancelled(); } }
+
+                Text {
+                    text: "Cancel";
+                    color: Theme.text-primary;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

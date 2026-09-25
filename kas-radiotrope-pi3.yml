@@ -1,0 +1,70 @@
+header:
+  version: 14
+  includes: []
+
+machine: raspberrypi3-64
+distro: poky
+target: radiotrope-image
+
+# Build directory inside yocto/
+build_system: oe
+
+repos:
+  # Upstream layers — clone into yocto/ to keep project root clean
+  poky:
+    url: https://git.yoctoproject.org/poky
+    branch: scarthgap
+    path: yocto/poky
+    layers:
+      meta:
+      meta-poky:
+
+  meta-raspberrypi:
+    url: https://git.yoctoproject.org/meta-raspberrypi
+    branch: scarthgap
+    path: yocto/meta-raspberrypi
+
+  meta-openembedded:
+    url: https://git.openembedded.org/meta-openembedded
+    branch: scarthgap
+    path: yocto/meta-openembedded
+    layers:
+      meta-oe:
+      meta-python:
+      meta-networking:
+
+  meta-rust-bin:
+    url: https://github.com/rust-embedded/meta-rust-bin.git
+    branch: master
+    path: yocto/meta-rust-bin
+
+  # Our custom layer
+  meta-radiotrope:
+    path: yocto/meta-radiotrope
+
+local_conf_header:
+  base: |
+    # Use systemd
+    DISTRO_FEATURES:append = " systemd usrmerge"
+    VIRTUAL-RUNTIME_init_manager = "systemd"
+    VIRTUAL-RUNTIME_initscripts = "systemd-compat-units"
+
+    # Build performance
+    BB_NUMBER_THREADS ?= "${@bb.utils.cpu_count()}"
+    PARALLEL_MAKE ?= "-j ${@bb.utils.cpu_count()}"
+
+    # SD card image — increase boot partition for kernel + DTBs + firmware
+    IMAGE_FSTYPES = "rpi-sdimg"
+    BOOT_SPACE = "131072"
+
+    # Add merus-amp overlay for InnoMaker AMP Pro HAT
+    RPI_KERNEL_DEVICETREE_OVERLAYS:append = " overlays/merus-amp.dtbo overlays/rotary-encoder.dtbo"
+
+    # Silent boot — hide kernel messages, show psplash instead
+    CMDLINE:append = " quiet loglevel=0 logo.nologo vt.global_cursor_default=0 console=tty3 systemd.show_status=false"
+
+    # Enable psplash
+    IMAGE_FEATURES:append = " splash"
+
+    # Accept all licenses for firmware blobs
+    LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"

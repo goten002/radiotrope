@@ -16,6 +16,8 @@ component StationRow inherits Rectangle {
     in property <string> country;
     in property <string> codec;
     in property <int> bitrate;
+    in property <image> logo-image;
+    in property <bool> has-logo;
     callback clicked();
 
     height: 52px;
@@ -32,6 +34,33 @@ component StationRow inherits Rectangle {
         padding-right: 12px;
         spacing: 8px;
         alignment: stretch;
+
+        // Station logo
+        VerticalLayout {
+            alignment: center;
+            width: 32px;
+
+            Rectangle {
+                width: 32px;
+                height: 32px;
+                border-radius: 4px;
+                clip: true;
+
+                if root.has-logo: Image {
+                    source: root.logo-image;
+                    width: 32px;
+                    height: 32px;
+                    image-fit: contain;
+                }
+
+                if !root.has-logo: Image {
+                    source: @image-url("../icons/music-note.svg");
+                    width: 16px;
+                    height: 16px;
+                    colorize: Theme.text-secondary;
+                }
+            }
+        }
 
         // Station name + country
         VerticalLayout {
@@ -96,6 +125,7 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <bool> search-loading-more: false;
     in-out property <string> search-error: "";
     in-out property <[BrowseStation]> search-results: [];
+    in-out property <[image]> browse-logos: [];
     in-out property <bool> has-more: false;
     in-out property <string> country-name: "";
     property <string> search-query: "";
@@ -255,6 +285,10 @@ export component StationBrowserDialog inherits Rectangle {
                                 country: station.country;
                                 codec: station.codec;
                                 bitrate: station.bitrate;
+                                logo-image: idx < root.browse-logos.length ? root.browse-logos[idx] : @image-url("");
+                                has-logo: idx < root.browse-logos.length
+                                    ? root.browse-logos[idx].width > 0
+                                    : false;
                                 clicked => { root.station-selected(station); }
                             }
 
