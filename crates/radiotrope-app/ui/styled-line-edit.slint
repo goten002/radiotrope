@@ -73,6 +73,7 @@ export component StyledLineEdit inherits Rectangle {
         height: 24px;
         border-radius: 12px;
         background: clear-touch.has-hover ? Theme.menu-hover : transparent;
+        animate background { duration: Theme.fast; }
 
         clear-touch := TouchArea {
             mouse-cursor: pointer;

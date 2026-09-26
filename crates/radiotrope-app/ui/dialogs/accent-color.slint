@@ -44,7 +44,7 @@ export component AccentColorDialog inherits Rectangle {
     if show-dialog: Rectangle {
         width: 100%;
         height: 100%;
-        background: #000000aa;
+        background: Theme.scrim;
 
         TouchArea {
             clicked => { root.show-dialog = false; }
@@ -55,10 +55,12 @@ export component AccentColorDialog inherits Rectangle {
             y: (parent.height - self.height) / 2;
             width: 380px;
             height: card-layout.preferred-height + 24px;
-            background: Theme.panel;
-            border-radius: 8px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.shadow;
 
             // Block clicks from closing dialog
             TouchArea {}
@@ -85,6 +87,7 @@ export component AccentColorDialog inherits Rectangle {
                         height: 24px;
                         border-radius: 4px;
                         background: close-touch.has-hover ? Theme.menu-hover : transparent;
+                        animate background { duration: Theme.fast; }
 
                         close-touch := TouchArea {
                             clicked => { root.show-dialog = false; }

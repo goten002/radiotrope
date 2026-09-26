@@ -81,7 +81,7 @@ export component Controls inherits Rectangle {
     Rectangle {
         y: 0;
         height: 1px;
-        background: Theme.dark-mode ? #161718 : #c8c9ce;
+        background: Theme.hairline;
     }
 
     HorizontalLayout {
@@ -103,6 +103,7 @@ export component Controls inherits Rectangle {
                 background: !can-interact ? Theme.disabled-bg
                     : play-touch.has-hover ? Theme.accent-hover
                     : Theme.accent;
+                animate background { duration: Theme.fast; }
 
                 Image {
                     width: 18px;
@@ -175,6 +176,7 @@ export component Controls inherits Rectangle {
                     height: 28px;
                     border-radius: 4px;
                     background: mute-touch.has-hover ? Theme.surface : transparent;
+                    animate background { duration: Theme.fast; }
 
                     Image {
                         width: 20px;
@@ -186,7 +188,7 @@ export component Controls inherits Rectangle {
                             : root.volume < 0.33 ? @image-url("icons/volume-low.svg")
                             : root.volume < 0.66 ? @image-url("icons/volume-medium.svg")
                             : @image-url("icons/volume-high.svg");
-                        colorize: root.is-muted ? #e05555 : Theme.text-secondary;
+                        colorize: root.is-muted ? Theme.danger : Theme.text-secondary;
                     }
 
                     mute-touch := TouchArea {

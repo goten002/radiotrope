@@ -22,7 +22,7 @@ component EqFader inherits Rectangle {
                 y: 0;
                 width: 6px;
                 height: parent.height;
-                background: Theme.dark-mode ? #151617 : #b0b1b6;
+                background: Theme.elevated;
                 border-radius: 3px;
             }
 
@@ -32,7 +32,7 @@ component EqFader inherits Rectangle {
                 y: 0.5px;
                 width: 5px;
                 height: parent.height - 1px;
-                background: Theme.dark-mode ? #1e1f21 : #c0c1c6;
+                background: Theme.viz-track;
                 border-radius: 2.5px;
             }
 
@@ -124,6 +124,7 @@ component PresetItem inherits Rectangle {
     height: 26px;
     border-radius: 4px;
     background: item-touch.has-hover ? Theme.menu-hover : transparent;
+    animate background { duration: Theme.fast; }
 
     item-touch := TouchArea {
         clicked => { root.clicked(); }
@@ -142,6 +143,7 @@ component PresetItem inherits Rectangle {
                 y: (parent.height - self.height) / 2;
                 border-radius: 3px;
                 background: item-touch.has-hover ? Theme.text-primary : Theme.menu-text;
+                animate background { duration: Theme.fast; }
             }
         }
 
@@ -178,7 +180,7 @@ export component EqualizerDialog inherits Rectangle {
     if show-dialog: Rectangle {
         width: 100%;
         height: 100%;
-        background: #000000aa;
+        background: Theme.scrim;
 
         TouchArea {
             clicked => { root.show-dialog = false; }
@@ -189,10 +191,12 @@ export component EqualizerDialog inherits Rectangle {
             y: (parent.height - self.height) / 2;
             width: 560px;
             height: card-layout.preferred-height + 24px;
-            background: Theme.panel;
-            border-radius: 8px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.shadow;
 
             // Block clicks from closing dialog
             TouchArea {}
@@ -219,6 +223,7 @@ export component EqualizerDialog inherits Rectangle {
                         height: 24px;
                         border-radius: 4px;
                         background: close-touch.has-hover ? Theme.menu-hover : transparent;
+                        animate background { duration: Theme.fast; }
 
                         close-touch := TouchArea {
                             clicked => { root.show-dialog = false; }
@@ -287,8 +292,9 @@ export component EqualizerDialog inherits Rectangle {
                         height: 30px;
                         border-radius: 6px;
                         background: preset-dd-touch.has-hover
-                            ? (Theme.dark-mode ? #3a3d42 : #b8b9be)
-                            : (Theme.dark-mode ? #2f3236 : #c5c6cb);
+                            ? Theme.menu-hover
+                            : Theme.elevated;
+                        animate background { duration: Theme.fast; }
 
                         preset-dd-touch := TouchArea {
                             clicked => { preset-popup.show(); }
@@ -328,9 +334,11 @@ export component EqualizerDialog inherits Rectangle {
 
                             Rectangle {
                                 background: Theme.popup-bg;
-                                border-radius: 4px;
+                                border-radius: Theme.radius-md;
+                                border-width: 1px;
+                                border-color: Theme.hairline;
                                 drop-shadow-blur: 8px;
-                                drop-shadow-color: #00000033;
+                                drop-shadow-color: Theme.shadow-soft;
 
                                 VerticalLayout {
                                     padding: 4px;
