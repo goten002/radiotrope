@@ -1,0 +1,63 @@
+import { Theme } from "theme.slint";
+
+// Always-visible vertical scrollbar for a Flickable. Place it next to (or over)
+// the Flickable and bind:
+//     content-y <=> flick.content-y;
+//     content-height: flick.content-height;
+//     viewport-height: flick.height;
+// Drag the thumb to scroll, or click the track to page up/down.
+export component ScrollBar inherits Rectangle {
+    in property <length> viewport-height;
+    in property <length> content-height;
+    in-out property <length> content-y;
+
+    property <length> max-scroll: max(0px, root.content-height - root.viewport-height);
+    property <length> thumb-height: max(24px,
+        root.height * min(1, root.viewport-height / max(1px, root.content-height)));
+    property <length> track-range: max(0px, root.height - root.thumb-height);
+    property <length> thumb-y: root.max-scroll > 0
+        ? root.track-range * (-root.content-y / root.max-scroll) : 0px;
+    property <bool> dragging: false;
+    property <length> drag-start-content-y;
+    property <bool> over-thumb: touch.has-hover
+        && touch.mouse-y >= root.thumb-y && touch.mouse-y <= root.thumb-y + root.thumb-height;
+
+    width: 8px;
+    visible: root.max-scroll > 0;
+    border-radius: 4px;
+    background: Theme.dark-mode ? #ffffff14 : #0000001a;
+
+    touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                if self.mouse-y >= root.thumb-y && self.mouse-y <= root.thumb-y + root.thumb-height {
+                    root.dragging = true;
+                    root.drag-start-content-y = root.content-y;
+                } else if self.mouse-y < root.thumb-y {
+                    root.content-y = min(0px, root.content-y + root.viewport-height);
+                } else {
+                    root.content-y = max(-root.max-scroll, root.content-y - root.viewport-height);
+                }
+            } else if e.kind == PointerEventKind.up {
+                root.dragging = false;
+            }
+        }
+        moved => {
+            if root.dragging && root.track-range > 0 {
+                root.content-y = clamp(
+                    root.drag-start-content-y
+                        - (self.mouse-y - self.pressed-y) * (root.max-scroll / root.track-range),
+                    -root.max-scroll, 0px);
+            }
+        }
+    }
+
+    Rectangle {
+        y: root.thumb-y;
+        height: root.thumb-height;
+        width: parent.width;
+        border-radius: 4px;
+        background: root.dragging ? Theme.accent
+            : root.over-thumb ? Theme.text-primary : Theme.text-secondary;
+    }
+}

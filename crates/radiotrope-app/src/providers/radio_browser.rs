@@ -169,6 +169,21 @@ impl RadioBrowserProvider {
     }
 }
 
+/// Search parameter that selects a category's stations
+///
+/// Countries use the exact ISO code when known; the `country` name filter is
+/// a substring match ("Congo" also matches "The Democratic Republic Of The Congo").
+fn category_filter(category: &Category) -> (&'static str, &str) {
+    match category.category_type {
+        CategoryType::Genre => ("tag", &category.id),
+        CategoryType::Country => match category.code.as_deref().filter(|c| !c.is_empty()) {
+            Some(code) => ("countrycode", code),
+            None => ("country", &category.id),
+        },
+        CategoryType::Language => ("language", &category.id),
+    }
+}
+
 impl StationProvider for RadioBrowserProvider {
     fn name(&self) -> &'static str {
         "Radio Browser"
@@ -208,9 +223,9 @@ impl StationProvider for RadioBrowserProvider {
         }
 
         // Countries
-        let countries: Vec<RbCountry> = self
-            .client
-            .get_json(&self.url("/json/countries?limit=100&order=stationcount&reverse=true"))?;
+        let countries: Vec<RbCountry> = self.client.get_json(
+            &self.url("/json/countries?order=stationcount&reverse=true&hidebroken=true"),
+        )?;
         for country in countries {
             if !country.name.is_empty() {
                 categories.push(
@@ -243,23 +258,31 @@ impl StationProvider for RadioBrowserProvider {
         limit: usize,
         offset: usize,
     ) -> Result<SearchResults> {
+        self.search_category(category, "", limit, offset)
+    }
+
+    fn search_category(
+        &self,
+        category: &Category,
+        query: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResults> {
         let limit_str = limit.to_string();
         let offset_str = offset.to_string();
-
-        let filter_key = match category.category_type {
-            CategoryType::Genre => "tag",
-            CategoryType::Country => "country",
-            CategoryType::Language => "language",
-        };
-
-        self.search_stations(&[
-            (filter_key, &category.id),
+        let mut params = vec![
+            category_filter(category),
             ("limit", &limit_str),
             ("offset", &offset_str),
             ("order", "clickcount"),
             ("reverse", "true"),
             ("hidebroken", "true"),
-        ])
+        ];
+        let query = query.trim();
+        if !query.is_empty() {
+            params.push(("name", query));
+        }
+        self.search_stations(&params)
     }
 
     fn get_popular(&self, limit: usize) -> Result<Vec<Station>> {
@@ -662,6 +685,29 @@ mod tests {
     }
 
     // ---- report_click edge case ----
+
+    #[test]
+    fn test_category_filter_country_prefers_code() {
+        let cat =
+            Category::new("Greece", "Greece", CategoryType::Country).with_code(Some("GR".into()));
+        assert_eq!(category_filter(&cat), ("countrycode", "GR"));
+    }
+
+    #[test]
+    fn test_category_filter_country_without_code() {
+        let cat = Category::new("Greece", "Greece", CategoryType::Country);
+        assert_eq!(category_filter(&cat), ("country", "Greece"));
+        let cat = cat.with_code(Some(String::new()));
+        assert_eq!(category_filter(&cat), ("country", "Greece"));
+    }
+
+    #[test]
+    fn test_category_filter_genre_and_language() {
+        let tag = Category::new("jazz", "jazz", CategoryType::Genre);
+        assert_eq!(category_filter(&tag), ("tag", "jazz"));
+        let lang = Category::new("greek", "greek", CategoryType::Language);
+        assert_eq!(category_filter(&lang), ("language", "greek"));
+    }
 
     #[test]
     fn test_report_click_no_provider_id() {
