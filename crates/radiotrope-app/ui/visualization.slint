@@ -42,8 +42,9 @@ export global VizStyle {
     }
 }
 
-// One bar used by every mode: a recessed track with a shaded, rounded-looking
-// fill. `anchor` is where the fill grows from: "bottom", "center" or "left".
+// One bar used by every mode: a flat fill on a faint track, the same in
+// all four modes. `anchor` is where the fill grows from: "bottom", "center"
+// or "left".
 component Bar inherits Rectangle {
     in property <float> level;
     in property <color> tint: Theme.accent;
@@ -52,12 +53,9 @@ component Bar inherits Rectangle {
     property <bool> horizontal: anchor == "left";
     property <float> amount: clamp(root.level, 0, 1);
 
-    // Track, slightly sunk into the tile
     Rectangle {
-        border-radius: 2px;
+        border-radius: 1.5px;
         background: Theme.viz-track;
-        border-width: 1px;
-        border-color: Theme.dark-mode ? #00000059 : #0000000f;
     }
 
     if root.amount > 0.01: Rectangle {
@@ -67,24 +65,8 @@ component Bar inherits Rectangle {
         y: root.anchor == "bottom" ? parent.height - self.height
             : root.anchor == "center" ? (parent.height - self.height) / 2
             : 0;
-        border-radius: 2px;
-        // Lit from the upper left: bright edge, full colour, darker far side
-        background: root.horizontal
-            ? @linear-gradient(180deg, root.tint.brighter(0.35) 0%, root.tint 40%, root.tint.darker(0.45) 100%)
-            : @linear-gradient(90deg, root.tint.brighter(0.35) 0%, root.tint 45%, root.tint.darker(0.45) 100%);
-        drop-shadow-blur: 3px;
-        drop-shadow-offset-y: 1px;
-        drop-shadow-color: #00000059;
-
-        // Highlight on the leading edge
-        Rectangle {
-            x: root.horizontal ? parent.width - self.width : 0;
-            y: 0;
-            width: root.horizontal ? 1px : parent.width;
-            height: root.horizontal ? parent.height : 1px;
-            border-radius: 1px;
-            background: root.tint.brighter(0.7).with-alpha(0.8);
-        }
+        border-radius: 1.5px;
+        background: root.tint;
     }
 }
 

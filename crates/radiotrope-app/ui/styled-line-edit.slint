@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Icon } from "components.slint";
 
 export component StyledLineEdit inherits Rectangle {
     in property <string> placeholder-text;
@@ -81,7 +82,7 @@ export component StyledLineEdit inherits Rectangle {
             }
         }
 
-        Image {
+        Icon {
             width: 10px;
             height: 10px;
             source: @image-url("icons/xmark.svg");

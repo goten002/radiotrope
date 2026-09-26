@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars } from "components.slint";
+import { IconButton, NowPlayingBars, Icon } from "components.slint";
 
 export struct FavoriteStation {
     id: string,
@@ -14,6 +14,8 @@ component FavoriteRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
     in property <bool> is-current;
+    // Playback state when current: "playing", "loading", "error" or ""
+    in property <string> state;
     in property <image> logo-image;
     in property <bool> has-logo;
     in property <bool> is-drag-source;
@@ -71,7 +73,7 @@ component FavoriteRow inherits Rectangle {
             alignment: center;
             width: 20px;
 
-            Image {
+            Icon {
                 source: @image-url("icons/grip-lines.svg");
                 width: 20px;
                 height: 20px;
@@ -102,7 +104,7 @@ component FavoriteRow inherits Rectangle {
                     image-fit: contain;
                 }
 
-                if !root.has-logo: Image {
+                if !root.has-logo: Icon {
                     source: @image-url("icons/music-note.svg");
                     width: 18px;
                     height: 18px;
@@ -131,10 +133,35 @@ component FavoriteRow inherits Rectangle {
                     overflow: elide;
                 }
 
-                if root.is-current: VerticalLayout {
+                // Same state marks as in search: bars only while audio
+                // plays, a spinner while connecting, a red mark on errors
+                if root.is-current && root.state == "playing": VerticalLayout {
                     horizontal-stretch: 0;
                     alignment: center;
                     NowPlayingBars {}
+                }
+
+                if root.is-current && root.state == "loading": VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    Icon {
+                        source: @image-url("icons/spinner.svg");
+                        width: 12px;
+                        height: 12px;
+                        colorize: Theme.accent;
+                        rotation: mod(animation-tick() / 900ms, 1) * 360deg;
+                    }
+                }
+
+                if root.is-current && root.state == "error": VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    Icon {
+                        source: @image-url("icons/circle-exclamation.svg");
+                        width: 13px;
+                        height: 13px;
+                        colorize: Theme.danger;
+                    }
                 }
 
                 Rectangle { horizontal-stretch: 1; }
@@ -203,6 +230,9 @@ export component Favorites inherits Rectangle {
     in-out property <[FavoriteStation]> favorites;
     in-out property <[image]> favorite-logos;
     in property <string> current-station-url;
+    in property <bool> is-playing;
+    in property <bool> play-loading;
+    in property <bool> play-error;
     // Drag the list itself to scroll (touch screens). Off on the desktop,
     // where the wheel and scrollbar scroll and a list that grabs drags
     // would eat quick reorder drags
@@ -229,7 +259,7 @@ export component Favorites inherits Rectangle {
 
         HorizontalLayout {
             alignment: center;
-            Image {
+            Icon {
                 source: @image-url("icons/book-heart.svg");
                 width: 48px;
                 height: 48px;
@@ -287,6 +317,9 @@ export component Favorites inherits Rectangle {
                         name: station.name;
                         country: station.country;
                         is-current: station.url == root.current-station-url;
+                        state: root.play-error ? "error"
+                            : root.play-loading ? "loading"
+                            : root.is-playing ? "playing" : "";
                         logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
                         has-logo: idx < root.favorite-logos.length
                             ? root.favorite-logos[idx].width > 0

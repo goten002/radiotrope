@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Icon } from "components.slint";
 import { VizStyle } from "visualization.slint";
 
 component MenuItem inherits Rectangle {
@@ -53,7 +54,7 @@ component CheckMenuItem inherits Rectangle {
         Rectangle {
             width: 14px;
 
-            if root.checked: Image {
+            if root.checked: Icon {
                 width: 12px;
                 height: 12px;
                 y: (parent.height - self.height) / 2;
@@ -186,7 +187,7 @@ export component MenuBar inherits Rectangle {
                 background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
                 animate background { duration: Theme.fast; }
 
-                Image {
+                Icon {
                     width: 16px;
                     height: 16px;
                     source: @image-url("icons/circle-info.svg");
