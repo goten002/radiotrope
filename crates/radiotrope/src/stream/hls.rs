@@ -300,60 +300,43 @@ pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
 ///
 /// Lenient on purpose: packets it doesn't understand (unknown stream types,
 /// PES header extensions, broken or missing sync) are skipped, never fatal
-/// for the rest of the segment. Only the first audio stream is taken, so a
-/// second language track can't interleave with the first. Without a PMT,
-/// the first PES stream with an MPEG audio stream id (0xC0-0xDF) is used.
+/// for the rest of the segment. The PAT/PMT are read first, since streams
+/// may send packets before them (RTL's segments start with the ID3 packet).
+/// Only the first audio stream is taken, so a second language track can't
+/// interleave with the first. Without a PMT, the first PES stream with an
+/// MPEG audio stream id (0xC0-0xDF) is used.
 pub fn demux_ts_segment_with_metadata(ts_data: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
+    // First pass: find the audio and metadata PIDs
     let mut pmt_pids: HashSet<u16> = HashSet::new();
     let mut audio_pid: Option<u16> = None;
-    let mut audio_from_pmt = false;
     let mut metadata_pids: HashSet<u16> = HashSet::new();
+    for (pid, unit_start, payload) in ts_packets(ts_data) {
+        if !unit_start {
+            continue;
+        }
+        if pid == 0 {
+            pmt_pids.extend(parse_pat(payload));
+        } else if pmt_pids.contains(&pid) {
+            if let Some((audio, meta)) = parse_pmt(payload) {
+                metadata_pids.extend(meta);
+                if audio.is_some() {
+                    audio_pid = audio;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Second pass: collect the audio and metadata payloads
     let mut audio_data = Vec::with_capacity(ts_data.len());
     let mut metadata: Vec<Vec<u8>> = Vec::new();
     // A metadata PES that is still receiving continuation packets
     let mut metadata_open = false;
-
-    let mut pos = 0;
-    while pos + TS_PACKET_LEN <= ts_data.len() {
-        if ts_data[pos] != 0x47 {
-            // Lost sync: find the next sync byte
-            pos += 1;
+    for (pid, unit_start, payload) in ts_packets(ts_data) {
+        if pid == 0 || pmt_pids.contains(&pid) {
             continue;
         }
-        let packet = &ts_data[pos..pos + TS_PACKET_LEN];
-        pos += TS_PACKET_LEN;
-
-        let transport_error = packet[1] & 0x80 != 0;
-        let unit_start = packet[1] & 0x40 != 0;
-        let pid = u16::from(packet[1] & 0x1F) << 8 | u16::from(packet[2]);
-        let adaptation_control = (packet[3] >> 4) & 0x03;
-        if transport_error || adaptation_control & 0x01 == 0 {
-            continue; // corrupt, or adaptation field only
-        }
-        let mut start = 4;
-        if adaptation_control & 0x02 != 0 {
-            start += 1 + usize::from(packet[4]);
-        }
-        if start >= TS_PACKET_LEN {
-            continue;
-        }
-        let payload = &packet[start..];
-
-        if pid == 0 {
-            if unit_start {
-                pmt_pids.extend(parse_pat(payload));
-            }
-        } else if pmt_pids.contains(&pid) {
-            if unit_start && !audio_from_pmt {
-                if let Some((audio, meta)) = parse_pmt(payload) {
-                    if audio.is_some() {
-                        audio_pid = audio;
-                        audio_from_pmt = true;
-                    }
-                    metadata_pids.extend(meta);
-                }
-            }
-        } else if metadata_pids.contains(&pid) {
+        if metadata_pids.contains(&pid) {
             if unit_start {
                 metadata_open = false;
                 if let Some(data) = pes_payload(payload) {
@@ -365,24 +348,57 @@ pub fn demux_ts_segment_with_metadata(ts_data: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>)
                     last.extend_from_slice(payload);
                 }
             }
-        } else {
-            if audio_pid.is_none() && unit_start && is_audio_pes(payload) {
-                // No PMT (yet): take the first MPEG audio PES stream
-                audio_pid = Some(pid);
-            }
-            if audio_pid == Some(pid) {
-                if unit_start {
-                    if let Some(data) = pes_payload(payload) {
-                        audio_data.extend_from_slice(data);
-                    }
-                } else {
-                    audio_data.extend_from_slice(payload);
+            continue;
+        }
+        if audio_pid.is_none() && unit_start && is_audio_pes(payload) {
+            // No PMT: take the first MPEG audio PES stream
+            audio_pid = Some(pid);
+        }
+        if audio_pid == Some(pid) {
+            if unit_start {
+                if let Some(data) = pes_payload(payload) {
+                    audio_data.extend_from_slice(data);
                 }
+            } else {
+                audio_data.extend_from_slice(payload);
             }
         }
     }
 
     (audio_data, metadata)
+}
+
+/// The TS packets in `ts_data` as (PID, payload unit start, payload).
+/// Resyncs on lost sync; skips corrupt packets and ones without a payload.
+fn ts_packets(ts_data: &[u8]) -> impl Iterator<Item = (u16, bool, &[u8])> {
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        while pos + TS_PACKET_LEN <= ts_data.len() {
+            if ts_data[pos] != 0x47 {
+                // Lost sync: find the next sync byte
+                pos += 1;
+                continue;
+            }
+            let packet = &ts_data[pos..pos + TS_PACKET_LEN];
+            pos += TS_PACKET_LEN;
+
+            let transport_error = packet[1] & 0x80 != 0;
+            let unit_start = packet[1] & 0x40 != 0;
+            let pid = u16::from(packet[1] & 0x1F) << 8 | u16::from(packet[2]);
+            let adaptation_control = (packet[3] >> 4) & 0x03;
+            if transport_error || adaptation_control & 0x01 == 0 {
+                continue; // corrupt, or adaptation field only
+            }
+            let mut start = 4;
+            if adaptation_control & 0x02 != 0 {
+                start += 1 + usize::from(packet[4]);
+            }
+            if start < TS_PACKET_LEN {
+                return Some((pid, unit_start, &packet[start..]));
+            }
+        }
+        None
+    })
 }
 
 /// The body of the PSI section starting in `payload` (after the pointer
@@ -1740,7 +1756,7 @@ mod tests {
 
     mod downloader {
         use super::*;
-        use crate::stream::id3::test_util::frame;
+        use crate::stream::id3::test_util::{frame, id3v2_song};
         use crate::stream::test_server::{Route, TestServer};
         use std::time::Instant;
 
@@ -1981,6 +1997,81 @@ mod tests {
             let audio = frame(400);
             let seg = [vec![0x00, 0x12, 0x34], ts_segment_unusual(&audio)].concat();
             assert_eq!(demux_ts_segment(&seg), audio);
+        }
+
+        /// A TS segment laid out like RTL's (Quortex): the ID3 song info
+        /// packet comes first, before the PAT and PMT. The old demuxer
+        /// failed on that first packet ("Unknown PID") and returned no audio
+        /// for every segment, so RTL never started.
+        fn ts_segment_rtl_layout(audio: &[u8], tag: &[u8]) -> Vec<u8> {
+            [
+                pes(0x3E8, 0xBD, tag),
+                pat(0x1000),
+                pmt(0x1000, &[(0x0F, 0x100), (0x15, 0x3E8)]),
+                pes(0x100, 0xC0, audio),
+            ]
+            .concat()
+        }
+
+        #[test]
+        fn demuxes_rtl_layout_with_id3_before_pat() {
+            let audio = frame(900);
+            let seg = ts_segment_rtl_layout(&audio, &id3v2_song("Georges Lang", "W RTL Country"));
+            let (out, meta) = split_segment(&seg, false);
+            assert_eq!(out, audio);
+            assert_eq!(meta.len(), 1);
+            assert_eq!(meta[0].artist.as_deref(), Some("Georges Lang"));
+            assert_eq!(meta[0].title.as_deref(), Some("W RTL Country"));
+        }
+
+        #[test]
+        fn plays_rtl_quortex_stream_end_to_end() {
+            let server = TestServer::start();
+            // Master playlist from the redirector: one variant on another
+            // path, with a signed query string
+            let master = format!(
+                "#EXTM3U\n#EXT-X-VERSION:7\n## RedirectorRewritten\n\
+                 #EXT-X-SESSION-DATA:DATA-ID=\"fr.rtl.hls.cdn\",VALUE=\"qtx\"\n\
+                 #EXT-X-INDEPENDENT-SEGMENTS\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=64000,FRAME-RATE=25,CODECS=\"mp4a.40.29\"\n\
+                 {}\n",
+                server.url("/radio/rtl/audio-64000/index.m3u8?Policy=abc&Signature=x~y")
+            );
+            // Media playlist as served by Quortex (live, trimmed to 3 segments)
+            let media = "#EXTM3U\n#EXT-X-VERSION:7\n\
+                ## Just In Time Delivered by Quortex Solution\n\
+                #EXT-X-TARGETDURATION:6\n#EXT-X-DISCONTINUITY-SEQUENCE:0\n\
+                #EXT-X-MEDIA-SEQUENCE:310843946\n\n\
+                #EXT-X-PROGRAM-DATE-TIME:2026-09-26T22:18:48.960000Z\n\
+                #EXTINF:5.760,\nsegment_310843946.ts\n#EXTINF:5.760,\nsegment_310843947.ts\n\
+                #EXT-X-PROGRAM-DATE-TIME:2026-09-26T22:19:00.480000Z\n\
+                #EXTINF:5.760,\nsegment_310843948.ts\n";
+            server.route(
+                "/webXYZ/grouprtl/audio-64000/index.m3u8",
+                Route::new(master),
+            );
+            server.route(
+                "/radio/rtl/audio-64000/index.m3u8?Policy=abc&Signature=x~y",
+                Route::new(media),
+            );
+            let audio = frame(300);
+            for n in 46..=48 {
+                server.route(
+                    &format!("/radio/rtl/audio-64000/segment_3108439{n}.ts"),
+                    Route::new(ts_segment_rtl_layout(
+                        &audio,
+                        &id3v2_song("Georges Lang", "W RTL Country"),
+                    )),
+                );
+            }
+
+            let media_url =
+                resolve_hls_url(&server.url("/webXYZ/grouprtl/audio-64000/index.m3u8")).unwrap();
+            let (mut reader, rx) = HlsReader::new(&media_url, None).unwrap();
+            assert_eq!(reader.detected_format, HlsSegmentFormat::Raw);
+            assert_eq!(first_chunk(&mut reader)[..audio.len()], audio[..]);
+            let meta = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(meta.title.as_deref(), Some("W RTL Country"));
         }
 
         #[test]
