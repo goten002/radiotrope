@@ -54,6 +54,9 @@ export global Theme {
     out property <color> menu-text: dark-mode ? #c8c9cc : #3a3c41;
 
     // ── Visualizer ──
+    // Selected text in inputs: an accent tint, not the style's own colour
+    out property <color> selection-bg: accent.with-alpha(dark-mode ? 0.4 : 0.3);
+    out property <color> selection-fg: text-primary;
     out property <color> viz-bg: dark-mode ? #141517 : #f0f0f4;
     out property <color> viz-track: dark-mode ? #ffffff0d : #0000000d;
 
