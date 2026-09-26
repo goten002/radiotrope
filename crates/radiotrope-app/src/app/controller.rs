@@ -3,17 +3,22 @@
 //! Owns the audio engine, shared state, and processes commands from all
 //! frontends (GUI, MCP, tray) through a single crossbeam channel.
 
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender};
 
-use radiotrope::audio::{AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, SharedStats};
+use radiotrope::audio::{
+    AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, RecordingOptions, RecordingStatus,
+    RecordingTags, SharedStats, TapPoint,
+};
 use radiotrope::stream::metadata::StreamMetadata;
 use radiotrope::stream::{StreamResolver, StreamType};
+use radiotrope_app::data::recordings;
 
-use super::state::{AppCommand, AppSnapshot};
+use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
 /// Timeout for stream resolution — if the server doesn't respond within this
 /// duration the resolve attempt is abandoned.
@@ -35,6 +40,8 @@ pub struct AppController {
     volume_before_mute: f32,
     /// Reusable buffer for collecting engine events (avoids allocation per poll)
     event_buf: Vec<AudioEvent>,
+    /// Sequence number of the last recording notice
+    notice_seq: u64,
 }
 
 impl AppController {
@@ -56,6 +63,7 @@ impl AppController {
             stats_tx: Some(stats_tx),
             volume_before_mute: 1.0,
             event_buf: Vec::new(),
+            notice_seq: 0,
         }
     }
 
@@ -94,7 +102,11 @@ impl AppController {
 
             // Poll engine events
             self.poll_engine_events();
+            self.poll_recording();
         }
+
+        // Finish any recording before the engine goes away
+        self.stop_recording();
 
         // Shutdown engine
         if let Some(engine) = self.engine.take() {
@@ -111,6 +123,7 @@ impl AppController {
                 self.start_stream(&url, name);
             }
             AppCommand::Stop => {
+                self.stop_recording();
                 if let Some(engine) = &self.engine {
                     engine.stop();
                 }
@@ -210,6 +223,16 @@ impl AppController {
             AppCommand::GetState => {
                 // No-op: MCP reads shared_state directly via Arc<Mutex<>>
             }
+            AppCommand::StartRecording {
+                folder,
+                with_eq,
+                cover,
+            } => {
+                self.start_recording(&folder, with_eq, cover);
+            }
+            AppCommand::StopRecording => {
+                self.stop_recording();
+            }
             AppCommand::InternalStreamResolved { generation, result } => {
                 self.handle_stream_resolved(generation, result);
             }
@@ -222,6 +245,9 @@ impl AppController {
     /// Each call increments `resolve_generation`; stale results from earlier
     /// calls are discarded in `handle_stream_resolved`.
     fn start_stream(&mut self, url: &str, name: Option<String>) {
+        // Switching station ends the recording of the old one
+        self.stop_recording();
+
         // Stop any current playback first
         if let Some(engine) = &self.engine {
             engine.stop();
@@ -362,6 +388,14 @@ impl AppController {
     }
 
     fn handle_engine_event(&mut self, event: AudioEvent) {
+        // The stream ended or failed: keep what was recorded
+        if matches!(
+            event,
+            AudioEvent::Stopped | AudioEvent::Error(_) | AudioEvent::NoAudioTimeout
+        ) {
+            self.stop_recording();
+        }
+
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         match event {
             AudioEvent::Playing(codec_info) => {
@@ -430,6 +464,122 @@ impl AppController {
                 state.is_error = true;
             }
         }
+    }
+
+    /// Start recording the playing station into `folder`.
+    fn start_recording(&mut self, folder: &Path, with_eq: bool, cover: Option<Vec<u8>>) {
+        let Some(engine) = &self.engine else { return };
+        let recorder = engine.recorder();
+        if recorder.is_recording() {
+            return;
+        }
+
+        let (station, url, playing) = {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                state.station_name.clone().unwrap_or_default(),
+                state.station_url.clone().unwrap_or_default(),
+                state.playback == PlaybackState::Playing,
+            )
+        };
+        if !playing {
+            self.notify("Start a station before recording", true);
+            return;
+        }
+
+        if let Err(e) = recordings::prepare_dir(folder) {
+            self.notify(&format!("Recording folder not available. {e}"), true);
+            return;
+        }
+
+        let now = chrono::Local::now();
+        let path = recordings::new_file_path(folder, &station, now);
+        let station_name = if station.is_empty() {
+            "Radio".to_string()
+        } else {
+            station
+        };
+        let options = RecordingOptions {
+            path: path.clone(),
+            tap: if with_eq {
+                TapPoint::AfterEq
+            } else {
+                TapPoint::BeforeEq
+            },
+            tags: RecordingTags {
+                title: format!("{station_name}, {}", now.format("%Y-%m-%d %H:%M")),
+                artist: station_name,
+                album: "Radiotrope recordings".to_string(),
+                comment: url,
+                cover,
+            },
+        };
+
+        match recorder.start(options) {
+            Ok(()) => {
+                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.recording = Some(RecordingProgress {
+                    path,
+                    duration: Duration::ZERO,
+                    bytes: 0,
+                });
+            }
+            Err(e) => self.notify(&format!("Could not start recording: {e}"), true),
+        }
+    }
+
+    /// Stop the running recording, if any, and say where it was saved.
+    fn stop_recording(&mut self) {
+        let Some(engine) = &self.engine else { return };
+        let Some(status) = engine.recorder().stop() else {
+            return;
+        };
+        self.shared_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .recording = None;
+        self.report_finished(&status);
+    }
+
+    /// Mirror the recording's progress into the shared state, and stop it
+    /// if writing failed (e.g. the disk is full).
+    fn poll_recording(&mut self) {
+        let Some(engine) = &self.engine else { return };
+        let Some(status) = engine.recorder().status() else {
+            return;
+        };
+        if status.error.is_some() {
+            self.stop_recording();
+            return;
+        }
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        state.recording = Some(RecordingProgress {
+            path: status.path,
+            duration: status.duration,
+            bytes: status.bytes_written,
+        });
+    }
+
+    fn report_finished(&mut self, status: &RecordingStatus) {
+        let name = status
+            .path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        match &status.error {
+            Some(e) => self.notify(&format!("Recording stopped: {e}. Saved {name}"), true),
+            None => self.notify(&format!("Saved {name}"), false),
+        }
+    }
+
+    fn notify(&mut self, text: &str, is_error: bool) {
+        self.notice_seq += 1;
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        state.recording_notice = Some(RecordingNotice {
+            seq: self.notice_seq,
+            text: text.to_string(),
+            is_error,
+        });
     }
 
     fn poll_metadata(&mut self) {
