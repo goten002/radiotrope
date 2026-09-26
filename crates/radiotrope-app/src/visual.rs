@@ -71,8 +71,10 @@ const MIN_VALUE: f32 = 0.25;
 const MIN_SATURATION: f32 = 0.3;
 /// A colour needs this share of the colourful pixels to make the palette
 const MIN_SHARE: f32 = 0.08;
-/// Logos with fewer colourful pixels than this share have no palette
-const MIN_COLOURFUL: f32 = 0.03;
+/// Logos with fewer colourful pixels than this share have no palette.
+/// Low enough to keep a small coloured mark on a dark logo (about 2.7% of
+/// the pixels), high enough to ignore stray JPEG noise in black and white.
+const MIN_COLOURFUL: f32 = 0.01;
 /// Palette colours are brightened to at least this value so bars stay
 /// visible on the dark tile
 const PALETTE_MIN_VALUE: f32 = 0.7;
@@ -237,6 +239,19 @@ mod tests {
             ([128, 128, 128], 50),
         ]);
         assert!(logo_palette(&img).is_empty());
+    }
+
+    #[test]
+    fn small_mark_on_dark_logo_gives_its_colour() {
+        // A red mark on a mostly black and grey logo
+        let img = image(&[
+            ([12, 12, 12], 870),
+            ([200, 200, 200], 100),
+            ([220, 20, 30], 27),
+        ]);
+        let p = logo_palette(&img);
+        assert_eq!(p.len(), 1);
+        assert!(p[0][0] > p[0][1] && p[0][0] > p[0][2]);
     }
 
     #[test]
