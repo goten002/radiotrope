@@ -9,6 +9,8 @@ export struct BrowseStation {
     country: string,
     codec: string,
     bitrate: int,
+    // Provider's station ID, used to recognize favorites with a different URL
+    provider-id: string,
 }
 
 component StationRow inherits Rectangle {

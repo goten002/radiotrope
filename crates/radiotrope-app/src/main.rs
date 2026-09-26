@@ -17,7 +17,7 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType};
@@ -221,11 +221,12 @@ fn main() {
                 &play_url_state,
                 &play_url_favs,
                 &play_url_logo_svc,
-                PlayRequest {
+                PlayMetadata {
                     url: url.to_string(),
                     name: None,
                     logo_url: None,
                     country: None,
+                    provider_id: None,
                 },
             );
         }
@@ -314,7 +315,7 @@ fn main() {
                     &play_state,
                     &favs,
                     &logo_svc,
-                    PlayRequest {
+                    PlayMetadata {
                         url: station.url.to_string(),
                         name: Some(station.name.to_string()),
                         logo_url: if logo_url.is_empty() {
@@ -327,6 +328,7 @@ fn main() {
                         } else {
                             Some(country)
                         },
+                        provider_id: None,
                     },
                 );
             }
@@ -981,7 +983,7 @@ fn main() {
                     &play_state,
                     &favs,
                     &logo_svc,
-                    PlayRequest {
+                    PlayMetadata {
                         url: station.url.to_string(),
                         name: Some(station.name.to_string()),
                         logo_url: if logo_url.is_empty() {
@@ -994,6 +996,8 @@ fn main() {
                         } else {
                             Some(country)
                         },
+                        provider_id: Some(station.provider_id.to_string())
+                            .filter(|id| !id.is_empty()),
                     },
                 );
             }
@@ -1708,24 +1712,6 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     let _ = settings.save();
 }
 
-/// All the data needed to start playing a station.
-struct PlayRequest {
-    url: String,
-    name: Option<String>,
-    logo_url: Option<String>,
-    country: Option<String>,
-}
-
-impl PlayRequest {
-    /// Override metadata from favorites if the station is favorited.
-    fn enrich_from_favorites(mut self, favorites: &Arc<Mutex<FavoritesManager>>) -> Self {
-        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
-        (self.name, self.logo_url, self.country) =
-            favs.enrich_metadata(&self.url, self.name, self.logo_url, self.country);
-        self
-    }
-}
-
 /// Shared helper for all play actions. Enriches metadata from favorites if available,
 /// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
 fn play_station_with_metadata(
@@ -1734,14 +1720,19 @@ fn play_station_with_metadata(
     shared_state: &Arc<Mutex<AppSnapshot>>,
     favorites: &Arc<Mutex<FavoritesManager>>,
     logo_service: &Arc<LogoService>,
-    req: PlayRequest,
+    req: PlayMetadata,
 ) {
-    let PlayRequest {
+    // A favorite's URL, name and logo take priority over the caller's
+    let PlayMetadata {
         url,
         name,
         logo_url,
         country,
-    } = req.enrich_from_favorites(favorites);
+        ..
+    } = favorites
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .resolve_play(req);
 
     // Set UI metadata properties
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
@@ -1923,6 +1914,7 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         country: s.country.as_deref().unwrap_or("").into(),
         codec: s.codec.as_deref().unwrap_or("").into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
+        provider_id: s.provider_id.as_deref().unwrap_or("").into(),
     }
 }
 
