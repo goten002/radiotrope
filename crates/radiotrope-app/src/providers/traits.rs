@@ -39,6 +39,30 @@ pub trait StationProvider: Send + Sync {
         offset: usize,
     ) -> Result<SearchResults>;
 
+    /// Search stations by name within a category
+    ///
+    /// An empty query lists the category like [`browse_category`]. The default
+    /// filters one page of the category by name; providers that can filter
+    /// server-side should override it.
+    ///
+    /// [`browse_category`]: StationProvider::browse_category
+    fn search_category(
+        &self,
+        category: &Category,
+        query: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResults> {
+        let mut results = self.browse_category(category, limit, offset)?;
+        let query = query.trim().to_lowercase();
+        if !query.is_empty() {
+            results
+                .stations
+                .retain(|s| s.name.to_lowercase().contains(&query));
+        }
+        Ok(results)
+    }
+
     /// Get popular/trending stations
     fn get_popular(&self, limit: usize) -> Result<Vec<Station>>;
 

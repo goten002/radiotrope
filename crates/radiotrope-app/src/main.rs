@@ -17,10 +17,10 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
-use radiotrope_app::providers::types::{Category, CategoryType};
+use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
 use radiotrope_app::providers::ProviderRegistry;
 
 use app::controller::AppController;
@@ -221,11 +221,12 @@ fn main() {
                 &play_url_state,
                 &play_url_favs,
                 &play_url_logo_svc,
-                PlayRequest {
+                PlayMetadata {
                     url: url.to_string(),
                     name: None,
                     logo_url: None,
                     country: None,
+                    provider_id: None,
                 },
             );
         }
@@ -314,7 +315,7 @@ fn main() {
                     &play_state,
                     &favs,
                     &logo_svc,
-                    PlayRequest {
+                    PlayMetadata {
                         url: station.url.to_string(),
                         name: Some(station.name.to_string()),
                         logo_url: if logo_url.is_empty() {
@@ -327,6 +328,7 @@ fn main() {
                         } else {
                             Some(country)
                         },
+                        provider_id: None,
                     },
                 );
             }
@@ -590,325 +592,87 @@ fn main() {
     // Disabled: embedded-only hardware, parked for now
     // setup_rotary_encoder(&ui, cmd_tx.clone(), shared_state.clone());
 
-    // Pagination state for station browser
-    let search_offset = Arc::new(Mutex::new(0usize));
-    let search_query = Arc::new(Mutex::new(String::new()));
-    let search_country = Arc::new(Mutex::new(String::new()));
-    let search_is_country_mode = Arc::new(Mutex::new(false));
+    // What the station browser shows, and how far "Load More" has paged
+    let browse_state = Arc::new(Mutex::new((BrowseQuery::Top, 0usize)));
 
-    // search-stations callback
+    // search-stations callback (an empty query shows the top stations)
     {
         let ui_weak = ui.as_weak();
-        let offset = search_offset.clone();
-        let query_store = search_query.clone();
-        let mode_store = search_is_country_mode.clone();
+        let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
         ui.on_search_stations(move |query| {
-            let query_str = query.to_string();
-            *offset.lock().unwrap() = 0;
-            *query_store.lock().unwrap() = query_str.clone();
-            *mode_store.lock().unwrap() = false;
-            let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
-            // Clear old results immediately
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_search_results(ModelRc::default());
-                ui.set_browse_logos(ModelRc::default());
-                ui.set_has_more(false);
-                ui.set_search_error(Default::default());
-            }
-            let ui_weak = ui_weak.clone();
-            let gen = gen.clone();
-            let logo_svc = logo_svc.clone();
-            std::thread::Builder::new()
-                .name("station-search".into())
-                .spawn(move || {
-                    let results = ProviderRegistry::with_defaults()
-                        .and_then(|r| r.search_all(&query_str, SEARCH_PAGE_SIZE));
-                    let gen2 = gen.clone();
-                    let logo_svc2 = logo_svc.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let Some(ui) = ui_weak.upgrade() else { return };
-                        match results {
-                            Ok(stations) => {
-                                let items: Vec<BrowseStation> =
-                                    stations.iter().map(station_to_browse).collect();
-                                let has_more = items.len() >= SEARCH_PAGE_SIZE;
-                                let (logos, misses) = build_browse_logos_from_cache(&items, 0);
-                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(items),
-                                )));
-                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(logos),
-                                )));
-                                ui.set_has_more(has_more);
-                                ui.set_search_error(Default::default());
-                                spawn_browse_logo_fetch(
-                                    ui.as_weak(),
-                                    logo_svc2,
-                                    misses,
-                                    gen2,
-                                    my_gen,
-                                );
-                            }
-                            Err(e) => {
-                                ui.set_search_error(format!("{e}").into());
-                            }
-                        }
-                        ui.set_search_loading(false);
-                    });
-                })
-                .ok();
+            let query = query.trim();
+            let query = if query.is_empty() {
+                BrowseQuery::Top
+            } else {
+                BrowseQuery::Search(query.to_string())
+            };
+            start_browse(&ui_weak, &state, &gen, &logo_svc, query);
         });
     }
 
     // load-top-stations callback
     {
         let ui_weak = ui.as_weak();
-        let offset = search_offset.clone();
-        let mode_store = search_is_country_mode.clone();
+        let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
         ui.on_load_top_stations(move || {
-            *offset.lock().unwrap() = 0;
-            *mode_store.lock().unwrap() = false;
-            let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
-            // Clear old results immediately
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_search_results(ModelRc::default());
-                ui.set_browse_logos(ModelRc::default());
-                ui.set_has_more(false);
-                ui.set_search_error(Default::default());
-            }
-            let ui_weak = ui_weak.clone();
-            let gen = gen.clone();
-            let logo_svc = logo_svc.clone();
-            std::thread::Builder::new()
-                .name("top-stations".into())
-                .spawn(move || {
-                    let results = ProviderRegistry::with_defaults().and_then(|r| {
-                        r.get("radio-browser")
-                            .ok_or_else(|| {
-                                radiotrope_app::error::AppError::NotFound(
-                                    "radio-browser provider not found".into(),
-                                )
-                            })
-                            .and_then(|p| p.get_popular(SEARCH_PAGE_SIZE))
-                    });
-                    let gen2 = gen.clone();
-                    let logo_svc2 = logo_svc.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let Some(ui) = ui_weak.upgrade() else { return };
-                        match results {
-                            Ok(stations) => {
-                                let items: Vec<BrowseStation> =
-                                    stations.iter().map(station_to_browse).collect();
-                                let has_more = items.len() >= SEARCH_PAGE_SIZE;
-                                let (logos, misses) = build_browse_logos_from_cache(&items, 0);
-                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(items),
-                                )));
-                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(logos),
-                                )));
-                                ui.set_has_more(has_more);
-                                ui.set_search_error(Default::default());
-                                spawn_browse_logo_fetch(
-                                    ui.as_weak(),
-                                    logo_svc2,
-                                    misses,
-                                    gen2,
-                                    my_gen,
-                                );
-                            }
-                            Err(e) => {
-                                ui.set_search_error(format!("{e}").into());
-                            }
-                        }
-                        ui.set_search_loading(false);
-                    });
-                })
-                .ok();
+            start_browse(&ui_weak, &state, &gen, &logo_svc, BrowseQuery::Top);
         });
     }
 
-    // browse-country callback
+    // browse-country callback (an empty query lists the whole country)
     {
         let ui_weak = ui.as_weak();
-        let offset = search_offset.clone();
-        let country_store = search_country.clone();
-        let mode_store = search_is_country_mode.clone();
+        let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
-        ui.on_browse_country(move |country| {
-            let country_str = country.to_string();
-            *offset.lock().unwrap() = 0;
-            *country_store.lock().unwrap() = country_str.clone();
-            *mode_store.lock().unwrap() = true;
-            let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
-            // Clear old results immediately
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_search_results(ModelRc::default());
-                ui.set_browse_logos(ModelRc::default());
-                ui.set_has_more(false);
-                ui.set_search_error(Default::default());
-            }
-            let ui_weak = ui_weak.clone();
-            let gen = gen.clone();
-            let logo_svc = logo_svc.clone();
-            std::thread::Builder::new()
-                .name("browse-country".into())
-                .spawn(move || {
-                    let results = ProviderRegistry::with_defaults().and_then(|r| {
-                        let cat = Category::new(&country_str, &country_str, CategoryType::Country);
-                        r.get("radio-browser")
-                            .ok_or_else(|| {
-                                radiotrope_app::error::AppError::NotFound(
-                                    "radio-browser provider not found".into(),
-                                )
-                            })
-                            .and_then(|p| p.browse_category(&cat, SEARCH_PAGE_SIZE, 0))
-                    });
-                    let gen2 = gen.clone();
-                    let logo_svc2 = logo_svc.clone();
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let Some(ui) = ui_weak.upgrade() else { return };
-                        match results {
-                            Ok(search_results) => {
-                                let items: Vec<BrowseStation> = search_results
-                                    .stations
-                                    .iter()
-                                    .map(station_to_browse)
-                                    .collect();
-                                let has_more = search_results.has_more;
-                                let (logos, misses) = build_browse_logos_from_cache(&items, 0);
-                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(items),
-                                )));
-                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(logos),
-                                )));
-                                ui.set_has_more(has_more);
-                                ui.set_search_error(Default::default());
-                                spawn_browse_logo_fetch(
-                                    ui.as_weak(),
-                                    logo_svc2,
-                                    misses,
-                                    gen2,
-                                    my_gen,
-                                );
-                            }
-                            Err(e) => {
-                                ui.set_search_error(format!("{e}").into());
-                            }
-                        }
-                        ui.set_search_loading(false);
-                    });
-                })
-                .ok();
+        ui.on_browse_country(move |name, code, query| {
+            let category = Category::new(name.as_str(), name.as_str(), CategoryType::Country)
+                .with_code(Some(code.to_string()).filter(|c| !c.is_empty()));
+            let query = BrowseQuery::Category {
+                category,
+                query: query.trim().to_string(),
+            };
+            start_browse(&ui_weak, &state, &gen, &logo_svc, query);
         });
     }
 
     // load-more-stations callback
     {
         let ui_weak = ui.as_weak();
-        let offset = search_offset.clone();
-        let query_store = search_query.clone();
-        let country_store = search_country.clone();
-        let mode_store = search_is_country_mode.clone();
+        let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
         ui.on_load_more_stations(move || {
-            let current_offset = {
-                let mut o = offset.lock().unwrap();
-                *o += SEARCH_PAGE_SIZE;
-                *o
+            let (query, offset) = {
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                s.1 += SEARCH_PAGE_SIZE;
+                (s.0.clone(), s.1)
             };
-            let is_country = *mode_store.lock().unwrap();
-            let query_str = query_store.lock().unwrap().clone();
-            let country_str = country_store.lock().unwrap().clone();
+            let my_gen = gen.load(Ordering::Relaxed);
             let ui_weak = ui_weak.clone();
             let gen = gen.clone();
             let logo_svc = logo_svc.clone();
             std::thread::Builder::new()
                 .name("load-more".into())
                 .spawn(move || {
-                    let results = if is_country {
-                        ProviderRegistry::with_defaults().and_then(|r| {
-                            let cat =
-                                Category::new(&country_str, &country_str, CategoryType::Country);
-                            r.get("radio-browser")
-                                .ok_or_else(|| {
-                                    radiotrope_app::error::AppError::NotFound(
-                                        "radio-browser provider not found".into(),
-                                    )
-                                })
-                                .and_then(|p| {
-                                    p.browse_category(&cat, SEARCH_PAGE_SIZE, current_offset)
-                                })
-                        })
-                    } else {
-                        ProviderRegistry::with_defaults().and_then(|r| {
-                            r.get("radio-browser")
-                                .ok_or_else(|| {
-                                    radiotrope_app::error::AppError::NotFound(
-                                        "radio-browser provider not found".into(),
-                                    )
-                                })
-                                .and_then(|p| {
-                                    p.search(&query_str, SEARCH_PAGE_SIZE, current_offset)
-                                })
-                        })
-                    };
-                    let gen2 = gen.clone();
-                    let logo_svc2 = logo_svc.clone();
-                    let my_gen = gen.load(Ordering::Relaxed);
+                    let results = fetch_browse_page(&query, offset);
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
-                        match results {
-                            Ok(search_results) => {
-                                let new_items: Vec<BrowseStation> = search_results
-                                    .stations
-                                    .iter()
-                                    .map(station_to_browse)
-                                    .collect();
-                                let has_more = search_results.has_more;
-                                // Append to existing results model
-                                let existing = ui.get_search_results();
-                                let mut all: Vec<BrowseStation> = (0..existing.row_count())
-                                    .map(|i| existing.row_data(i).unwrap())
-                                    .collect();
-                                let logo_offset = all.len();
-                                let (new_logos, misses) =
-                                    build_browse_logos_from_cache(&new_items, logo_offset);
-                                all.extend(new_items);
-                                ui.set_search_results(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(all),
-                                )));
-                                // Append cached/placeholder logos to existing logos model
-                                let existing_logos = ui.get_browse_logos();
-                                let mut all_logos: Vec<slint::Image> = (0..existing_logos
-                                    .row_count())
-                                    .map(|i| existing_logos.row_data(i).unwrap())
-                                    .collect();
-                                all_logos.extend(new_logos);
-                                ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(
-                                    VecModel::from(all_logos),
-                                )));
-                                ui.set_has_more(has_more);
-                                spawn_browse_logo_fetch(
-                                    ui.as_weak(),
-                                    logo_svc2,
-                                    misses,
-                                    gen2,
-                                    my_gen,
-                                );
-                            }
-                            Err(e) => {
-                                ui.set_search_error(format!("{e}").into());
-                            }
-                        }
                         ui.set_search_loading_more(false);
+                        // A new search replaced the list meanwhile
+                        if gen.load(Ordering::Relaxed) != my_gen {
+                            return;
+                        }
+                        match results {
+                            Ok(results) => {
+                                show_browse_results(&ui, results, true, logo_svc, gen, my_gen)
+                            }
+                            Err(e) => ui.set_search_error(format!("{e}").into()),
+                        }
                     });
                 })
                 .ok();
@@ -941,6 +705,7 @@ fn main() {
                                     .filter(|c| c.category_type == CategoryType::Country)
                                     .map(|c| CountryEntry {
                                         flag: flag_image(c.code.as_deref(), Some(&c.name)),
+                                        code: c.code.as_deref().unwrap_or("").into(),
                                         name: c.name.as_str().into(),
                                         station_count: c.station_count.unwrap_or(0) as i32,
                                     })
@@ -948,9 +713,8 @@ fn main() {
                                 countries.sort_by(|a, b| {
                                     a.name.to_lowercase().cmp(&b.name.to_lowercase())
                                 });
-                                ui.set_countries(ModelRc::from(std::rc::Rc::new(VecModel::from(
-                                    countries,
-                                ))));
+                                ALL_COUNTRIES.with(|all| *all.borrow_mut() = countries);
+                                show_countries(&ui, &ui.get_country_filter());
                                 ui.set_country_error(Default::default());
                             }
                             Err(e) => {
@@ -961,6 +725,16 @@ fn main() {
                     });
                 })
                 .ok();
+        });
+    }
+
+    // filter-countries callback
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_filter_countries(move |text| {
+            if let Some(ui) = ui_weak.upgrade() {
+                show_countries(&ui, &text);
+            }
         });
     }
 
@@ -981,7 +755,7 @@ fn main() {
                     &play_state,
                     &favs,
                     &logo_svc,
-                    PlayRequest {
+                    PlayMetadata {
                         url: station.url.to_string(),
                         name: Some(station.name.to_string()),
                         logo_url: if logo_url.is_empty() {
@@ -994,6 +768,8 @@ fn main() {
                         } else {
                             Some(country)
                         },
+                        provider_id: Some(station.provider_id.to_string())
+                            .filter(|id| !id.is_empty()),
                     },
                 );
             }
@@ -1708,24 +1484,6 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     let _ = settings.save();
 }
 
-/// All the data needed to start playing a station.
-struct PlayRequest {
-    url: String,
-    name: Option<String>,
-    logo_url: Option<String>,
-    country: Option<String>,
-}
-
-impl PlayRequest {
-    /// Override metadata from favorites if the station is favorited.
-    fn enrich_from_favorites(mut self, favorites: &Arc<Mutex<FavoritesManager>>) -> Self {
-        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
-        (self.name, self.logo_url, self.country) =
-            favs.enrich_metadata(&self.url, self.name, self.logo_url, self.country);
-        self
-    }
-}
-
 /// Shared helper for all play actions. Enriches metadata from favorites if available,
 /// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
 fn play_station_with_metadata(
@@ -1734,14 +1492,19 @@ fn play_station_with_metadata(
     shared_state: &Arc<Mutex<AppSnapshot>>,
     favorites: &Arc<Mutex<FavoritesManager>>,
     logo_service: &Arc<LogoService>,
-    req: PlayRequest,
+    req: PlayMetadata,
 ) {
-    let PlayRequest {
+    // A favorite's URL, name and logo take priority over the caller's
+    let PlayMetadata {
         url,
         name,
         logo_url,
         country,
-    } = req.enrich_from_favorites(favorites);
+        ..
+    } = favorites
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .resolve_play(req);
 
     // Set UI metadata properties
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
@@ -1915,6 +1678,121 @@ fn format_number(n: u64) -> String {
     }
 }
 
+/// What the station browser is listing
+#[derive(Clone)]
+enum BrowseQuery {
+    /// Most played stations
+    Top,
+    /// Stations whose name matches
+    Search(String),
+    /// Stations in a category, optionally filtered by name
+    Category { category: Category, query: String },
+}
+
+/// Fetch one page of browser results from radio-browser
+fn fetch_browse_page(
+    query: &BrowseQuery,
+    offset: usize,
+) -> radiotrope_app::error::Result<SearchResults> {
+    let registry = ProviderRegistry::with_defaults()?;
+    let radio_browser = || {
+        registry.get("radio-browser").ok_or_else(|| {
+            radiotrope_app::error::AppError::NotFound("radio-browser provider not found".into())
+        })
+    };
+    let first_page = |stations: Vec<Station>| SearchResults {
+        total: None,
+        has_more: stations.len() >= SEARCH_PAGE_SIZE,
+        stations,
+    };
+    match query {
+        BrowseQuery::Top if offset == 0 => {
+            Ok(first_page(radio_browser()?.get_popular(SEARCH_PAGE_SIZE)?))
+        }
+        // Later pages of the top list: every station, most clicked first
+        BrowseQuery::Top => radio_browser()?.search("", SEARCH_PAGE_SIZE, offset),
+        BrowseQuery::Search(q) if offset == 0 => {
+            Ok(first_page(registry.search_all(q, SEARCH_PAGE_SIZE)?))
+        }
+        BrowseQuery::Search(q) => radio_browser()?.search(q, SEARCH_PAGE_SIZE, offset),
+        BrowseQuery::Category { category, query } => {
+            radio_browser()?.search_category(category, query, SEARCH_PAGE_SIZE, offset)
+        }
+    }
+}
+
+/// Replace the browser list with the first page of `query`, fetched in the
+/// background. Results of an older request that finish later are dropped.
+fn start_browse(
+    ui_weak: &slint::Weak<App>,
+    state: &Arc<Mutex<(BrowseQuery, usize)>>,
+    gen: &Arc<AtomicU64>,
+    logo_svc: &Arc<LogoService>,
+    query: BrowseQuery,
+) {
+    *state.lock().unwrap_or_else(|e| e.into_inner()) = (query.clone(), 0);
+    let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
+    // Clear old results immediately
+    if let Some(ui) = ui_weak.upgrade() {
+        ui.set_search_results(ModelRc::default());
+        ui.set_browse_logos(ModelRc::default());
+        ui.set_has_more(false);
+        ui.set_search_error(Default::default());
+        ui.set_search_loading(true);
+    }
+    let ui_weak = ui_weak.clone();
+    let gen = gen.clone();
+    let logo_svc = logo_svc.clone();
+    std::thread::Builder::new()
+        .name("station-browse".into())
+        .spawn(move || {
+            let results = fetch_browse_page(&query, 0);
+            let _ = slint::invoke_from_event_loop(move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                if gen.load(Ordering::Relaxed) != my_gen {
+                    return;
+                }
+                match results {
+                    Ok(results) => show_browse_results(&ui, results, false, logo_svc, gen, my_gen),
+                    Err(e) => ui.set_search_error(format!("{e}").into()),
+                }
+                ui.set_search_loading(false);
+            });
+        })
+        .ok();
+}
+
+/// Show a page of browser results, appending to the list or replacing it,
+/// then fetch the logos that aren't cached
+fn show_browse_results(
+    ui: &App,
+    results: SearchResults,
+    append: bool,
+    logo_svc: Arc<LogoService>,
+    gen: Arc<AtomicU64>,
+    my_gen: u64,
+) {
+    let new_items: Vec<BrowseStation> = results.stations.iter().map(station_to_browse).collect();
+    let (mut items, mut logos) = if append {
+        let existing = ui.get_search_results();
+        let existing_logos = ui.get_browse_logos();
+        (
+            existing.iter().collect::<Vec<_>>(),
+            existing_logos.iter().collect::<Vec<_>>(),
+        )
+    } else {
+        (Vec::new(), Vec::new())
+    };
+    let (new_logos, misses) = build_browse_logos_from_cache(&new_items, items.len());
+    items.extend(new_items);
+    logos.extend(new_logos);
+    ui.set_search_results(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
+    ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
+    ui.set_has_more(results.has_more);
+    ui.set_search_error(Default::default());
+    spawn_browse_logo_fetch(ui.as_weak(), logo_svc, misses, gen, my_gen);
+}
+
 fn station_to_browse(s: &Station) -> BrowseStation {
     BrowseStation {
         name: s.name.as_str().into(),
@@ -1923,6 +1801,7 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         country: s.country.as_deref().unwrap_or("").into(),
         codec: s.codec.as_deref().unwrap_or("").into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
+        provider_id: s.provider_id.as_deref().unwrap_or("").into(),
     }
 }
 
@@ -2027,6 +1906,25 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
 thread_local! {
     static FLAG_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
         std::cell::RefCell::new(HashMap::new());
+}
+
+thread_local! {
+    /// Every country from the last load; the picker shows a filtered copy
+    static ALL_COUNTRIES: std::cell::RefCell<Vec<CountryEntry>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Show the countries whose name contains `filter` (case-insensitive)
+fn show_countries(ui: &App, filter: &str) {
+    let filter = filter.trim().to_lowercase();
+    let countries: Vec<CountryEntry> = ALL_COUNTRIES.with(|all| {
+        all.borrow()
+            .iter()
+            .filter(|c| filter.is_empty() || c.name.to_lowercase().contains(&filter))
+            .cloned()
+            .collect()
+    });
+    ui.set_countries(ModelRc::from(std::rc::Rc::new(VecModel::from(countries))));
 }
 
 /// Flag image for a country (an empty image if there is no flag for it)

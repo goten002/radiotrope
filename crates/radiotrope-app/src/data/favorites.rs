@@ -15,6 +15,17 @@ const FAVORITES_FILE: &str = "favorites.json";
 /// Favorites file format version for migrations
 const FAVORITES_VERSION: u32 = 1;
 
+/// Metadata describing a station to play (see [`FavoritesManager::resolve_play`])
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlayMetadata {
+    pub url: String,
+    pub name: Option<String>,
+    pub logo_url: Option<String>,
+    pub country: Option<String>,
+    /// Provider-specific station ID (e.g. radio-browser's stationuuid)
+    pub provider_id: Option<String>,
+}
+
 /// Favorites file structure
 #[derive(Debug, Serialize, Deserialize)]
 struct FavoritesFile {
@@ -181,23 +192,35 @@ impl FavoritesManager {
         self.favorites.get(&id)
     }
 
-    /// Enrich optional metadata from a matching favorite.
-    /// Favorite name always wins; logo_url and country fill in gaps only.
-    /// Returns (name, logo_url, country) with favorite data merged in.
-    pub fn enrich_metadata(
-        &self,
-        url: &str,
-        name: Option<String>,
-        logo_url: Option<String>,
-        country: Option<String>,
-    ) -> (Option<String>, Option<String>, Option<String>) {
-        if let Some(fav) = self.get_by_url(url) {
-            let name = Some(fav.name().to_string());
-            let logo_url = logo_url.or_else(|| fav.station.logo_url.clone());
-            let country = country.or_else(|| fav.station.country.clone());
-            (name, logo_url, country)
-        } else {
-            (name, logo_url, country)
+    /// Find the favorite for a station about to be played
+    ///
+    /// Matches the stream URL first, then the provider's station ID, since
+    /// providers may return a different (e.g. resolved) URL for the same
+    /// station than the one saved in favorites.
+    pub fn find_match(&self, url: &str, provider_id: Option<&str>) -> Option<&Favorite> {
+        self.get_by_url(url).or_else(|| {
+            let provider_id = provider_id.filter(|id| !id.is_empty())?;
+            self.favorites
+                .values()
+                .find(|f| f.station.provider_id.as_deref() == Some(provider_id))
+        })
+    }
+
+    /// Resolve the metadata for playing a station, favorites taking priority
+    ///
+    /// When the station is a favorite (see [`find_match`](Self::find_match)),
+    /// its URL, name, logo and country are used, and the given values only
+    /// fill in what the favorite lacks.
+    pub fn resolve_play(&self, request: PlayMetadata) -> PlayMetadata {
+        let Some(fav) = self.find_match(&request.url, request.provider_id.as_deref()) else {
+            return request;
+        };
+        PlayMetadata {
+            url: fav.url().to_string(),
+            name: Some(fav.name().to_string()),
+            logo_url: fav.station.logo_url.clone().or(request.logo_url),
+            country: fav.station.country.clone().or(request.country),
+            provider_id: fav.station.provider_id.clone().or(request.provider_id),
         }
     }
 
@@ -473,6 +496,7 @@ impl Default for FavoritesManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::env::temp_dir;
     use std::fs;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -820,5 +844,98 @@ mod tests {
         }
 
         let _ = fs::remove_file(&path);
+    }
+
+    // =========================================================================
+    // Play metadata resolution
+    // =========================================================================
+
+    fn manager_with_favorite() -> FavoritesManager {
+        let mut manager = empty_manager();
+        let fav = Favorite::new("My Station", "http://fav.example/stream")
+            .with_provider("radio-browser", Some("uuid-1".to_string()))
+            .with_logo("http://fav.example/logo.png")
+            .with_metadata(Some("Greece".to_string()), None, HashSet::new());
+        manager.add(fav).unwrap();
+        manager
+    }
+
+    #[test]
+    fn test_find_match_by_url() {
+        let manager = manager_with_favorite();
+        assert!(manager
+            .find_match("http://fav.example/stream", None)
+            .is_some());
+    }
+
+    #[test]
+    fn test_find_match_by_provider_id() {
+        let manager = manager_with_favorite();
+        let fav = manager
+            .find_match("http://resolved.example/other", Some("uuid-1"))
+            .unwrap();
+        assert_eq!(fav.url(), "http://fav.example/stream");
+    }
+
+    #[test]
+    fn test_find_match_none() {
+        let manager = manager_with_favorite();
+        assert!(manager.find_match("http://other/stream", None).is_none());
+        assert!(manager
+            .find_match("http://other/stream", Some("uuid-2"))
+            .is_none());
+        assert!(manager
+            .find_match("http://other/stream", Some(""))
+            .is_none());
+    }
+
+    #[test]
+    fn test_resolve_play_favorite_wins() {
+        let manager = manager_with_favorite();
+        let resolved = manager.resolve_play(PlayMetadata {
+            url: "http://resolved.example/other".to_string(),
+            name: Some("Search Name".to_string()),
+            logo_url: Some("http://search.example/favicon.ico".to_string()),
+            country: Some("The Hellenic Republic".to_string()),
+            provider_id: Some("uuid-1".to_string()),
+        });
+        assert_eq!(resolved.url, "http://fav.example/stream");
+        assert_eq!(resolved.name.as_deref(), Some("My Station"));
+        assert_eq!(
+            resolved.logo_url.as_deref(),
+            Some("http://fav.example/logo.png")
+        );
+        assert_eq!(resolved.country.as_deref(), Some("Greece"));
+    }
+
+    #[test]
+    fn test_resolve_play_fills_gaps_from_request() {
+        let mut manager = empty_manager();
+        manager
+            .add(Favorite::new("Bare", "http://bare.example/stream"))
+            .unwrap();
+        let resolved = manager.resolve_play(PlayMetadata {
+            url: "http://bare.example/stream".to_string(),
+            logo_url: Some("http://search.example/logo.png".to_string()),
+            country: Some("Germany".to_string()),
+            ..Default::default()
+        });
+        assert_eq!(resolved.name.as_deref(), Some("Bare"));
+        assert_eq!(
+            resolved.logo_url.as_deref(),
+            Some("http://search.example/logo.png")
+        );
+        assert_eq!(resolved.country.as_deref(), Some("Germany"));
+    }
+
+    #[test]
+    fn test_resolve_play_not_a_favorite() {
+        let manager = manager_with_favorite();
+        let request = PlayMetadata {
+            url: "http://other/stream".to_string(),
+            name: Some("Other".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(manager.resolve_play(request.clone()), request);
     }
 }
