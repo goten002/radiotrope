@@ -3,10 +3,12 @@
 //! Implementation of `StationProvider` for the Radio Browser directory
 //! (<https://www.radio-browser.info/>).
 
-use crate::config::providers::RADIO_BROWSER_DEFAULT_SERVER;
+use crate::config::providers::{
+    CATEGORY_CACHE_TTL, RADIO_BROWSER_DEFAULT_SERVER, STATION_CACHE_TTL,
+};
 use crate::data::types::Station;
 use crate::error::Result;
-use crate::network::HttpClient;
+use crate::network::{ApiCache, HttpClient};
 
 use super::traits::StationProvider;
 use super::types::{Category, CategoryType, SearchResults};
@@ -132,14 +134,18 @@ pub struct RadioBrowserProvider {
 
 impl RadioBrowserProvider {
     /// Create a provider using the default server
+    ///
+    /// Responses are cached on disk (see [`ApiCache`]) and the HTTP
+    /// connections are shared with every other provider instance.
     pub fn new() -> Result<Self> {
         Ok(Self {
-            client: HttpClient::new()?,
+            client: HttpClient::shared()?.with_cache(ApiCache::open_default()),
             base_url: RADIO_BROWSER_DEFAULT_SERVER.to_string(),
         })
     }
 
-    /// Create a provider with a custom base URL (for testing or mirrors)
+    /// Create a provider with a custom base URL (for testing or mirrors),
+    /// without a response cache
     pub fn with_base_url(base_url: impl Into<String>) -> Result<Self> {
         Ok(Self {
             client: HttpClient::new()?,
@@ -154,9 +160,11 @@ impl RadioBrowserProvider {
 
     /// Search stations via POST /json/stations/search
     fn search_stations(&self, params: &[(&str, &str)]) -> Result<SearchResults> {
-        let rb_stations: Vec<RbStation> = self
-            .client
-            .post_form_json(&self.url("/json/stations/search"), params)?;
+        let rb_stations: Vec<RbStation> = self.client.post_form_json_cached(
+            &self.url("/json/stations/search"),
+            params,
+            STATION_CACHE_TTL,
+        )?;
 
         let has_more = !rb_stations.is_empty();
         let stations: Vec<Station> = rb_stations.into_iter().map(Station::from).collect();
@@ -210,9 +218,10 @@ impl StationProvider for RadioBrowserProvider {
         let mut categories = Vec::new();
 
         // Genres (tags)
-        let tags: Vec<RbTag> = self
-            .client
-            .get_json(&self.url("/json/tags?limit=100&order=stationcount&reverse=true"))?;
+        let tags: Vec<RbTag> = self.client.get_json_cached(
+            &self.url("/json/tags?limit=100&order=stationcount&reverse=true"),
+            CATEGORY_CACHE_TTL,
+        )?;
         for tag in tags {
             if !tag.name.is_empty() {
                 categories.push(
@@ -223,8 +232,9 @@ impl StationProvider for RadioBrowserProvider {
         }
 
         // Countries
-        let countries: Vec<RbCountry> = self.client.get_json(
+        let countries: Vec<RbCountry> = self.client.get_json_cached(
             &self.url("/json/countries?order=stationcount&reverse=true&hidebroken=true"),
+            CATEGORY_CACHE_TTL,
         )?;
         for country in countries {
             if !country.name.is_empty() {
@@ -237,9 +247,10 @@ impl StationProvider for RadioBrowserProvider {
         }
 
         // Languages
-        let languages: Vec<RbLanguage> = self
-            .client
-            .get_json(&self.url("/json/languages?limit=100&order=stationcount&reverse=true"))?;
+        let languages: Vec<RbLanguage> = self.client.get_json_cached(
+            &self.url("/json/languages?limit=100&order=stationcount&reverse=true"),
+            CATEGORY_CACHE_TTL,
+        )?;
         for lang in languages {
             if !lang.name.is_empty() {
                 categories.push(
@@ -287,13 +298,13 @@ impl StationProvider for RadioBrowserProvider {
 
     fn get_popular(&self, limit: usize) -> Result<Vec<Station>> {
         let url = self.url(&format!("/json/stations/topclick/{}", limit));
-        let rb_stations: Vec<RbStation> = self.client.get_json(&url)?;
+        let rb_stations: Vec<RbStation> = self.client.get_json_cached(&url, STATION_CACHE_TTL)?;
         Ok(rb_stations.into_iter().map(Station::from).collect())
     }
 
     fn get_station(&self, id: &str) -> Result<Option<Station>> {
         let url = self.url(&format!("/json/stations/byuuid/{}", id));
-        let rb_stations: Vec<RbStation> = self.client.get_json(&url)?;
+        let rb_stations: Vec<RbStation> = self.client.get_json_cached(&url, STATION_CACHE_TTL)?;
         Ok(rb_stations.into_iter().next().map(Station::from))
     }
 
