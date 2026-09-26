@@ -1,6 +1,7 @@
 import { Theme } from "theme.slint";
 import { Icon } from "components.slint";
 import { VizStyle } from "visualization.slint";
+import { Platform } from "@platform/wifi.slint";
 
 component MenuItem inherits Rectangle {
     in property <string> label;
@@ -85,7 +86,6 @@ export component MenuBar inherits Rectangle {
     callback open-wifi-settings();
     callback open-about();
 
-    in property <bool> show-wifi-option: false;
 
     HorizontalLayout {
         padding-left: 4px;
@@ -359,17 +359,15 @@ export component MenuBar inherits Rectangle {
                         root.open-statistics();
                     }
                 }
-                Rectangle {
-                    height: root.show-wifi-option ? 9px : 0px;
-                    visible: root.show-wifi-option;
+                if Platform.has-wifi: Rectangle {
+                    height: 9px;
                     Rectangle {
                         y: 4px;
                         height: 1px;
                         background: Theme.menu-hover;
                     }
                 }
-                MenuItem {
-                    visible: root.show-wifi-option;
+                if Platform.has-wifi: MenuItem {
                     label: "WiFi Settings...";
                     clicked => {
                         tools-popup.close();

@@ -1,0 +1,8 @@
+// WiFi settings for the Raspberry Pi build (`embedded` feature).
+// build.rs maps `@platform` to this folder or to ../desktop.
+export global Platform {
+    // The Tools menu offers WiFi settings
+    out property <bool> has-wifi: true;
+}
+
+export { WifiSettingsDialog, WifiNetworkEntry } from "../../dialogs/wifi-settings.slint";
