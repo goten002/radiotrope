@@ -201,7 +201,10 @@ export component DialogShell inherits Rectangle {
     // Take keyboard focus on open so Esc works; turn off when a child input
     // focuses itself (Esc still reaches the shell from the input)
     in property <bool> auto-focus: true;
+    // Show a back arrow at the start of the title row
+    in property <bool> show-back: false;
     callback close-requested();
+    callback back-requested();
 
     // Drives the fade and slide-in when the dialog appears
     property <bool> shown: false;
@@ -275,6 +278,15 @@ export component DialogShell inherits Rectangle {
                 if root.title != "": HorizontalLayout {
                     spacing: 10px;
                     padding-right: 32px;
+
+                    if root.show-back: VerticalLayout {
+                        alignment: center;
+                        IconButton {
+                            icon: @image-url("icons/chevron-left.svg");
+                            icon-size: 16px;
+                            clicked => { root.back-requested(); }
+                        }
+                    }
 
                     if root.icon.width > 0: VerticalLayout {
                         alignment: center;
