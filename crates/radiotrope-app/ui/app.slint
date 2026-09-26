@@ -125,6 +125,7 @@ export component App inherits Window {
 
     // Accent color proxy — two-way bind to Theme global
     in-out property <color> accent-color <=> Theme.accent-base;
+    in-out property <bool> panel-gradient <=> Theme.panel-gradient;
 
     in-out property <string> stat-health;
     in-out property <string> stat-playtime;
@@ -148,6 +149,7 @@ export component App inherits Window {
             background: Theme.panel;
 
             Rectangle {
+                visible: Theme.panel-gradient;
                 background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
             }
 
