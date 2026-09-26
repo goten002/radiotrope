@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { Visualization } from "visualization.slint";
+import { Chip, IconButton } from "components.slint";
 
 export component Playback inherits Rectangle {
     in property <string> station-name;
@@ -16,8 +17,13 @@ export component Playback inherits Rectangle {
     callback toggle-favorite();
     in-out property <string> viz-mode <=> viz.viz-mode;
 
-    height: 100px;
+    height: 108px;
     background: Theme.panel;
+
+    // Soft accent glow from the left, behind the logo
+    Rectangle {
+        background: @linear-gradient(90deg, Theme.accent-glow 0%, transparent 45%);
+    }
 
     // 1px bottom separator — shadow edge casting onto favorites
     Rectangle {
@@ -27,24 +33,30 @@ export component Playback inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding: 12px;
-        spacing: 12px;
+        padding: 14px;
+        padding-left: 16px;
+        spacing: 14px;
         alignment: stretch;
 
         // Station logo / placeholder
         VerticalLayout {
             alignment: center;
             Rectangle {
-                width: 70px;
-                height: 70px;
-                background: Theme.surface;
-                border-radius: 4px;
+                width: 76px;
+                height: 76px;
+                background: Theme.elevated;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.hairline;
+                drop-shadow-blur: 14px;
+                drop-shadow-offset-y: 3px;
+                drop-shadow-color: Theme.shadow-soft;
                 clip: true;
 
                 if root.station-logo.width > 0: Image {
                     source: root.station-logo;
-                    width: 70px;
-                    height: 70px;
+                    width: 76px;
+                    height: 76px;
                     image-fit: contain;
                 }
 
@@ -63,56 +75,45 @@ export component Playback inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 4px;
+            spacing: 5px;
 
             Text {
                 text: root.station-name;
                 color: Theme.text-primary;
-                font-size: 16px;
+                font-size: 18px;
                 font-weight: 600;
                 overflow: elide;
             }
 
-            Text {
+            if root.codec-info != "": Text {
                 text: root.codec-info;
                 color: Theme.text-secondary;
                 font-size: 12px;
                 overflow: elide;
             }
 
-            Text {
-                text: root.status-text;
-                color: root.is-error ? Theme.danger : Theme.accent-text;
-                font-size: 14px;
-                overflow: elide;
+            HorizontalLayout {
+                alignment: start;
+
+                Chip {
+                    text: root.status-text;
+                    tone: root.is-error ? Theme.danger : Theme.accent-text;
+                    dot: true;
+                    pulse: root.status-text == "Playing" || root.is-loading;
+                }
             }
         }
 
         // Star (favorite) button
         if root.has-station: VerticalLayout {
             alignment: center;
-            Rectangle {
-                width: 32px;
-                height: 32px;
-                border-radius: 4px;
-                background: star-touch.has-hover ? Theme.surface : transparent;
-                animate background { duration: Theme.fast; }
-
-                star-touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.toggle-favorite();
-                    }
-                }
-
-                Image {
-                    source: @image-url("icons/star.svg");
-                    width: 20px;
-                    height: 20px;
-                    colorize: root.is-station-favorited ? Theme.accent : Theme.text-secondary;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+            IconButton {
+                width: 36px;
+                height: 36px;
+                icon: @image-url("icons/star.svg");
+                icon-size: 20px;
+                active: root.is-station-favorited;
+                clicked => { root.toggle-favorite(); }
             }
         }
 

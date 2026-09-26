@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { DialogShell, Toggle } from "../components.slint";
 
 component EqFader inherits Rectangle {
     in property <string> label;
@@ -177,257 +178,164 @@ export component EqualizerDialog inherits Rectangle {
     callback preamp-changed(float);
     callback band-changed(int, float);
 
-    if show-dialog: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: Theme.scrim;
+    if show-dialog: DialogShell {
+        title: "Equalizer";
+        subtitle: "10-band EQ, applied live to the stream";
+        card-width: 580px;
+        close-requested => { root.show-dialog = false; }
 
-        TouchArea {
-            clicked => { root.show-dialog = false; }
-        }
+        // Controls row: enable toggle + preset dropdown
+        HorizontalLayout {
+            height: 28px;
+            spacing: 12px;
+            alignment: start;
 
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 560px;
-            height: card-layout.preferred-height + 24px;
-            background: Theme.card;
-            border-radius: Theme.radius-lg;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: Theme.shadow;
+            Toggle {
+                label: "Enabled";
+                checked <=> root.eq-enabled;
+                toggled(on) => { root.enabled-toggled(on); }
+            }
 
-            // Block clicks from closing dialog
-            TouchArea {}
+            // Preset dropdown
+            Rectangle {
+                width: 160px;
+                height: 30px;
+                border-radius: 6px;
+                background: preset-dd-touch.has-hover
+                    ? Theme.menu-hover
+                    : Theme.elevated;
+                animate background { duration: Theme.fast; }
 
-            card-layout := VerticalLayout {
-                padding: 16px;
-                spacing: 12px;
+                preset-dd-touch := TouchArea {
+                    clicked => { preset-popup.show(); }
+                }
 
-                // Title bar
                 HorizontalLayout {
-                    height: 28px;
+                    padding-left: 12px;
+                    padding-right: 10px;
 
                     Text {
-                        text: "Equalizer";
+                        text: root.preset-name == "" ? "Custom" : root.preset-name;
                         color: Theme.text-primary;
-                        font-size: 14px;
-                        font-weight: 600;
+                        font-size: 12.5px;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
+                        overflow: elide;
                     }
 
+                    // Chevron
                     Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 4px;
-                        background: close-touch.has-hover ? Theme.menu-hover : transparent;
-                        animate background { duration: Theme.fast; }
+                        width: 14px;
+                        height: parent.height;
 
-                        close-touch := TouchArea {
-                            clicked => { root.show-dialog = false; }
-                        }
-
-                        Image {
-                            width: 12px;
-                            height: 12px;
-                            source: @image-url("../icons/xmark.svg");
-                            colorize: close-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        Text {
+                            text: "\u{2304}";
+                            color: Theme.text-secondary;
+                            font-size: 14px;
+                            y: (parent.height - self.preferred-height) / 2 - 2px;
                         }
                     }
                 }
 
-                // Controls row: enable toggle + preset dropdown
-                HorizontalLayout {
-                    height: 28px;
-                    spacing: 12px;
-                    alignment: start;
+                preset-popup := PopupWindow {
+                    x: 0;
+                    y: 30px;
+                    width: 160px;
 
-                    // Enable checkbox
                     Rectangle {
-                        width: enable-row.preferred-width;
-                        height: 28px;
+                        background: Theme.popup-bg;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.hairline;
+                        drop-shadow-blur: 8px;
+                        drop-shadow-color: Theme.shadow-soft;
 
-                        enable-row := HorizontalLayout {
-                            spacing: 6px;
-                            alignment: start;
+                        VerticalLayout {
+                            padding: 4px;
 
-                            Rectangle {
-                                width: 18px;
-                                height: 18px;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 4px;
-                                border-width: 1.5px;
-                                border-color: root.eq-enabled ? Theme.accent : Theme.text-secondary;
-                                background: root.eq-enabled ? Theme.accent : transparent;
-
-                                enable-touch := TouchArea {
-                                    clicked => {
-                                        root.eq-enabled = !root.eq-enabled;
-                                        root.enabled-toggled(root.eq-enabled);
-                                    }
-                                }
-
-                                if root.eq-enabled: Image {
-                                    width: 12px;
-                                    height: 12px;
-                                    source: @image-url("../icons/tick.svg");
-                                    colorize: Theme.button-text;
-                                }
-                            }
-
-                            Text {
-                                text: "On";
-                                color: Theme.text-primary;
-                                font-size: 13px;
-                                vertical-alignment: center;
-                            }
+                            PresetItem { name: "Flat"; is-selected: root.preset-name == "Flat"; clicked => { preset-popup.close(); root.preset-selected("Flat"); } }
+                            PresetItem { name: "Radio Enhance"; is-selected: root.preset-name == "Radio Enhance"; clicked => { preset-popup.close(); root.preset-selected("Radio Enhance"); } }
+                            PresetItem { name: "Rock"; is-selected: root.preset-name == "Rock"; clicked => { preset-popup.close(); root.preset-selected("Rock"); } }
+                            PresetItem { name: "Pop"; is-selected: root.preset-name == "Pop"; clicked => { preset-popup.close(); root.preset-selected("Pop"); } }
+                            PresetItem { name: "Classical"; is-selected: root.preset-name == "Classical"; clicked => { preset-popup.close(); root.preset-selected("Classical"); } }
+                            PresetItem { name: "Jazz"; is-selected: root.preset-name == "Jazz"; clicked => { preset-popup.close(); root.preset-selected("Jazz"); } }
+                            PresetItem { name: "Bass Boost"; is-selected: root.preset-name == "Bass Boost"; clicked => { preset-popup.close(); root.preset-selected("Bass Boost"); } }
+                            PresetItem { name: "Treble Boost"; is-selected: root.preset-name == "Treble Boost"; clicked => { preset-popup.close(); root.preset-selected("Treble Boost"); } }
+                            PresetItem { name: "Dance"; is-selected: root.preset-name == "Dance"; clicked => { preset-popup.close(); root.preset-selected("Dance"); } }
+                            PresetItem { name: "Soft"; is-selected: root.preset-name == "Soft"; clicked => { preset-popup.close(); root.preset-selected("Soft"); } }
+                            PresetItem { name: "Live"; is-selected: root.preset-name == "Live"; clicked => { preset-popup.close(); root.preset-selected("Live"); } }
+                            PresetItem { name: "Club"; is-selected: root.preset-name == "Club"; clicked => { preset-popup.close(); root.preset-selected("Club"); } }
+                            PresetItem { name: "Headphones"; is-selected: root.preset-name == "Headphones"; clicked => { preset-popup.close(); root.preset-selected("Headphones"); } }
+                            PresetItem { name: "Techno"; is-selected: root.preset-name == "Techno"; clicked => { preset-popup.close(); root.preset-selected("Techno"); } }
                         }
                     }
-
-                    // Preset dropdown
-                    Rectangle {
-                        width: 160px;
-                        height: 30px;
-                        border-radius: 6px;
-                        background: preset-dd-touch.has-hover
-                            ? Theme.menu-hover
-                            : Theme.elevated;
-                        animate background { duration: Theme.fast; }
-
-                        preset-dd-touch := TouchArea {
-                            clicked => { preset-popup.show(); }
-                        }
-
-                        HorizontalLayout {
-                            padding-left: 12px;
-                            padding-right: 10px;
-
-                            Text {
-                                text: root.preset-name == "" ? "Custom" : root.preset-name;
-                                color: Theme.text-primary;
-                                font-size: 12.5px;
-                                vertical-alignment: center;
-                                horizontal-stretch: 1;
-                                overflow: elide;
-                            }
-
-                            // Chevron
-                            Rectangle {
-                                width: 14px;
-                                height: parent.height;
-
-                                Text {
-                                    text: "\u{2304}";
-                                    color: Theme.text-secondary;
-                                    font-size: 14px;
-                                    y: (parent.height - self.preferred-height) / 2 - 2px;
-                                }
-                            }
-                        }
-
-                        preset-popup := PopupWindow {
-                            x: 0;
-                            y: 30px;
-                            width: 160px;
-
-                            Rectangle {
-                                background: Theme.popup-bg;
-                                border-radius: Theme.radius-md;
-                                border-width: 1px;
-                                border-color: Theme.hairline;
-                                drop-shadow-blur: 8px;
-                                drop-shadow-color: Theme.shadow-soft;
-
-                                VerticalLayout {
-                                    padding: 4px;
-
-                                    PresetItem { name: "Flat"; is-selected: root.preset-name == "Flat"; clicked => { preset-popup.close(); root.preset-selected("Flat"); } }
-                                    PresetItem { name: "Radio Enhance"; is-selected: root.preset-name == "Radio Enhance"; clicked => { preset-popup.close(); root.preset-selected("Radio Enhance"); } }
-                                    PresetItem { name: "Rock"; is-selected: root.preset-name == "Rock"; clicked => { preset-popup.close(); root.preset-selected("Rock"); } }
-                                    PresetItem { name: "Pop"; is-selected: root.preset-name == "Pop"; clicked => { preset-popup.close(); root.preset-selected("Pop"); } }
-                                    PresetItem { name: "Classical"; is-selected: root.preset-name == "Classical"; clicked => { preset-popup.close(); root.preset-selected("Classical"); } }
-                                    PresetItem { name: "Jazz"; is-selected: root.preset-name == "Jazz"; clicked => { preset-popup.close(); root.preset-selected("Jazz"); } }
-                                    PresetItem { name: "Bass Boost"; is-selected: root.preset-name == "Bass Boost"; clicked => { preset-popup.close(); root.preset-selected("Bass Boost"); } }
-                                    PresetItem { name: "Treble Boost"; is-selected: root.preset-name == "Treble Boost"; clicked => { preset-popup.close(); root.preset-selected("Treble Boost"); } }
-                                    PresetItem { name: "Dance"; is-selected: root.preset-name == "Dance"; clicked => { preset-popup.close(); root.preset-selected("Dance"); } }
-                                    PresetItem { name: "Soft"; is-selected: root.preset-name == "Soft"; clicked => { preset-popup.close(); root.preset-selected("Soft"); } }
-                                    PresetItem { name: "Live"; is-selected: root.preset-name == "Live"; clicked => { preset-popup.close(); root.preset-selected("Live"); } }
-                                    PresetItem { name: "Club"; is-selected: root.preset-name == "Club"; clicked => { preset-popup.close(); root.preset-selected("Club"); } }
-                                    PresetItem { name: "Headphones"; is-selected: root.preset-name == "Headphones"; clicked => { preset-popup.close(); root.preset-selected("Headphones"); } }
-                                    PresetItem { name: "Techno"; is-selected: root.preset-name == "Techno"; clicked => { preset-popup.close(); root.preset-selected("Techno"); } }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // dB scale + faders
-                HorizontalLayout {
-                    spacing: 0px;
-
-                    // dB labels
-                    VerticalLayout {
-                        width: 28px;
-                        height: 220px;
-
-                        Text {
-                            text: "+12";
-                            color: Theme.text-secondary;
-                            font-size: 9px;
-                            horizontal-alignment: right;
-                            vertical-alignment: top;
-                        }
-                        Rectangle { vertical-stretch: 1; }
-                        Text {
-                            text: "0 dB";
-                            color: Theme.text-secondary;
-                            font-size: 9px;
-                            horizontal-alignment: right;
-                            vertical-alignment: center;
-                        }
-                        Rectangle { vertical-stretch: 1; }
-                        Text {
-                            text: "-12";
-                            color: Theme.text-secondary;
-                            font-size: 9px;
-                            horizontal-alignment: right;
-                            vertical-alignment: bottom;
-                        }
-                    }
-
-                    // Preamp fader
-                    EqFader {
-                        label: "Pre";
-                        value <=> root.preamp-gain;
-                        value-changed(v) => { root.preamp-changed(v); }
-                    }
-
-                    // Separator line
-                    VerticalLayout {
-                        width: 1px;
-                        padding-top: 8px;
-                        padding-bottom: 24px;
-                        Rectangle {
-                            width: 1px;
-                            background: Theme.menu-hover;
-                        }
-                    }
-
-                    // 10 band faders — each stretches equally
-                    EqFader { label: "32"; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
-                    EqFader { label: "64"; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
-                    EqFader { label: "125"; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
-                    EqFader { label: "250"; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
-                    EqFader { label: "500"; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
-                    EqFader { label: "1K"; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
-                    EqFader { label: "2K"; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
-                    EqFader { label: "4K"; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
-                    EqFader { label: "8K"; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
-                    EqFader { label: "16K"; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
                 }
             }
+        }
+
+        // dB scale + faders
+        HorizontalLayout {
+            spacing: 0px;
+
+            // dB labels
+            VerticalLayout {
+                width: 28px;
+                height: 220px;
+
+                Text {
+                    text: "+12";
+                    color: Theme.text-secondary;
+                    font-size: 9px;
+                    horizontal-alignment: right;
+                    vertical-alignment: top;
+                }
+                Rectangle { vertical-stretch: 1; }
+                Text {
+                    text: "0 dB";
+                    color: Theme.text-secondary;
+                    font-size: 9px;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+                Rectangle { vertical-stretch: 1; }
+                Text {
+                    text: "-12";
+                    color: Theme.text-secondary;
+                    font-size: 9px;
+                    horizontal-alignment: right;
+                    vertical-alignment: bottom;
+                }
+            }
+
+            // Preamp fader
+            EqFader {
+                label: "Pre";
+                value <=> root.preamp-gain;
+                value-changed(v) => { root.preamp-changed(v); }
+            }
+
+            // Separator line
+            VerticalLayout {
+                width: 1px;
+                padding-top: 8px;
+                padding-bottom: 24px;
+                Rectangle {
+                    width: 1px;
+                    background: Theme.menu-hover;
+                }
+            }
+
+            // 10 band faders — each stretches equally
+            EqFader { label: "32"; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
+            EqFader { label: "64"; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
+            EqFader { label: "125"; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
+            EqFader { label: "250"; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
+            EqFader { label: "500"; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
+            EqFader { label: "1K"; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
+            EqFader { label: "2K"; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
+            EqFader { label: "4K"; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
+            EqFader { label: "8K"; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
+            EqFader { label: "16K"; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
         }
     }
 }

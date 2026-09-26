@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { DialogShell, Field } from "../components.slint";
 
 export component NetworkStreamDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
@@ -8,90 +9,51 @@ export component NetworkStreamDialog inherits Rectangle {
     callback accepted(string);
     callback cancelled();
 
-    // Overlay covers the entire window
-    if show-dialog: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: Theme.scrim;
+    function cancel() {
+        root.url = "";
+        root.show-dialog = false;
+        root.cancelled();
+    }
 
-        TouchArea {
-            clicked => {
-                root.url = "";
-                root.show-dialog = false;
-                root.cancelled();
+    function play() {
+        if root.url != "" {
+            root.show-dialog = false;
+            root.accepted(root.url);
+            root.url = "";
+        }
+    }
+
+    if show-dialog: DialogShell {
+        title: "Open Network Stream";
+        subtitle: "Play any internet radio or HLS stream by its address";
+        card-width: 460px;
+        auto-focus: false;
+        close-requested => { root.cancel(); }
+
+        Field {
+            label: "Stream URL";
+            url-input := StyledLineEdit {
+                placeholder-text: "https://stream.example.com/radio";
+                text <=> root.url;
+                clearable: true;
+                accepted(url) => { root.play(); }
+                init => { self.focus-input(); }
             }
         }
 
-        // Dialog card
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 450px;
-            height: dialog-layout.preferred-height + 40px;
-            background: Theme.card;
-            border-radius: Theme.radius-lg;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: Theme.shadow;
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
 
-            // Block clicks from closing the overlay
-            TouchArea {}
+            SecondaryButton {
+                label: "Cancel";
+                clicked => { root.cancel(); }
+            }
 
-            dialog-layout := VerticalLayout {
-                padding: 20px;
-                spacing: 12px;
-
-                Text {
-                    text: "Open Network Stream";
-                    color: Theme.text-primary;
-                    font-size: 16px;
-                    font-weight: 600;
-                }
-
-                VerticalLayout {
-                    Text {
-                        text: "Enter the URL of the radio station:";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                    }
-
-                    url-input := StyledLineEdit {
-                        placeholder-text: "https://stream.example.com/radio";
-                        text <=> root.url;
-                        accepted(url) => {
-                            if root.url != "" {
-                                root.show-dialog = false;
-                                root.accepted(root.url);
-                                root.url = "";
-                            }
-                        }
-                    }
-                }
-
-                HorizontalLayout {
-                    alignment: end;
-                    spacing: 8px;
-
-                    SecondaryButton {
-                        label: "Cancel";
-                        clicked => {
-                            root.url = "";
-                            root.show-dialog = false;
-                            root.cancelled();
-                        }
-                    }
-
-                    AccentButton {
-                        label: "Play";
-                        enabled: root.url != "";
-                        clicked => {
-                            root.show-dialog = false;
-                            root.accepted(root.url);
-                            root.url = "";
-                        }
-                    }
-                }
+            AccentButton {
+                label: "Play";
+                enabled: root.url != "";
+                clicked => { root.play(); }
             }
         }
     }
