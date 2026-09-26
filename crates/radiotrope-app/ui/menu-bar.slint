@@ -151,6 +151,11 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> always-on-top;
     callback minimize();
     callback toggle-custom-frame();
+    // (x, y, pressed) -> whether the system shows its menu (on press or on
+    // the release that follows)
+    callback show-system-menu(length, length, bool) -> bool;
+    property <length> window-menu-x;
+    property <length> window-menu-y;
     callback close-window();
 
 
@@ -236,13 +241,27 @@ export component MenuBar inherits Rectangle {
         }
 
         // Empty part of the bar: drag to move, double-click to maximize
-        WindowMoveArea {
+        move-area := WindowMoveArea {
             horizontal-stretch: 1;
             enabled: root.custom-frame;
 
-            TouchArea {
+            move-touch := TouchArea {
                 enabled: root.custom-frame;
                 double-clicked => { root.maximized = !root.maximized; }
+                // Right-click: the system window menu, or ours where the
+                // system has none (ours opens on press: X11 window managers
+                // can close a popup opened on release)
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        if !root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true) {
+                            root.window-menu-x = move-area.x + self.mouse-x + 2px;
+                            root.window-menu-y = self.mouse-y + 2px;
+                            window-popup.show();
+                        }
+                    } else if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
+                        root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false);
+                    }
+                }
             }
         }
 
@@ -410,6 +429,69 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         stations-popup.close();
                         root.open-country-picker();
+                    }
+                }
+            }
+        }
+    }
+
+    // Our window menu, for systems without one (some X11 window managers)
+    window-popup := PopupWindow {
+        x: root.window-menu-x;
+        y: root.window-menu-y;
+        width: window-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: Theme.shadow-soft;
+            drop-shadow-offset-y: 2px;
+
+            window-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "Minimize";
+                    icon: @image-url("icons/window-minimize.svg");
+                    clicked => {
+                        window-popup.close();
+                        root.minimize();
+                    }
+                }
+                MenuItem {
+                    label: root.maximized ? "Restore" : "Maximize";
+                    icon: root.maximized ? @image-url("icons/window-restore.svg") : @image-url("icons/window-maximize.svg");
+                    clicked => {
+                        window-popup.close();
+                        root.maximized = !root.maximized;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Always on Top";
+                    icon: @image-url("icons/thumbtack.svg");
+                    checked: root.always-on-top;
+                    clicked => {
+                        window-popup.close();
+                        root.always-on-top = !root.always-on-top;
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                MenuItem {
+                    label: "Close";
+                    icon: @image-url("icons/xmark.svg");
+                    clicked => {
+                        window-popup.close();
+                        root.close-window();
                     }
                 }
             }

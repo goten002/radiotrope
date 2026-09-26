@@ -32,8 +32,11 @@ export component App inherits Window {
     in-out property <bool> keep-on-top: false;
     no-frame: root.custom-frame;
     // Edges to grab for resizing, since there is no system frame
-    resize-border-width: root.custom-frame && !root.maximized ? 6px : 0px;
+    resize-border-width: root.custom-frame && !root.maximized ? 8px : 0px;
     always-on-top: root.keep-on-top;
+    callback minimize-window();
+    // The OS window menu on right-click; false when there is none
+    callback show-system-menu(length, length, bool) -> bool;
 
     callback play-url(string);
     callback stop-clicked();
@@ -190,7 +193,8 @@ export component App inherits Window {
                 custom-frame: root.custom-frame;
                 maximized <=> root.maximized;
                 always-on-top <=> root.keep-on-top;
-                minimize => { root.minimized = true; }
+                minimize => { root.minimize-window(); }
+                show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
                 close-window => { root.close(); }
                 toggle-custom-frame => { root.custom-frame = !root.custom-frame; }
                 open-wifi-settings => {

@@ -1,5 +1,7 @@
 mod app;
 mod mcp;
+#[cfg(feature = "desktop")]
+mod window_frame;
 
 slint::include_modules!();
 
@@ -180,6 +182,21 @@ fn main() {
     // The Pi build is full screen with no frame to replace
     if cfg!(not(feature = "embedded")) {
         ui.set_custom_frame(settings.custom_title_bar);
+        #[cfg(feature = "desktop")]
+        {
+            let ui_weak = ui.as_weak();
+            ui.on_minimize_window(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    window_frame::minimize(ui.window());
+                }
+            });
+            let ui_weak = ui.as_weak();
+            ui.on_show_system_menu(move |x, y, pressed| {
+                ui_weak
+                    .upgrade()
+                    .is_some_and(|ui| window_frame::show_system_menu(ui.window(), x, y, pressed))
+            });
+        }
         // Window managers ignore the level on a window that isn't mapped
         // yet (seen on X11), so raise it once the window is up
         if settings.always_on_top {
