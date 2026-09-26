@@ -1,18 +1,19 @@
 //! Station recording
 //!
-//! Records the decoded audio of the playing station to an MP3 file.
+//! Records the decoded audio of the playing station to an MP3, Opus or WAV
+//! file.
 //!
 //! Two [`RecordingTap`] sources sit in the playback chain, one before and one
 //! after the equalizer. Both pass audio through untouched; while a recording
 //! is running, the tap chosen by [`TapPoint`] also copies the samples to a
-//! writer thread, which encodes them with LAME and writes the file. Volume is
+//! writer thread, which encodes them and writes the file. Volume is
 //! applied later by the output sink, so it never affects the recording.
 //!
 //! The taps never block playback: batches are handed over with `try_send`,
 //! and if the writer falls behind, batches are dropped and counted.
 
 use std::fs::{File, OpenOptions};
-use std::io::{BufWriter, Write};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::mem;
 use std::num::NonZero;
 use std::path::{Path, PathBuf};
@@ -22,10 +23,14 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
-use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushNoGap, InterleavedPcm, Mode, MonoPcm};
 use rodio::Source;
 
 use crate::error::RadioError;
+
+mod mp3;
+mod opus;
+mod resample;
+mod wav;
 
 /// Samples per batch sent to the writer (about 46 ms of 44.1 kHz stereo).
 const BATCH_SAMPLES: usize = 4096;
@@ -41,12 +46,6 @@ const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How long `stop()` waits for the writer to finish the file.
 const STOP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// MP3 bitrate for stereo recordings.
-const STEREO_BITRATE: Bitrate = Bitrate::Kbps192;
-
-/// MP3 bitrate for mono recordings.
-const MONO_BITRATE: Bitrate = Bitrate::Kbps96;
 
 /// Where in the playback chain a recording takes its audio from
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +65,30 @@ impl TapPoint {
     }
 }
 
-/// Tag fields written at the start of the MP3 file
+/// File format of a recording
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordingFormat {
+    /// MP3, 192 kbps: plays everywhere
+    #[default]
+    Mp3,
+    /// Opus in Ogg, 128 kbps: better sound for the size
+    Opus,
+    /// 16-bit PCM WAV: uncompressed, large
+    Wav,
+}
+
+impl RecordingFormat {
+    /// File name extension, without the dot
+    pub fn extension(self) -> &'static str {
+        match self {
+            RecordingFormat::Mp3 => "mp3",
+            RecordingFormat::Opus => "opus",
+            RecordingFormat::Wav => "wav",
+        }
+    }
+}
+
+/// Tag fields stored in the file (ID3, Opus comments or WAV INFO)
 #[derive(Debug, Clone, Default)]
 pub struct RecordingTags {
     pub title: String,
@@ -82,6 +104,7 @@ pub struct RecordingTags {
 pub struct RecordingOptions {
     /// File to create. It must not exist yet.
     pub path: PathBuf,
+    pub format: RecordingFormat,
     pub tap: TapPoint,
     pub tags: RecordingTags,
 }
@@ -167,11 +190,11 @@ impl Recorder {
 
         let (tx, rx) = bounded(QUEUE_BATCHES);
         let stats = Arc::new(WriterStats::default());
-        let header = id3v2_tag(&options.tags);
+        let (format, tags) = (options.format, options.tags);
         let writer_stats = stats.clone();
         let handle = thread::Builder::new()
             .name("recording-writer".to_string())
-            .spawn(move || writer_loop(file, header, rx, writer_stats))
+            .spawn(move || writer_loop(file, new_encoder(format, tags), rx, writer_stats))
             .map_err(|e| RadioError::Audio(format!("Failed to spawn recording thread: {e}")))?;
 
         let generation = self.shared.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -415,83 +438,58 @@ impl<S> Drop for RecordingTap<S> {
 // Writer thread
 // ---------------------------------------------------------------------------
 
-/// A LAME encoder set up for one input format.
-struct Mp3Encoder {
-    encoder: Encoder,
-    sample_rate: u32,
-    channels: u16,
-    /// Reused buffer for the first two channels of multichannel audio
-    stereo: Vec<f32>,
-}
+/// Turns interleaved audio into the bytes of one file format.
+///
+/// Encoders get mono or stereo samples within ±1.0. The rate and channel
+/// count can change between calls (a station switching streams); each
+/// format deals with that in its own way.
+trait AudioEncoder {
+    /// Encode `samples`, appending file bytes to `out`.
+    fn encode(
+        &mut self,
+        sample_rate: u32,
+        channels: u16,
+        samples: &[f32],
+        out: &mut Vec<u8>,
+    ) -> Result<(), String>;
 
-impl Mp3Encoder {
-    fn new(sample_rate: u32, channels: u16) -> Result<Self, String> {
-        let mono = channels == 1;
-        let mut builder = Builder::new().ok_or("Could not create the MP3 encoder")?;
-        builder
-            .set_sample_rate(sample_rate)
-            .map_err(|e| format!("MP3 encoder: {e}"))?;
-        builder
-            .set_num_channels(if mono { 1 } else { 2 })
-            .map_err(|e| format!("MP3 encoder: {e}"))?;
-        builder
-            .set_brate(if mono { MONO_BITRATE } else { STEREO_BITRATE })
-            .map_err(|e| format!("MP3 encoder: {e}"))?;
-        builder
-            .set_mode(if mono { Mode::Mono } else { Mode::JointStereo })
-            .map_err(|e| format!("MP3 encoder: {e}"))?;
-        builder
-            .set_quality(mp3lame_encoder::Quality::NearBest)
-            .map_err(|e| format!("MP3 encoder: {e}"))?;
-        let encoder = builder.build().map_err(|e| format!("MP3 encoder: {e}"))?;
-        Ok(Self {
-            encoder,
-            sample_rate,
-            channels,
-            stereo: Vec::new(),
-        })
-    }
+    /// Write whatever is still buffered; called once at the end.
+    fn finish(&mut self, out: &mut Vec<u8>) -> Result<(), String>;
 
-    /// Encode interleaved samples, appending MP3 data to `out`.
-    fn encode(&mut self, samples: &mut [f32], out: &mut Vec<u8>) -> Result<(), String> {
-        for s in samples.iter_mut() {
-            // The EQ has no limiter; clip like the sound card would.
-            *s = if s.is_finite() {
-                s.clamp(-1.0, 1.0)
-            } else {
-                0.0
-            };
-        }
-        let frames = samples.len() / self.channels as usize;
-        // LAME's worst case: 1.25 * samples + 7200 bytes.
-        out.reserve(frames * 5 / 4 + 7200);
-        let result = match self.channels {
-            1 => self.encoder.encode_to_vec(MonoPcm(samples), out),
-            2 => self.encoder.encode_to_vec(InterleavedPcm(samples), out),
-            n => {
-                // Keep front left/right of surround streams.
-                self.stereo.clear();
-                for frame in samples.chunks_exact(n as usize) {
-                    self.stereo.extend_from_slice(&frame[..2]);
-                }
-                self.encoder
-                    .encode_to_vec(InterleavedPcm(&self.stereo), out)
-            }
-        };
-        result
-            .map(|_| ())
-            .map_err(|e| format!("MP3 encoding failed: {e}"))
-    }
-
-    /// Flush the encoder's last frames into `out`.
-    fn finish(&mut self, out: &mut Vec<u8>) {
-        out.reserve(7200);
-        let _ = self.encoder.flush_to_vec::<FlushNoGap>(out);
+    /// Bytes to overwrite at file offsets once everything is written,
+    /// e.g. sizes in a header.
+    fn header_patches(&self) -> Vec<(u64, Vec<u8>)> {
+        Vec::new()
     }
 }
 
-fn writer_loop(file: File, header: Vec<u8>, rx: Receiver<WriterMsg>, stats: Arc<WriterStats>) {
-    if let Err(e) = write_recording(file, header, &rx, &stats) {
+fn new_encoder(format: RecordingFormat, tags: RecordingTags) -> Box<dyn AudioEncoder> {
+    match format {
+        RecordingFormat::Mp3 => Box::new(mp3::Mp3Encoder::new(tags)),
+        RecordingFormat::Opus => Box::new(opus::OpusEncoder::new(tags)),
+        RecordingFormat::Wav => Box::new(wav::WavEncoder::new(tags)),
+    }
+}
+
+/// Mix interleaved audio from `from` channels to `to` (1 or 2).
+fn convert_channels(samples: &[f32], from: u16, to: u16) -> Vec<f32> {
+    let from = from.max(1) as usize;
+    let frames = samples.chunks_exact(from);
+    match (from, to) {
+        (1, _) => frames.flat_map(|f| [f[0], f[0]]).collect(),
+        (_, 1) => frames.map(|f| (f[0] + f[1]) * 0.5).collect(),
+        // Keep front left/right of surround streams
+        _ => frames.flat_map(|f| [f[0], f[1]]).collect(),
+    }
+}
+
+fn writer_loop(
+    file: File,
+    encoder: Box<dyn AudioEncoder>,
+    rx: Receiver<WriterMsg>,
+    stats: Arc<WriterStats>,
+) {
+    if let Err(e) = write_recording(file, encoder, &rx, &stats) {
         *stats.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
         stats.failed.store(true, Ordering::SeqCst);
     }
@@ -499,21 +497,25 @@ fn writer_loop(file: File, header: Vec<u8>, rx: Receiver<WriterMsg>, stats: Arc<
 
 fn write_recording(
     file: File,
-    header: Vec<u8>,
+    mut encoder: Box<dyn AudioEncoder>,
     rx: &Receiver<WriterMsg>,
     stats: &WriterStats,
 ) -> Result<(), String> {
     let io_err = |e: std::io::Error| format!("Writing the recording failed: {e}");
     let mut out = BufWriter::with_capacity(64 * 1024, file);
-    let mut encoder: Option<Mp3Encoder> = None;
-    let mut mp3 = Vec::new();
+    let mut bytes = Vec::new();
+    let write = |out: &mut BufWriter<File>, bytes: &mut Vec<u8>| -> Result<(), String> {
+        out.write_all(bytes).map_err(io_err)?;
+        stats
+            .bytes_written
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        bytes.clear();
+        Ok(())
+    };
 
-    out.write_all(&header).map_err(io_err)?;
-    stats
-        .bytes_written
-        .fetch_add(header.len() as u64, Ordering::Relaxed);
-
-    loop {
+    // Run until stopped or an error; either way, finish the file after so
+    // what was recorded stays playable.
+    let mut result = (|| loop {
         match rx.recv_timeout(FLUSH_INTERVAL) {
             Ok(WriterMsg::Pcm {
                 sample_rate,
@@ -523,121 +525,43 @@ fn write_recording(
                 if sample_rate == 0 || channels == 0 {
                     continue;
                 }
-                let format_changed = encoder
-                    .as_ref()
-                    .is_some_and(|e| e.sample_rate != sample_rate || e.channels != channels);
-                if format_changed {
-                    // E.g. HE-AAC switching rate: finish these frames, go on
-                    // in the new format in the same file.
-                    if let Some(mut old) = encoder.take() {
-                        old.finish(&mut mp3);
-                    }
-                }
-                if encoder.is_none() {
-                    encoder = Some(Mp3Encoder::new(sample_rate, channels)?);
-                }
-                if let Some(enc) = encoder.as_mut() {
-                    enc.encode(&mut samples, &mut mp3)?;
+                for s in samples.iter_mut() {
+                    // The EQ has no limiter; clip like the sound card would.
+                    *s = if s.is_finite() {
+                        s.clamp(-1.0, 1.0)
+                    } else {
+                        0.0
+                    };
                 }
                 let frames = (samples.len() / channels as usize) as u64;
+                let (samples, channels) = if channels > 2 {
+                    (convert_channels(&samples, channels, 2), 2)
+                } else {
+                    (samples, channels)
+                };
+                let encoded = encoder.encode(sample_rate, channels, &samples, &mut bytes);
+                write(&mut out, &mut bytes)?;
+                encoded?;
                 stats
                     .duration_micros
                     .fetch_add(frames * 1_000_000 / sample_rate as u64, Ordering::Relaxed);
             }
-            Ok(WriterMsg::Finish) | Err(RecvTimeoutError::Disconnected) => break,
-            Err(RecvTimeoutError::Timeout) => {
-                out.flush().map_err(io_err)?;
-                continue;
-            }
+            Ok(WriterMsg::Finish) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
+            Err(RecvTimeoutError::Timeout) => out.flush().map_err(io_err)?,
         }
-        if !mp3.is_empty() {
-            out.write_all(&mp3).map_err(io_err)?;
-            stats
-                .bytes_written
-                .fetch_add(mp3.len() as u64, Ordering::Relaxed);
-            mp3.clear();
-        }
-    }
+    })();
 
-    if let Some(mut enc) = encoder.take() {
-        enc.finish(&mut mp3);
+    let finished = encoder.finish(&mut bytes);
+    let written = write(&mut out, &mut bytes);
+    result = result.and(finished).and(written);
+
+    let mut file = out.into_inner().map_err(|e| io_err(e.into_error()))?;
+    for (offset, patch) in encoder.header_patches() {
+        file.seek(SeekFrom::Start(offset)).map_err(io_err)?;
+        file.write_all(&patch).map_err(io_err)?;
     }
-    out.write_all(&mp3).map_err(io_err)?;
-    stats
-        .bytes_written
-        .fetch_add(mp3.len() as u64, Ordering::Relaxed);
-    let file = out.into_inner().map_err(|e| io_err(e.into_error()))?;
     file.sync_all().map_err(io_err)?;
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// ID3v2 tag
-// ---------------------------------------------------------------------------
-
-/// Build an ID3v2.4 tag (UTF-8 text) for the start of the file.
-///
-/// Returns an empty vector when no field is set.
-pub fn id3v2_tag(tags: &RecordingTags) -> Vec<u8> {
-    let mut frames = Vec::new();
-    for (id, text) in [
-        (b"TIT2", &tags.title),
-        (b"TPE1", &tags.artist),
-        (b"TALB", &tags.album),
-    ] {
-        if !text.is_empty() {
-            let mut body = vec![3u8]; // UTF-8
-            body.extend_from_slice(text.as_bytes());
-            push_frame(&mut frames, id, &body);
-        }
-    }
-    if !tags.comment.is_empty() {
-        let mut body = vec![3u8];
-        body.extend_from_slice(b"eng");
-        body.push(0); // empty description
-        body.extend_from_slice(tags.comment.as_bytes());
-        push_frame(&mut frames, b"COMM", &body);
-    }
-    if let Some(cover) = tags.cover.as_deref().filter(|c| !c.is_empty()) {
-        let mime: &[u8] = if cover.starts_with(b"\x89PNG") {
-            b"image/png"
-        } else {
-            b"image/jpeg"
-        };
-        let mut body = vec![3u8];
-        body.extend_from_slice(mime);
-        body.push(0);
-        body.push(3); // front cover
-        body.push(0); // empty description
-        body.extend_from_slice(cover);
-        push_frame(&mut frames, b"APIC", &body);
-    }
-    if frames.is_empty() {
-        return frames;
-    }
-
-    let mut tag = Vec::with_capacity(10 + frames.len());
-    tag.extend_from_slice(b"ID3\x04\x00\x00");
-    tag.extend_from_slice(&synchsafe(frames.len() as u32));
-    tag.extend_from_slice(&frames);
-    tag
-}
-
-fn push_frame(out: &mut Vec<u8>, id: &[u8; 4], body: &[u8]) {
-    out.extend_from_slice(id);
-    out.extend_from_slice(&synchsafe(body.len() as u32));
-    out.extend_from_slice(&[0, 0]);
-    out.extend_from_slice(body);
-}
-
-/// 28-bit synchsafe integer (7 bits per byte) as used by ID3v2.4 sizes.
-fn synchsafe(n: u32) -> [u8; 4] {
-    [
-        ((n >> 21) & 0x7f) as u8,
-        ((n >> 14) & 0x7f) as u8,
-        ((n >> 7) & 0x7f) as u8,
-        (n & 0x7f) as u8,
-    ]
+    result
 }
 
 #[cfg(test)]
@@ -670,6 +594,7 @@ mod tests {
     fn options(path: &Path, tap: TapPoint) -> RecordingOptions {
         RecordingOptions {
             path: path.to_path_buf(),
+            format: RecordingFormat::Mp3,
             tap,
             tags: RecordingTags {
                 title: "Test FM, 2026-09-26 20:15".to_string(),
@@ -688,9 +613,15 @@ mod tests {
     /// Decode an MP3 file with the engine's decoder; returns
     /// (sample_rate, channels, frames).
     fn decode_mp3(path: &Path) -> (u32, usize, usize) {
+        decode(path, "mp3")
+    }
+
+    /// Decode a recording with the engine's decoder, as the app would play
+    /// it; returns (sample_rate, channels, frames).
+    fn decode(path: &Path, hint: &str) -> (u32, usize, usize) {
         let data = std::fs::read(path).unwrap();
-        let mut source = SymphoniaSource::new_with_hint(Cursor::new(data), Some("mp3"))
-            .expect("recording should probe as MP3");
+        let mut source = SymphoniaSource::new_with_hint(Cursor::new(data), Some(hint))
+            .expect("recording should probe");
         let mut samples = 0;
         let mut rate = 0;
         let mut channels = 0;
@@ -846,39 +777,117 @@ mod tests {
         assert!(!recorder.is_recording());
     }
 
-    #[test]
-    fn id3_tag_layout() {
-        let tag = id3v2_tag(&RecordingTags {
-            title: "Ράδιο".to_string(),
-            artist: "A".to_string(),
-            album: String::new(),
-            comment: "http://x".to_string(),
-            cover: Some(b"\x89PNG....".to_vec()),
-        });
-        assert_eq!(&tag[..6], b"ID3\x04\x00\x00");
-        let size = tag[6..10]
-            .iter()
-            .fold(0u32, |acc, b| (acc << 7) | *b as u32);
-        assert_eq!(size as usize, tag.len() - 10);
-        // First frame is the title, UTF-8 encoded.
-        assert_eq!(&tag[10..14], b"TIT2");
-        assert_eq!(tag[20], 3);
-        assert_eq!(&tag[21..21 + "Ράδιο".len()], "Ράδιο".as_bytes());
-        assert!(tag.windows(4).any(|w| w == b"COMM"));
-        assert!(tag.windows(9).any(|w| w == b"image/png"));
-        assert!(!tag.windows(4).any(|w| w == b"TALB"));
+    /// Record `seconds` of a sine in `format` and return the file and status.
+    fn record(
+        name: &str,
+        format: RecordingFormat,
+        parts: &[(u32, u16, f32)],
+    ) -> (PathBuf, RecordingStatus) {
+        let path = temp_path(name).with_extension(format.extension());
+        let recorder = Recorder::new();
+        let mut opts = options(&path, TapPoint::BeforeEq);
+        opts.format = format;
+        opts.tags.cover = Some(b"\x89PNG fake".to_vec());
+        recorder.start(opts).unwrap();
+        for &(rate, channels, seconds) in parts {
+            let source = SamplesBuffer::new(
+                NonZero::new(channels).unwrap(),
+                NonZero::new(rate).unwrap(),
+                sine(rate, channels, seconds),
+            );
+            play_through(source, &recorder, TapPoint::BeforeEq);
+        }
+        let status = recorder.stop().unwrap();
+        assert_eq!(status.error, None);
+        assert_eq!(
+            status.bytes_written,
+            std::fs::metadata(&path).unwrap().len()
+        );
+        (path, status)
     }
 
     #[test]
-    fn empty_tags_write_no_tag() {
-        assert!(id3v2_tag(&RecordingTags::default()).is_empty());
+    fn records_opus_resampled_to_48k() {
+        let (path, _) = record("opus", RecordingFormat::Opus, &[(44_100, 2, 2.0)]);
+        let data = std::fs::read(&path).unwrap();
+        assert!(data.starts_with(b"OggS"));
+        assert!(data.windows(8).any(|w| w == b"OpusHead"));
+        assert!(data.windows(6).any(|w| w == b"TITLE="));
+        assert!(data.windows(23).any(|w| w == b"METADATA_BLOCK_PICTURE="));
+
+        let (rate, channels, frames) = decode(&path, "opus");
+        assert_eq!(rate, 48_000);
+        assert_eq!(channels, 2);
+        // Two seconds at 48 kHz; the decoder may keep the pre-skip.
+        assert!(
+            (96_000 - 960..96_000 + 2 * 960).contains(&frames),
+            "{frames}"
+        );
     }
 
     #[test]
-    fn synchsafe_encoding() {
-        assert_eq!(synchsafe(0), [0, 0, 0, 0]);
-        assert_eq!(synchsafe(127), [0, 0, 0, 127]);
-        assert_eq!(synchsafe(128), [0, 0, 1, 0]);
-        assert_eq!(synchsafe(0x0fff_ffff), [0x7f, 0x7f, 0x7f, 0x7f]);
+    fn opus_follows_rate_and_channel_changes() {
+        let (path, status) = record(
+            "opus-change",
+            RecordingFormat::Opus,
+            &[(48_000, 1, 1.0), (22_050, 2, 1.0)],
+        );
+        assert!(status.duration.abs_diff(Duration::from_secs(2)) < Duration::from_millis(50));
+        let (rate, channels, frames) = decode(&path, "opus");
+        assert_eq!(
+            (rate, channels),
+            (48_000, 1),
+            "keeps the first channel count"
+        );
+        assert!(
+            (96_000 - 960..96_000 + 2 * 960).contains(&frames),
+            "{frames}"
+        );
+    }
+
+    #[test]
+    fn records_wav_with_exact_length() {
+        let (path, _) = record("wav", RecordingFormat::Wav, &[(44_100, 2, 1.5)]);
+        let (rate, channels, frames) = decode(&path, "wav");
+        assert_eq!((rate, channels, frames), (44_100, 2, 66_150));
+        let data = std::fs::read(&path).unwrap();
+        let riff = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        assert_eq!(riff as usize, data.len() - 8);
+    }
+
+    #[test]
+    fn wav_resamples_a_rate_change_into_the_first_rate() {
+        let (path, _) = record(
+            "wav-change",
+            RecordingFormat::Wav,
+            &[(44_100, 2, 1.0), (48_000, 6, 1.0)],
+        );
+        let (rate, channels, frames) = decode(&path, "wav");
+        assert_eq!((rate, channels), (44_100, 2));
+        assert_eq!(frames, 88_200);
+    }
+
+    #[test]
+    fn empty_recordings_are_still_valid_files() {
+        for format in [
+            RecordingFormat::Mp3,
+            RecordingFormat::Opus,
+            RecordingFormat::Wav,
+        ] {
+            let path = temp_path(&format!("empty-{format:?}")).with_extension(format.extension());
+            let recorder = Recorder::new();
+            let mut opts = options(&path, TapPoint::BeforeEq);
+            opts.format = format;
+            recorder.start(opts).unwrap();
+            let status = recorder.stop().unwrap();
+            assert_eq!(status.error, None, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn channel_conversion() {
+        assert_eq!(convert_channels(&[0.5, 0.25], 1, 2), [0.5, 0.5, 0.25, 0.25]);
+        assert_eq!(convert_channels(&[0.5, 0.25], 2, 1), [0.375]);
+        assert_eq!(convert_channels(&[1., 2., 3., 4., 5., 6.], 6, 2), [1., 2.]);
     }
 }

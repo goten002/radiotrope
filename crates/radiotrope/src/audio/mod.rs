@@ -17,7 +17,8 @@ pub use decoder::SymphoniaSource;
 pub use dsp::equalizer::{find_preset, EqParams, EqPreset, EqSource, SharedEqParams, PRESETS};
 pub use engine::AudioEngine;
 pub use recording::{
-    Recorder, RecordingOptions, RecordingStatus, RecordingTags, RecordingTap, TapPoint,
+    Recorder, RecordingFormat, RecordingOptions, RecordingStatus, RecordingTags, RecordingTap,
+    TapPoint,
 };
 pub use stats::{new_shared_stats, DecoderStats, EventBus, SharedStats, StreamEvent, StreamStats};
 pub use types::{AudioAnalysis, AudioCommand, AudioEvent, CodecInfo, PlaybackState};

@@ -61,20 +61,20 @@ pub fn prepare_dir(dir: &Path) -> Result<(), String> {
 }
 
 /// A path in `dir` for a new recording of `station` started at `time`,
-/// e.g. `Station - 2026-09-26 20-15-03.mp3`, with ` (2)`, ` (3)`... added
-/// if that name is taken.
-pub fn new_file_path(dir: &Path, station: &str, time: DateTime<Local>) -> PathBuf {
+/// e.g. `Station - 2026-09-26 20-15-03.mp3` for extension `mp3`, with
+/// ` (2)`, ` (3)`... added if that name is taken.
+pub fn new_file_path(dir: &Path, station: &str, time: DateTime<Local>, ext: &str) -> PathBuf {
     let stem = format!(
         "{} - {}",
         sanitize_name(station),
         time.format("%Y-%m-%d %H-%M-%S")
     );
-    let first = dir.join(format!("{stem}.mp3"));
+    let first = dir.join(format!("{stem}.{ext}"));
     if !first.exists() {
         return first;
     }
     (2..)
-        .map(|n| dir.join(format!("{stem} ({n}).mp3")))
+        .map(|n| dir.join(format!("{stem} ({n}).{ext}")))
         .find(|p| !p.exists())
         .expect("some numbered name is free")
 }
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn file_name_has_station_and_time() {
         let dir = temp_dir("name");
-        let path = new_file_path(&dir, "Test FM", at());
+        let path = new_file_path(&dir, "Test FM", at(), "mp3");
         assert_eq!(
             path.file_name().unwrap().to_str().unwrap(),
             "Test FM - 2026-09-26 20-15-03.mp3"
@@ -158,13 +158,16 @@ mod tests {
     #[test]
     fn taken_names_get_a_number() {
         let dir = temp_dir("taken");
-        let first = new_file_path(&dir, "Test FM", at());
+        let first = new_file_path(&dir, "Test FM", at(), "mp3");
         fs::write(&first, b"").unwrap();
-        let second = new_file_path(&dir, "Test FM", at());
+        let second = new_file_path(&dir, "Test FM", at(), "mp3");
         assert!(second.ends_with("Test FM - 2026-09-26 20-15-03 (2).mp3"));
         fs::write(&second, b"").unwrap();
-        let third = new_file_path(&dir, "Test FM", at());
+        let third = new_file_path(&dir, "Test FM", at(), "mp3");
         assert!(third.ends_with("Test FM - 2026-09-26 20-15-03 (3).mp3"));
+        // Another format has its own names
+        let opus = new_file_path(&dir, "Test FM", at(), "opus");
+        assert!(opus.ends_with("Test FM - 2026-09-26 20-15-03.opus"));
     }
 
     #[test]
