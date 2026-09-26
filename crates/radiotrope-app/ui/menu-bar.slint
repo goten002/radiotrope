@@ -532,17 +532,6 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 if Platform.has-window-frame: CheckMenuItem {
-                    label: "Always on Top";
-                    icon: @image-url("icons/thumbtack.svg");
-                    checked: root.always-on-top;
-                    clicked => {
-                        // Act before closing: closing the popup drops this
-                        // conditional item and the rest of the handler
-                        root.always-on-top = !root.always-on-top;
-                        view-popup.close();
-                    }
-                }
-                if Platform.has-window-frame: CheckMenuItem {
                     label: "Custom Title Bar";
                     icon: @image-url("icons/window-maximize.svg");
                     checked: root.custom-frame;
