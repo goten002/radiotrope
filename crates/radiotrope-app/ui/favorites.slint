@@ -13,6 +13,8 @@ export struct FavoriteStation {
     listen-time: string,
     last-played: string,
     play-count: int,
+    // Listening time since the app was opened, empty when none
+    session-time: string,
 }
 
 // Item of a row's menu
@@ -58,6 +60,7 @@ component FavoriteRow inherits Rectangle {
     in property <string> listen-time;
     in property <string> last-played;
     in property <int> play-count;
+    in property <string> session-time;
     // Show the stats on the right (View > Show Station Stats)
     in property <bool> show-stats: true;
     // Touch screens: pick a station up only after holding the logo
@@ -113,9 +116,10 @@ component FavoriteRow inherits Rectangle {
     // Accent left border for current station
     if is-current: Rectangle {
         x: 0;
-        y: 12px;
+        // As tall as the logo (40px, centred in the row)
+        y: 8px;
         width: 3px;
-        height: parent.height - 24px;
+        height: parent.height - 16px;
         background: Theme.accent;
         border-radius: 1.5px;
     }
@@ -339,6 +343,11 @@ component FavoriteRow inherits Rectangle {
             }
             if root.last-played != "": Text {
                 text: "Total listening time: " + (root.listen-time != "" ? root.listen-time : "<1 m");
+                color: Theme.text-primary;
+                font-size: 11px;
+            }
+            if root.session-time != "": Text {
+                text: "This session: " + root.session-time;
                 color: Theme.text-primary;
                 font-size: 11px;
             }
@@ -646,6 +655,7 @@ export component Favorites inherits Rectangle {
                         listen-time: station.listen-time;
                         last-played: station.last-played;
                         play-count: station.play-count;
+                        session-time: station.session-time;
                         show-stats: root.show-stats;
                         hold-to-drag: root.touch-scroll;
                         edit-clicked => {
