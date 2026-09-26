@@ -2,16 +2,31 @@
 //!
 //! Caches station logos locally using station ID as filename.
 //! Uses the system cache directory for proper cache semantics.
+//!
+//! Decodable logos are stored as PNG thumbnails no larger than
+//! [`LOGO_MAX_SIZE`], so loading one never decodes a full-size image and the
+//! lookup hits `<id>.png` first. Data the `image` crate cannot decode (e.g.
+//! SVG) is stored as-is with an extension guessed from its content.
 
 use crate::config::app::NAME;
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use std::collections::HashSet;
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use image::imageops::FilterType;
+use image::{ImageFormat, ImageReader};
 
 /// Supported image extensions (in order of preference for lookup)
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"];
+
+/// Largest width or height of a cached logo, in pixels.
+///
+/// Logos are displayed at 70px at most; 160px keeps them sharp at 2x scale.
+pub const LOGO_MAX_SIZE: u32 = 160;
 
 /// Get the application cache directory path
 ///
@@ -84,16 +99,31 @@ impl ImageCache {
     }
 
     /// Load cached image data
+    ///
+    /// Entries cached before logos were stored as thumbnails (any non-PNG
+    /// format, or larger than [`LOGO_MAX_SIZE`]) are converted on first read.
     pub fn get(&self, id: &str) -> Option<Vec<u8>> {
         let path = self.find_cached_path(id)?;
-        fs::read(&path).ok()
+        let data = fs::read(&path).ok()?;
+        if needs_thumbnail(&data) {
+            if let Some(thumb) = make_thumbnail(&data) {
+                let _ = self.write_png(id, &thumb);
+                return Some(thumb);
+            }
+        }
+        Some(data)
     }
 
     /// Save image data to cache
     ///
-    /// The extension is determined from the URL or content type.
-    /// Falls back to "png" if extension cannot be determined.
+    /// Decodable images are stored as a PNG thumbnail (see [`LOGO_MAX_SIZE`]).
+    /// Anything else is stored as-is, with the extension determined from the
+    /// content or URL, falling back to "png".
     pub fn put(&self, id: &str, data: &[u8], url_or_hint: Option<&str>) -> Result<PathBuf> {
+        if let Some(thumb) = make_thumbnail(data) {
+            return self.write_png(id, &thumb);
+        }
+
         let extension = self.determine_extension(data, url_or_hint);
         let path = self.cache_dir.join(format!("{}.{}", id, extension));
 
@@ -101,6 +131,33 @@ impl ImageCache {
         self.delete(id);
 
         fs::write(&path, data).map_err(|e| {
+            AppError::Config(format!("Failed to write cached image {:?}: {}", path, e))
+        })?;
+
+        Ok(path)
+    }
+
+    /// Write a PNG thumbnail as `<id>.png`, replacing any other cached file
+    fn write_png(&self, id: &str, png: &[u8]) -> Result<PathBuf> {
+        let path = self.cache_dir.join(format!("{}.png", id));
+        // Unique temp name so concurrent writers of the same ID don't collide
+        static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = self
+            .cache_dir
+            .join(format!("{}.{}.{}.tmp", id, std::process::id(), n));
+
+        fs::write(&tmp, png).map_err(|e| {
+            AppError::Config(format!("Failed to write cached image {:?}: {}", tmp, e))
+        })?;
+
+        // Remove files with other extensions left by earlier versions
+        for ext in IMAGE_EXTENSIONS.iter().filter(|e| **e != "png") {
+            let _ = fs::remove_file(self.cache_dir.join(format!("{}.{}", id, ext)));
+        }
+
+        fs::rename(&tmp, &path).map_err(|e| {
+            let _ = fs::remove_file(&tmp);
             AppError::Config(format!("Failed to write cached image {:?}: {}", path, e))
         })?;
 
@@ -322,6 +379,37 @@ impl ImageCache {
             _ => None,
         }
     }
+}
+
+/// Whether cached data is a decodable image not yet stored as a thumbnail
+///
+/// Only reads the image header, so it is cheap for data that is already fine.
+fn needs_thumbnail(data: &[u8]) -> bool {
+    let Ok(reader) = ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+        return false;
+    };
+    let is_png = reader.format() == Some(ImageFormat::Png);
+    match reader.into_dimensions() {
+        Ok((w, h)) => !is_png || w > LOGO_MAX_SIZE || h > LOGO_MAX_SIZE,
+        Err(_) => false,
+    }
+}
+
+/// Decode an image and re-encode it as a PNG no larger than [`LOGO_MAX_SIZE`]
+///
+/// Returns `None` if the data is not an image the `image` crate can decode.
+fn make_thumbnail(data: &[u8]) -> Option<Vec<u8>> {
+    let img = image::load_from_memory(data).ok()?;
+    let img = if img.width() > LOGO_MAX_SIZE || img.height() > LOGO_MAX_SIZE {
+        img.resize(LOGO_MAX_SIZE, LOGO_MAX_SIZE, FilterType::CatmullRom)
+    } else {
+        img
+    };
+
+    let mut png = Vec::new();
+    img.write_to(&mut Cursor::new(&mut png), ImageFormat::Png)
+        .ok()?;
+    Some(png)
 }
 
 impl Default for ImageCache {
@@ -812,6 +900,160 @@ mod tests {
             )
             .unwrap();
         assert!(path.to_string_lossy().ends_with(".gif"));
+
+        cleanup_dir(&dir);
+    }
+
+    // =========================================================================
+    // Thumbnail tests
+    // =========================================================================
+
+    fn encode_image(size: u32, format: ImageFormat) -> Vec<u8> {
+        let img = image::RgbImage::from_fn(size, size, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
+        let mut data = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut data), format)
+            .unwrap();
+        data
+    }
+
+    fn dimensions(data: &[u8]) -> (u32, u32) {
+        let img = image::load_from_memory_with_format(data, ImageFormat::Png).unwrap();
+        (img.width(), img.height())
+    }
+
+    #[test]
+    fn test_put_large_image_stores_png_thumbnail() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        let data = encode_image(600, ImageFormat::Jpeg);
+        let path = cache.put("thumb_large", &data, Some("logo.jpg")).unwrap();
+
+        assert_eq!(path, dir.join("thumb_large.png"));
+        let stored = cache.get("thumb_large").unwrap();
+        assert_eq!(dimensions(&stored), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_put_keeps_aspect_ratio() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        let img = image::RgbImage::new(800, 200);
+        let mut data = Vec::new();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut data), ImageFormat::Png)
+            .unwrap();
+        cache.put("thumb_wide", &data, None).unwrap();
+
+        let stored = cache.get("thumb_wide").unwrap();
+        assert_eq!(dimensions(&stored), (LOGO_MAX_SIZE, LOGO_MAX_SIZE / 4));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_put_small_image_keeps_size() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        let data = encode_image(64, ImageFormat::Gif);
+        let path = cache.put("thumb_small", &data, None).unwrap();
+
+        assert!(path.to_string_lossy().ends_with(".png"));
+        assert_eq!(dimensions(&cache.get("thumb_small").unwrap()), (64, 64));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_put_replaces_legacy_extension() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        fs::write(dir.join("thumb_replace.webp"), b"old").unwrap();
+        cache
+            .put("thumb_replace", &encode_image(32, ImageFormat::Png), None)
+            .unwrap();
+
+        assert!(!dir.join("thumb_replace.webp").exists());
+        assert!(dir.join("thumb_replace.png").exists());
+        let leftovers = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_get_converts_legacy_entry() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        // Written directly, as an older version of the cache would have
+        fs::write(
+            dir.join("thumb_legacy.jpg"),
+            encode_image(500, ImageFormat::Jpeg),
+        )
+        .unwrap();
+
+        let data = cache.get("thumb_legacy").unwrap();
+        assert_eq!(dimensions(&data), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        assert!(!dir.join("thumb_legacy.jpg").exists());
+        assert_eq!(fs::read(dir.join("thumb_legacy.png")).unwrap(), data);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_get_converts_legacy_large_png() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        fs::write(
+            dir.join("thumb_big_png.png"),
+            encode_image(400, ImageFormat::Png),
+        )
+        .unwrap();
+
+        let data = cache.get("thumb_big_png").unwrap();
+        assert_eq!(dimensions(&data), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        assert_eq!(fs::read(dir.join("thumb_big_png.png")).unwrap(), data);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_get_leaves_small_png_untouched() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        let original = encode_image(100, ImageFormat::Png);
+        fs::write(dir.join("thumb_ok.png"), &original).unwrap();
+
+        assert_eq!(cache.get("thumb_ok").unwrap(), original);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_undecodable_svg_stored_as_is() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_vec();
+        let path = cache.put("thumb_svg", &svg, None).unwrap();
+
+        assert!(path.to_string_lossy().ends_with(".svg"));
+        assert_eq!(cache.get("thumb_svg").unwrap(), svg);
 
         cleanup_dir(&dir);
     }
