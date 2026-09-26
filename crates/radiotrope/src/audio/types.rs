@@ -42,6 +42,9 @@ pub enum AudioCommand {
         bytes_received: Option<Arc<AtomicU64>>,
         /// Atomic counter tracking HLS segments downloaded (optional)
         segments_downloaded: Option<Arc<AtomicU64>>,
+        /// Updated with how many bytes of `reader` the decoder has read, so
+        /// song info can follow playback (optional)
+        playback_position: Option<Arc<AtomicU64>>,
     },
     /// Stop playback
     Stop,
@@ -250,6 +253,7 @@ mod tests {
             bitrate: None,
             bytes_received: None,
             segments_downloaded: None,
+            playback_position: None,
         };
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("Play"));
@@ -264,6 +268,7 @@ mod tests {
             bitrate: None,
             bytes_received: None,
             segments_downloaded: None,
+            playback_position: None,
         };
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("Play"));

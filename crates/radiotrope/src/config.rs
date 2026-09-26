@@ -88,6 +88,16 @@ pub mod timeouts {
 }
 
 /// Equalizer configuration
+pub mod metadata {
+    /// Longest a song change waits for playback to reach its position (seconds).
+    /// A safety net in case playback position is not reported: covers the
+    /// HLS segment queue plus the stream buffer.
+    pub const MAX_SYNC_DELAY_SECS: u64 = 60;
+
+    /// How often held-back song changes are checked against playback (ms).
+    pub const SYNC_POLL_MS: u64 = 100;
+}
+
 pub mod eq {
     /// Number of EQ bands
     pub const NUM_BANDS: usize = 10;
