@@ -341,6 +341,10 @@ export component Toggle inherits Rectangle {
     in-out property <bool> checked;
     in property <string> label;
     callback toggled(bool);
+    // Dark knob in the dark theme (like the volume knob), white in the light
+    // one. Off in the dark theme: an outlined track with a smaller grey knob,
+    // so it doesn't vanish into the panel
+    property <bool> dark-off: Theme.dark-mode && !root.checked;
 
     width: row.preferred-width;
     height: 28px;
@@ -363,18 +367,23 @@ export component Toggle inherits Rectangle {
                 width: 36px;
                 height: 20px;
                 border-radius: 10px;
-                background: root.checked ? Theme.accent : Theme.disabled-bg;
+                background: root.checked ? Theme.accent : Theme.dark-mode ? Theme.elevated : Theme.disabled-bg;
+                border-width: root.dark-off ? 1.5px : 0;
+                border-color: Theme.text-tertiary;
                 animate background { duration: Theme.normal; }
 
                 Rectangle {
-                    x: root.checked ? parent.width - self.width - 3px : 3px;
+                    property <length> size: root.dark-off ? 10px : 14px;
+                    animate size { duration: Theme.normal; easing: ease-out; }
+                    x: root.checked ? parent.width - self.width - 3px : (parent.height - self.height) / 2;
                     animate x { duration: Theme.normal; easing: ease-out; }
-                    y: 3px;
-                    width: 14px;
-                    height: 14px;
-                    border-radius: 7px;
-                    background: #ffffff;
-                    drop-shadow-blur: 3px;
+                    y: (parent.height - self.height) / 2;
+                    width: self.size;
+                    height: self.size;
+                    border-radius: self.size / 2;
+                    background: !Theme.dark-mode ? #ffffff : root.checked ? Theme.panel : Theme.text-tertiary;
+                    animate background { duration: Theme.normal; }
+                    drop-shadow-blur: Theme.dark-mode ? 0 : 3px;
                     drop-shadow-color: #00000040;
                 }
             }

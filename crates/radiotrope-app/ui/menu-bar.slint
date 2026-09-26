@@ -97,18 +97,14 @@ component CheckMenuItem inherits Rectangle {
     }
 }
 
-// Window button in our own title bar (minimize, maximize, close, pin)
+// Window button in our own title bar (minimize, maximize, close)
 component CaptionButton inherits Rectangle {
-    in property <bool> danger;
     callback clicked();
-    out property <bool> hovered: touch.has-hover;
-    out property <color> glyph: root.danger && touch.has-hover ? #ffffff : Theme.menu-text;
+    out property <color> glyph: Theme.menu-text;
 
     width: 42px;
     height: 32px;
-    background: root.danger && touch.pressed ? #c42b1c
-        : root.danger && touch.has-hover ? #e81123
-        : touch.pressed ? Theme.menu-hover
+    background: touch.pressed ? Theme.menu-hover
         : touch.has-hover ? Theme.menu-bar-hover : transparent;
     animate background { duration: Theme.fast; }
 
@@ -284,17 +280,6 @@ export component MenuBar inherits Rectangle {
         if root.custom-frame: HorizontalLayout {
             padding-left: 6px;
 
-            pin := CaptionButton {
-                clicked => { root.always-on-top = !root.always-on-top; }
-
-                Icon {
-                    width: 13px;
-                    height: 13px;
-                    source: @image-url("icons/thumbtack.svg");
-                    colorize: root.always-on-top ? Theme.accent : pin.glyph;
-                }
-            }
-
             min := CaptionButton {
                 clicked => { root.minimize(); }
 
@@ -343,7 +328,6 @@ export component MenuBar inherits Rectangle {
             }
 
             close := CaptionButton {
-                danger: true;
                 clicked => { root.close-window(); }
 
                 Path {
