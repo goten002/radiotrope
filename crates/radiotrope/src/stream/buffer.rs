@@ -13,7 +13,7 @@
 //!            StreamBufferReader → SymphoniaSource → Sink
 
 use std::io::{self, Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -496,6 +496,53 @@ impl Seek for StreamBufferReader {
 // StreamBufferReader is Send (Arc<BufferState> is Send+Sync) and
 // Sync is safe because the reader is used from a single thread.
 unsafe impl Sync for StreamBufferReader {}
+
+/// Largest read [`PlaybackPositionReader`] passes through. symphonia reads
+/// ahead in blocks of up to 32 KiB (about 2 s at 128 kbps); smaller reads
+/// keep the reported position within a fraction of a second of what is decoded.
+const PLAYBACK_POSITION_MAX_READ: usize = 4 * 1024;
+
+/// Reader adapter placed in front of the decoder. It publishes how many
+/// bytes the decoder has read, and caps each read so the decoder's own
+/// read-ahead stays small.
+pub struct PlaybackPositionReader<R> {
+    inner: R,
+    pos: u64,
+    shared: Arc<AtomicU64>,
+}
+
+impl<R> PlaybackPositionReader<R> {
+    pub fn new(inner: R, shared: Arc<AtomicU64>) -> Self {
+        shared.store(0, Ordering::Relaxed);
+        Self {
+            inner,
+            pos: 0,
+            shared,
+        }
+    }
+
+    fn set_pos(&mut self, pos: u64) {
+        self.pos = pos;
+        self.shared.store(pos, Ordering::Relaxed);
+    }
+}
+
+impl<R: Read> Read for PlaybackPositionReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let len = buf.len().min(PLAYBACK_POSITION_MAX_READ);
+        let n = self.inner.read(&mut buf[..len])?;
+        self.set_pos(self.pos + n as u64);
+        Ok(n)
+    }
+}
+
+impl<R: Seek> Seek for PlaybackPositionReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        let new_pos = self.inner.seek(pos)?;
+        self.set_pos(new_pos);
+        Ok(new_pos)
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2317,5 +2364,22 @@ mod tests {
             m.throughput_ema, 0.0,
             "EMA should stay at 0 until enough time passes"
         );
+    }
+
+    // --- PlaybackPositionReader ---
+
+    #[test]
+    fn playback_position_tracks_reads_and_caps_them() {
+        let shared = Arc::new(AtomicU64::new(99));
+        let mut reader =
+            PlaybackPositionReader::new(io::Cursor::new(vec![7u8; 10_000]), shared.clone());
+        assert_eq!(shared.load(Ordering::Relaxed), 0);
+        let mut buf = vec![0u8; 8192];
+        assert_eq!(reader.read(&mut buf).unwrap(), PLAYBACK_POSITION_MAX_READ);
+        assert_eq!(shared.load(Ordering::Relaxed), 4096);
+        reader.read_exact(&mut buf[..5000]).unwrap();
+        assert_eq!(shared.load(Ordering::Relaxed), 9096);
+        reader.seek(SeekFrom::Start(100)).unwrap();
+        assert_eq!(shared.load(Ordering::Relaxed), 100);
     }
 }
