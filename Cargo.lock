@@ -5009,6 +5009,7 @@ dependencies = [
 name = "radiotrope-app"
 version = "0.1.0-dev"
 dependencies = [
+ "chrono",
  "clap",
  "crossbeam-channel",
  "dirs",
