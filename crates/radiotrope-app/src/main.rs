@@ -171,6 +171,7 @@ fn main() {
     ui.set_viz_mode(viz_mode.into());
     ui.global::<VizStyle>()
         .set_palette(settings.viz_palette.as_str().into());
+    ui.set_show_station_stats(settings.show_station_stats);
 
     // Apply saved window size
     if let (Some(w), Some(h)) = (settings.window_width, settings.window_height) {
@@ -468,6 +469,25 @@ fn main() {
                 if station.url == current_url {
                     ui.set_is_station_favorited(false);
                 }
+                refresh_favorites(&ui, &favs, &logo_svc);
+            }
+        });
+    }
+
+    // move-favorite callback: Move to Top / Move to Bottom from a row's menu
+    {
+        let favs = favorites.clone();
+        let logo_svc = logo_service.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_move_favorite(move |station, to_top| {
+            {
+                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                if f.move_to_edge(&station.id, to_top).is_err() {
+                    return;
+                }
+                let _ = f.save();
+            }
+            if let Some(ui) = ui_weak.upgrade() {
                 refresh_favorites(&ui, &favs, &logo_svc);
             }
         });
@@ -917,6 +937,26 @@ fn main() {
             .generation(),
     );
     let last_poll_url = std::cell::RefCell::new(String::new());
+    // Listening session of the station playing now, for favorite stats
+    let listen_session: std::rc::Rc<std::cell::RefCell<Option<ListenSession>>> = Default::default();
+    let poll_listen = listen_session.clone();
+    let listen_favs = favorites.clone();
+    // Keep "12 min ago" and similar texts current
+    let stats_timer = slint::Timer::default();
+    {
+        let ui_weak = ui.as_weak();
+        let favs = favorites.clone();
+        stats_timer.start(
+            slint::TimerMode::Repeated,
+            Duration::from_secs(60),
+            move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                if let Ok(f) = favs.try_lock() {
+                    update_favorite_stats(&ui, &f);
+                }
+            },
+        );
+    }
     let _timer = slint::Timer::default();
     _timer.start(
         slint::TimerMode::Repeated,
@@ -990,6 +1030,10 @@ fn main() {
                 .unwrap_or("")
                 .into();
             drop(s);
+
+            // Credit listening time to the favorite being played
+            let playing_url = station_url.as_deref().filter(|_| is_playing);
+            track_listening(&ui, &poll_favs, &mut poll_listen.borrow_mut(), playing_url);
 
             // Set UI properties without holding any lock
             ui.set_station_name(station_name);
@@ -1109,6 +1153,11 @@ fn main() {
 
     // Run Slint event loop (blocks main thread)
     ui.run().unwrap();
+
+    // Credit the session still playing at exit
+    if let Some(session) = listen_session.borrow_mut().take() {
+        credit_listening(&ui, &listen_favs, session);
+    }
 
     // Final save before shutdown
     save_settings(&shared_state, &ui);
@@ -1594,6 +1643,7 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
 
     settings.viz_mode = ui.get_viz_mode().to_string();
     settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
+    settings.show_station_stats = ui.get_show_station_stats();
 
     if let Some(ref url) = s.station_url {
         if !url.is_empty() {
@@ -2037,6 +2087,158 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
         url: f.url().into(),
         logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
         country: f.station.country.as_deref().unwrap_or("").into(),
+        listen_time: format_listen_time(f.total_listen_time_secs).into(),
+        last_played: format_last_played(f.last_played).into(),
+        play_count: f.play_count.min(i32::MAX as u32) as i32,
+    }
+}
+
+/// Listening shorter than this does not count (tuning through stations)
+const MIN_LISTEN_SECS: u64 = 10;
+/// Listening time is saved in steps of this long while a station plays
+const LISTEN_CREDIT_SECS: u64 = 60;
+
+/// A station playing without interruption since `started`
+struct ListenSession {
+    url: String,
+    started: Instant,
+    /// Seconds of this session already added to the favorite
+    credited: u64,
+}
+
+/// Follow what is playing and add listening time to favorites: once a
+/// minute while a station plays, and when it stops or changes
+fn track_listening(
+    ui: &App,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+    session: &mut Option<ListenSession>,
+    playing_url: Option<&str>,
+) {
+    if session
+        .as_ref()
+        .is_some_and(|s| Some(s.url.as_str()) != playing_url)
+    {
+        if let Some(ended) = session.take() {
+            credit_listening(ui, favorites, ended);
+        }
+    }
+    match (session.as_mut(), playing_url) {
+        (None, Some(url)) => {
+            *session = Some(ListenSession {
+                url: url.to_string(),
+                started: Instant::now(),
+                credited: 0,
+            });
+        }
+        (Some(s), _) if s.started.elapsed().as_secs() >= s.credited + LISTEN_CREDIT_SECS => {
+            let elapsed = s.started.elapsed().as_secs();
+            let (url, credited) = (s.url.clone(), s.credited);
+            s.credited = elapsed;
+            add_listening(ui, favorites, &url, elapsed - credited, credited == 0);
+        }
+        _ => {}
+    }
+}
+
+/// Add what is left of a finished session
+fn credit_listening(ui: &App, favorites: &Arc<Mutex<FavoritesManager>>, session: ListenSession) {
+    let elapsed = session.started.elapsed().as_secs();
+    if elapsed < MIN_LISTEN_SECS || elapsed <= session.credited {
+        return;
+    }
+    add_listening(
+        ui,
+        favorites,
+        &session.url,
+        elapsed - session.credited,
+        session.credited == 0,
+    );
+}
+
+fn add_listening(
+    ui: &App,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+    url: &str,
+    secs: u64,
+    new_play: bool,
+) {
+    let mut favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    if favs.add_listening(url, secs, new_play).is_none() {
+        return;
+    }
+    let _ = favs.save();
+    update_favorite_stats(ui, &favs);
+}
+
+/// Refresh the stats text of every favorites row in place, without
+/// rebuilding the list (which would interrupt a drag)
+fn update_favorite_stats(ui: &App, favs: &FavoritesManager) {
+    let model = ui.get_favorites_list();
+    for i in 0..model.row_count() {
+        let Some(mut row) = model.row_data(i) else {
+            continue;
+        };
+        let Some(fav) = favs.get(&row.id) else {
+            continue;
+        };
+        let listen_time: slint::SharedString =
+            format_listen_time(fav.total_listen_time_secs).into();
+        let last_played: slint::SharedString = format_last_played(fav.last_played).into();
+        let play_count = fav.play_count.min(i32::MAX as u32) as i32;
+        if row.listen_time != listen_time
+            || row.last_played != last_played
+            || row.play_count != play_count
+        {
+            row.listen_time = listen_time;
+            row.last_played = last_played;
+            row.play_count = play_count;
+            model.set_row_data(i, row);
+        }
+    }
+}
+
+/// Total listening time for a favorites row: "3 h 25 m", "40 m", "<1 m",
+/// or empty when never played
+fn format_listen_time(secs: u64) -> String {
+    let mins = secs / 60;
+    match mins {
+        _ if secs == 0 => String::new(),
+        0 => "<1 m".into(),
+        1..=59 => format!("{mins} m"),
+        60..=5999 => format!("{} h {} m", mins / 60, mins % 60),
+        _ => format!("{} h", mins / 60),
+    }
+}
+
+/// When a favorite was last played, relative to now: "Just now",
+/// "12 min ago", "3 h ago", "Yesterday", "5 days ago", "2 weeks ago",
+/// "4 months ago", or empty when never played
+fn format_last_played(timestamp: Option<u64>) -> String {
+    let Some(ts) = timestamp else {
+        return String::new();
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let ago = now.saturating_sub(ts);
+    let (min, hour, day) = (60, 3600, 86400);
+    match ago {
+        a if a < 2 * min => "Just now".into(),
+        a if a < hour => format!("{} min ago", a / min),
+        a if a < day => format!("{} h ago", a / hour),
+        a if a < 2 * day => "Yesterday".into(),
+        a if a < 14 * day => format!("{} days ago", a / day),
+        a if a < 60 * day => format!("{} weeks ago", a / (7 * day)),
+        a if a < 365 * day => format!("{} months ago", a / (30 * day)),
+        a => {
+            let years = a / (365 * day);
+            if years == 1 {
+                "1 year ago".into()
+            } else {
+                format!("{years} years ago")
+            }
+        }
     }
 }
 

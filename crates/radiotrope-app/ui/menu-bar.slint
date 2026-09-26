@@ -84,6 +84,7 @@ export component MenuBar inherits Rectangle {
     callback open-statistics();
     callback open-equalizer();
     callback open-accent-color();
+    in-out property <bool> show-station-stats: true;
     callback open-wifi-settings();
     callback open-about();
 
@@ -315,6 +316,14 @@ export component MenuBar inherits Rectangle {
                         y: 4px;
                         height: 1px;
                         background: Theme.menu-hover;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Show Station Stats";
+                    checked: root.show-station-stats;
+                    clicked => {
+                        view-popup.close();
+                        root.show-station-stats = !root.show-station-stats;
                     }
                 }
                 CheckMenuItem {
