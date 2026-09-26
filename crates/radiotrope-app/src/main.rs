@@ -175,6 +175,7 @@ fn main() {
     ui.global::<VizStyle>()
         .set_palette(settings.viz_palette.as_str().into());
     ui.set_show_station_stats(settings.show_station_stats);
+    ui.set_panel_gradient(settings.panel_gradient);
 
     // Apply saved window size
     if let (Some(w), Some(h)) = (settings.window_width, settings.window_height) {
@@ -1686,6 +1687,7 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     settings.viz_mode = ui.get_viz_mode().to_string();
     settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
     settings.show_station_stats = ui.get_show_station_stats();
+    settings.panel_gradient = ui.get_panel_gradient();
 
     if let Some(ref url) = s.station_url {
         if !url.is_empty() {
@@ -2149,7 +2151,7 @@ fn session_listen_secs(id: &str) -> u64 {
 }
 
 /// Listening shorter than this does not count (tuning through stations)
-const MIN_LISTEN_SECS: u64 = 10;
+const MIN_LISTEN_SECS: u64 = 30;
 /// Listening time is saved in steps of this long while a station plays
 const LISTEN_CREDIT_SECS: u64 = 60;
 
