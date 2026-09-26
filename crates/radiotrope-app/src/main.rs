@@ -2132,7 +2132,20 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
         listen_time: format_listen_time(f.total_listen_time_secs).into(),
         last_played: format_last_played(f.last_played).into(),
         play_count: f.play_count.min(i32::MAX as u32) as i32,
+        session_time: format_listen_time(session_listen_secs(&f.id())).into(),
     }
+}
+
+/// Listening time per favorite since the app was opened, by favorite ID
+static SESSION_LISTEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+
+fn session_listen_secs(id: &str) -> u64 {
+    SESSION_LISTEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .and_then(|m| m.get(id).copied())
+        .unwrap_or(0)
 }
 
 /// Listening shorter than this does not count (tuning through stations)
@@ -2205,9 +2218,15 @@ fn add_listening(
     new_play: bool,
 ) {
     let mut favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
-    if favs.add_listening(url, secs, new_play).is_none() {
+    let Some(id) = favs.add_listening(url, secs, new_play).map(|f| f.id()) else {
         return;
-    }
+    };
+    *SESSION_LISTEN
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .entry(id)
+        .or_default() += secs;
     let _ = favs.save();
     update_favorite_stats(ui, &favs);
 }
@@ -2227,13 +2246,17 @@ fn update_favorite_stats(ui: &App, favs: &FavoritesManager) {
             format_listen_time(fav.total_listen_time_secs).into();
         let last_played: slint::SharedString = format_last_played(fav.last_played).into();
         let play_count = fav.play_count.min(i32::MAX as u32) as i32;
+        let session_time: slint::SharedString =
+            format_listen_time(session_listen_secs(&row.id)).into();
         if row.listen_time != listen_time
             || row.last_played != last_played
             || row.play_count != play_count
+            || row.session_time != session_time
         {
             row.listen_time = listen_time;
             row.last_played = last_played;
             row.play_count = play_count;
+            row.session_time = session_time;
             model.set_row_data(i, row);
         }
     }
