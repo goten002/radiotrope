@@ -643,10 +643,9 @@ fn synchsafe(n: u32) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::decoder::SymphoniaSource;
     use rodio::buffer::SamplesBuffer;
     use std::io::Cursor;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::probe::Hint;
 
     fn temp_path(name: &str) -> PathBuf {
         let dir =
@@ -686,29 +685,21 @@ mod tests {
         for _ in tap {}
     }
 
-    /// Decode an MP3 file with symphonia; returns (sample_rate, channels, frames).
+    /// Decode an MP3 file with the engine's decoder; returns
+    /// (sample_rate, channels, frames).
     fn decode_mp3(path: &Path) -> (u32, usize, usize) {
         let data = std::fs::read(path).unwrap();
-        let mss = MediaSourceStream::new(Box::new(Cursor::new(data)), Default::default());
-        let mut hint = Hint::new();
-        hint.with_extension("mp3");
-        let probed = symphonia::default::get_probe()
-            .format(&hint, mss, &Default::default(), &Default::default())
+        let mut source = SymphoniaSource::new_with_hint(Cursor::new(data), Some("mp3"))
             .expect("recording should probe as MP3");
-        let mut format = probed.format;
-        let track = format.default_track().unwrap();
-        let rate = track.codec_params.sample_rate.unwrap();
-        let channels = track.codec_params.channels.unwrap().count();
-        let mut decoder = symphonia::default::get_codecs()
-            .make(&track.codec_params, &Default::default())
-            .unwrap();
-        let mut frames = 0;
-        while let Ok(packet) = format.next_packet() {
-            if let Ok(decoded) = decoder.decode(&packet) {
-                frames += decoded.frames();
-            }
+        let mut samples = 0;
+        let mut rate = 0;
+        let mut channels = 0;
+        while source.next().is_some() {
+            samples += 1;
+            rate = source.sample_rate().get();
+            channels = source.channels().get() as usize;
         }
-        (rate, channels, frames)
+        (rate, channels, samples / channels.max(1))
     }
 
     #[test]
