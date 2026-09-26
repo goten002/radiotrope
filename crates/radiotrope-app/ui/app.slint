@@ -13,7 +13,8 @@ import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry } from "dialogs/wifi-settings.slint";
-export { BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
+import { AboutDialog, AboutInfo } from "dialogs/about.slint";
+export { AboutInfo, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -40,6 +41,7 @@ export component App inherits Window {
     callback reorder-favorites(/* from */ int, /* to */ int);
     callback load-top-stations();
     callback load-countries();
+    callback open-url(string);
     callback filter-countries(string);
     callback eq-band-changed(int, float);
     callback eq-preamp-changed(float);
@@ -161,6 +163,9 @@ export component App inherits Window {
                 picker-dialog.show-dialog = true;
                 root.load-countries();
             }
+            open-about => {
+                about-dialog.show-dialog = true;
+            }
             open-statistics => {
                 stats-dialog.show-dialog = true;
             }
@@ -275,6 +280,10 @@ export component App inherits Window {
         }
         load-countries() => { root.load-countries(); }
         filter-countries(text) => { root.filter-countries(text); }
+    }
+
+    about-dialog := AboutDialog {
+        open-url(url) => { root.open-url(url); }
     }
 
     // WiFi settings dialog (visible only on embedded)
