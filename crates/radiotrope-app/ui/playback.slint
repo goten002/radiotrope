@@ -17,12 +17,8 @@ export component Playback inherits Rectangle {
     in-out property <string> viz-mode: "mirror";
 
     height: 108px;
-    background: Theme.panel;
-
-    // Soft accent glow from the left, behind the logo
-    Rectangle {
-        background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
-    }
+    // No background of its own: it sits on the header (app.slint), which
+    // draws the panel colour and the accent glow behind the menu bar too
 
     // 1px bottom separator — shadow edge casting onto favorites
     Rectangle {
