@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { Chip, DialogShell, SectionHeader, Icon, Toggle } from "../components.slint";
+import { DialogShell, SectionHeader, Icon, Toggle } from "../components.slint";
 
 component ColorSwatch inherits Rectangle {
     in property <color> swatch-color;
@@ -114,49 +114,6 @@ export component AccentColorDialog inherits Rectangle {
             Toggle {
                 label: "Gradient on panels and dialogs";
                 checked <=> Theme.panel-gradient;
-            }
-        }
-
-        // Live preview of the current accent
-        VerticalLayout {
-            spacing: 8px;
-
-            SectionHeader { title: "PREVIEW"; }
-
-            HorizontalLayout {
-                spacing: 10px;
-                alignment: start;
-
-                AccentButton { label: "Play"; }
-                Chip {
-                    text: "Playing";
-                    tone: Theme.accent-text;
-                    dot: true;
-                    pulse: true;
-                    y: (parent.height - self.height) / 2;
-                }
-                Rectangle {
-                    width: 110px;
-                    height: 34px;
-
-                    Rectangle {
-                        x: 0;
-                        width: parent.width;
-                        y: (parent.height - self.height) / 2;
-                        height: 6px;
-                        border-radius: 3px;
-                        background: Theme.elevated;
-
-                        Rectangle {
-                            x: 0;
-                            y: 0;
-                            width: parent.width * 0.65;
-                            height: parent.height;
-                            border-radius: 3px;
-                            background: Theme.accent;
-                        }
-                    }
-                }
             }
         }
 
