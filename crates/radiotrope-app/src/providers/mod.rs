@@ -301,6 +301,24 @@ mod tests {
         assert!(!results.has_more);
     }
 
+    #[test]
+    fn test_default_search_category_filters_by_name() {
+        let provider = MockProvider::new(test_stations());
+        let category = Category::new("rock", "Rock", CategoryType::Genre);
+        let results = provider.search_category(&category, "ROCK", 10, 0).unwrap();
+        assert_eq!(results.stations.len(), 1);
+        assert_eq!(results.stations[0].name, "Rock FM");
+    }
+
+    #[test]
+    fn test_default_search_category_empty_query_browses() {
+        let provider = MockProvider::new(test_stations());
+        let category = Category::new("rock", "Rock", CategoryType::Genre);
+        let all = provider.browse_category(&category, 10, 0).unwrap();
+        let results = provider.search_category(&category, "  ", 10, 0).unwrap();
+        assert_eq!(results.stations.len(), all.stations.len());
+    }
+
     // --- Multiple providers ---
 
     /// A second mock provider to test registry with 2+ providers

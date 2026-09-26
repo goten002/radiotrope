@@ -10,7 +10,7 @@ use crossbeam_channel::Sender;
 use serde_json::{json, Value};
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::types::Favorite;
 use radiotrope_app::providers::ProviderRegistry;
 
@@ -204,7 +204,14 @@ fn handle_play_url(
     let name = favorites
         .lock()
         .ok()
-        .map(|f| f.enrich_metadata(url, name.clone(), None, None).0)
+        .map(|f| {
+            f.resolve_play(PlayMetadata {
+                url: url.to_string(),
+                name: name.clone(),
+                ..Default::default()
+            })
+            .name
+        })
         .unwrap_or(name);
     cmd_tx
         .send(AppCommand::Play {

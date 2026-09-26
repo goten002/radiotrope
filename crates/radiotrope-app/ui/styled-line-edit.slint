@@ -4,9 +4,16 @@ export component StyledLineEdit inherits Rectangle {
     in property <string> placeholder-text;
     in-out property <string> text;
     in property <bool> enabled: true;
+    // Show an ✕ button on the right that clears the text
+    in property <bool> clearable: false;
     callback accepted(string);
+    callback edited(string);
+    callback cleared();
 
     property <length> margin: 10px;
+    property <bool> show-clear: root.clearable && root.text != "" && root.enabled;
+    // Space on the right for the text: the margin, plus the ✕ button when shown
+    property <length> right-margin: root.show-clear ? 32px : root.margin;
 
     height: 36px;
     border-radius: 4px;
@@ -28,16 +35,16 @@ export component StyledLineEdit inherits Rectangle {
         font-size: 13px;
         vertical-alignment: center;
         x: root.margin;
-        width: root.width - root.margin * 2;
+        width: root.width - root.margin - root.right-margin;
         height: root.height;
     }
 
     input := TextInput {
         property <length> computed-x;
 
-        x: min(root.margin, max(root.width - root.margin - self.width - self.text-cursor-width,
+        x: min(root.margin, max(root.width - root.right-margin - self.width - self.text-cursor-width,
                self.computed-x + root.margin));
-        width: max(root.width - root.margin * 2, self.preferred-width);
+        width: max(root.width - root.margin - root.right-margin, self.preferred-width);
         height: root.height;
         text <=> root.text;
         color: Theme.text-primary;
@@ -49,12 +56,39 @@ export component StyledLineEdit inherits Rectangle {
         cursor-position-changed(cursor-position) => {
             if cursor-position.x + self.computed-x < root.margin {
                 self.computed-x = -cursor-position.x + root.margin;
-            } else if cursor-position.x + self.computed-x > root.width - root.margin - self.text-cursor-width {
-                self.computed-x = root.width - cursor-position.x - root.margin - self.text-cursor-width;
+            } else if cursor-position.x + self.computed-x > root.width - root.margin - root.right-margin - self.text-cursor-width {
+                self.computed-x = root.width - cursor-position.x - root.margin - root.right-margin - self.text-cursor-width;
             }
         }
 
         accepted => { root.accepted(root.text); }
+        edited => { root.edited(root.text); }
+    }
+
+    // Clear button
+    if root.show-clear: Rectangle {
+        x: root.width - self.width - 6px;
+        y: (root.height - self.height) / 2;
+        width: 24px;
+        height: 24px;
+        border-radius: 12px;
+        background: clear-touch.has-hover ? Theme.menu-hover : transparent;
+
+        clear-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                root.text = "";
+                input.focus();
+                root.cleared();
+            }
+        }
+
+        Image {
+            width: 10px;
+            height: 10px;
+            source: @image-url("icons/xmark.svg");
+            colorize: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        }
     }
 
     public function select-all() {

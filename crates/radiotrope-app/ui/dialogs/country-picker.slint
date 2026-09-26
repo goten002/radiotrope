@@ -1,7 +1,11 @@
 import { Theme } from "../theme.slint";
+import { StyledLineEdit } from "../styled-line-edit.slint";
+import { ScrollBar } from "../scroll-bar.slint";
 
 export struct CountryEntry {
     name: string,
+    // ISO 3166-1 alpha-2 code, empty if unknown
+    code: string,
     station-count: int,
     flag: image,
 }
@@ -64,9 +68,12 @@ export component CountryPickerDialog inherits Rectangle {
     in-out property <bool> loading: false;
     in-out property <string> error: "";
     in-out property <[CountryEntry]> countries: [];
+    in-out property <string> filter-text: "";
 
-    callback country-selected(string);
+    callback country-selected(CountryEntry);
     callback load-countries();
+    // Show only countries whose name contains the text
+    callback filter-countries(string);
 
     if show-dialog: Rectangle {
         width: 100%;
@@ -125,6 +132,20 @@ export component CountryPickerDialog inherits Rectangle {
                     }
                 }
 
+                StyledLineEdit {
+                    placeholder-text: "Filter countries...";
+                    clearable: true;
+                    text <=> root.filter-text;
+                    edited(text) => { root.filter-countries(text); }
+                    cleared => { root.filter-countries(""); }
+                    accepted(text) => {
+                        if root.countries.length == 1 {
+                            root.show-dialog = false;
+                            root.country-selected(root.countries[0]);
+                        }
+                    }
+                }
+
                 // Content area
                 Rectangle {
                     vertical-stretch: 1;
@@ -151,22 +172,43 @@ export component CountryPickerDialog inherits Rectangle {
                     }
 
                     // Country list
-                    if root.countries.length > 0 && !root.loading: Flickable {
-                        content-height: country-layout.preferred-height;
+                    if root.countries.length > 0 && !root.loading: Rectangle {
+                        country-flick := Flickable {
+                            content-height: country-layout.preferred-height;
 
-                        country-layout := VerticalLayout {
-                            padding: 4px;
+                            country-layout := VerticalLayout {
+                                padding: 4px;
 
-                            for entry[idx] in root.countries: CountryRow {
-                                name: entry.name;
-                                station-count: entry.station-count;
-                                flag: entry.flag;
-                                clicked => {
-                                    root.show-dialog = false;
-                                    root.country-selected(entry.name);
+                                for entry[idx] in root.countries: CountryRow {
+                                    name: entry.name;
+                                    station-count: entry.station-count;
+                                    flag: entry.flag;
+                                    clicked => {
+                                        root.show-dialog = false;
+                                        root.country-selected(entry);
+                                    }
                                 }
                             }
                         }
+
+                        ScrollBar {
+                            x: parent.width - self.width - 2px;
+                            y: 4px;
+                            height: parent.height - 8px;
+                            viewport-height: country-flick.height;
+                            content-height: country-flick.content-height;
+                            content-y <=> country-flick.content-y;
+                        }
+                    }
+
+                    // No match for the filter
+                    if root.countries.length == 0 && !root.loading && root.error == ""
+                        && root.filter-text != "": Text {
+                        text: "No countries match \"\{root.filter-text}\"";
+                        color: Theme.text-secondary;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
                     }
                 }
             }

@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { ScrollBar } from "scroll-bar.slint";
 
 export struct FavoriteStation {
     id: string,
@@ -6,13 +7,11 @@ export struct FavoriteStation {
     url: string,
     logo-url: string,
     country: string,
-    flag: image,
 }
 
 component FavoriteRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
-    in property <image> flag;
     in property <bool> is-current;
     in property <image> logo-image;
     in property <bool> has-logo;
@@ -130,23 +129,11 @@ component FavoriteRow inherits Rectangle {
                 overflow: elide;
             }
 
-            if root.country != "": HorizontalLayout {
-                spacing: 4px;
-
-                if root.flag.width > 0: Image {
-                    source: root.flag;
-                    width: 16px;
-                    height: 12px;
-                    image-fit: contain;
-                    y: (parent.height - self.height) / 2;
-                }
-
-                Text {
-                    text: root.country;
-                    color: Theme.text-secondary;
-                    font-size: 11px;
-                    overflow: elide;
-                }
+            if root.country != "": Text {
+                text: root.country;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                overflow: elide;
             }
         }
 
@@ -237,82 +224,92 @@ export component Favorites inherits Rectangle {
     }
 
     // Favorites list
-    if favorites.length > 0: fav-flickable := Flickable {
-        interactive: root.drag-from-index < 0;
-        content-height: fav-layout.preferred-height;
-        changed content-y => { root.scroll-y = self.content-y; }
+    if favorites.length > 0: Rectangle {
+        fav-flickable := Flickable {
+            interactive: root.drag-from-index < 0;
+            content-height: fav-layout.preferred-height;
+            changed content-y => { root.scroll-y = self.content-y; }
 
-        fav-layout := VerticalLayout {
-            padding: 4px;
-            spacing: 2px;
+            fav-layout := VerticalLayout {
+                padding: 4px;
+                spacing: 2px;
 
-            for station[idx] in root.favorites: FavoriteRow {
-                name: station.name;
-                country: station.country;
-                flag: station.flag;
-                is-current: station.url == root.current-station-url;
-                logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
-                has-logo: idx < root.favorite-logos.length
-                    ? root.favorite-logos[idx].width > 0
-                    : false;
-                is-drag-source: root.drag-from-index == idx;
-                row-index: idx;
-                clicked => {
-                    root.favorite-clicked(station);
-                }
-                edit-clicked => {
-                    root.favorite-edit-requested(station);
-                }
-                grip-moved(offset-y) => {
-                    // Start drag on first movement
-                    if root.drag-from-index < 0 {
-                        root.drag-from-index = idx;
-                        root.drag-target-index = idx;
+                for station[idx] in root.favorites: FavoriteRow {
+                    name: station.name;
+                    country: station.country;
+                    is-current: station.url == root.current-station-url;
+                    logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
+                    has-logo: idx < root.favorite-logos.length
+                        ? root.favorite-logos[idx].width > 0
+                        : false;
+                    is-drag-source: root.drag-from-index == idx;
+                    row-index: idx;
+                    clicked => {
+                        root.favorite-clicked(station);
                     }
-                    // Mouse position in viewport coordinates
-                    root.drag-mouse-in-viewport = RowMetrics.list-padding
-                        + idx * RowMetrics.row-stride + 26px + offset-y;
-                    // Target index from viewport position
-                    root.drag-target-index = Math.clamp(
-                        Math.round((root.drag-mouse-in-viewport - RowMetrics.list-padding)
-                            / RowMetrics.row-stride),
-                        0,
-                        root.favorites.length - 1
-                    );
-                    // Auto-scroll near edges (visible pos = viewport pos + content-y)
-                    if root.drag-mouse-in-viewport + fav-flickable.content-y < 40px {
-                        fav-flickable.content-y = Math.min(0px,
-                            fav-flickable.content-y + 16px);
+                    edit-clicked => {
+                        root.favorite-edit-requested(station);
                     }
-                    if root.drag-mouse-in-viewport + fav-flickable.content-y
-                       > fav-flickable.height - 40px {
-                        fav-flickable.content-y = Math.max(
-                            fav-flickable.height - fav-flickable.content-height,
-                            fav-flickable.content-y - 16px);
+                    grip-moved(offset-y) => {
+                        // Start drag on first movement
+                        if root.drag-from-index < 0 {
+                            root.drag-from-index = idx;
+                            root.drag-target-index = idx;
+                        }
+                        // Mouse position in viewport coordinates
+                        root.drag-mouse-in-viewport = RowMetrics.list-padding
+                            + idx * RowMetrics.row-stride + 26px + offset-y;
+                        // Target index from viewport position
+                        root.drag-target-index = Math.clamp(
+                            Math.round((root.drag-mouse-in-viewport - RowMetrics.list-padding)
+                                / RowMetrics.row-stride),
+                            0,
+                            root.favorites.length - 1
+                        );
+                        // Auto-scroll near edges (visible pos = viewport pos + content-y)
+                        if root.drag-mouse-in-viewport + fav-flickable.content-y < 40px {
+                            fav-flickable.content-y = Math.min(0px,
+                                fav-flickable.content-y + 16px);
+                        }
+                        if root.drag-mouse-in-viewport + fav-flickable.content-y
+                           > fav-flickable.height - 40px {
+                            fav-flickable.content-y = Math.max(
+                                fav-flickable.height - fav-flickable.content-height,
+                                fav-flickable.content-y - 16px);
+                        }
+                    }
+                    grip-released => {
+                        if root.drag-from-index >= 0 && root.drag-target-index >= 0
+                           && root.drag-from-index != root.drag-target-index {
+                            root.favorites-reordered(root.drag-from-index, root.drag-target-index);
+                        }
+                        root.drag-from-index = -1;
+                        root.drag-target-index = -1;
                     }
                 }
-                grip-released => {
-                    if root.drag-from-index >= 0 && root.drag-target-index >= 0
-                       && root.drag-from-index != root.drag-target-index {
-                        root.favorites-reordered(root.drag-from-index, root.drag-target-index);
-                    }
-                    root.drag-from-index = -1;
-                    root.drag-target-index = -1;
-                }
+            }
+
+            // Drop indicator line — inside Flickable so it scrolls with content
+            if root.drag-from-index >= 0 && root.drag-target-index >= 0
+               && root.drag-from-index != root.drag-target-index: Rectangle {
+                property <int> insert-visual: root.drag-target-index > root.drag-from-index
+                    ? root.drag-target-index + 1 : root.drag-target-index;
+                x: 12px;
+                y: RowMetrics.list-padding + insert-visual * RowMetrics.row-stride - 1px;
+                width: root.width - 24px;
+                height: 2px;
+                background: Theme.accent;
+                border-radius: 1px;
             }
         }
 
-        // Drop indicator line — inside Flickable so it scrolls with content
-        if root.drag-from-index >= 0 && root.drag-target-index >= 0
-           && root.drag-from-index != root.drag-target-index: Rectangle {
-            property <int> insert-visual: root.drag-target-index > root.drag-from-index
-                ? root.drag-target-index + 1 : root.drag-target-index;
-            x: 12px;
-            y: RowMetrics.list-padding + insert-visual * RowMetrics.row-stride - 1px;
-            width: root.width - 24px;
-            height: 2px;
-            background: Theme.accent;
-            border-radius: 1px;
+        ScrollBar {
+            x: parent.width - self.width - 2px;
+            y: 4px;
+            height: parent.height - 8px;
+            viewport-height: fav-flickable.height;
+            content-height: fav-flickable.content-height;
+            content-y <=> fav-flickable.content-y;
         }
     }
 

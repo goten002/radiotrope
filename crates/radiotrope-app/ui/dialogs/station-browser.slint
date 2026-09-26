@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { ScrollBar } from "../scroll-bar.slint";
 
 export struct BrowseStation {
     name: string,
@@ -9,13 +10,13 @@ export struct BrowseStation {
     country: string,
     codec: string,
     bitrate: int,
-    flag: image,
+    // Provider's station ID, used to recognize favorites with a different URL
+    provider-id: string,
 }
 
 component StationRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
-    in property <image> flag;
     in property <string> codec;
     in property <int> bitrate;
     in property <image> logo-image;
@@ -77,23 +78,11 @@ component StationRow inherits Rectangle {
                 overflow: elide;
             }
 
-            HorizontalLayout {
-                spacing: 4px;
-
-                if root.flag.width > 0: Image {
-                    source: root.flag;
-                    width: 16px;
-                    height: 12px;
-                    image-fit: contain;
-                    y: (parent.height - self.height) / 2;
-                }
-
-                Text {
-                    text: root.country;
-                    color: Theme.text-secondary;
-                    font-size: 11px;
-                    overflow: elide;
-                }
+            Text {
+                text: root.country;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                overflow: elide;
             }
         }
 
@@ -129,12 +118,6 @@ component StationRow inherits Rectangle {
 export component StationBrowserDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <string> search-mode: "search";
-    // Clear search query when switching to country mode
-    changed search-mode => {
-        if (root.search-mode == "country") {
-            root.search-query = "";
-        }
-    }
     in-out property <bool> search-loading: false;
     in-out property <bool> search-loading-more: false;
     in-out property <string> search-error: "";
@@ -142,12 +125,36 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <[image]> browse-logos: [];
     in-out property <bool> has-more: false;
     in-out property <string> country-name: "";
+    // ISO 3166-1 code of the country, empty if unknown
+    in-out property <string> country-code: "";
+    in-out property <image> country-flag;
     property <string> search-query: "";
+    // Query of the results on screen; empty means the default list
+    property <string> shown-query: "";
 
+    // Search by name; an empty query loads the top stations
     callback search-stations(string);
-    callback search-by-country(string);
+    // Search by name within a country (name, code, query); an empty query
+    // lists the country's stations
+    callback search-in-country(string, string, string);
     callback load-more();
     callback station-selected(BrowseStation);
+
+    // Forget the typed query, for when the dialog opens in a new mode
+    public function reset-query() {
+        root.search-query = "";
+        root.shown-query = "";
+    }
+
+    function run-search() {
+        root.shown-query = root.search-query;
+        root.search-loading = true;
+        if root.search-mode == "country" {
+            root.search-in-country(root.country-name, root.country-code, root.search-query);
+        } else {
+            root.search-stations(root.search-query);
+        }
+    }
 
     if show-dialog: Rectangle {
         width: 100%;
@@ -180,6 +187,15 @@ export component StationBrowserDialog inherits Rectangle {
                 // Header row: title left, "radio-browser.info" right
                 HorizontalLayout {
                     height: 28px;
+                    spacing: 8px;
+
+                    if root.search-mode == "country" && root.country-flag.width > 0: Image {
+                        source: root.country-flag;
+                        width: 24px;
+                        height: 18px;
+                        image-fit: contain;
+                        y: (parent.height - self.height) / 2;
+                    }
 
                     Text {
                         text: root.search-mode == "country"
@@ -201,19 +217,32 @@ export component StationBrowserDialog inherits Rectangle {
                     }
                 }
 
-                // Search input (search mode only)
-                if root.search-mode == "search": HorizontalLayout {
+                // Search input
+                HorizontalLayout {
                     spacing: 8px;
                     height: 36px;
 
                     search-input := StyledLineEdit {
                         horizontal-stretch: 1;
-                        placeholder-text: "Search by station name...";
+                        clearable: true;
+                        placeholder-text: root.search-mode == "country"
+                            ? "Search stations in \{root.country-name}..."
+                            : "Search by station name...";
                         text <=> root.search-query;
                         accepted(query) => {
-                            if (root.search-query != "") {
-                                root.search-loading = true;
-                                root.search-stations(root.search-query);
+                            if root.search-query != "" || root.shown-query != "" {
+                                root.run-search();
+                            }
+                        }
+                        // Emptying the box (backspace or ✕) brings back the default list
+                        edited(query) => {
+                            if query == "" && root.shown-query != "" {
+                                root.run-search();
+                            }
+                        }
+                        cleared => {
+                            if root.shown-query != "" {
+                                root.run-search();
                             }
                         }
                     }
@@ -222,9 +251,8 @@ export component StationBrowserDialog inherits Rectangle {
                         label: "Search";
                         enabled: root.search-query != "";
                         clicked => {
-                            if (root.search-query != "") {
-                                root.search-loading = true;
-                                root.search-stations(root.search-query);
+                            if root.search-query != "" {
+                                root.run-search();
                             }
                         }
                     }
@@ -255,32 +283,12 @@ export component StationBrowserDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
 
-                    // Empty state (search mode, no query, not loading)
-                    if root.search-mode == "search" && root.search-results.length == 0
-                        && !root.search-loading && root.search-error == ""
-                        && root.search-query == "": Text {
-                        text: "Top stations loaded automatically";
-                        color: Theme.text-secondary;
-                        font-size: 13px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    // Empty state (search mode, with query, no results)
-                    if root.search-mode == "search" && root.search-results.length == 0
-                        && !root.search-loading && root.search-error == ""
-                        && root.search-query != "": Text {
-                        text: "No stations found";
-                        color: Theme.text-secondary;
-                        font-size: 13px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-
-                    // Empty state (country mode)
-                    if root.search-mode == "country" && root.search-results.length == 0
+                    // Empty state
+                    if root.search-results.length == 0
                         && !root.search-loading && root.search-error == "": Text {
-                        text: "No stations found in \{root.country-name}";
+                        text: root.search-mode == "country"
+                            ? "No stations found in \{root.country-name}"
+                            : "No stations found";
                         color: Theme.text-secondary;
                         font-size: 13px;
                         horizontal-alignment: center;
@@ -288,49 +296,59 @@ export component StationBrowserDialog inherits Rectangle {
                     }
 
                     // Results list
-                    if root.search-results.length > 0: Flickable {
-                        content-height: results-layout.preferred-height;
+                    if root.search-results.length > 0: Rectangle {
+                        results-flick := Flickable {
+                            content-height: results-layout.preferred-height;
 
-                        results-layout := VerticalLayout {
-                            padding: 4px;
+                            results-layout := VerticalLayout {
+                                padding: 4px;
 
-                            for station[idx] in root.search-results: StationRow {
-                                name: station.name;
-                                country: station.country;
-                                flag: station.flag;
-                                codec: station.codec;
-                                bitrate: station.bitrate;
-                                logo-image: idx < root.browse-logos.length ? root.browse-logos[idx] : @image-url("");
-                                has-logo: idx < root.browse-logos.length
-                                    ? root.browse-logos[idx].width > 0
-                                    : false;
-                                clicked => { root.station-selected(station); }
-                            }
+                                for station[idx] in root.search-results: StationRow {
+                                    name: station.name;
+                                    country: station.country;
+                                    codec: station.codec;
+                                    bitrate: station.bitrate;
+                                    logo-image: idx < root.browse-logos.length ? root.browse-logos[idx] : @image-url("");
+                                    has-logo: idx < root.browse-logos.length
+                                        ? root.browse-logos[idx].width > 0
+                                        : false;
+                                    clicked => { root.station-selected(station); }
+                                }
 
-                            // Load More button
-                            if root.has-more: Rectangle {
-                                height: 44px;
-                                border-radius: 4px;
-                                background: load-more-touch.has-hover && !root.search-loading-more
-                                    ? Theme.menu-hover : transparent;
+                                // Load More button
+                                if root.has-more: Rectangle {
+                                    height: 44px;
+                                    border-radius: 4px;
+                                    background: load-more-touch.has-hover && !root.search-loading-more
+                                        ? Theme.menu-hover : transparent;
 
-                                load-more-touch := TouchArea {
-                                    enabled: !root.search-loading-more;
-                                    clicked => {
-                                        root.search-loading-more = true;
-                                        root.load-more();
+                                    load-more-touch := TouchArea {
+                                        enabled: !root.search-loading-more;
+                                        clicked => {
+                                            root.search-loading-more = true;
+                                            root.load-more();
+                                        }
+                                        mouse-cursor: root.search-loading-more ? default : pointer;
                                     }
-                                    mouse-cursor: root.search-loading-more ? default : pointer;
-                                }
 
-                                Text {
-                                    text: root.search-loading-more ? "Loading..." : "Load More Stations";
-                                    color: root.search-loading-more ? Theme.text-secondary : Theme.accent;
-                                    font-size: 13px;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
+                                    Text {
+                                        text: root.search-loading-more ? "Loading..." : "Load More Stations";
+                                        color: root.search-loading-more ? Theme.text-secondary : Theme.accent;
+                                        font-size: 13px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
                                 }
                             }
+                        }
+
+                        ScrollBar {
+                            x: parent.width - self.width - 2px;
+                            y: 4px;
+                            height: parent.height - 8px;
+                            viewport-height: results-flick.height;
+                            content-height: results-flick.content-height;
+                            content-y <=> results-flick.content-y;
                         }
                     }
                 }
