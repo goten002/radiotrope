@@ -173,6 +173,11 @@ export component Controls inherits Rectangle {
     height: 64px;
     background: Theme.panel;
 
+    // Same soft accent glow from the left as the header
+    Rectangle {
+        background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
+    }
+
     // 1px top separator — shadow edge at bottom of favorites groove
     Rectangle {
         y: 0;
