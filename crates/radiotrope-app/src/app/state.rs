@@ -4,6 +4,8 @@
 //! `AppSnapshot` is the shared state read by MCP tool handlers.
 
 use std::borrow::Cow;
+use std::path::PathBuf;
+use std::time::Duration;
 
 use radiotrope::audio::PlaybackState;
 
@@ -39,6 +41,17 @@ pub enum AppCommand {
     SetEqGains([f32; 10]),
     SetEqPreamp(f32),
     SetEqEnabled(bool),
+
+    // Recording
+    /// Record the playing station to `<folder>/<Station> - <time>.mp3`
+    StartRecording {
+        folder: PathBuf,
+        /// Record the sound after the equalizer instead of before it
+        with_eq: bool,
+        /// Station logo as PNG, for the file's cover art
+        cover: Option<Vec<u8>>,
+    },
+    StopRecording,
 
     // Internal: stream resolved on worker thread (not sent by frontends)
     InternalStreamResolved {
@@ -80,6 +93,29 @@ pub struct AppSnapshot {
     pub eq_preamp: f32,
     pub eq_enabled: bool,
     pub eq_preset_name: Option<String>,
+
+    // Recording
+    /// Progress of the running recording, `None` when not recording
+    pub recording: Option<RecordingProgress>,
+    /// Last "saved" or error message about a recording
+    pub recording_notice: Option<RecordingNotice>,
+}
+
+/// Progress of the running recording
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordingProgress {
+    pub path: PathBuf,
+    pub duration: Duration,
+    pub bytes: u64,
+}
+
+/// A message about a recording for the UI to show briefly
+#[derive(Clone, Debug, PartialEq)]
+pub struct RecordingNotice {
+    /// Increases with every notice, so the UI can tell a new one apart
+    pub seq: u64,
+    pub text: String,
+    pub is_error: bool,
 }
 
 impl Default for AppSnapshot {
@@ -106,6 +142,8 @@ impl Default for AppSnapshot {
             eq_preamp: 0.0,
             eq_enabled: false,
             eq_preset_name: Some("Flat".to_string()),
+            recording: None,
+            recording_notice: None,
         }
     }
 }

@@ -18,6 +18,7 @@ use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
+use radiotrope_app::data::recordings;
 use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
@@ -659,6 +660,13 @@ fn main() {
     setup_wifi(&ui);
 
     setup_about(&ui);
+    setup_recording(
+        &ui,
+        &settings,
+        cmd_tx.clone(),
+        shared_state.clone(),
+        logo_service.clone(),
+    );
 
     // Rotary encoder for volume control (GPIO 5=CLK, GPIO 6=DT, GPIO 13=SW)
     // Disabled: embedded-only hardware, parked for now
@@ -859,7 +867,7 @@ fn main() {
     // Spawn controller on its own thread
     let ctrl_state = shared_state.clone();
     let ctrl_tx = cmd_tx.clone();
-    std::thread::Builder::new()
+    let controller = std::thread::Builder::new()
         .name("controller".into())
         .spawn(move || {
             let mut ctrl = AppController::new(cmd_rx, ctrl_tx, ctrl_state, analysis_tx, stats_tx);
@@ -973,6 +981,8 @@ fn main() {
             .generation(),
     );
     let last_poll_url = std::cell::RefCell::new(String::new());
+    // Recording notice on screen: its sequence number and when it appeared
+    let poll_notice = std::cell::RefCell::new((0u64, Instant::now()));
     // Listening session of the station playing now, for favorite stats
     let listen_session: std::rc::Rc<std::cell::RefCell<Option<ListenSession>>> = Default::default();
     let poll_listen = listen_session.clone();
@@ -1065,7 +1075,17 @@ fn main() {
                 .as_deref()
                 .unwrap_or("")
                 .into();
+            let recording = s.recording.clone();
+            let recording_notice = s.recording_notice.clone();
             drop(s);
+
+            show_recording_state(
+                &ui,
+                recording.as_ref(),
+                recording_notice.as_ref(),
+                is_playing,
+                &mut poll_notice.borrow_mut(),
+            );
 
             // Credit listening time to the favorite being played
             let playing_url = station_url.as_deref().filter(|_| is_playing);
@@ -1207,7 +1227,17 @@ fn main() {
 
     // UI closed — tell controller to shut down
     let _ = cmd_tx.send(app::state::AppCommand::Shutdown);
+
+    // Give the controller a moment to finish a recording in progress, so
+    // the end of the file is written before the process exits
+    let deadline = Instant::now() + SHUTDOWN_GRACE;
+    while !controller.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
+
+/// Longest wait at exit for the controller to finish (e.g. a recording)
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Rotary encoder for volume control (KY-040 on GPIO 5/6/13)
 /// Uses the kernel `rotary-encoder` driver via /dev/input/eventN for reliable
@@ -1667,6 +1697,217 @@ fn setup_wifi(ui: &App) {
 }
 
 /// Persist current app state to settings.json
+/// How long "Saved ..." and recording errors stay on screen
+const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
+
+/// Largest station logo embedded as cover art in a recording
+const MAX_COVER_BYTES: usize = 512 * 1024;
+
+/// Wire the Record button, the Tools menu items and the Recording Folder
+/// dialog. The folder and the before/after-EQ choice are saved right away.
+fn setup_recording(
+    ui: &App,
+    settings: &radiotrope_app::data::settings::Settings,
+    cmd_tx: crossbeam_channel::Sender<app::state::AppCommand>,
+    shared_state: Arc<Mutex<AppSnapshot>>,
+    logo_service: Arc<LogoService>,
+) {
+    show_recording_folder(ui, settings.recording_dir.as_deref());
+    ui.set_record_with_eq(settings.record_with_eq);
+
+    ui.on_toggle_recording({
+        let ui_weak = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let recording = shared_state
+                .lock()
+                .map(|s| s.recording.is_some())
+                .unwrap_or(false);
+            if recording {
+                let _ = cmd_tx.send(app::state::AppCommand::StopRecording);
+                return;
+            }
+            let settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+            let station = Station::new(
+                ui.get_station_name().as_str(),
+                ui.get_station_url().as_str(),
+            );
+            let _ = cmd_tx.send(app::state::AppCommand::StartRecording {
+                folder: recordings::folder(settings.recording_dir.as_deref()),
+                with_eq: settings.record_with_eq,
+                cover: station_cover_png(&logo_service, &station),
+            });
+        }
+    });
+
+    ui.on_apply_recording_folder({
+        let ui_weak = ui.as_weak();
+        move |path| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let path = std::path::PathBuf::from(path.trim());
+            if path.as_os_str().is_empty() {
+                ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
+                return;
+            }
+            if !path.is_absolute() {
+                ui.set_recording_folder_error("Enter a full path to a folder.".into());
+                return;
+            }
+            if let Err(e) = recordings::prepare_dir(&path) {
+                ui.set_recording_folder_error(e.into());
+                return;
+            }
+            // Choosing the default folder by hand keeps following the default
+            let custom = (path != recordings::default_dir()).then_some(path);
+            save_recording_settings(|s| s.recording_dir = custom.clone());
+            show_recording_folder(&ui, custom.as_deref());
+            ui.set_show_recording_dialog(false);
+        }
+    });
+
+    ui.on_restore_recording_folder({
+        let ui_weak = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            save_recording_settings(|s| s.recording_dir = None);
+            show_recording_folder(&ui, None);
+        }
+    });
+
+    ui.on_record_with_eq_toggled(|on| {
+        save_recording_settings(|s| s.record_with_eq = on);
+    });
+
+    ui.on_open_recordings_folder({
+        let ui_weak = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let dir = std::path::PathBuf::from(ui.get_recording_folder().as_str());
+            // Opening a folder that doesn't exist yet would show an error
+            if let Err(e) = recordings::prepare_dir(&dir) {
+                ui.set_recording_folder_error(e.into());
+                return;
+            }
+            open_folder(&dir);
+        }
+    });
+
+    ui.on_browse_recording_folder({
+        let ui_weak = ui.as_weak();
+        move || browse_recording_folder(ui_weak.clone())
+    });
+}
+
+/// Show `custom` (or the default folder) in the Recording Folder dialog.
+fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
+    let folder = recordings::folder(custom);
+    let text: slint::SharedString = folder.display().to_string().into();
+    ui.set_recording_folder(text.clone());
+    ui.set_recording_folder_edit(text);
+    ui.set_recording_folder_is_default(custom.is_none());
+    ui.set_recording_folder_error(Default::default());
+}
+
+/// Change recording settings on disk right away.
+fn save_recording_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
+    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    change(&mut settings);
+    if let Err(e) = settings.save() {
+        eprintln!("Failed to save recording settings: {e}");
+    }
+}
+
+/// The station's cached logo as PNG, for a recording's cover art.
+fn station_cover_png(logo_service: &LogoService, station: &Station) -> Option<Vec<u8>> {
+    let (rgba, w, h) = logo_service.get_cached_rgba(station)?;
+    let img = image::RgbaImage::from_raw(w, h, rgba)?;
+    let mut png = Vec::new();
+    img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    (png.len() <= MAX_COVER_BYTES).then_some(png)
+}
+
+/// Mirror recording progress and notices into the UI (called every 200 ms).
+fn show_recording_state(
+    ui: &App,
+    recording: Option<&app::state::RecordingProgress>,
+    notice: Option<&app::state::RecordingNotice>,
+    is_playing: bool,
+    shown: &mut (u64, Instant),
+) {
+    ui.set_is_recording(recording.is_some());
+    ui.set_can_record(is_playing);
+    if let Some(rec) = recording {
+        let secs = rec.duration.as_secs();
+        let time = if secs >= 3600 {
+            format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
+        } else {
+            format!("{}:{:02}", secs / 60, secs % 60)
+        };
+        ui.set_recording_text(format!("{time} · {}", format_bytes(rec.bytes)).into());
+    }
+
+    match notice {
+        Some(n) if n.seq != shown.0 => {
+            *shown = (n.seq, Instant::now());
+            ui.set_recording_notice(n.text.as_str().into());
+            ui.set_recording_notice_error(n.is_error);
+        }
+        _ => {
+            if !ui.get_recording_notice().is_empty() && shown.1.elapsed() >= RECORDING_NOTICE_TIME {
+                ui.set_recording_notice(Default::default());
+            }
+        }
+    }
+}
+
+/// Let the user pick the recording folder with the system's folder dialog.
+/// The choice goes into the dialog's path field; Save applies it.
+#[cfg(feature = "desktop")]
+fn browse_recording_folder(ui_weak: slint::Weak<App>) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let start = std::path::PathBuf::from(ui.get_recording_folder_edit().as_str());
+    let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Recording Folder");
+    // Start in the folder being edited, or the nearest parent that exists
+    if let Some(dir) = start.ancestors().find(|p| p.is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog = dialog.set_parent(&ui.window().window_handle());
+    let pick = dialog.pick_folder();
+    let spawned = slint::spawn_local(async move {
+        let picked = pick.await;
+        let Some(ui) = ui_weak.upgrade() else { return };
+        if let Some(folder) = picked {
+            ui.set_recording_folder_edit(folder.path().display().to_string().into());
+            ui.set_recording_folder_error(Default::default());
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("Failed to open the folder dialog: {e}");
+    }
+}
+
+/// The kiosk build has no folder dialog; the path is typed instead.
+#[cfg(not(feature = "desktop"))]
+fn browse_recording_folder(_ui_weak: slint::Weak<App>) {}
+
+/// Open a folder in the system file manager.
+fn open_folder(dir: &std::path::Path) {
+    let program = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    match std::process::Command::new(program).arg(dir).spawn() {
+        Ok(mut child) => {
+            std::thread::spawn(move || child.wait());
+        }
+        Err(e) => eprintln!("Failed to open {}: {e}", dir.display()),
+    }
+}
+
 fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
