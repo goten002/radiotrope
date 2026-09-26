@@ -84,6 +84,8 @@ component FavoriteRow inherits Rectangle {
     property <bool> confirm-remove: false;
     // The menu opened from a hold, so letting go must not also play
     property <bool> menu-held: false;
+    // The pointer has rested on the stats long enough to explain them
+    property <bool> stats-ready: false;
     property <length> menu-width: 186px;
 
     public function open-menu(x: length, y: length) {
@@ -275,6 +277,76 @@ component FavoriteRow inherits Rectangle {
                 color: Theme.text-tertiary;
                 font-size: 11px;
                 horizontal-alignment: right;
+            }
+        }
+    }
+
+    // Hovering the stats explains them in a bubble to their left. Clicks
+    // pass through to the row.
+    stats-touch := TouchArea {
+        visible: root.show-stats;
+        x: root.width - self.width;
+        width: 104px;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.open-menu(self.x + self.mouse-x, self.mouse-y);
+            }
+        }
+        changed has-hover => {
+            if !self.has-hover {
+                root.stats-ready = false;
+            }
+        }
+    }
+
+    Timer {
+        interval: 400ms;
+        running: stats-touch.has-hover && !root.stats-ready;
+        triggered => { root.stats-ready = true; }
+    }
+
+    stats-bubble := Rectangle {
+        property <bool> shown: stats-touch.has-hover && root.stats-ready
+            && !stats-touch.pressed && !root.dragging;
+        visible: self.opacity > 0;
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: Theme.fast; }
+        x: stats-touch.x - self.width - 4px;
+        y: (root.height - self.height) / 2;
+        width: bubble-layout.preferred-width;
+        height: bubble-layout.preferred-height;
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: Theme.shadow-soft;
+
+        bubble-layout := VerticalLayout {
+            padding-left: 10px;
+            padding-right: 10px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 2px;
+
+            if root.last-played == "": Text {
+                text: "Listening stats appear once you play it";
+                color: Theme.text-secondary;
+                font-size: 11px;
+            }
+            if root.last-played != "": Text {
+                text: "Total listening time: " + (root.listen-time != "" ? root.listen-time : "<1 m");
+                color: Theme.text-primary;
+                font-size: 11px;
+            }
+            if root.last-played != "": Text {
+                text: "Last played: " + root.last-played
+                    + "  ·  " + root.play-count + (root.play-count == 1 ? " play" : " plays");
+                color: Theme.text-secondary;
+                font-size: 11px;
             }
         }
     }
