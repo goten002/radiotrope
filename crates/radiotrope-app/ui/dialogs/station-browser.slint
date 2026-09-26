@@ -220,6 +220,8 @@ export component StationBrowserDialog inherits Rectangle {
     // Search by name within a country (name, code, query); an empty query
     // lists the country's stations
     callback search-in-country(string, string, string);
+    // Back to the country list (country mode only)
+    callback change-country();
     callback load-more();
     callback station-selected(BrowseStation);
 
@@ -254,6 +256,12 @@ export component StationBrowserDialog inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             height: 36px;
+
+            if root.search-mode == "country": SecondaryButton {
+                y: (parent.height - self.height) / 2;
+                label: "‹ Countries";
+                clicked => { root.change-country(); }
+            }
 
             search-input := StyledLineEdit {
                 horizontal-stretch: 1;
