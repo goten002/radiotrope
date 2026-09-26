@@ -17,6 +17,7 @@ symphonia-adapter-libopus = { version = "0.3", features = ["bundled"] }
 symphonia-adapter-fdk-aac = "0.2"
 rustfft = "6.4"
 biquad = "0.6"
+mp3lame-encoder = "0.2"
 
 # Streaming
 m3u8-rs = "6.0"

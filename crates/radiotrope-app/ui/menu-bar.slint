@@ -111,6 +111,11 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> show-station-stats: true;
     callback open-wifi-settings();
     callback open-about();
+    in property <bool> is-recording;
+    in property <bool> can-record;
+    callback toggle-recording();
+    callback open-recording-folder-dialog();
+    callback open-recordings-folder();
 
 
     HorizontalLayout {
@@ -401,6 +406,38 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         tools-popup.close();
                         root.open-statistics();
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                if root.is-recording || root.can-record: MenuItem {
+                    label: root.is-recording ? "Stop Recording" : "Start Recording";
+                    icon: @image-url("icons/circle.svg");
+                    clicked => {
+                        tools-popup.close();
+                        root.toggle-recording();
+                    }
+                }
+                MenuItem {
+                    label: "Recording Folder...";
+                    icon: @image-url("icons/folder.svg");
+                    clicked => {
+                        tools-popup.close();
+                        root.open-recording-folder-dialog();
+                    }
+                }
+                if Platform.has-file-manager: MenuItem {
+                    label: "Open Recordings Folder";
+                    icon: @image-url("icons/folder-open.svg");
+                    clicked => {
+                        tools-popup.close();
+                        root.open-recordings-folder();
                     }
                 }
                 if Platform.has-wifi: Rectangle {

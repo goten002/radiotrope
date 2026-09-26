@@ -10,6 +10,7 @@ import { StatisticsDialog } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
 import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint";
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
+import { RecordingFolderDialog } from "dialogs/recording.slint";
 import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry } from "@platform/wifi.slint";
@@ -53,6 +54,24 @@ export component App inherits Window {
     callback eq-enabled-toggled(bool);
     callback accent-color-changed(color);
     callback apply-custom-hex(string);
+    // Recording
+    callback toggle-recording();
+    callback open-recordings-folder();
+    callback browse-recording-folder();
+    callback apply-recording-folder(string);
+    callback restore-recording-folder();
+    callback record-with-eq-toggled(bool);
+    in-out property <bool> is-recording;
+    in-out property <bool> can-record;
+    in-out property <string> recording-text;
+    in-out property <string> recording-notice;
+    in-out property <bool> recording-notice-error;
+    in-out property <string> recording-folder <=> recording-dialog.folder;
+    in-out property <bool> recording-folder-is-default <=> recording-dialog.is-default;
+    in-out property <string> recording-folder-error <=> recording-dialog.error;
+    in-out property <string> recording-folder-edit <=> recording-dialog.edit-path;
+    in-out property <bool> record-with-eq <=> recording-dialog.with-eq;
+    in-out property <bool> show-recording-dialog <=> recording-dialog.show-dialog;
 
     // WiFi (embedded only — connected from Rust when feature = "embedded")
     callback wifi-scan-requested();
@@ -195,6 +214,14 @@ export component App inherits Window {
                 open-accent-color => {
                     accent-dialog.show-dialog = true;
                 }
+                is-recording: root.is-recording;
+                can-record: root.can-record;
+                toggle-recording => { root.toggle-recording(); }
+                open-recording-folder-dialog => {
+                    root.recording-folder-error = "";
+                    recording-dialog.open();
+                }
+                open-recordings-folder => { root.open-recordings-folder(); }
             }
             playback := Playback {
                 station-name: root.station-name;
@@ -236,6 +263,12 @@ export component App inherits Window {
             stop-clicked => { root.stop-clicked(); }
             volume-changed(vol) => { root.volume-changed(vol); }
             mute-clicked => { root.mute-clicked(); }
+            is-recording: root.is-recording;
+            can-record: root.can-record;
+            recording-text: root.recording-text;
+            recording-notice: root.recording-notice;
+            recording-notice-error: root.recording-notice-error;
+            record-clicked => { root.toggle-recording(); }
         }
     }
 
@@ -331,6 +364,14 @@ export component App inherits Window {
         }
         load-countries() => { root.load-countries(); }
         filter-countries(text) => { root.filter-countries(text); }
+    }
+
+    recording-dialog := RecordingFolderDialog {
+        browse() => { root.browse-recording-folder(); }
+        apply-folder(path) => { root.apply-recording-folder(path); }
+        restore-default() => { root.restore-recording-folder(); }
+        open-folder() => { root.open-recordings-folder(); }
+        with-eq-toggled(on) => { root.record-with-eq-toggled(on); }
     }
 
     about-dialog := AboutDialog {

@@ -25,15 +25,17 @@ thiserror = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "7.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
 libc = "0.2"
 # WiFi settings over iwd (embedded only)
 zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
 tokio = { version = "1", features = ["rt", "macros"], optional = true }
+rfd = { version = "0.17", optional = true }
 
 [features]
 default = ["desktop"]
-desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "dep:rfd"]
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "dep:tokio"]
 
 [build-dependencies]

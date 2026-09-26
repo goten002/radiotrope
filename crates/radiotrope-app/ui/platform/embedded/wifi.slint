@@ -3,6 +3,8 @@
 export global Platform {
     // The Tools menu offers WiFi settings
     out property <bool> has-wifi: true;
+    // No folder picker or file manager on the kiosk
+    out property <bool> has-file-manager: false;
 }
 
 export { WifiSettingsDialog, WifiNetworkEntry } from "../../dialogs/wifi-settings.slint";

@@ -1,0 +1,121 @@
+import { Theme } from "../theme.slint";
+import { StyledLineEdit } from "../styled-line-edit.slint";
+import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { DialogShell, Field, Toggle } from "../components.slint";
+import { Platform } from "@platform/wifi.slint";
+
+// Where recordings are saved, and whether they include the equalizer
+export component RecordingFolderDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    // The folder in use
+    in property <string> folder;
+    in property <bool> is-default;
+    // Problem with the last folder tried, shown under the field
+    in property <string> error;
+    in-out property <bool> with-eq;
+
+    // The path being edited; reset to `folder` each time the dialog opens
+    in-out property <string> edit-path;
+
+    callback browse();
+    callback apply-folder(string);
+    callback restore-default();
+    callback open-folder();
+    callback with-eq-toggled(bool);
+
+    property <bool> edited: root.edit-path != root.folder;
+
+    public function open() {
+        root.edit-path = root.folder;
+        root.show-dialog = true;
+    }
+
+    function close() {
+        root.show-dialog = false;
+    }
+
+    if show-dialog: DialogShell {
+        title: "Recording Folder";
+        subtitle: "Recordings are saved as MP3 files in this folder";
+        card-width: 480px;
+        auto-focus: false;
+        close-requested => { root.close(); }
+
+        Field {
+            label: root.is-default && !root.edited ? "Folder (default)" : "Folder";
+            StyledLineEdit {
+                text <=> root.edit-path;
+                placeholder-text: "Folder for recordings";
+                accepted(path) => { root.apply-folder(path); }
+            }
+        }
+
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.danger;
+            font-size: 12px;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+
+            if Platform.has-file-manager: SecondaryButton {
+                label: "Browse...";
+                clicked => { root.browse(); }
+            }
+            if !root.is-default: SecondaryButton {
+                label: "Restore Default";
+                clicked => { root.restore-default(); }
+            }
+            if Platform.has-file-manager: SecondaryButton {
+                label: "Open Folder";
+                clicked => { root.open-folder(); }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.hairline;
+        }
+
+        VerticalLayout {
+            spacing: 4px;
+
+            Toggle {
+                label: "Include equalizer in recordings";
+                checked <=> root.with-eq;
+                toggled(on) => { root.with-eq-toggled(on); }
+            }
+            Text {
+                text: root.with-eq
+                    ? "Recordings sound like what you hear. Lower the EQ preamp if they sound distorted."
+                    : "Recordings keep the station's own sound. Volume never affects them.";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                wrap: word-wrap;
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            spacing: 8px;
+
+            if root.edited: SecondaryButton {
+                label: "Cancel";
+                clicked => { root.close(); }
+            }
+            AccentButton {
+                label: root.edited ? "Save" : "Close";
+                clicked => {
+                    if root.edited {
+                        root.apply-folder(root.edit-path);
+                    } else {
+                        root.close();
+                    }
+                }
+            }
+        }
+    }
+}

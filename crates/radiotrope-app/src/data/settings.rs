@@ -6,6 +6,7 @@ use crate::data::storage;
 use crate::data::types::Station;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 /// Settings data file name
 const SETTINGS_FILE: &str = "settings.json";
@@ -100,6 +101,15 @@ pub struct Settings {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq_preset_name: Option<String>,
+
+    // === Recording ===
+    /// Folder for recordings; `None` means the default (`<Music>/Radiotrope`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_dir: Option<PathBuf>,
+
+    /// Record the sound after the equalizer instead of the station's sound
+    #[serde(default)]
+    pub record_with_eq: bool,
 }
 
 fn default_version() -> u32 {
@@ -145,6 +155,8 @@ impl Default for Settings {
             eq_preamp: 0.0,
             eq_enabled: false,
             eq_preset_name: Some("Flat".to_string()),
+            recording_dir: None,
+            record_with_eq: false,
         }
     }
 }
@@ -346,6 +358,18 @@ mod tests {
     }
 
     #[test]
+    fn test_recording_defaults() {
+        let settings = Settings::default();
+        assert_eq!(settings.recording_dir, None);
+        assert!(!settings.record_with_eq);
+
+        // Settings files from before recording existed load unchanged
+        let old: Settings = serde_json::from_str(r#"{"version":1,"volume":0.5}"#).unwrap();
+        assert_eq!(old.recording_dir, None);
+        assert!(!old.record_with_eq);
+    }
+
+    #[test]
     fn test_theme_is_dark() {
         assert!(Theme::Dark.is_dark());
         assert!(!Theme::Light.is_dark());
@@ -371,6 +395,8 @@ mod tests {
             settings.start_minimized = true;
             settings.show_notifications = false;
             settings.accent_color = Some("#3584e4".to_string());
+            settings.recording_dir = Some(PathBuf::from("/media/usb/radio"));
+            settings.record_with_eq = true;
             settings.save_to(&path).unwrap();
         }
 
@@ -392,6 +418,8 @@ mod tests {
             assert!(s.start_minimized);
             assert!(!s.show_notifications);
             assert_eq!(s.accent_color, Some("#3584e4".to_string()));
+            assert_eq!(s.recording_dir, Some(PathBuf::from("/media/usb/radio")));
+            assert!(s.record_with_eq);
         }
 
         let _ = fs::remove_file(&path);

@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { IconButton, Icon } from "components.slint";
+import { IconButton, Icon, Chip } from "components.slint";
 
 component VolumeSlider inherits Rectangle {
     in-out property <float> value: 50;  // 0–100
@@ -162,8 +162,16 @@ export component Controls inherits Rectangle {
     in property <string> now-playing-title;
     in-out property <float> volume: 1.0;   // 0.0–1.0
     in-out property <bool> is-muted;
+    // Recording: button state, "12:34 · 11.8 MB" while recording, and a
+    // short message after a recording ends or fails
+    in property <bool> is-recording;
+    in property <bool> can-record;
+    in property <string> recording-text;
+    in property <string> recording-notice;
+    in property <bool> recording-notice-error;
 
     callback play-clicked();
+    callback record-clicked();
     callback stop-clicked();
     callback volume-changed(float);        // 0.0–1.0
     callback mute-clicked();
@@ -232,6 +240,55 @@ export component Controls inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+
+        // ── Record button ──
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                property <bool> can-interact: root.is-recording || root.can-record;
+
+                width: 32px;
+                height: 32px;
+                border-radius: 16px;
+                background: rec-touch.has-hover && can-interact ? Theme.text-primary.with-alpha(0.08) : transparent;
+                border-width: 1.5px;
+                border-color: root.is-recording ? Theme.danger
+                    : can-interact ? Theme.text-primary.with-alpha(0.25)
+                    : Theme.disabled-bg;
+                animate background, border-color { duration: Theme.fast; }
+
+                Icon {
+                    width: root.is-recording ? 12px : 11px;
+                    height: self.width;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    source: @image-url("icons/circle.svg");
+                    colorize: root.is-recording || (can-interact && rec-touch.has-hover) ? Theme.danger
+                        : can-interact ? Theme.text-secondary
+                        : Theme.disabled-text;
+                    opacity: root.is-recording ? 0.45 + 0.55 * abs(sin(animation-tick() / 1400ms * 180deg)) : 1;
+                }
+
+                rec-touch := TouchArea {
+                    enabled: can-interact;
+                    mouse-cursor: can-interact ? pointer : default;
+                    clicked => { root.record-clicked(); }
+                }
+            }
+        }
+
+        // ── Recording progress, or what happened to the last recording ──
+        if root.is-recording || root.recording-notice != "": VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 0;
+            max-width: 260px;
+            Chip {
+                text: root.is-recording ? "REC " + root.recording-text : root.recording-notice;
+                tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
+                dot: root.is-recording;
+                pulse: root.is-recording;
             }
         }
 
