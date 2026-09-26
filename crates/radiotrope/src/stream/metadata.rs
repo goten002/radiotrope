@@ -1,11 +1,38 @@
-//! Stream metadata types and ICY parsing
+//! Stream metadata types, ICY parsing, and source priority
 //!
-//! Pure data types and parsing functions for ICY (Icecast/Shoutcast) metadata.
+//! Pure data types and parsing functions for ICY (Icecast/Shoutcast) metadata,
+//! plus [`MetadataArbiter`], which decides which source's song info is shown
+//! when a stream carries more than one.
+
+use std::sync::{Arc, Mutex};
+
+use crossbeam_channel::{Receiver, Sender};
 
 /// Source of stream metadata
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MetadataSource {
+    /// ICY `StreamTitle` (Icecast/SHOUTcast)
     Icy,
+    /// ID3v2 tag embedded in the stream
+    Id3v2,
+    /// ID3v1 tag embedded in the stream
+    Id3v1,
+    /// `title=`/`artist=` attributes on an HLS playlist `#EXTINF` line
+    HlsPlaylist,
+}
+
+impl MetadataSource {
+    /// Priority when several sources are present: higher wins.
+    ///
+    /// ICY beats ID3, which beats HLS playlist titles. ID3v1 and ID3v2 share
+    /// a rank since they come from the same place in the stream.
+    pub fn priority(self) -> u8 {
+        match self {
+            MetadataSource::Icy => 2,
+            MetadataSource::Id3v2 | MetadataSource::Id3v1 => 1,
+            MetadataSource::HlsPlaylist => 0,
+        }
+    }
 }
 
 /// Parsed stream metadata with artist/title split
@@ -17,6 +44,21 @@ pub struct StreamMetadata {
 }
 
 impl StreamMetadata {
+    /// Create metadata, trimming fields and treating blank ones as missing.
+    pub fn new(title: Option<String>, artist: Option<String>, source: MetadataSource) -> Self {
+        let clean = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        Self {
+            title: clean(title),
+            artist: clean(artist),
+            source,
+        }
+    }
+
+    /// True if there is neither a title nor an artist
+    pub fn is_empty(&self) -> bool {
+        self.title.is_none() && self.artist.is_none()
+    }
+
     /// Create metadata from an ICY title string.
     ///
     /// Splits on first ` - ` separator: "Artist - Title" → artist="Artist", title="Title".
@@ -85,6 +127,105 @@ pub fn extract_icy_title(raw_block: &[u8]) -> Option<String> {
 
     let meta_str = String::from_utf8_lossy(&raw_block[..end]);
     parse_icy_metadata(&meta_str)
+}
+
+/// Decides which source's song info is shown when a stream has several.
+///
+/// The highest-priority source that currently has song info "holds" the
+/// display; updates from lower-priority sources are ignored while it does.
+/// An empty update from the holder (e.g. ICY `StreamTitle=''`) releases it,
+/// and the latest update a lower-priority source sent meanwhile is shown.
+/// Repeated identical updates are dropped.
+#[derive(Debug, Default)]
+pub struct MetadataArbiter {
+    holder: Option<u8>,
+    /// Latest update ignored because a higher-priority source held the display
+    deferred: Option<StreamMetadata>,
+    last_shown: Option<(Option<String>, Option<String>)>,
+}
+
+impl MetadataArbiter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Offer an update; returns the update to show, if any.
+    pub fn offer(&mut self, meta: StreamMetadata) -> Option<StreamMetadata> {
+        let priority = meta.source.priority();
+
+        if meta.is_empty() {
+            if self.holder == Some(priority) {
+                self.holder = None;
+                if let Some(deferred) = self.deferred.take() {
+                    return self.show(deferred);
+                }
+            }
+            return None;
+        }
+
+        if let Some(holder) = self.holder {
+            if priority < holder {
+                self.deferred = Some(meta);
+                return None;
+            }
+        }
+        if self
+            .deferred
+            .as_ref()
+            .is_some_and(|d| d.source.priority() <= priority)
+        {
+            self.deferred = None;
+        }
+        self.show(meta)
+    }
+
+    fn show(&mut self, meta: StreamMetadata) -> Option<StreamMetadata> {
+        self.holder = Some(meta.source.priority());
+        let key = (meta.title.clone(), meta.artist.clone());
+        if self.last_shown.as_ref() == Some(&key) {
+            return None;
+        }
+        self.last_shown = Some(key);
+        Some(meta)
+    }
+}
+
+/// Sending side of a stream's metadata channel.
+///
+/// Every source in a stream (ICY, embedded ID3, HLS playlist) offers its
+/// updates here; the shared [`MetadataArbiter`] decides what reaches the
+/// receiver. Cheap to clone.
+#[derive(Debug, Clone)]
+pub struct MetadataSink {
+    tx: Sender<StreamMetadata>,
+    arbiter: Arc<Mutex<MetadataArbiter>>,
+}
+
+impl MetadataSink {
+    /// Create a sink and the receiver that gets the chosen updates.
+    pub fn channel() -> (Self, Receiver<StreamMetadata>) {
+        let (tx, rx) = crossbeam_channel::unbounded();
+        (
+            Self {
+                tx,
+                arbiter: Arc::new(Mutex::new(MetadataArbiter::new())),
+            },
+            rx,
+        )
+    }
+
+    /// Offer an update. Returns true if it was sent to the receiver.
+    pub fn offer(&self, meta: StreamMetadata) -> bool {
+        let chosen = self
+            .arbiter
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .offer(meta);
+        match chosen {
+            Some(meta) => self.tx.send(meta).is_ok(),
+            None => false,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -437,5 +578,162 @@ mod tests {
             source: MetadataSource::Icy,
         };
         assert_ne!(a, b);
+    }
+
+    // --- StreamMetadata::new / is_empty ---
+
+    #[test]
+    fn new_trims_and_drops_blank_fields() {
+        let m = StreamMetadata::new(
+            Some("  Song ".to_string()),
+            Some("   ".to_string()),
+            MetadataSource::Id3v2,
+        );
+        assert_eq!(m.title, Some("Song".to_string()));
+        assert_eq!(m.artist, None);
+        assert!(!m.is_empty());
+        assert!(StreamMetadata::new(None, None, MetadataSource::Icy).is_empty());
+    }
+
+    // --- MetadataArbiter ---
+
+    fn meta(source: MetadataSource, artist: &str, title: &str) -> StreamMetadata {
+        StreamMetadata::new(Some(title.to_string()), Some(artist.to_string()), source)
+    }
+
+    fn empty(source: MetadataSource) -> StreamMetadata {
+        StreamMetadata::new(None, None, source)
+    }
+
+    fn shown(a: &mut MetadataArbiter, m: StreamMetadata) -> Option<String> {
+        a.offer(m).and_then(|m| m.title)
+    }
+
+    #[test]
+    fn source_priorities() {
+        assert!(MetadataSource::Icy.priority() > MetadataSource::Id3v2.priority());
+        assert_eq!(
+            MetadataSource::Id3v2.priority(),
+            MetadataSource::Id3v1.priority()
+        );
+        assert!(MetadataSource::Id3v1.priority() > MetadataSource::HlsPlaylist.priority());
+    }
+
+    #[test]
+    fn arbiter_shows_single_source() {
+        let mut a = MetadataArbiter::new();
+        assert_eq!(
+            shown(&mut a, meta(MetadataSource::Id3v2, "A", "1")),
+            Some("1".into())
+        );
+        assert_eq!(
+            shown(&mut a, meta(MetadataSource::Id3v2, "A", "2")),
+            Some("2".into())
+        );
+    }
+
+    #[test]
+    fn arbiter_drops_duplicates() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "1")).is_some());
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "1")).is_none());
+        assert!(a.offer(meta(MetadataSource::Icy, "B", "1")).is_some());
+    }
+
+    #[test]
+    fn arbiter_ignores_empty_updates() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(empty(MetadataSource::Icy)).is_none());
+        assert!(a.offer(empty(MetadataSource::Id3v2)).is_none());
+    }
+
+    #[test]
+    fn arbiter_icy_wins_over_id3() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "icy")).is_some());
+        assert!(a.offer(meta(MetadataSource::Id3v2, "B", "id3")).is_none());
+        assert!(a.offer(meta(MetadataSource::Id3v1, "B", "id3v1")).is_none());
+    }
+
+    #[test]
+    fn arbiter_icy_takes_over_from_id3() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(meta(MetadataSource::Id3v2, "B", "id3")).is_some());
+        assert_eq!(
+            shown(&mut a, meta(MetadataSource::Icy, "A", "icy")),
+            Some("icy".into())
+        );
+        assert!(a.offer(meta(MetadataSource::Id3v2, "C", "id3 2")).is_none());
+    }
+
+    #[test]
+    fn arbiter_empty_icy_falls_back_to_id3() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "icy")).is_some());
+        assert!(a.offer(meta(MetadataSource::Id3v2, "B", "id3")).is_none());
+        // ICY goes blank: the ID3 song that was held back is shown
+        assert_eq!(
+            shown(&mut a, empty(MetadataSource::Icy)),
+            Some("id3".into())
+        );
+        // New ID3 updates now go through
+        assert_eq!(
+            shown(&mut a, meta(MetadataSource::Id3v2, "C", "id3 2")),
+            Some("id3 2".into())
+        );
+        // ICY comes back and wins again
+        assert_eq!(
+            shown(&mut a, meta(MetadataSource::Icy, "A", "icy 2")),
+            Some("icy 2".into())
+        );
+        assert!(a.offer(meta(MetadataSource::Id3v2, "D", "id3 3")).is_none());
+    }
+
+    #[test]
+    fn arbiter_empty_icy_without_id3_shows_nothing() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "icy")).is_some());
+        assert!(a.offer(empty(MetadataSource::Icy)).is_none());
+        // Same ICY title again after a blank: display still shows it, so no resend
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "icy")).is_none());
+    }
+
+    #[test]
+    fn arbiter_empty_id3_does_not_release_icy() {
+        let mut a = MetadataArbiter::new();
+        assert!(a.offer(meta(MetadataSource::Icy, "A", "icy")).is_some());
+        assert!(a.offer(empty(MetadataSource::Id3v2)).is_none());
+        assert!(a.offer(meta(MetadataSource::Id3v2, "B", "id3")).is_none());
+    }
+
+    #[test]
+    fn arbiter_id3_wins_over_hls_playlist() {
+        let mut a = MetadataArbiter::new();
+        assert!(a
+            .offer(meta(MetadataSource::HlsPlaylist, "A", "pl"))
+            .is_some());
+        assert!(a.offer(meta(MetadataSource::Id3v2, "B", "id3")).is_some());
+        assert!(a
+            .offer(meta(MetadataSource::HlsPlaylist, "C", "pl 2"))
+            .is_none());
+    }
+
+    // --- MetadataSink ---
+
+    #[test]
+    fn sink_forwards_chosen_updates() {
+        let (sink, rx) = MetadataSink::channel();
+        let other = sink.clone();
+        assert!(sink.offer(meta(MetadataSource::Icy, "A", "icy")));
+        assert!(!other.offer(meta(MetadataSource::Id3v2, "B", "id3")));
+        let got: Vec<_> = rx.try_iter().map(|m| m.title.unwrap()).collect();
+        assert_eq!(got, vec!["icy".to_string()]);
+    }
+
+    #[test]
+    fn sink_offer_after_receiver_dropped() {
+        let (sink, rx) = MetadataSink::channel();
+        drop(rx);
+        assert!(!sink.offer(meta(MetadataSource::Icy, "A", "icy")));
     }
 }
