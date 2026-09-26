@@ -1,0 +1,258 @@
+# Country name (lowercase) -> ISO 3166-1 alpha-2 code, from flag-icons country.json
+afghanistan	af
+aland islands	ax
+albania	al
+algeria	dz
+american samoa	as
+andorra	ad
+angola	ao
+anguilla	ai
+antarctica	aq
+antigua and barbuda	ag
+argentina	ar
+armenia	am
+aruba	aw
+australia	au
+austria	at
+azerbaijan	az
+bahamas	bs
+bahrain	bh
+bangladesh	bd
+barbados	bb
+belarus	by
+belgium	be
+belize	bz
+benin	bj
+bermuda	bm
+bhutan	bt
+bolivia	bo
+bonaire, sint eustatius and saba	bq
+bosnia and herzegovina	ba
+botswana	bw
+bouvet island	bv
+brazil	br
+british indian ocean territory	io
+brunei darussalam	bn
+bulgaria	bg
+burkina faso	bf
+burundi	bi
+cabo verde	cv
+cambodia	kh
+cameroon	cm
+canada	ca
+canary islands	ic
+cayman islands	ky
+central african republic	cf
+chad	td
+chile	cl
+china	cn
+christmas island	cx
+clipperton island	cp
+cocos (keeling) islands	cc
+colombia	co
+comoros	km
+cook islands	ck
+costa rica	cr
+croatia	hr
+cuba	cu
+curaçao	cw
+cyprus	cy
+czech republic	cz
+côte d'ivoire	ci
+democratic republic of the congo	cd
+denmark	dk
+diego garcia	dg
+djibouti	dj
+dominica	dm
+dominican republic	do
+ecuador	ec
+egypt	eg
+el salvador	sv
+equatorial guinea	gq
+eritrea	er
+estonia	ee
+eswatini	sz
+ethiopia	et
+europe	eu
+falkland islands	fk
+faroe islands	fo
+federated states of micronesia	fm
+fiji	fj
+finland	fi
+france	fr
+french guiana	gf
+french polynesia	pf
+french southern territories	tf
+gabon	ga
+gambia	gm
+georgia	ge
+germany	de
+ghana	gh
+gibraltar	gi
+greece	gr
+greenland	gl
+grenada	gd
+guadeloupe	gp
+guam	gu
+guatemala	gt
+guernsey	gg
+guinea	gn
+guinea-bissau	gw
+guyana	gy
+haiti	ht
+heard island and mcdonald islands	hm
+holy see	va
+honduras	hn
+hong kong	hk
+hungary	hu
+iceland	is
+india	in
+indonesia	id
+iran	ir
+iraq	iq
+ireland	ie
+isle of man	im
+israel	il
+italy	it
+jamaica	jm
+japan	jp
+jersey	je
+jordan	jo
+kazakhstan	kz
+kenya	ke
+kiribati	ki
+kosovo	xk
+kuwait	kw
+kyrgyzstan	kg
+laos	la
+latvia	lv
+lebanon	lb
+lesotho	ls
+liberia	lr
+libya	ly
+liechtenstein	li
+lithuania	lt
+luxembourg	lu
+macau	mo
+madagascar	mg
+malawi	mw
+malaysia	my
+maldives	mv
+mali	ml
+malta	mt
+marshall islands	mh
+martinique	mq
+mauritania	mr
+mauritius	mu
+mayotte	yt
+mexico	mx
+moldova	md
+monaco	mc
+mongolia	mn
+montenegro	me
+montserrat	ms
+morocco	ma
+mozambique	mz
+myanmar	mm
+namibia	na
+nauru	nr
+nepal	np
+netherlands	nl
+new caledonia	nc
+new zealand	nz
+nicaragua	ni
+niger	ne
+nigeria	ng
+niue	nu
+norfolk island	nf
+north korea	kp
+north macedonia	mk
+northern mariana islands	mp
+norway	no
+oman	om
+pacific community	pc
+pakistan	pk
+palau	pw
+panama	pa
+papua new guinea	pg
+paraguay	py
+peru	pe
+philippines	ph
+pitcairn	pn
+poland	pl
+portugal	pt
+puerto rico	pr
+qatar	qa
+republic of the congo	cg
+romania	ro
+russia	ru
+rwanda	rw
+réunion	re
+saint barthélemy	bl
+saint helena, ascension and tristan da cunha	sh
+saint kitts and nevis	kn
+saint lucia	lc
+saint martin	mf
+saint pierre and miquelon	pm
+saint vincent and the grenadines	vc
+samoa	ws
+san marino	sm
+sao tome and principe	st
+saudi arabia	sa
+senegal	sn
+serbia	rs
+seychelles	sc
+sierra leone	sl
+singapore	sg
+sint maarten	sx
+slovakia	sk
+slovenia	si
+solomon islands	sb
+somalia	so
+south africa	za
+south georgia and the south sandwich islands	gs
+south korea	kr
+south sudan	ss
+spain	es
+sri lanka	lk
+state of palestine	ps
+sudan	sd
+suriname	sr
+svalbard and jan mayen	sj
+sweden	se
+switzerland	ch
+syria	sy
+taiwan	tw
+tajikistan	tj
+tanzania	tz
+thailand	th
+timor-leste	tl
+togo	tg
+tokelau	tk
+tonga	to
+trinidad and tobago	tt
+tunisia	tn
+turkmenistan	tm
+turks and caicos islands	tc
+tuvalu	tv
+türkiye	tr
+uganda	ug
+ukraine	ua
+united arab emirates	ae
+united kingdom	gb
+united nations	un
+united states minor outlying islands	um
+united states of america	us
+unknown	xx
+uruguay	uy
+uzbekistan	uz
+vanuatu	vu
+venezuela	ve
+vietnam	vn
+virgin islands (british)	vg
+virgin islands (u.s.)	vi
+wallis and futuna	wf
+western sahara	eh
+yemen	ye
+zambia	zm
+zimbabwe	zw

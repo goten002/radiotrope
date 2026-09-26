@@ -37,6 +37,8 @@ pub struct Category {
     pub category_type: CategoryType,
     /// Number of stations in this category (if known)
     pub station_count: Option<usize>,
+    /// ISO 3166-1 alpha-2 code, for country categories (if known)
+    pub code: Option<String>,
 }
 
 impl Category {
@@ -51,12 +53,19 @@ impl Category {
             name: name.into(),
             category_type,
             station_count: None,
+            code: None,
         }
     }
 
     /// Set the station count
     pub fn with_station_count(mut self, count: usize) -> Self {
         self.station_count = Some(count);
+        self
+    }
+
+    /// Set the ISO country code
+    pub fn with_code(mut self, code: Option<String>) -> Self {
+        self.code = code;
         self
     }
 }

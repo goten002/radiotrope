@@ -3,11 +3,13 @@ import { Theme } from "../theme.slint";
 export struct CountryEntry {
     name: string,
     station-count: int,
+    flag: image,
 }
 
 component CountryRow inherits Rectangle {
     in property <string> name;
     in property <int> station-count;
+    in property <image> flag;
     callback clicked();
 
     height: 32px;
@@ -22,7 +24,20 @@ component CountryRow inherits Rectangle {
     HorizontalLayout {
         padding-left: 12px;
         padding-right: 12px;
+        spacing: 8px;
         alignment: stretch;
+
+        // Flag slot keeps names aligned even when a country has no flag
+        Rectangle {
+            width: 20px;
+
+            if root.flag.width > 0: Image {
+                source: root.flag;
+                width: 20px;
+                height: 15px;
+                image-fit: contain;
+            }
+        }
 
         Text {
             text: root.name;
@@ -145,6 +160,7 @@ export component CountryPickerDialog inherits Rectangle {
                             for entry[idx] in root.countries: CountryRow {
                                 name: entry.name;
                                 station-count: entry.station-count;
+                                flag: entry.flag;
                                 clicked => {
                                     root.show-dialog = false;
                                     root.country-selected(entry.name);
