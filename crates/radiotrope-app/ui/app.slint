@@ -12,7 +12,7 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
-import { WifiSettingsDialog, WifiNetworkEntry } from "dialogs/wifi-settings.slint";
+import { WifiSettingsDialog, WifiNetworkEntry } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { VizData, VizStyle } from "visualization.slint";
 export { AboutInfo, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
@@ -110,7 +110,6 @@ export component App inherits Window {
 
     // WiFi proxy properties (embedded only)
     in-out property <bool> show-wifi-settings: false;
-    in-out property <bool> wifi-embedded-mode: false; // set true from Rust on embedded
     // Touch screen build: lists scroll by dragging
     in property <bool> touch-scroll: false;
     in-out property <[WifiNetworkEntry]> wifi-networks <=> wifi-dialog.networks;
@@ -141,7 +140,6 @@ export component App inherits Window {
 
     VerticalLayout {
         MenuBar {
-            show-wifi-option: root.wifi-embedded-mode;
             open-wifi-settings => {
                 root.show-wifi-settings = true;
                 root.wifi-scan-requested();
@@ -296,7 +294,7 @@ export component App inherits Window {
         open-url(url) => { root.open-url(url); }
     }
 
-    // WiFi settings dialog (visible only on embedded)
+    // WiFi settings dialog (an empty stand-in on desktop builds)
     wifi-dialog := WifiSettingsDialog {
         show-dialog <=> root.show-wifi-settings;
         scan-requested() => { root.wifi-scan-requested(); }

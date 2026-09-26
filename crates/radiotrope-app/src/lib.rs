@@ -10,5 +10,5 @@ pub mod network;
 pub mod providers;
 pub mod visual;
 
-// TODO: gate with #[cfg(feature = "embedded")] once verified
+#[cfg(feature = "embedded")]
 pub mod wifi;

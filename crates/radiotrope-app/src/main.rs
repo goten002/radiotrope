@@ -604,8 +604,8 @@ fn main() {
         });
     }
 
-    // WiFi settings (embedded only)
-    // TODO: gate with feature flag once #[cfg(feature = "embedded")] on function calls is verified
+    // WiFi settings (Raspberry Pi build only)
+    #[cfg(feature = "embedded")]
     setup_wifi(&ui);
 
     setup_about(&ui);
@@ -1117,11 +1117,11 @@ fn main() {
     let _ = cmd_tx.send(app::state::AppCommand::Shutdown);
 }
 
-/// Set up WiFi settings UI callbacks
 /// Rotary encoder for volume control (KY-040 on GPIO 5/6/13)
 /// Uses the kernel `rotary-encoder` driver via /dev/input/eventN for reliable
 /// quadrature decoding. Push button on GPIO 13 via gpiomon.
-#[allow(dead_code)] // embedded-only, currently disabled
+#[cfg(feature = "embedded")]
+#[allow(dead_code)] // currently disabled
 fn setup_rotary_encoder(
     _ui: &App,
     cmd_tx: crossbeam_channel::Sender<app::state::AppCommand>,
@@ -1359,11 +1359,9 @@ fn open_url(url: &str) {
     }
 }
 
+/// Set up WiFi settings UI callbacks
+#[cfg(feature = "embedded")]
 fn setup_wifi(ui: &App) {
-    // TODO: gate properly with feature flag
-    eprintln!("setup_wifi: enabling WiFi UI");
-    ui.set_wifi_embedded_mode(true);
-
     // Backspace handler for virtual keyboard (Slint has no string substring)
     ui.on_wifi_backspace(|text| {
         let s = text.to_string();

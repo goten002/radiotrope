@@ -1,0 +1,34 @@
+// Desktop builds have no WiFi settings: an empty stand-in with the same
+// interface, so the WiFi dialog and virtual keyboard are not compiled in.
+// build.rs maps `@platform` to this folder or to ../embedded.
+
+export global Platform {
+    // The Tools menu offers WiFi settings
+    out property <bool> has-wifi: false;
+}
+
+export struct WifiNetworkEntry {
+    ssid: string,
+    signal-percent: int,
+    security: string,
+    connected: bool,
+    object-path: string,
+}
+
+export component WifiSettingsDialog {
+    in-out property <bool> show-dialog: false;
+    in property <bool> is-scanning: false;
+    in property <string> current-ssid: "";
+    in property <string> connection-status: "";
+    in property <[WifiNetworkEntry]> networks: [];
+
+    callback scan-requested();
+    callback connect-requested(string, string);
+    callback disconnect-requested();
+    callback close-requested();
+    callback wifi-backspace-requested(string) -> string;
+
+    width: 0px;
+    height: 0px;
+    visible: false;
+}
