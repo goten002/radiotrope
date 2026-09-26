@@ -1,6 +1,6 @@
 import { Theme } from "theme.slint";
 import { Visualization } from "visualization.slint";
-import { Chip, IconButton } from "components.slint";
+import { Chip, IconButton, Icon } from "components.slint";
 
 export component Playback inherits Rectangle {
     in property <string> station-name;
@@ -57,7 +57,7 @@ export component Playback inherits Rectangle {
                     image-fit: contain;
                 }
 
-                if root.station-logo.width == 0: Image {
+                if root.station-logo.width == 0: Icon {
                     source: @image-url("icons/music-note.svg");
                     width: 30px;
                     height: 30px;

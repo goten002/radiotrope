@@ -1,8 +1,9 @@
 //! Visualizer helpers
 //!
 //! A noise gate so quiet bands (like the empty top of a low-passed MP3) drop
-//! to nothing instead of sitting as frozen stubs, and the palette sampled
-//! from a station logo that colours the bars.
+//! to nothing instead of sitting as frozen stubs, smoothing so bars glide
+//! instead of flickering, and the palette sampled from a station logo that
+//! colours the bars.
 
 /// Levels at or below this are noise; the rest is rescaled to 0-1
 const NOISE_FLOOR: f32 = 0.08;
@@ -10,6 +11,44 @@ const NOISE_FLOOR: f32 = 0.08;
 /// Remove the noise floor and stretch what is left back to 0-1
 pub fn gate(level: f32) -> f32 {
     ((level.clamp(0.0, 1.0) - NOISE_FLOOR) / (1.0 - NOISE_FLOOR)).max(0.0)
+}
+
+/// Share of the way to a higher level a bar moves per frame
+const RISE: f32 = 0.6;
+/// Share of its height a falling bar keeps per frame (higher = slower fall)
+const FALL: f32 = 0.8;
+
+/// Frame-to-frame smoothing of visualizer levels: quick but not instant
+/// rises, and gentle falls
+#[derive(Debug, Clone)]
+pub struct LevelSmoother {
+    levels: Vec<f32>,
+}
+
+impl LevelSmoother {
+    pub fn new(count: usize) -> Self {
+        Self {
+            levels: vec![0.0; count],
+        }
+    }
+
+    /// Advance one frame towards `targets` (0-1) and return the new levels
+    pub fn update(&mut self, targets: &[f32]) -> &[f32] {
+        for (level, &target) in self.levels.iter_mut().zip(targets) {
+            let target = target.clamp(0.0, 1.0);
+            *level = if target > *level {
+                *level + (target - *level) * RISE
+            } else {
+                *level * FALL + target * (1.0 - FALL)
+            };
+        }
+        &self.levels
+    }
+
+    /// Drop everything to zero (playback stopped)
+    pub fn reset(&mut self) {
+        self.levels.fill(0.0);
+    }
 }
 
 /// Hue buckets used to group logo colours (30 degrees each)
@@ -124,6 +163,27 @@ mod tests {
         assert_eq!(gate(1.0), 1.0);
         assert!((gate(0.54) - 0.5).abs() < 1e-6);
         assert_eq!(gate(5.0), 1.0);
+    }
+
+    #[test]
+    fn smoother_rises_quickly_and_falls_gently() {
+        let mut s = LevelSmoother::new(1);
+        let up = s.update(&[1.0])[0];
+        assert!((up - RISE).abs() < 1e-6);
+        let top = s.update(&[1.0])[0];
+        assert!(top > up);
+        let down = s.update(&[0.0])[0];
+        assert!((down - top * FALL).abs() < 1e-6);
+    }
+
+    #[test]
+    fn smoother_reset_and_clamp() {
+        let mut s = LevelSmoother::new(2);
+        s.update(&[5.0, -1.0]);
+        assert!(s.update(&[5.0, -1.0])[0] <= 1.0);
+        assert_eq!(s.update(&[5.0, -1.0])[1], 0.0);
+        s.reset();
+        assert_eq!(s.update(&[0.0, 0.0]), &[0.0, 0.0]);
     }
 
     #[test]

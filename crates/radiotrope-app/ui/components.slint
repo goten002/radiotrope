@@ -5,6 +5,28 @@
 
 import { Theme } from "theme.slint";
 
+// Colorized icon. Draws the image 1px larger on every side and clips that
+// edge off: the femtovg renderer builds colorized textures without clearing
+// them, so their outermost pixels can hold leftover garbage that shows as a
+// thin bar beside the icon.
+export component Icon inherits Rectangle {
+    in property <image> source;
+    in property <brush> colorize;
+    in property <angle> rotation: 0deg;
+
+    clip: true;
+
+    Image {
+        x: -1px;
+        y: -1px;
+        width: parent.width + 2px;
+        height: parent.height + 2px;
+        source: root.source;
+        colorize: root.colorize;
+        transform-rotation: root.rotation;
+    }
+}
+
 // Three small bars that bounce while a station plays
 export component NowPlayingBars inherits HorizontalLayout {
     spacing: 2px;
@@ -44,7 +66,7 @@ export component IconButton inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
-    Image {
+    Icon {
         source: root.icon;
         width: root.icon-size;
         height: root.icon-size;
