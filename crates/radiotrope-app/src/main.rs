@@ -22,6 +22,7 @@ use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
 use radiotrope_app::providers::ProviderRegistry;
+use radiotrope_app::visual::SpectrumDisplay;
 
 use app::controller::AppController;
 use app::state::AppSnapshot;
@@ -151,6 +152,9 @@ fn main() {
     // Apply saved theme and viz mode
     ui.set_dark_mode(settings.theme.is_dark());
     ui.set_viz_mode(settings.viz_mode.as_str().into());
+    ui.global::<VizStyle>().set_wide(settings.viz_wide);
+    ui.global::<VizStyle>()
+        .set_palette(settings.viz_palette.as_str().into());
 
     // Apply saved window size
     if let (Some(w), Some(h)) = (settings.window_width, settings.window_height) {
@@ -799,38 +803,52 @@ fn main() {
     let _viz_timer = slint::Timer::default();
     if let Some(analysis) = analysis {
         let ui_weak = ui.as_weak();
-        // Pre-allocate the spectrum model once; update in-place each tick
-        let spectrum_model = std::rc::Rc::new(VecModel::from(
-            vec![0.0f32; radiotrope::config::audio::SPECTRUM_BANDS],
-        ));
-        let spectrum_rc = ModelRc::from(spectrum_model.clone());
-        ui.set_spectrum(spectrum_rc);
+        let bands = radiotrope::config::audio::SPECTRUM_BANDS;
+        // Pre-allocate the models once; update in-place each tick
+        let spectrum_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; bands]));
+        let peaks_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; bands]));
+        let viz = ui.global::<VizData>();
+        viz.set_spectrum(ModelRc::from(spectrum_model.clone()));
+        viz.set_peaks(ModelRc::from(peaks_model.clone()));
+        let mut spectrum_display = SpectrumDisplay::new(bands);
+        let mut vu_display = SpectrumDisplay::new(2);
+        let mut idle = false;
         _viz_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(33),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
+                let viz = ui.global::<VizData>();
                 // Skip polling when not playing — zero out once on stop transition
                 if !ui.get_is_playing() {
-                    if ui.get_vu_left() != 0.0 || ui.get_vu_right() != 0.0 {
-                        ui.set_vu_left(0.0);
-                        ui.set_vu_right(0.0);
-                        for i in 0..spectrum_model.row_count() {
-                            spectrum_model.set_row_data(i, 0.0);
-                        }
+                    if !idle {
+                        idle = true;
+                        spectrum_display.reset();
+                        vu_display.reset();
+                        show_viz_frame(
+                            &viz,
+                            &spectrum_display,
+                            &vu_display,
+                            &spectrum_model,
+                            &peaks_model,
+                        );
                     }
                     return;
                 }
+                idle = false;
                 // try_lock: skip this tick if engine/analyzer holds the lock
                 let Ok(a) = analysis.try_lock() else { return };
                 let (vu_l, vu_r, spectrum) = (a.vu_left, a.vu_right, a.spectrum);
                 drop(a);
-                ui.set_vu_left(vu_l);
-                ui.set_vu_right(vu_r);
-                // Update model in-place — no allocation
-                for (i, &val) in spectrum.iter().enumerate() {
-                    spectrum_model.set_row_data(i, val);
-                }
+                spectrum_display.update(&spectrum);
+                vu_display.update(&[vu_l, vu_r]);
+                show_viz_frame(
+                    &viz,
+                    &spectrum_display,
+                    &vu_display,
+                    &spectrum_model,
+                    &peaks_model,
+                );
             },
         );
     }
@@ -1227,6 +1245,26 @@ fn setup_rotary_encoder(
         .ok();
 }
 
+/// Push one visualizer frame to the UI. Models are updated in place, so
+/// nothing is allocated per frame apart from the curve path string.
+fn show_viz_frame(
+    viz: &VizData,
+    spectrum: &SpectrumDisplay,
+    vu: &SpectrumDisplay,
+    spectrum_model: &VecModel<f32>,
+    peaks_model: &VecModel<f32>,
+) {
+    for (i, (&bar, &peak)) in spectrum.bars().iter().zip(spectrum.peaks()).enumerate() {
+        spectrum_model.set_row_data(i, bar);
+        peaks_model.set_row_data(i, peak);
+    }
+    viz.set_vu_left(vu.bars()[0]);
+    viz.set_vu_right(vu.bars()[1]);
+    viz.set_vu_peak_left(vu.peaks()[0]);
+    viz.set_vu_peak_right(vu.peaks()[1]);
+    viz.set_curve_path(spectrum.curve_path().into());
+}
+
 /// Fill in the About dialog and handle its links
 fn setup_about(ui: &App) {
     let info = ui.global::<AboutInfo>();
@@ -1525,6 +1563,8 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     };
 
     settings.viz_mode = ui.get_viz_mode().to_string();
+    settings.viz_wide = ui.global::<VizStyle>().get_wide();
+    settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
 
     if let Some(ref url) = s.station_url {
         if !url.is_empty() {

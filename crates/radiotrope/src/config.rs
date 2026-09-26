@@ -10,6 +10,10 @@ pub mod audio {
 
     /// VU meter decay factor (0.0-1.0, higher = slower decay)
     pub const VU_DECAY: f32 = 0.7;
+
+    /// How much of a rise the VU and spectrum levels take at once
+    /// (0.0-1.0, higher = snappier); falls use [`VU_DECAY`]
+    pub const VU_ATTACK: f32 = 0.8;
 }
 
 /// Network-related configuration

@@ -67,9 +67,17 @@ pub struct Settings {
     pub show_notifications: bool,
 
     // === Visualization ===
-    /// Visualization mode (mirror, vu, spectrum, hbars)
+    /// Visualization mode (mirror, spectrum, curve, vu, hbars)
     #[serde(default = "default_viz_mode")]
     pub viz_mode: String,
+
+    /// Also run the visualizer wide behind the now-playing header
+    #[serde(default)]
+    pub viz_wide: bool,
+
+    /// Visualizer colors: "logo" (the icon's gradient) or "accent"
+    #[serde(default = "default_viz_palette")]
+    pub viz_palette: String,
 
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
@@ -102,6 +110,10 @@ fn default_viz_mode() -> String {
     "mirror".to_string()
 }
 
+fn default_viz_palette() -> String {
+    "logo".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -121,6 +133,8 @@ impl Default for Settings {
             start_minimized: false,
             show_notifications: true,
             viz_mode: default_viz_mode(),
+            viz_wide: false,
+            viz_palette: default_viz_palette(),
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,

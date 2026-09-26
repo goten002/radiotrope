@@ -14,7 +14,8 @@ import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry } from "dialogs/wifi-settings.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
-export { AboutInfo, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
+import { VizData, VizStyle } from "visualization.slint";
+export { AboutInfo, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -59,9 +60,6 @@ export component App inherits Window {
     in-out property <string> station-name;
     in-out property <string> codec-info;
     in-out property <string> status-text;
-    in-out property <float> vu-left;
-    in-out property <float> vu-right;
-    in-out property <[float]> spectrum;
     in-out property <bool> is-loading;
     in-out property <bool> is-error;
     in-out property <string> viz-mode <=> playback.viz-mode;
@@ -180,9 +178,6 @@ export component App inherits Window {
             station-name: root.station-name;
             codec-info: root.codec-info;
             status-text: root.status-text;
-            vu-left: root.vu-left;
-            vu-right: root.vu-right;
-            spectrum: root.spectrum;
             is-loading: root.is-loading;
             is-error: root.is-error;
             station-logo: root.current-logo;
