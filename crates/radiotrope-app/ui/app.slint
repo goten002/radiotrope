@@ -108,6 +108,8 @@ export component App inherits Window {
     // WiFi proxy properties (embedded only)
     in-out property <bool> show-wifi-settings: false;
     in-out property <bool> wifi-embedded-mode: false; // set true from Rust on embedded
+    // Touch screen build: lists scroll by dragging
+    in property <bool> touch-scroll: false;
     in-out property <[WifiNetworkEntry]> wifi-networks <=> wifi-dialog.networks;
     in-out property <bool> wifi-scanning <=> wifi-dialog.is-scanning;
     in-out property <string> wifi-current-ssid <=> wifi-dialog.current-ssid;
@@ -190,6 +192,7 @@ export component App inherits Window {
             favorites: root.favorites-list;
             favorite-logos: root.favorite-logos;
             current-station-url: root.station-url;
+            touch-scroll: root.touch-scroll;
             favorite-clicked(station) => { root.play-favorite(station); }
             favorite-edit-requested(station) => { edit-dialog.open(station); }
             favorites-reordered(from, to) => { root.reorder-favorites(from, to); }

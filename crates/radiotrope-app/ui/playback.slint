@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { Visualization, VizContent, VizStyle } from "visualization.slint";
+import { Visualization } from "visualization.slint";
 import { Chip, IconButton } from "components.slint";
 
 export component Playback inherits Rectangle {
@@ -22,34 +22,6 @@ export component Playback inherits Rectangle {
         background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
     }
 
-    // Wide visualizer: runs faintly across the whole header; click the
-    // empty header space to switch between mirror and spectrum
-    if VizStyle.wide: Rectangle {
-        TouchArea {
-            clicked => { root.viz-mode = root.viz-mode == "spectrum" ? "mirror" : "spectrum"; }
-        }
-
-        VizContent {
-            x: 0;
-            y: 10px;
-            width: parent.width;
-            height: parent.height - 10px;
-            // Only the bar modes suit the wide strip: meters would sit behind
-            // the text and the curve can't stretch (paths scale evenly)
-            mode: root.viz-mode == "spectrum" ? "spectrum" : "mirror";
-            is-loading: root.is-loading;
-            gap: 4px;
-            peaks: false;
-            tracks: false;
-            opacity: Theme.dark-mode ? 0.5 : 0.4;
-        }
-
-        // Fade the left side so the logo and title stay readable
-        Rectangle {
-            background: @linear-gradient(90deg, Theme.panel 0%, Theme.panel.with-alpha(0.75) 22%, Theme.panel.with-alpha(0) 50%);
-        }
-    }
-
     // 1px bottom separator — shadow edge casting onto favorites
     Rectangle {
         y: parent.height - 1px;
@@ -70,7 +42,7 @@ export component Playback inherits Rectangle {
                 width: 76px;
                 height: 76px;
                 background: Theme.elevated;
-                border-radius: 12px;
+                border-radius: Theme.radius-md;
                 border-width: 1px;
                 border-color: Theme.hairline;
                 drop-shadow-blur: 14px;
@@ -118,14 +90,16 @@ export component Playback inherits Rectangle {
             }
 
             HorizontalLayout {
-                alignment: start;
-
                 Chip {
                     text: root.status-text;
                     tone: root.is-error ? Theme.danger : Theme.accent-text;
                     dot: true;
                     pulse: root.status-text == "Playing" || root.is-loading;
                 }
+
+                // Takes the spare width, so a long status elides in the chip
+                // instead of capping the whole column
+                Rectangle { horizontal-stretch: 1; }
             }
         }
 
@@ -142,8 +116,8 @@ export component Playback inherits Rectangle {
             }
         }
 
-        // Visualization tile (hidden while the wide visualizer runs)
-        if !VizStyle.wide: VerticalLayout {
+        // Visualization tile
+        VerticalLayout {
             alignment: center;
             viz := Visualization {
                 viz-mode <=> root.viz-mode;

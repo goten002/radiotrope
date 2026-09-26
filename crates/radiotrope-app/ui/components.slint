@@ -90,15 +90,20 @@ export component Chip inherits Rectangle {
     in property <bool> dot: false;
     in property <bool> pulse: false;
 
-    width: row.preferred-width + 16px;
+    // Grows with its text but gives way (eliding) when space runs out
+    preferred-width: row.preferred-width + 16px;
+    max-width: self.preferred-width;
+    min-width: 40px;
+    horizontal-stretch: 1;
     height: 20px;
-    border-radius: self.height / 2;
+    border-radius: Theme.radius-sm;
     background: root.tone.with-alpha(0.14);
 
     row := HorizontalLayout {
         x: 8px;
+        width: parent.width - 16px;
         spacing: 5px;
-        alignment: center;
+        alignment: start;
 
         if root.dot: VerticalLayout {
             alignment: center;
@@ -117,6 +122,8 @@ export component Chip inherits Rectangle {
             font-size: 11px;
             font-weight: 600;
             vertical-alignment: center;
+            overflow: elide;
+            horizontal-stretch: 1;
         }
     }
 }

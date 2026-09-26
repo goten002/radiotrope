@@ -48,7 +48,7 @@ component StationRow inherits Rectangle {
             Rectangle {
                 width: 40px;
                 height: 40px;
-                border-radius: 8px;
+                border-radius: Theme.radius-sm;
                 background: Theme.elevated;
                 border-width: 1px;
                 border-color: Theme.hairline;
@@ -92,23 +92,32 @@ component StationRow inherits Rectangle {
             }
         }
 
-        // Codec badge
+        // Codec badge, sized to its text
         VerticalLayout {
             alignment: center;
-            width: 40px;
+            width: 64px;
 
-            if root.codec != "": Rectangle {
-                height: 18px;
-                border-radius: 9px;
-                background: Theme.elevated;
-                border-width: 1px;
-                border-color: Theme.hairline;
+            if root.codec != "": HorizontalLayout {
+                alignment: end;
 
-                Text {
-                    text: root.codec;
-                    color: Theme.text-secondary;
-                    font-size: 10px;
-                    font-weight: 600;
+                Rectangle {
+                    width: min(64px, codec-text.preferred-width + 12px);
+                    height: 18px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.elevated;
+                    border-width: 1px;
+                    border-color: Theme.hairline;
+
+                    codec-text := Text {
+                        x: 6px;
+                        width: parent.width - 12px;
+                        text: root.codec;
+                        color: Theme.text-secondary;
+                        font-size: 10px;
+                        font-weight: 600;
+                        horizontal-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
         }
@@ -265,6 +274,16 @@ export component StationBrowserDialog inherits Rectangle {
                 results-flick := Flickable {
                     content-height: results-layout.preferred-height;
 
+                    // Infinite scroll: fetch the next page when the view
+                    // comes within about five rows of the end
+                    changed content-y => {
+                        if root.has-more && !root.search-loading-more
+                           && self.height - self.content-y > self.content-height - 300px {
+                            root.search-loading-more = true;
+                            root.load-more();
+                        }
+                    }
+
                     results-layout := VerticalLayout {
                         padding: 4px;
 
@@ -280,30 +299,14 @@ export component StationBrowserDialog inherits Rectangle {
                             clicked => { root.station-selected(station); }
                         }
 
-                        // Load More button
-                        if root.has-more: Rectangle {
-                            height: 44px;
-                            border-radius: 4px;
-                            background: load-more-touch.has-hover && !root.search-loading-more
-                                ? Theme.menu-hover : transparent;
-                            animate background { duration: Theme.fast; }
-
-                            load-more-touch := TouchArea {
-                                enabled: !root.search-loading-more;
-                                clicked => {
-                                    root.search-loading-more = true;
-                                    root.load-more();
-                                }
-                                mouse-cursor: root.search-loading-more ? default : pointer;
-                            }
-
-                            Text {
-                                text: root.search-loading-more ? "Loading..." : "Load More Stations";
-                                color: root.search-loading-more ? Theme.text-secondary : Theme.accent;
-                                font-size: 13px;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        // Footer while the next page loads
+                        if root.has-more: Text {
+                            height: 40px;
+                            text: root.search-loading-more ? "Loading more stations..." : "";
+                            color: Theme.text-secondary;
+                            font-size: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
                         }
                     }
                 }
