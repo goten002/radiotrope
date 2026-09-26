@@ -116,9 +116,10 @@ component FavoriteRow inherits Rectangle {
     // Accent left border for current station
     if is-current: Rectangle {
         x: 0;
-        y: 12px;
+        // As tall as the logo (40px, centred in the row)
+        y: 8px;
         width: 3px;
-        height: parent.height - 24px;
+        height: parent.height - 16px;
         background: Theme.accent;
         border-radius: 1.5px;
     }
