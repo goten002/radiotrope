@@ -34,6 +34,10 @@ pub mod hls {
 
     /// Segment download timeout in seconds
     pub const SEGMENT_TIMEOUT_SECS: u64 = 15;
+
+    /// How long to wait for the first segment before giving up, in seconds.
+    /// Kept under the app's 15 s resolve timeout so the real reason is shown.
+    pub const FIRST_SEGMENT_TIMEOUT_SECS: u64 = 12;
 }
 
 /// Timeout configuration for resilience
