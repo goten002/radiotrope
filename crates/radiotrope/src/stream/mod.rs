@@ -12,11 +12,14 @@ use crate::config::timeouts::{MAX_BACKOFF_SECS, RETRY_BASE_DELAY_SECS};
 
 pub mod buffer;
 pub mod hls;
+pub mod hls_metadata;
 pub mod icy;
 pub mod id3;
 pub mod metadata;
 pub mod playlist;
 pub mod resolver;
+#[cfg(test)]
+pub(crate) mod test_server;
 pub mod types;
 
 pub use buffer::{BufferStatus, SharedBufferStatus, StreamBuffer, StreamBufferReader};

@@ -2,6 +2,8 @@
 //!
 //! Downloads HLS segments in the background, handles MPEG-TS demuxing and
 //! fMP4 init segments, and provides a Read+Seek interface for the audio engine.
+//! Song info found in the segments (ID3 timed metadata) or on the playlist's
+//! `#EXTINF` lines is sent on a metadata channel.
 
 use std::collections::HashSet;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
@@ -18,6 +20,11 @@ use crate::config::hls::{SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS};
 use crate::config::network::USER_AGENT;
 use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
 use crate::error::{RadioError, Result};
+use crate::stream::hls_metadata::{
+    extinf_titles, fmp4_emsg_id3, looks_like_fmp4, parse_extinf_title,
+};
+use crate::stream::id3::{parse_id3v2_payload, Id3Scanner};
+use crate::stream::metadata::{MetadataSink, StreamMetadata};
 use crate::stream::playlist::{get_base_url, make_absolute_url};
 
 /// Detected segment container format
@@ -45,9 +52,12 @@ pub struct HlsReader {
 unsafe impl Sync for HlsReader {}
 
 impl HlsReader {
-    /// Create a new HLS reader for a media playlist URL
-    pub fn new(media_url: &str, base_url: &str) -> Result<Self> {
+    /// Create a new HLS reader for a media playlist URL.
+    ///
+    /// Returns the reader and a channel that receives song info updates.
+    pub fn new(media_url: &str, base_url: &str) -> Result<(Self, Receiver<StreamMetadata>)> {
         let (sender, receiver) = bounded::<Vec<u8>>(SEGMENT_BUFFER_SIZE);
+        let (metadata_sink, metadata_rx) = MetadataSink::channel();
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_clone = stop_flag.clone();
         let bytes_received = Arc::new(AtomicU64::new(0));
@@ -63,6 +73,7 @@ impl HlsReader {
                 &media_url_owned,
                 &base_url_owned,
                 sender,
+                metadata_sink,
                 stop_clone,
                 bytes_clone,
                 segments_clone,
@@ -78,15 +89,18 @@ impl HlsReader {
 
         let detected_format = detect_segment_format(&initial_data, media_url);
 
-        Ok(Self {
-            buffer: Cursor::new(initial_data),
-            receiver,
-            stop_flag,
-            _handle: Some(handle),
-            detected_format,
-            bytes_received,
-            segments_downloaded,
-        })
+        Ok((
+            Self {
+                buffer: Cursor::new(initial_data),
+                receiver,
+                stop_flag,
+                _handle: Some(handle),
+                detected_format,
+                bytes_received,
+                segments_downloaded,
+            },
+            metadata_rx,
+        ))
     }
 
     /// Create an HlsReader from a test channel (bypasses HTTP)
@@ -261,8 +275,17 @@ pub fn is_valid_segment_uri(uri: &str) -> bool {
 
 /// Demux an MPEG-TS segment and extract audio data
 pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
+    demux_ts_segment_with_metadata(ts_data).0
+}
+
+/// Demux an MPEG-TS segment, returning its audio data and the payload of
+/// each timed-metadata PES packet (PMT stream type 0x15, which HLS uses for
+/// ID3 tags).
+pub fn demux_ts_segment_with_metadata(ts_data: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
     let mut audio_data = Vec::new();
+    let mut metadata = Vec::new();
     let mut audio_pids: HashSet<u16> = HashSet::new();
+    let mut metadata_pids: HashSet<u16> = HashSet::new();
 
     // First pass: find audio PIDs from PMT
     let mut reader = TsPacketReader::new(Cursor::new(ts_data));
@@ -276,6 +299,9 @@ pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
                         // AAC LOAS (0x11), AC-3 (0x81), private (0x80)
                         if matches!(stream_type, 0x03 | 0x04 | 0x0F | 0x11 | 0x81 | 0x80) {
                             audio_pids.insert(es.elementary_pid.as_u16());
+                        } else if stream_type == 0x15 {
+                            // Packetized metadata: ID3 timed metadata in HLS
+                            metadata_pids.insert(es.elementary_pid.as_u16());
                         }
                     }
                 }
@@ -312,6 +338,16 @@ pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
                             _ => {}
                         }
                     }
+                } else if metadata_pids.contains(&pid) {
+                    match packet.payload {
+                        Some(TsPayload::PesStart(pes)) => metadata.push(pes.data.as_ref().to_vec()),
+                        Some(TsPayload::PesContinuation(data)) => {
+                            if let Some(last) = metadata.last_mut() {
+                                last.extend_from_slice(data.as_ref());
+                            }
+                        }
+                        _ => {}
+                    }
                 }
             }
             Ok(None) => break,
@@ -319,7 +355,38 @@ pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
         }
     }
 
-    audio_data
+    (audio_data, metadata)
+}
+
+/// Split a downloaded segment into its audio bytes and the song info it carries.
+///
+/// `is_fmp4` is the downloader's URL-based fMP4 decision; fMP4 audio is
+/// passed through untouched (the caller prepends the init segment).
+pub fn split_segment(data: &[u8], is_fmp4: bool) -> (Vec<u8>, Vec<StreamMetadata>) {
+    if !data.is_empty() && data[0] == 0x47 {
+        // MPEG-TS: demux audio and the ID3 metadata stream
+        let (audio, payloads) = demux_ts_segment_with_metadata(data);
+        let meta = payloads
+            .iter()
+            .flat_map(|p| parse_id3v2_payload(p))
+            .collect();
+        (audio, meta)
+    } else if is_fmp4 || looks_like_fmp4(data) {
+        // fMP4/CMAF: ID3 in emsg boxes
+        let meta = fmp4_emsg_id3(data)
+            .into_iter()
+            .flat_map(parse_id3v2_payload)
+            .collect();
+        (data.to_vec(), meta)
+    } else {
+        // Packed audio (raw AAC/ADTS or MP3): cut out ID3 tags
+        let mut scanner = Id3Scanner::new();
+        let mut audio = Vec::with_capacity(data.len());
+        let mut meta = Vec::new();
+        scanner.push(data, &mut audio, &mut meta);
+        scanner.flush(&mut audio, &mut meta);
+        (audio, meta)
+    }
 }
 
 /// Resolve an HLS URL — follows master playlists to find the media playlist
@@ -384,6 +451,7 @@ fn segment_downloader(
     media_url: &str,
     base_url: &str,
     sender: Sender<Vec<u8>>,
+    metadata_sink: MetadataSink,
     stop_flag: Arc<AtomicBool>,
     bytes_received: Arc<AtomicU64>,
     segments_downloaded: Arc<AtomicU64>,
@@ -453,6 +521,10 @@ fn segment_downloader(
 
         // Playlist fetched successfully — reset backoff
         consecutive_failures = 0;
+
+        // m3u8-rs cuts #EXTINF titles at the first comma, so read the full
+        // titles (which may carry title="…",artist="…") from the raw text
+        let segment_titles = extinf_titles(&content);
 
         let is_live = !playlist.end_list;
         let target_duration = playlist.target_duration as u64;
@@ -526,26 +598,15 @@ fn segment_downloader(
                             segment_url.ends_with(".m4s") || segment_url.contains(".m4s?");
                         downloaded_urls.insert(segment_url);
 
-                        let audio_data = if !data.is_empty() && data[0] == 0x47 {
-                            // MPEG-TS: demux to extract audio
-                            demux_ts_segment(&data)
-                        } else if is_fmp4 {
+                        let (mut audio_data, segment_meta) = split_segment(&data, is_fmp4);
+                        if is_fmp4 && !sent_first {
                             // fMP4: prepend init segment for first segment
                             if let Some(ref init) = init_segment {
-                                if !sent_first {
-                                    let mut combined = init.clone();
-                                    combined.extend_from_slice(&data);
-                                    combined
-                                } else {
-                                    data.to_vec()
-                                }
-                            } else {
-                                data.to_vec()
+                                let mut combined = init.clone();
+                                combined.append(&mut audio_data);
+                                audio_data = combined;
                             }
-                        } else {
-                            // Raw AAC/ADTS — pass through
-                            data.to_vec()
-                        };
+                        }
 
                         if audio_data.is_empty() {
                             continue;
@@ -559,6 +620,18 @@ fn segment_downloader(
                             return Ok(());
                         }
                         segments_downloaded.fetch_add(1, Ordering::Relaxed);
+
+                        // Song info: playlist attributes first, since ID3
+                        // from the segment itself takes priority over them
+                        if let Some(meta) = segment_titles
+                            .get(segment.uri.trim())
+                            .and_then(|t| parse_extinf_title(t))
+                        {
+                            metadata_sink.offer(meta);
+                        }
+                        for meta in segment_meta {
+                            metadata_sink.offer(meta);
+                        }
                         if !sent_first {
                             sent_first = true;
                             // Init segment only needed for first fMP4 segment — free it
@@ -1200,5 +1273,234 @@ mod tests {
         // Should still read pending data
         reader.read_exact(&mut buf).unwrap();
         assert_eq!(buf, [3, 4]);
+    }
+
+    // --- ID3 song info in segments ---
+
+    mod segment_metadata {
+        use super::*;
+        use crate::stream::id3::test_util::{frame, id3v2_song, id3v2_tag};
+        use crate::stream::metadata::MetadataSource;
+        use mpeg2ts::es::{StreamId, StreamType};
+        use mpeg2ts::pes::PesHeader;
+        use mpeg2ts::time::Timestamp;
+        use mpeg2ts::ts::payload::{Bytes, Pat, Pes, Pmt};
+        use mpeg2ts::ts::{
+            ContinuityCounter, EsInfo, Pid, ProgramAssociation, TransportScramblingControl,
+            TsHeader, TsPacket, TsPacketWriter, VersionNumber, WriteTsPacket,
+        };
+
+        const PMT_PID: u16 = 0x1000;
+        const AUDIO_PID: u16 = 0x101;
+        const META_PID: u16 = 0x102;
+
+        fn header(pid: u16) -> TsHeader {
+            TsHeader {
+                transport_error_indicator: false,
+                transport_priority: false,
+                pid: Pid::new(pid).unwrap(),
+                transport_scrambling_control: TransportScramblingControl::NotScrambled,
+                continuity_counter: ContinuityCounter::new(),
+            }
+        }
+
+        fn packet(pid: u16, payload: TsPayload) -> TsPacket {
+            TsPacket {
+                header: header(pid),
+                adaptation_field: None,
+                payload: Some(payload),
+            }
+        }
+
+        /// PES packets carrying `data`, split to fit TS packets
+        fn pes_packets(pid: u16, stream_id: u8, data: &[u8]) -> Vec<TsPacket> {
+            const FIRST: usize = 160;
+            let first = &data[..data.len().min(FIRST)];
+            let mut packets = vec![packet(
+                pid,
+                TsPayload::PesStart(Pes {
+                    header: PesHeader {
+                        stream_id: StreamId::new(stream_id),
+                        priority: false,
+                        data_alignment_indicator: true,
+                        copyright: false,
+                        original_or_copy: false,
+                        pts: Some(Timestamp::new(90_000).unwrap()),
+                        dts: None,
+                        escr: None,
+                    },
+                    pes_packet_len: 0,
+                    data: Bytes::new(first).unwrap(),
+                }),
+            )];
+            for chunk in data[first.len()..].chunks(Bytes::MAX_SIZE) {
+                packets.push(packet(
+                    pid,
+                    TsPayload::PesContinuation(Bytes::new(chunk).unwrap()),
+                ));
+            }
+            packets
+        }
+
+        /// A TS segment with an AAC audio stream and an ID3 metadata stream
+        fn ts_segment(audio: &[u8], tags: &[Vec<u8>]) -> Vec<u8> {
+            let mut packets = vec![
+                packet(
+                    0,
+                    TsPayload::Pat(Pat {
+                        transport_stream_id: 1,
+                        version_number: VersionNumber::new(),
+                        table: vec![ProgramAssociation {
+                            program_num: 1,
+                            program_map_pid: Pid::new(PMT_PID).unwrap(),
+                        }],
+                    }),
+                ),
+                packet(
+                    PMT_PID,
+                    TsPayload::Pmt(Pmt {
+                        program_num: 1,
+                        pcr_pid: None,
+                        version_number: VersionNumber::new(),
+                        program_info: vec![],
+                        es_info: vec![
+                            EsInfo {
+                                stream_type: StreamType::AdtsAac,
+                                elementary_pid: Pid::new(AUDIO_PID).unwrap(),
+                                descriptors: vec![],
+                            },
+                            EsInfo {
+                                stream_type: StreamType::PacketizedMetadata,
+                                elementary_pid: Pid::new(META_PID).unwrap(),
+                                descriptors: vec![],
+                            },
+                        ],
+                    }),
+                ),
+            ];
+            for tag in tags {
+                packets.extend(pes_packets(META_PID, 0xBD, tag));
+            }
+            packets.extend(pes_packets(AUDIO_PID, 0xC0, audio));
+
+            let mut writer = TsPacketWriter::new(Vec::new());
+            for p in &packets {
+                writer.write_ts_packet(p).unwrap();
+            }
+            writer.into_stream()
+        }
+
+        fn titles(meta: &[StreamMetadata]) -> Vec<&str> {
+            meta.iter().filter_map(|m| m.title.as_deref()).collect()
+        }
+
+        #[test]
+        fn ts_segment_yields_audio_and_id3() {
+            let audio = frame(400);
+            let seg = ts_segment(&audio, &[id3v2_song("Artist", "Song")]);
+            let (out, meta) = split_segment(&seg, false);
+            assert_eq!(out, audio);
+            assert_eq!(titles(&meta), vec!["Song"]);
+            assert_eq!(meta[0].artist.as_deref(), Some("Artist"));
+            assert_eq!(meta[0].source, MetadataSource::Id3v2);
+        }
+
+        #[test]
+        fn ts_segment_with_large_tag_across_packets() {
+            let long_title = "x".repeat(600);
+            let seg = ts_segment(&frame(200), &[id3v2_song("Artist", &long_title)]);
+            let (_, meta) = split_segment(&seg, false);
+            assert_eq!(titles(&meta), vec![long_title.as_str()]);
+        }
+
+        #[test]
+        fn ts_segment_with_several_tags() {
+            let seg = ts_segment(
+                &frame(200),
+                &[id3v2_song("A", "One"), id3v2_song("B", "Two")],
+            );
+            let (_, meta) = split_segment(&seg, false);
+            assert_eq!(titles(&meta), vec!["One", "Two"]);
+        }
+
+        #[test]
+        fn ts_segment_without_metadata_stream_is_unchanged() {
+            let audio = frame(300);
+            let seg = ts_segment(&audio, &[]);
+            let (out, meta) = split_segment(&seg, false);
+            assert_eq!(out, audio);
+            assert_eq!(out, demux_ts_segment(&seg));
+            assert!(meta.is_empty());
+        }
+
+        #[test]
+        fn packed_audio_segment_strips_leading_tags() {
+            // Timestamp-style tag with no song info, then a song tag, then ADTS audio
+            let audio = frame(500);
+            let seg = [
+                id3v2_tag(&[(b"TXXX", "\0cue")]),
+                id3v2_song("Artist", "Song"),
+                audio.clone(),
+            ]
+            .concat();
+            let (out, meta) = split_segment(&seg, false);
+            assert_eq!(out, audio);
+            assert_eq!(titles(&meta), vec!["Song"]);
+        }
+
+        #[test]
+        fn packed_audio_without_tags_is_unchanged() {
+            let audio = frame(500);
+            let (out, meta) = split_segment(&audio, false);
+            assert_eq!(out, audio);
+            assert!(meta.is_empty());
+        }
+
+        #[test]
+        fn fmp4_segment_reads_emsg_and_keeps_bytes() {
+            let tag = id3v2_song("Artist", "Song");
+            let mut body = vec![1, 0, 0, 0];
+            body.extend_from_slice(&[0u8; 20]);
+            body.extend_from_slice(b"https://aomedia.org/emsg/ID3\0\0");
+            body.extend_from_slice(&tag);
+            let mut seg = ((body.len() + 8) as u32).to_be_bytes().to_vec();
+            seg.extend_from_slice(b"emsg");
+            seg.extend(body);
+            seg.extend_from_slice(&[0, 0, 0, 8, b'm', b'o', b'o', b'f']);
+            let (out, meta) = split_segment(&seg, true);
+            assert_eq!(out, seg);
+            assert_eq!(titles(&meta), vec!["Song"]);
+            // Detected from the data even when the URL is not .m4s
+            let (out, meta) = split_segment(&seg, false);
+            assert_eq!(out, seg);
+            assert_eq!(titles(&meta), vec!["Song"]);
+        }
+
+        #[test]
+        fn hls_reader_sends_song_info() {
+            use crate::stream::test_server::{Route, TestServer};
+
+            let server = TestServer::start();
+            let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n\
+                #EXT-X-MEDIA-SEQUENCE:1\n\
+                #EXTINF:2.0,title=\"From Playlist\",artist=\"Pl\"\nseg1.ts\n\
+                #EXTINF:2.0,\nseg2.ts\n#EXT-X-ENDLIST\n";
+            server.route("/live.m3u8", Route::new(playlist));
+            server.route("/seg1.ts", Route::new(ts_segment(&frame(300), &[])));
+            server.route(
+                "/seg2.ts",
+                Route::new(ts_segment(&frame(300), &[id3v2_song("Artist", "From ID3")])),
+            );
+
+            let (_reader, rx) =
+                HlsReader::new(&server.url("/live.m3u8"), &server.base_url).unwrap();
+            let got: Vec<_> = (0..2)
+                .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
+                .collect();
+            assert_eq!(got[0].title.as_deref(), Some("From Playlist"));
+            assert_eq!(got[0].source, MetadataSource::HlsPlaylist);
+            assert_eq!(got[1].title.as_deref(), Some("From ID3"));
+            assert_eq!(got[1].source, MetadataSource::Id3v2);
+        }
     }
 }
