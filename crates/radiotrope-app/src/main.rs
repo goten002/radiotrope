@@ -821,7 +821,7 @@ fn main() {
     let analysis = analysis_rx.recv_timeout(Duration::from_secs(5)).ok();
     let shared_stats = stats_rx.recv_timeout(Duration::from_secs(5)).ok();
 
-    // Visualization timer — 30ms (~33 FPS)
+    // Visualization timer, about 60 frames a second
     let _viz_timer = slint::Timer::default();
     if let Some(analysis) = analysis {
         let ui_weak = ui.as_weak();
@@ -834,12 +834,18 @@ fn main() {
         let mut vu_smooth = LevelSmoother::new(2);
         let mut gated = vec![0.0f32; bands];
         let mut idle = false;
+        let mut last_frame = Instant::now();
         _viz_timer.start(
             slint::TimerMode::Repeated,
-            Duration::from_millis(33),
+            Duration::from_millis(16),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
                 let viz = ui.global::<VizData>();
+                // Seconds since the last frame, capped so a stall doesn't
+                // make the bars jump
+                let now = Instant::now();
+                let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
+                last_frame = now;
                 // Skip polling when not playing — zero out once on stop transition
                 if !ui.get_is_playing() {
                     if !idle {
@@ -859,8 +865,13 @@ fn main() {
                 for (g, &level) in gated.iter_mut().zip(spectrum.iter()) {
                     *g = gate(level);
                 }
-                let vu = vu_smooth.update(&[vu_l, vu_r]).to_vec();
-                show_viz_frame(&viz, &vu, spectrum_smooth.update(&gated), &spectrum_model);
+                let vu = vu_smooth.update(&[vu_l, vu_r], dt).to_vec();
+                show_viz_frame(
+                    &viz,
+                    &vu,
+                    spectrum_smooth.update(&gated, dt),
+                    &spectrum_model,
+                );
             },
         );
     }
@@ -876,6 +887,7 @@ fn main() {
                 let Some(ui) = ui_weak.upgrade() else { return };
                 // Skip polling when not playing — stats are stale anyway
                 if !ui.get_is_playing() {
+                    ui.set_stat_playtime("--".into());
                     return;
                 }
                 // try_lock: skip this tick if engine holds shared_stats
@@ -1699,7 +1711,7 @@ fn play_station_with_metadata(
 fn update_stats_ui(ui: &App, s: &StreamStats) {
     // Stream section
     ui.set_stat_health(format_health(&s.health_state).into());
-    ui.set_stat_uptime(format_uptime(s.play_started_at).into());
+    ui.set_stat_playtime(format_playtime(s.play_started_at).into());
 
     // Codec section
     let (codec, bitrate, sample_rate, channels) = if let Some(ref ci) = s.codec_info {
@@ -1760,7 +1772,7 @@ fn format_health(state: &HealthState) -> String {
     }
 }
 
-fn format_uptime(started: Option<Instant>) -> String {
+fn format_playtime(started: Option<Instant>) -> String {
     let Some(t) = started else {
         return "--".into();
     };

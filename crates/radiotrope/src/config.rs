@@ -12,6 +12,13 @@ pub mod audio {
     /// Extra gain for the top band, scaled down linearly to none at the bottom
     pub const SPECTRUM_TREBLE_BOOST: f32 = 3.0;
 
+    /// Loudness (dBFS RMS) shown as an empty VU meter
+    pub const VU_FLOOR_DB: f32 = -36.0;
+    /// Loudness (dBFS RMS) shown as a full VU meter. Loud, heavily
+    /// compressed stations sit around -10 dBFS, so this leaves them headroom
+    /// to move instead of pinning at the top.
+    pub const VU_CEILING_DB: f32 = -3.0;
+
     /// VU meter decay factor (0.0-1.0, higher = slower decay)
     pub const VU_DECAY: f32 = 0.7;
 

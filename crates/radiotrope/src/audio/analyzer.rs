@@ -12,7 +12,8 @@ use rodio::Source;
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use crate::config::audio::{
-    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, VU_ATTACK, VU_DECAY,
+    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, VU_ATTACK, VU_CEILING_DB,
+    VU_DECAY, VU_FLOOR_DB,
 };
 
 use super::types::AudioAnalysis;
@@ -25,6 +26,17 @@ fn smooth_level(current: f32, target: f32) -> f32 {
     } else {
         current * VU_DECAY + target * (1.0 - VU_DECAY)
     }
+}
+
+/// VU meter position (0-1) for an RMS level, on a decibel scale from
+/// [`VU_FLOOR_DB`] to [`VU_CEILING_DB`] like a real meter, so both quiet and
+/// loud stations keep moving
+fn vu_level(rms: f32) -> f32 {
+    if rms <= 0.0 {
+        return 0.0;
+    }
+    let db = 20.0 * rms.log10();
+    ((db - VU_FLOOR_DB) / (VU_CEILING_DB - VU_FLOOR_DB)).clamp(0.0, 1.0)
 }
 
 /// Wrapper source that captures samples for visualization
@@ -130,8 +142,8 @@ where
         }
 
         if let Ok(mut analysis) = self.analysis.lock() {
-            analysis.vu_left = smooth_level(analysis.vu_left, rms_left * 3.0);
-            analysis.vu_right = smooth_level(analysis.vu_right, rms_right * 3.0);
+            analysis.vu_left = smooth_level(analysis.vu_left, vu_level(rms_left));
+            analysis.vu_right = smooth_level(analysis.vu_right, vu_level(rms_right));
 
             for (i, spectrum_val) in spectrum.iter().enumerate() {
                 analysis.spectrum[i] = smooth_level(analysis.spectrum[i], spectrum_val.min(1.0));
@@ -207,6 +219,21 @@ mod tests {
     fn smooth_level_rises_fast() {
         let v = smooth_level(0.0, 1.0);
         assert!((v - VU_ATTACK).abs() < 1e-6);
+    }
+
+    #[test]
+    fn vu_level_decibel_scale() {
+        assert_eq!(vu_level(0.0), 0.0);
+        assert_eq!(vu_level(0.001), 0.0);
+        assert_eq!(vu_level(1.0), 1.0);
+        let db = |d: f32| 10f32.powf(d / 20.0);
+        assert!(vu_level(db(VU_FLOOR_DB)).abs() < 1e-4);
+        assert!((vu_level(db(VU_CEILING_DB)) - 1.0).abs() < 1e-4);
+        // A loud master (-10 dBFS) and a louder passage (-6 dBFS) stay
+        // apart instead of both pinning at the top
+        let loud = vu_level(db(-10.0));
+        let louder = vu_level(db(-6.0));
+        assert!(loud < 0.85 && louder - loud > 0.1, "{loud} {louder}");
     }
 
     #[test]

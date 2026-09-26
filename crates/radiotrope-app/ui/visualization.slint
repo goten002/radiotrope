@@ -42,18 +42,19 @@ export global VizStyle {
     }
 }
 
-// One bar used by every mode: a flat fill on a faint track, the same in
-// all four modes. `anchor` is where the fill grows from: "bottom", "center"
-// or "left".
+// One bar used by every mode: a flat fill, on a faint track when `track` is
+// set (the VU meters; the many-bar modes look busy with one). `anchor` is
+// where the fill grows from: "bottom", "center" or "left".
 component Bar inherits Rectangle {
     in property <float> level;
     in property <color> tint: Theme.accent;
     in property <string> anchor: "bottom";
+    in property <bool> track: true;
 
     property <bool> horizontal: anchor == "left";
     property <float> amount: clamp(root.level, 0, 1);
 
-    Rectangle {
+    if root.track: Rectangle {
         border-radius: 1.5px;
         background: Theme.viz-track;
     }
@@ -83,6 +84,7 @@ export component VizContent inherits Rectangle {
 
         for i in [0, 1, 2, 3, 4]: Bar {
             horizontal-stretch: 1;
+            track: false;
             level: 0.3 + 0.7 * abs(sin(mod(animation-tick() / 800ms * 360deg - i * 36deg, 360deg)));
             tint: VizStyle.bar-color(i / 4);
         }
@@ -95,6 +97,7 @@ export component VizContent inherits Rectangle {
         for val[i] in VizData.spectrum: Bar {
             horizontal-stretch: 1;
             level: val;
+            track: false;
             tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
         }
     }
@@ -107,6 +110,7 @@ export component VizContent inherits Rectangle {
             horizontal-stretch: 1;
             level: val;
             anchor: "center";
+            track: false;
             tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
         }
     }

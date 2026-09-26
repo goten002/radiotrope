@@ -125,7 +125,7 @@ export component App inherits Window {
     in-out property <color> accent-color <=> Theme.accent-base;
 
     in-out property <string> stat-health;
-    in-out property <string> stat-uptime;
+    in-out property <string> stat-playtime;
     in-out property <string> stat-codec;
     in-out property <string> stat-bitrate;
     in-out property <string> stat-sample-rate;
@@ -183,6 +183,7 @@ export component App inherits Window {
             station-name: root.station-name;
             codec-info: root.codec-info;
             status-text: root.status-text;
+            playtime: root.stat-playtime;
             is-loading: root.is-loading;
             is-error: root.is-error;
             station-logo: root.current-logo;
@@ -224,7 +225,7 @@ export component App inherits Window {
 
     stats-dialog := StatisticsDialog {
         stat-health: root.stat-health;
-        stat-uptime: root.stat-uptime;
+        stat-playtime: root.stat-playtime;
         stat-codec: root.stat-codec;
         stat-bitrate: root.stat-bitrate;
         stat-sample-rate: root.stat-sample-rate;

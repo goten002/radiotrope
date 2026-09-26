@@ -13,13 +13,14 @@ pub fn gate(level: f32) -> f32 {
     ((level.clamp(0.0, 1.0) - NOISE_FLOOR) / (1.0 - NOISE_FLOOR)).max(0.0)
 }
 
-/// Share of the way to a higher level a bar moves per frame
-const RISE: f32 = 0.6;
-/// Share of its height a falling bar keeps per frame (higher = slower fall)
-const FALL: f32 = 0.8;
+/// Time a rising bar takes to cover about two thirds of the way (seconds)
+const RISE_TIME: f32 = 0.05;
+/// Time a falling bar takes to drop about two thirds of the way (seconds)
+const FALL_TIME: f32 = 0.25;
 
 /// Frame-to-frame smoothing of visualizer levels: quick but not instant
-/// rises, and gentle falls
+/// rises, and gentle falls. Based on the time between frames, so motion
+/// stays even when frames arrive late.
 #[derive(Debug, Clone)]
 pub struct LevelSmoother {
     levels: Vec<f32>,
@@ -32,15 +33,14 @@ impl LevelSmoother {
         }
     }
 
-    /// Advance one frame towards `targets` (0-1) and return the new levels
-    pub fn update(&mut self, targets: &[f32]) -> &[f32] {
+    /// Advance `dt` seconds towards `targets` (0-1) and return the new levels
+    pub fn update(&mut self, targets: &[f32], dt: f32) -> &[f32] {
+        let rise = 1.0 - (-dt / RISE_TIME).exp();
+        let fall = 1.0 - (-dt / FALL_TIME).exp();
         for (level, &target) in self.levels.iter_mut().zip(targets) {
             let target = target.clamp(0.0, 1.0);
-            *level = if target > *level {
-                *level + (target - *level) * RISE
-            } else {
-                *level * FALL + target * (1.0 - FALL)
-            };
+            let k = if target > *level { rise } else { fall };
+            *level += (target - *level) * k;
         }
         &self.levels
     }
@@ -168,22 +168,35 @@ mod tests {
     #[test]
     fn smoother_rises_quickly_and_falls_gently() {
         let mut s = LevelSmoother::new(1);
-        let up = s.update(&[1.0])[0];
-        assert!((up - RISE).abs() < 1e-6);
-        let top = s.update(&[1.0])[0];
-        assert!(top > up);
-        let down = s.update(&[0.0])[0];
-        assert!((down - top * FALL).abs() < 1e-6);
+        let up = s.update(&[1.0], RISE_TIME)[0];
+        assert!((up - (1.0 - (-1f32).exp())).abs() < 1e-6);
+        let top = s.update(&[1.0], 0.5)[0];
+        assert!(top > 0.99);
+        let down = s.update(&[0.0], RISE_TIME)[0];
+        assert!(down > 0.7, "falls slower than it rises");
+        let gone = s.update(&[0.0], 2.0)[0];
+        assert!(gone < 0.01);
+    }
+
+    #[test]
+    fn smoother_same_motion_at_any_frame_rate() {
+        let mut fast = LevelSmoother::new(1);
+        let mut slow = LevelSmoother::new(1);
+        for _ in 0..4 {
+            fast.update(&[1.0], 0.0125);
+        }
+        slow.update(&[1.0], 0.05);
+        assert!((fast.update(&[1.0], 0.0)[0] - slow.update(&[1.0], 0.0)[0]).abs() < 1e-5);
     }
 
     #[test]
     fn smoother_reset_and_clamp() {
         let mut s = LevelSmoother::new(2);
-        s.update(&[5.0, -1.0]);
-        assert!(s.update(&[5.0, -1.0])[0] <= 1.0);
-        assert_eq!(s.update(&[5.0, -1.0])[1], 0.0);
+        s.update(&[5.0, -1.0], 0.1);
+        assert!(s.update(&[5.0, -1.0], 0.1)[0] <= 1.0);
+        assert_eq!(s.update(&[5.0, -1.0], 0.1)[1], 0.0);
         s.reset();
-        assert_eq!(s.update(&[0.0, 0.0]), &[0.0, 0.0]);
+        assert_eq!(s.update(&[0.0, 0.0], 0.1), &[0.0, 0.0]);
     }
 
     #[test]
