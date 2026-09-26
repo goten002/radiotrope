@@ -16,6 +16,8 @@ component VolumeSlider inherits Rectangle {
     property <color> fill-color: root.muted ? Theme.text-tertiary : Theme.accent;
     property <length> knob: root.active ? 16px : 12px;
     animate knob { duration: Theme.fast; }
+    // Keeps the value bubble up briefly after a scroll or key press
+    property <bool> nudged;
 
     public function scroll-by(delta: length) {
         root.set(root.value + (delta / 1px / 24));
@@ -23,6 +25,18 @@ component VolumeSlider inherits Rectangle {
 
     function set(v: float) {
         root.value-changed(Math.clamp(v, 0, 100));
+        root.nudged = true;
+        nudge-timer.running = false;
+        nudge-timer.running = true;
+    }
+
+    nudge-timer := Timer {
+        interval: 900ms;
+        running: false;
+        triggered => {
+            root.nudged = false;
+            self.running = false;
+        }
     }
 
     // Track, thicker while hovered or dragged
@@ -55,6 +69,32 @@ component VolumeSlider inherits Rectangle {
         border-color: root.fill-color;
         drop-shadow-blur: 4px;
         drop-shadow-color: #00000040;
+    }
+
+    // Value bubble above the knob while hovered, dragging, scrolling or using keys
+    bubble := Rectangle {
+        property <bool> visible-now: touch.has-hover || touch.pressed || root.nudged;
+        opacity: visible-now ? 1 : 0;
+        animate opacity { duration: Theme.fast; }
+        width: 44px;
+        height: 20px;
+        x: thumb.x + thumb.width / 2 - self.width / 2;
+        y: -self.height - 4px;
+        border-radius: 5px;
+        background: Theme.card;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: Theme.shadow-soft;
+
+        Text {
+            text: root.muted && !touch.pressed ? "Muted" : Math.round(root.value) + "%";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
     }
 
     touch := TouchArea {
@@ -268,19 +308,6 @@ export component Controls inherits Rectangle {
                             root.volume = val / 100;
                             root.volume-changed(root.volume);
                         }
-                    }
-                }
-
-                // Percentage text
-                VerticalLayout {
-                    alignment: center;
-                    Text {
-                        width: 38px;
-                        text: root.is-muted ? "Muted"
-                            : Math.round(root.volume * 100) + "%";
-                        font-size: 11px;
-                        color: root.is-muted ? Theme.text-tertiary : Theme.text-secondary;
-                        horizontal-alignment: right;
                     }
                 }
             }
