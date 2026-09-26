@@ -396,16 +396,16 @@ export component MenuBar inherits Rectangle {
                     label: "Equalizer";
                     icon: @image-url("icons/sliders.svg");
                     clicked => {
-                        tools-popup.close();
                         root.open-equalizer();
+                        tools-popup.close();
                     }
                 }
                 MenuItem {
                     label: "Statistics";
                     icon: @image-url("icons/chart-column.svg");
                     clicked => {
-                        tools-popup.close();
                         root.open-statistics();
+                        tools-popup.close();
                     }
                 }
                 Rectangle {
@@ -420,24 +420,24 @@ export component MenuBar inherits Rectangle {
                     label: root.is-recording ? "Stop Recording" : "Start Recording";
                     icon: @image-url("icons/circle.svg");
                     clicked => {
-                        tools-popup.close();
                         root.toggle-recording();
+                        tools-popup.close();
                     }
                 }
                 MenuItem {
                     label: "Recording Folder...";
                     icon: @image-url("icons/folder.svg");
                     clicked => {
-                        tools-popup.close();
                         root.open-recording-folder-dialog();
+                        tools-popup.close();
                     }
                 }
                 if Platform.has-file-manager: MenuItem {
                     label: "Open Recordings Folder";
                     icon: @image-url("icons/folder-open.svg");
                     clicked => {
-                        tools-popup.close();
                         root.open-recordings-folder();
+                        tools-popup.close();
                     }
                 }
                 if Platform.has-wifi: Rectangle {
@@ -452,8 +452,8 @@ export component MenuBar inherits Rectangle {
                     label: "WiFi Settings...";
                     icon: @image-url("icons/wifi.svg");
                     clicked => {
-                        tools-popup.close();
                         root.open-wifi-settings();
+                        tools-popup.close();
                     }
                 }
             }

@@ -233,6 +233,10 @@ export component App inherits Window {
                 station-logo: root.current-logo;
                 is-station-favorited: root.is-station-favorited;
                 has-station: root.station-url != "";
+                is-recording: root.is-recording;
+                recording-text: root.recording-text;
+                recording-notice: root.recording-notice;
+                recording-notice-error: root.recording-notice-error;
                 toggle-favorite => { root.toggle-favorite(); }
             }
             }
@@ -263,12 +267,6 @@ export component App inherits Window {
             stop-clicked => { root.stop-clicked(); }
             volume-changed(vol) => { root.volume-changed(vol); }
             mute-clicked => { root.mute-clicked(); }
-            is-recording: root.is-recording;
-            can-record: root.can-record;
-            recording-text: root.recording-text;
-            recording-notice: root.recording-notice;
-            recording-notice-error: root.recording-notice-error;
-            record-clicked => { root.toggle-recording(); }
         }
     }
 
