@@ -149,10 +149,16 @@ fn main() {
         ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
     }
 
+    ui.set_touch_scroll(cfg!(feature = "embedded"));
+
     // Apply saved theme and viz mode
     ui.set_dark_mode(settings.theme.is_dark());
-    ui.set_viz_mode(settings.viz_mode.as_str().into());
-    ui.global::<VizStyle>().set_wide(settings.viz_wide);
+    // Modes that no longer exist (the old curve) fall back to mirror
+    let viz_mode = match settings.viz_mode.as_str() {
+        m @ ("mirror" | "spectrum" | "vu" | "hbars") => m,
+        _ => "mirror",
+    };
+    ui.set_viz_mode(viz_mode.into());
     ui.global::<VizStyle>()
         .set_palette(settings.viz_palette.as_str().into());
 
@@ -662,6 +668,7 @@ fn main() {
             let ui_weak = ui_weak.clone();
             let gen = gen.clone();
             let logo_svc = logo_svc.clone();
+            let state = state.clone();
             std::thread::Builder::new()
                 .name("load-more".into())
                 .spawn(move || {
@@ -677,7 +684,12 @@ fn main() {
                             Ok(results) => {
                                 show_browse_results(&ui, results, true, logo_svc, gen, my_gen)
                             }
-                            Err(e) => ui.set_search_error(format!("{e}").into()),
+                            Err(e) => {
+                                // Step back so the next scroll retries this page
+                                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+                                s.1 = s.1.saturating_sub(SEARCH_PAGE_SIZE);
+                                ui.set_search_error(format!("{e}").into());
+                            }
                         }
                     });
                 })
@@ -1246,7 +1258,7 @@ fn setup_rotary_encoder(
 }
 
 /// Push one visualizer frame to the UI. Models are updated in place, so
-/// nothing is allocated per frame apart from the curve path string.
+/// nothing is allocated per frame.
 fn show_viz_frame(
     viz: &VizData,
     spectrum: &SpectrumDisplay,
@@ -1262,7 +1274,6 @@ fn show_viz_frame(
     viz.set_vu_right(vu.bars()[1]);
     viz.set_vu_peak_left(vu.peaks()[0]);
     viz.set_vu_peak_right(vu.peaks()[1]);
-    viz.set_curve_path(spectrum.curve_path().into());
 }
 
 /// Fill in the About dialog and handle its links
@@ -1563,7 +1574,6 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     };
 
     settings.viz_mode = ui.get_viz_mode().to_string();
-    settings.viz_wide = ui.global::<VizStyle>().get_wide();
     settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
 
     if let Some(ref url) = s.station_url {
@@ -1903,7 +1913,13 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         url: s.url.as_str().into(),
         logo_url: s.logo_url.as_deref().unwrap_or("").into(),
         country: s.country.as_deref().unwrap_or("").into(),
-        codec: s.codec.as_deref().unwrap_or("").into(),
+        // radio-browser reports "UNKNOWN" when it has no codec; show no badge
+        codec: s
+            .codec
+            .as_deref()
+            .filter(|c| !c.eq_ignore_ascii_case("unknown"))
+            .unwrap_or("")
+            .into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
         provider_id: s.provider_id.as_deref().unwrap_or("").into(),
     }

@@ -6,51 +6,112 @@ export global VizData {
     in property <float> vu-right;
     in property <float> vu-peak-left;
     in property <float> vu-peak-right;
-    // Bar heights per band (0-1), already smoothed
+    // Bar heights per band (0-1), already smoothed and noise-gated
     in property <[float]> spectrum;
     // Peak-hold dot per band (0-1)
     in property <[float]> peaks;
-    // SVG path of the spectrum as a filled curve, 100 x 100 viewbox
-    in property <string> curve-path;
 }
 
-// Visualizer look: palette and whether it also runs wide behind the header
+// Visualizer colours
 export global VizStyle {
-    // "logo" (the icon's yellow-orange-magenta) or "accent"
+    // "logo" (the app icon's yellow, orange, red and magenta) or "accent"
     in-out property <string> palette: "logo";
-    in-out property <bool> wide: false;
 
-    out property <color> low: palette == "logo" ? #ffc23a : Theme.accent.brighter(0.3);
-    out property <color> mid: palette == "logo" ? #ff6b2c : Theme.accent;
-    out property <color> high: palette == "logo" ? #e0245e : Theme.accent.darker(0.35);
-    // Bottom-to-top and left-to-right gradients
-    out property <brush> vertical: @linear-gradient(0deg, low 0%, mid 55%, high 100%);
-    out property <brush> downward: @linear-gradient(180deg, low 0%, mid 55%, high 100%);
-    out property <brush> horizontal: @linear-gradient(90deg, low 0%, mid 60%, high 100%);
+    // Colour of a bar at position t (0 = bass on the left, 1 = treble)
+    public pure function bar-color(t: float) -> color {
+        if palette != "logo" {
+            return Theme.accent;
+        }
+        if t < 0.33 {
+            return #ff7a1f.mix(#ffc23a, t / 0.33);
+        }
+        if t < 0.66 {
+            return #f0284a.mix(#ff7a1f, (t - 0.33) / 0.33);
+        }
+        return #b01c78.mix(#f0284a, (t - 0.66) / 0.34);
+    }
+
+    // Level-meter gradient, bottom to top (quiet to loud)
+    out property <brush> meter: palette == "logo"
+        ? @linear-gradient(0deg, #ffc23a 0%, #ff7a1f 45%, #f0284a 80%, #b01c78 100%)
+        : @linear-gradient(0deg, Theme.accent.brighter(0.3) 0%, Theme.accent 55%, Theme.accent.darker(0.35) 100%);
+    out property <brush> meter-horizontal: palette == "logo"
+        ? @linear-gradient(90deg, #ffc23a 0%, #ff7a1f 45%, #f0284a 80%, #b01c78 100%)
+        : @linear-gradient(90deg, Theme.accent.brighter(0.3) 0%, Theme.accent 60%, Theme.accent.darker(0.35) 100%);
+
     // Mode after `mode` in the click cycle
     public pure function next-mode(mode: string) -> string {
         if mode == "mirror" { return "spectrum"; }
-        if mode == "spectrum" { return "curve"; }
-        if mode == "curve" { return "vu"; }
+        if mode == "spectrum" { return "vu"; }
         if mode == "vu" { return "hbars"; }
         return "mirror";
     }
-
-    out property <brush> curve-fill: @linear-gradient(0deg, low.with-alpha(0.25) 0%, mid.with-alpha(0.55) 50%, high.with-alpha(0.85) 100%);
 }
 
-// Vertical bar filled with the full-height gradient, so short bars stay
-// warm and only tall ones reach the top color; optional peak-hold dot
-component GradientBar inherits Rectangle {
+// Spectrum bar growing up from the bottom, with a peak-hold dot
+component SpectrumBar inherits Rectangle {
     in property <float> level;
     in property <float> peak;
-    in property <bool> show-peak: true;
-    in property <bool> show-track: true;
-    // Grow downward from the top edge (mirror reflection)
-    in property <bool> downward: false;
+    in property <color> tint;
 
-    if root.show-track: Rectangle {
-        border-radius: min(self.width / 2, 2px);
+    if root.level > 0.01: Rectangle {
+        x: 0;
+        width: parent.width;
+        height: clamp(root.level, 0, 1) * parent.height;
+        y: parent.height - self.height;
+        border-radius: min(self.width / 2, 1.5px);
+        background: @linear-gradient(0deg, root.tint.darker(0.3) 0%, root.tint 100%);
+    }
+
+    if root.peak > 0.03: Rectangle {
+        x: 0;
+        width: parent.width;
+        height: 2px;
+        y: (1 - clamp(root.peak, 0, 1)) * (parent.height - self.height);
+        background: Theme.text-primary.with-alpha(0.75);
+    }
+}
+
+// Mirror bar: grows out from the middle, the same up and down
+component MirrorBar inherits Rectangle {
+    in property <float> level;
+    in property <float> peak;
+    in property <color> tint;
+
+    if root.level > 0.01: Rectangle {
+        x: 0;
+        width: parent.width;
+        height: clamp(root.level, 0, 1) * parent.height;
+        y: (parent.height - self.height) / 2;
+        border-radius: min(self.width / 2, 1.5px);
+        background: @linear-gradient(0deg, root.tint 0%, root.tint.darker(0.3) 50%, root.tint 100%);
+    }
+
+    if root.peak > 0.03: Rectangle {
+        x: 0;
+        width: parent.width;
+        height: 1.5px;
+        y: (1 - clamp(root.peak, 0, 1)) * (parent.height - self.height) / 2;
+        background: Theme.text-primary.with-alpha(0.7);
+    }
+
+    if root.peak > 0.03: Rectangle {
+        x: 0;
+        width: parent.width;
+        height: 1.5px;
+        y: parent.height - self.height - (1 - clamp(root.peak, 0, 1)) * (parent.height - self.height) / 2;
+        background: Theme.text-primary.with-alpha(0.7);
+    }
+}
+
+// Vertical level meter filled with the full-height meter gradient, so quiet
+// levels stay warm and only loud ones reach the top colour
+component MeterBar inherits Rectangle {
+    in property <float> level;
+    in property <float> peak;
+
+    Rectangle {
+        border-radius: 2px;
         background: Theme.viz-track;
     }
 
@@ -58,25 +119,24 @@ component GradientBar inherits Rectangle {
         x: 0;
         width: parent.width;
         height: clamp(root.level, 0, 1) * parent.height;
-        y: root.downward ? 0 : parent.height - self.height;
-        border-radius: min(self.width / 2, 2px);
+        y: parent.height - self.height;
+        border-radius: 2px;
         clip: true;
 
         Rectangle {
             x: 0;
-            y: root.downward ? 0 : parent.height - root.height;
+            y: parent.height - root.height;
             width: parent.width;
             height: root.height;
-            background: root.downward ? VizStyle.downward : VizStyle.vertical;
+            background: VizStyle.meter;
         }
     }
 
-    if root.show-peak && root.peak > 0.03: Rectangle {
+    if root.peak > 0.03: Rectangle {
         x: 0;
         width: parent.width;
         height: 2px;
         y: (1 - clamp(root.peak, 0, 1)) * (parent.height - self.height);
-        border-radius: 1px;
         background: Theme.text-primary.with-alpha(0.75);
     }
 }
@@ -86,7 +146,7 @@ component HorizontalMeter inherits Rectangle {
     in property <float> level;
     in property <float> peak;
 
-    border-radius: min(self.height / 2, 3px);
+    border-radius: 2px;
     background: Theme.viz-track;
     clip: true;
 
@@ -101,7 +161,7 @@ component HorizontalMeter inherits Rectangle {
             x: 0;
             width: root.width;
             height: parent.height;
-            background: VizStyle.horizontal;
+            background: VizStyle.meter-horizontal;
         }
     }
 
@@ -119,76 +179,40 @@ export component VizContent inherits Rectangle {
     in property <bool> is-loading;
     // Gap between spectrum bars
     in property <length> gap: 1px;
-    in property <bool> peaks: true;
-    // Faint full-height track behind each spectrum bar
-    in property <bool> tracks: true;
 
-    // Loading animation (bouncing gradient bars)
+    // Loading animation (bouncing bars)
     if root.is-loading: HorizontalLayout {
         spacing: 3px;
 
-        for i in [0, 1, 2, 3, 4]: Rectangle {
+        for i in [0, 1, 2, 3, 4]: SpectrumBar {
             horizontal-stretch: 1;
-
-            GradientBar {
-                property <float> anim: abs(sin(mod(animation-tick() / 800ms * 360deg - i * 36deg, 360deg)));
-                level: 0.3 + 0.7 * self.anim;
-                show-peak: false;
-                show-track: false;
-            }
+            level: 0.3 + 0.7 * abs(sin(mod(animation-tick() / 800ms * 360deg - i * 36deg, 360deg)));
+            tint: VizStyle.bar-color(i / 4);
         }
     }
 
-    // Spectrum: gradient bars with peak dots
+    // Spectrum: bars rising from the bottom with peak dots
     if !root.is-loading && root.mode == "spectrum": HorizontalLayout {
         spacing: root.gap;
 
-        for val[i] in VizData.spectrum: GradientBar {
+        for val[i] in VizData.spectrum: SpectrumBar {
             horizontal-stretch: 1;
             level: val;
             peak: i < VizData.peaks.length ? VizData.peaks[i] : 0;
-            show-peak: root.peaks;
-            show-track: root.tracks;
+            tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
         }
     }
 
-    // Mirror: bars grow up from the middle over a faded reflection
+    // Mirror: bars grow out from the middle, symmetric top and bottom
     if !root.is-loading && root.mode == "mirror": HorizontalLayout {
         spacing: root.gap;
 
-        for val[i] in VizData.spectrum: VerticalLayout {
+        for val[i] in VizData.spectrum: MirrorBar {
             horizontal-stretch: 1;
-            spacing: 1px;
-
-            GradientBar {
-                vertical-stretch: 1;
-                level: val;
-                peak: i < VizData.peaks.length ? VizData.peaks[i] : 0;
-                show-peak: root.peaks;
-                show-track: false;
-            }
-
-            GradientBar {
-                vertical-stretch: 1;
-                level: val;
-                downward: true;
-                show-peak: false;
-                show-track: false;
-                opacity: 0.3;
-            }
+            level: val;
+            peak: i < VizData.peaks.length ? VizData.peaks[i] : 0;
+            tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
         }
-    }
-
-    // Curve: the spectrum as a smooth filled shape
-    if !root.is-loading && root.mode == "curve": Path {
-        width: parent.width;
-        height: parent.height;
-        viewbox-width: 100;
-        viewbox-height: 100;
-        commands: VizData.curve-path;
-        fill: VizStyle.curve-fill;
-        stroke: VizStyle.mid;
-        stroke-width: 1.5px;
     }
 
     // VU: two vertical meters, left and right
@@ -196,18 +220,16 @@ export component VizContent inherits Rectangle {
         spacing: 4px;
         alignment: center;
 
-        GradientBar {
+        MeterBar {
             width: min(root.width / 2 - 4px, 22px);
             level: VizData.vu-left;
             peak: VizData.vu-peak-left;
-            show-peak: root.peaks;
         }
 
-        GradientBar {
+        MeterBar {
             width: min(root.width / 2 - 4px, 22px);
             level: VizData.vu-right;
             peak: VizData.vu-peak-right;
-            show-peak: root.peaks;
         }
     }
 
@@ -238,15 +260,10 @@ export component Visualization inherits Rectangle {
     width: 70px;
     height: 70px;
     background: Theme.viz-bg;
-    border-radius: 12px;
+    border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.hairline;
     clip: true;
-
-    // Soft glow at the bottom, in the palette's warm color
-    Rectangle {
-        background: @linear-gradient(0deg, VizStyle.mid.with-alpha(0.14) 0%, VizStyle.mid.with-alpha(0) 70%);
-    }
 
     TouchArea {
         mouse-cursor: pointer;

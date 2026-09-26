@@ -316,14 +316,6 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    label: "Wide Visualizer";
-                    checked: VizStyle.wide;
-                    clicked => {
-                        view-popup.close();
-                        VizStyle.wide = !VizStyle.wide;
-                    }
-                }
-                CheckMenuItem {
                     label: "Logo Colors in Visualizer";
                     checked: VizStyle.palette == "logo";
                     clicked => {

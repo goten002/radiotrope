@@ -7,7 +7,7 @@ export component AccentButton inherits Rectangle {
 
     height: 34px;
     width: btn-text.preferred-width + 32px;
-    border-radius: 8px;
+    border-radius: Theme.radius-sm;
     background: !root.enabled ? Theme.disabled-bg
                 : touch.pressed ? Theme.accent-hover.darker(0.1)
                 : touch.has-hover ? Theme.accent-hover
@@ -39,7 +39,7 @@ export component SecondaryButton inherits Rectangle {
 
     height: 34px;
     width: btn-text.preferred-width + 32px;
-    border-radius: 8px;
+    border-radius: Theme.radius-sm;
     border-width: 1px;
     border-color: Theme.hairline;
     background: touch.pressed ? Theme.menu-hover
@@ -70,7 +70,7 @@ export component DangerButton inherits Rectangle {
 
     height: 34px;
     width: row.preferred-width + 28px;
-    border-radius: 8px;
+    border-radius: Theme.radius-sm;
     background: touch.pressed ? Theme.danger.with-alpha(0.3)
                 : touch.has-hover ? Theme.danger.with-alpha(0.22)
                 : Theme.danger.with-alpha(0.14);

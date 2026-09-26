@@ -16,7 +16,7 @@ export component StyledLineEdit inherits Rectangle {
     property <length> right-margin: root.show-clear ? 32px : root.margin;
 
     height: 36px;
-    border-radius: 8px;
+    border-radius: Theme.radius-sm;
     background: Theme.elevated;
     border-width: input.has-focus ? 1.5px : 1px;
     border-color: input.has-focus ? Theme.accent : Theme.hairline;

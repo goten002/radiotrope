@@ -7,7 +7,11 @@ component StatTile inherits Rectangle {
     in property <string> value;
     in property <color> tone: Theme.text-primary;
 
+    // Equal share of the row whatever the text, so tiles don't jump as
+    // values change
     horizontal-stretch: 1;
+    min-width: 0;
+    preferred-width: 0;
     height: 62px;
     border-radius: Theme.radius-md;
     background: Theme.elevated;
@@ -42,6 +46,9 @@ component StatTile inherits Rectangle {
 component StatGroup inherits Rectangle {
     in property <string> title;
 
+    min-width: 0;
+    preferred-width: 0;
+
     border-radius: Theme.radius-md;
     background: Theme.elevated;
     border-width: 1px;
@@ -51,6 +58,7 @@ component StatGroup inherits Rectangle {
         padding: 12px;
         padding-top: 4px;
         spacing: 0;
+        alignment: start;
 
         SectionHeader { title: root.title; }
         @children
@@ -95,13 +103,11 @@ export component StatisticsDialog inherits Rectangle {
             StatTile { label: "BUFFER"; value: root.stat-buffer-level; }
         }
 
-        HorizontalLayout {
+        // Two equal columns lined up with the tiles above; rows share a height
+        GridLayout {
             spacing: 10px;
 
-            VerticalLayout {
-                spacing: 10px;
-                horizontal-stretch: 1;
-
+            Row {
                 StatGroup {
                     title: "CODEC";
                     InfoRow { label: "Codec"; value: root.stat-codec; }
@@ -111,27 +117,24 @@ export component StatisticsDialog inherits Rectangle {
                 }
 
                 StatGroup {
+                    title: "DECODE";
+                    InfoRow { label: "Frames"; value: root.stat-frames-played; }
+                    InfoRow { label: "Errors"; value: root.stat-decode-errors; }
+                    InfoRow { label: "Underruns"; value: root.stat-underruns; }
+                }
+            }
+
+            Row {
+                StatGroup {
                     title: "NETWORK";
                     InfoRow { label: "Received"; value: root.stat-received; }
                     InfoRow { label: "Segments"; value: root.stat-segments; }
                 }
-            }
-
-            VerticalLayout {
-                spacing: 10px;
-                horizontal-stretch: 1;
 
                 StatGroup {
                     title: "BUFFER";
                     InfoRow { label: "Level"; value: root.stat-buffer-level; }
                     InfoRow { label: "Capacity"; value: root.stat-buffer-capacity; }
-                }
-
-                StatGroup {
-                    title: "DECODE";
-                    InfoRow { label: "Frames"; value: root.stat-frames-played; }
-                    InfoRow { label: "Errors"; value: root.stat-decode-errors; }
-                    InfoRow { label: "Underruns"; value: root.stat-underruns; }
                 }
             }
         }
