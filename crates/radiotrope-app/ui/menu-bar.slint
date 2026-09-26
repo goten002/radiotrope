@@ -5,6 +5,7 @@ import { Platform } from "@platform/wifi.slint";
 
 component MenuItem inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     callback clicked();
 
     height: 28px;
@@ -18,9 +19,20 @@ component MenuItem inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 12px;
+        padding-left: 10px;
         padding-right: 12px;
+        spacing: 10px;
         alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 15px;
+                height: 15px;
+                source: root.icon;
+                colorize: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
 
         Text {
             text: root.label;
@@ -33,6 +45,7 @@ component MenuItem inherits Rectangle {
 
 component CheckMenuItem inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> checked;
     callback clicked();
 
@@ -47,13 +60,31 @@ component CheckMenuItem inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 12px;
+        padding-left: 10px;
         padding-right: 12px;
-        spacing: 8px;
-        alignment: start;
+        spacing: 10px;
 
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 15px;
+                height: 15px;
+                source: root.icon;
+                colorize: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+
+        // Tick on the right while the option is on
         Rectangle {
-            width: 14px;
+            width: 12px;
 
             if root.checked: Icon {
                 width: 12px;
@@ -62,13 +93,6 @@ component CheckMenuItem inherits Rectangle {
                 source: @image-url("icons/tick.svg");
                 colorize: Theme.accent;
             }
-        }
-
-        Text {
-            text: root.label;
-            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: 13px;
-            vertical-alignment: center;
         }
     }
 }
@@ -218,6 +242,7 @@ export component MenuBar inherits Rectangle {
 
                 MenuItem {
                     label: "Network Stream...";
+                    icon: @image-url("icons/link.svg");
                     clicked => {
                         open-popup.close();
                         root.open-network-stream();
@@ -246,6 +271,7 @@ export component MenuBar inherits Rectangle {
 
                 MenuItem {
                     label: "Search Stations...";
+                    icon: @image-url("icons/magnifying-glass.svg");
                     clicked => {
                         stations-popup.close();
                         root.open-station-search();
@@ -253,6 +279,7 @@ export component MenuBar inherits Rectangle {
                 }
                 MenuItem {
                     label: "By Country...";
+                    icon: @image-url("icons/earth-europe.svg");
                     clicked => {
                         stations-popup.close();
                         root.open-country-picker();
@@ -281,6 +308,7 @@ export component MenuBar inherits Rectangle {
 
                 CheckMenuItem {
                     label: "Dark Theme";
+                    icon: @image-url("icons/moon.svg");
                     checked: Theme.dark-mode;
                     clicked => {
                         view-popup.close();
@@ -289,6 +317,7 @@ export component MenuBar inherits Rectangle {
                 }
                 CheckMenuItem {
                     label: "Light Theme";
+                    icon: @image-url("icons/sun.svg");
                     checked: !Theme.dark-mode;
                     clicked => {
                         view-popup.close();
@@ -305,6 +334,7 @@ export component MenuBar inherits Rectangle {
                 }
                 MenuItem {
                     label: "Accent Color...";
+                    icon: @image-url("icons/palette.svg");
                     clicked => {
                         view-popup.close();
                         root.open-accent-color();
@@ -320,6 +350,7 @@ export component MenuBar inherits Rectangle {
                 }
                 CheckMenuItem {
                     label: "Show Station Stats";
+                    icon: @image-url("icons/clock.svg");
                     checked: root.show-station-stats;
                     clicked => {
                         view-popup.close();
@@ -328,6 +359,7 @@ export component MenuBar inherits Rectangle {
                 }
                 CheckMenuItem {
                     label: "Station Colors in Visualizer";
+                    icon: @image-url("icons/wave-square.svg");
                     checked: VizStyle.palette == "logo";
                     clicked => {
                         view-popup.close();
@@ -357,6 +389,7 @@ export component MenuBar inherits Rectangle {
 
                 MenuItem {
                     label: "Equalizer";
+                    icon: @image-url("icons/sliders.svg");
                     clicked => {
                         tools-popup.close();
                         root.open-equalizer();
@@ -364,6 +397,7 @@ export component MenuBar inherits Rectangle {
                 }
                 MenuItem {
                     label: "Statistics";
+                    icon: @image-url("icons/chart-column.svg");
                     clicked => {
                         tools-popup.close();
                         root.open-statistics();
@@ -379,6 +413,7 @@ export component MenuBar inherits Rectangle {
                 }
                 if Platform.has-wifi: MenuItem {
                     label: "WiFi Settings...";
+                    icon: @image-url("icons/wifi.svg");
                     clicked => {
                         tools-popup.close();
                         root.open-wifi-settings();
