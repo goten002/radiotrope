@@ -9,11 +9,13 @@ export struct BrowseStation {
     country: string,
     codec: string,
     bitrate: int,
+    flag: image,
 }
 
 component StationRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
+    in property <image> flag;
     in property <string> codec;
     in property <int> bitrate;
     in property <image> logo-image;
@@ -75,11 +77,23 @@ component StationRow inherits Rectangle {
                 overflow: elide;
             }
 
-            Text {
-                text: root.country;
-                color: Theme.text-secondary;
-                font-size: 11px;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 4px;
+
+                if root.flag.width > 0: Image {
+                    source: root.flag;
+                    width: 16px;
+                    height: 12px;
+                    image-fit: contain;
+                    y: (parent.height - self.height) / 2;
+                }
+
+                Text {
+                    text: root.country;
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    overflow: elide;
+                }
             }
         }
 
@@ -283,6 +297,7 @@ export component StationBrowserDialog inherits Rectangle {
                             for station[idx] in root.search-results: StationRow {
                                 name: station.name;
                                 country: station.country;
+                                flag: station.flag;
                                 codec: station.codec;
                                 bitrate: station.bitrate;
                                 logo-image: idx < root.browse-logos.length ? root.browse-logos[idx] : @image-url("");
