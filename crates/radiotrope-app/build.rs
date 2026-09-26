@@ -2,7 +2,21 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 fn main() {
-    let config = slint_build::CompilerConfiguration::new().with_style("fluent-dark".into());
+    // `@platform/...` imports resolve to the UI for this build: the WiFi
+    // settings only exist in the Raspberry Pi (`embedded`) build.
+    let platform = if std::env::var_os("CARGO_FEATURE_EMBEDDED").is_some() {
+        "ui/platform/embedded"
+    } else {
+        "ui/platform/desktop"
+    };
+    let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
+    let config = slint_build::CompilerConfiguration::new()
+        .with_style("fluent-dark".into())
+        .with_library_paths(
+            [("platform".to_string(), manifest_dir.join(platform))]
+                .into_iter()
+                .collect(),
+        );
     slint_build::compile_with_config("ui/app.slint", config).unwrap();
 
     generate_flags();
