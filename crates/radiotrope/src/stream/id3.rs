@@ -81,6 +81,21 @@ pub fn parse_id3v2(tag: &[u8]) -> Option<StreamMetadata> {
     metadata_from_tags(&buffer.revision.media.tags, MetadataSource::Id3v2)
 }
 
+/// Parse every ID3v2 tag in a metadata payload (an HLS timed-metadata PES
+/// packet or `emsg` message), in order. Stops at the first byte that is not
+/// the start of a complete tag, so trailing padding is ignored.
+pub fn parse_id3v2_payload(mut data: &[u8]) -> Vec<StreamMetadata> {
+    let mut found = Vec::new();
+    while let Some(len) = id3v2_tag_len(data) {
+        if len > data.len() {
+            break;
+        }
+        found.extend(parse_id3v2(&data[..len]));
+        data = &data[len..];
+    }
+    found
+}
+
 /// Parse a 128-byte ID3v1 tag into song info.
 ///
 /// Returns `None` if the block is not an ID3v1 tag or has no title or artist.
@@ -433,6 +448,26 @@ mod tests {
     fn garbage_id3v2_is_none() {
         assert!(parse_id3v2(b"ID3\x04\x00\x00\x00\x00\x00\x05abc").is_none());
         assert!(parse_id3v2(b"").is_none());
+    }
+
+    #[test]
+    fn payload_with_several_tags_and_padding() {
+        let mut payload = id3v2_song("A", "1");
+        payload.extend(id3v2_tag(&[(b"TALB", "no song info")]));
+        payload.extend(id3v2_song("B", "2"));
+        payload.extend_from_slice(&[0xFF; 7]);
+        let songs: Vec<_> = parse_id3v2_payload(&payload)
+            .iter()
+            .map(|m| m.title.clone().unwrap())
+            .collect();
+        assert_eq!(songs, vec!["1".to_string(), "2".to_string()]);
+    }
+
+    #[test]
+    fn payload_with_truncated_tag() {
+        let tag = id3v2_song("A", "1");
+        assert!(parse_id3v2_payload(&tag[..tag.len() - 1]).is_empty());
+        assert!(parse_id3v2_payload(b"").is_empty());
     }
 
     #[test]
