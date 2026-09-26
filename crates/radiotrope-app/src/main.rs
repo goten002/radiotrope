@@ -95,6 +95,9 @@ fn main() {
         let logo_svc = logo_service.clone();
         let fav_clone = favorites.clone();
         let ui_weak = ui.as_weak();
+        // The station restored into the player keeps its logo even when it
+        // isn't a favorite
+        let last_station_id = settings.last_station.as_ref().map(|s| s.id());
         std::thread::Builder::new()
             .name("fav-logo-prefetch".into())
             .spawn(move || {
@@ -108,7 +111,7 @@ fn main() {
 
                 // Clean up cached logos not belonging to any current favorite
                 let valid_ids: std::collections::HashSet<String> =
-                    all.iter().map(|f| f.id()).collect();
+                    all.iter().map(|f| f.id()).chain(last_station_id).collect();
                 let removed = logo_svc.cache().cleanup_orphaned(&valid_ids);
                 if removed > 0 {
                     eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
@@ -198,6 +201,25 @@ fn main() {
                 if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
                     let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                     ui.set_current_logo(slint::Image::from_rgba8(pb));
+                } else {
+                    // Not cached (e.g. removed by an older cleanup): fetch it
+                    let logo_svc = logo_service.clone();
+                    let ui_weak = ui.as_weak();
+                    let station_url = station.url.clone();
+                    std::thread::Builder::new()
+                        .name("last-logo-fetch".into())
+                        .spawn(move || {
+                            if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
+                                let _ = slint::invoke_from_event_loop(move || {
+                                    let Some(ui) = ui_weak.upgrade() else { return };
+                                    if ui.get_station_url() == station_url.as_str() {
+                                        let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+                                        ui.set_current_logo(slint::Image::from_rgba8(pb));
+                                    }
+                                });
+                            }
+                        })
+                        .ok();
                 }
             }
         }
@@ -236,6 +258,13 @@ fn main() {
     let play_url_state = shared_state.clone();
     ui.on_play_url(move |url| {
         if let Some(ui) = play_url_weak.upgrade() {
+            // Replaying the station already in the player (the Play button)
+            // keeps its name, logo and country, which a station that isn't a
+            // favorite has nowhere else
+            let current = ui.get_station_url() == url;
+            let keep = |value: slint::SharedString| {
+                Some(value.to_string()).filter(|v| current && !v.is_empty())
+            };
             play_station_with_metadata(
                 &ui,
                 &play_tx,
@@ -244,9 +273,9 @@ fn main() {
                 &play_url_logo_svc,
                 PlayMetadata {
                     url: url.to_string(),
-                    name: None,
-                    logo_url: None,
-                    country: None,
+                    name: keep(ui.get_station_name()),
+                    logo_url: keep(ui.get_station_logo_url()),
+                    country: keep(ui.get_station_country()),
                     provider_id: None,
                 },
             );
@@ -930,6 +959,12 @@ fn main() {
     let poll_state = shared_state.clone();
     let poll_favs = favorites.clone();
     let poll_logo_svc = logo_service.clone();
+    // Logo of the station restored at startup, which may not be a favorite
+    let restored_logo: Option<(String, String)> = settings
+        .last_station
+        .as_ref()
+        .and_then(|s| Some((s.url.clone(), s.logo_url.clone()?)))
+        .filter(|(_, logo)| !logo.is_empty());
     let last_fav_generation = std::cell::Cell::new(
         favorites
             .lock()
@@ -1074,13 +1109,20 @@ fn main() {
                     } else {
                         // Clear stale logo only when no cached replacement is available
                         ui.set_current_logo(Default::default());
-                        // Not cached — look up logo URL from favorites and fetch
+                        // Not cached — look up logo URL from favorites (or the
+                        // restored station's own) and fetch
                         let logo_url = poll_favs
                             .lock()
                             .ok()
                             .and_then(|f| {
                                 f.get_by_url(url.as_str())
                                     .and_then(|fav| fav.station.logo_url.clone())
+                            })
+                            .or_else(|| {
+                                restored_logo
+                                    .as_ref()
+                                    .filter(|(u, _)| u == url.as_str())
+                                    .map(|(_, logo)| logo.clone())
                             });
                         if let Some(logo) = logo_url {
                             if !logo.is_empty() {
