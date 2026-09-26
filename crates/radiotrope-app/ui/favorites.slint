@@ -60,10 +60,9 @@ component FavoriteRow inherits Rectangle {
     in property <int> play-count;
     // Show the stats on the right (View > Show Station Stats)
     in property <bool> show-stats: true;
-    // Keep the menu button visible, not only on hover (touch screens)
-    in property <bool> always-show-menu: false;
-    // Pick a station up only after holding the logo briefly, so a swipe
-    // that starts on the logo still scrolls the list (touch screens)
+    // Touch screens: pick a station up only after holding the logo
+    // briefly, so a swipe that starts on the logo still scrolls the list,
+    // and open the menu by holding the rest of the row
     in property <bool> hold-to-drag: false;
     callback clicked();
     callback edit-clicked();
@@ -83,7 +82,8 @@ component FavoriteRow inherits Rectangle {
     property <length> menu-x;
     property <length> menu-y;
     property <bool> confirm-remove: false;
-    property <bool> hovered: touch.has-hover || handle.has-hover || menu-button.hovered;
+    // The menu opened from a hold, so letting go must not also play
+    property <bool> menu-held: false;
     property <length> menu-width: 186px;
 
     public function open-menu(x: length, y: length) {
@@ -118,12 +118,43 @@ component FavoriteRow inherits Rectangle {
         border-radius: 1.5px;
     }
 
+    // Holding the row opens the menu on touch screens (right-click does
+    // on the desktop)
+    menu-timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if touch.pressed {
+                root.menu-held = true;
+                root.open-menu(touch.pressed-x, touch.pressed-y);
+            }
+        }
+    }
+
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            if !root.menu-held {
+                root.clicked();
+            }
+        }
         pointer-event(event) => {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.open-menu(self.mouse-x, self.mouse-y);
+            }
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.menu-held = false;
+                menu-timer.running = root.hold-to-drag;
+            }
+            if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                menu-timer.running = false;
+            }
+        }
+        moved => {
+            // Moving is a swipe: leave it to the list
+            if abs(self.mouse-y - self.pressed-y) > 6px || abs(self.mouse-x - self.pressed-x) > 6px {
+                menu-timer.running = false;
             }
         }
     }
@@ -244,22 +275,6 @@ component FavoriteRow inherits Rectangle {
                 color: Theme.text-tertiary;
                 font-size: 11px;
                 horizontal-alignment: right;
-            }
-        }
-
-        // Menu button: shows on hover (always on touch screens)
-        VerticalLayout {
-            alignment: center;
-
-            menu-button := IconButton {
-                icon: @image-url("icons/ellipsis.svg");
-                icon-size: 16px;
-                icon-color: Theme.text-secondary;
-                opacity: root.always-show-menu || root.hovered || root.dragging ? 1 : 0;
-                animate opacity { duration: Theme.fast; }
-                clicked => {
-                    root.open-menu(root.width - root.menu-width - 8px, root.height - 6px);
-                }
             }
         }
     }
@@ -560,7 +575,6 @@ export component Favorites inherits Rectangle {
                         last-played: station.last-played;
                         play-count: station.play-count;
                         show-stats: root.show-stats;
-                        always-show-menu: root.touch-scroll;
                         hold-to-drag: root.touch-scroll;
                         edit-clicked => {
                             root.favorite-edit-requested(station);
