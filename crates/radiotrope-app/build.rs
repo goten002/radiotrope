@@ -6,6 +6,42 @@ fn main() {
     slint_build::compile_with_config("ui/app.slint", config).unwrap();
 
     generate_flags();
+    emit_git_info();
+}
+
+/// Set `RADIOTROPE_GIT_HASH` and `RADIOTROPE_GIT_DATE` for the About dialog.
+/// Both are empty when building outside a git checkout (e.g. Yocto tarballs).
+fn emit_git_info() {
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .args(args)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default()
+    };
+    let hash = git(&["rev-parse", "--short=9", "HEAD"]);
+    let date = git(&["log", "-1", "--format=%cs"]);
+    println!("cargo:rustc-env=RADIOTROPE_GIT_HASH={hash}");
+    println!("cargo:rustc-env=RADIOTROPE_GIT_DATE={date}");
+
+    // Rebuild when HEAD moves (checkout, commit). Only watch files that
+    // exist: cargo reruns the script every build for a missing path.
+    let git_dir = git(&["rev-parse", "--absolute-git-dir"]);
+    if !git_dir.is_empty() {
+        let git_dir = Path::new(&git_dir);
+        let head_ref = git(&["symbolic-ref", "-q", "HEAD"]);
+        for path in [
+            git_dir.join("HEAD"),
+            git_dir.join(&head_ref),
+            git_dir.join("packed-refs"),
+        ] {
+            if path.is_file() {
+                println!("cargo:rerun-if-changed={}", path.display());
+            }
+        }
+    }
 }
 
 /// Generate `$OUT_DIR/flags.rs` with the bundled country flags and the
