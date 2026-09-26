@@ -5,6 +5,7 @@
 pub mod cache;
 pub mod favorites;
 pub mod flags;
+pub mod recordings;
 pub mod settings;
 pub mod storage;
 pub mod types;

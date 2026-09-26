@@ -25,6 +25,7 @@ thiserror = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 dirs = "6.0"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
 libc = "0.2"
 # WiFi settings over iwd (embedded only)
