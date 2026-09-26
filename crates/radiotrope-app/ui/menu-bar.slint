@@ -79,12 +79,14 @@ export component MenuBar inherits Rectangle {
     callback open-equalizer();
     callback open-accent-color();
     callback open-wifi-settings();
+    callback open-about();
 
     in property <bool> show-wifi-option: false;
 
     HorizontalLayout {
         padding-left: 4px;
-        alignment: start;
+        padding-right: 4px;
+        alignment: stretch;
 
         Rectangle {
             width: open-label.preferred-width + 20px;
@@ -155,6 +157,33 @@ export component MenuBar inherits Rectangle {
                 font-size: 13px;
                 horizontal-alignment: center;
                 vertical-alignment: center;
+            }
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        // About button at the right end
+        Rectangle {
+            width: 32px;
+            height: 32px;
+
+            about-touch := TouchArea {
+                clicked => { root.open-about(); }
+                mouse-cursor: pointer;
+            }
+
+            Rectangle {
+                width: 26px;
+                height: 26px;
+                border-radius: 13px;
+                background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
+
+                Image {
+                    width: 16px;
+                    height: 16px;
+                    source: @image-url("icons/circle-info.svg");
+                    colorize: about-touch.has-hover ? Theme.accent : Theme.menu-text;
+                }
             }
         }
     }
