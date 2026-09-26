@@ -11,7 +11,7 @@ exclude = ["build", "yocto"]
 # Audio
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
 symphonia = { version = "0.6", default-features = false, features = [
-    "ogg", "pcm", "mp3", "aac", "isomp4", "flac", "vorbis", "wav", "id3v2"
+    "ogg", "pcm", "mp3", "aac", "isomp4", "flac", "vorbis", "wav", "id3v1", "id3v2"
 ] }
 symphonia-adapter-libopus = { version = "0.3", features = ["bundled"] }
 symphonia-adapter-fdk-aac = "0.2"

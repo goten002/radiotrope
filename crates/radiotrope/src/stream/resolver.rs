@@ -3,6 +3,9 @@
 //! Orchestrates URL resolution: follows playlists, detects HLS,
 //! and returns a `ResolvedStream` ready for the audio engine.
 
+use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
+
 use crate::error::Result;
 use crate::stream::hls::{HlsReader, HlsSegmentFormat};
 use crate::stream::icy::IcyReader;
@@ -20,12 +23,14 @@ impl StreamResolver {
     /// 3. Otherwise → IcyReader (works for ICY and non-ICY servers)
     pub fn resolve(url: &str) -> Result<ResolvedStream> {
         let resolved_url = resolve_playlist_url(url)?;
+        let playback_position = Arc::new(AtomicU64::new(0));
 
         match check_playlist_type(&resolved_url) {
             PlaylistCheck::Hls => {
                 let (media_url, base_url) = crate::stream::hls::resolve_hls_url(&resolved_url)?;
 
-                let hls_reader = HlsReader::new(&media_url, &base_url)?;
+                let (hls_reader, metadata_rx) =
+                    HlsReader::new(&media_url, &base_url, Some(playback_position.clone()))?;
 
                 let format_hint = match hls_reader.detected_format {
                     HlsSegmentFormat::Fmp4 => Some("mp4".to_string()),
@@ -37,7 +42,7 @@ impl StreamResolver {
 
                 Ok(ResolvedStream {
                     reader: Box::new(hls_reader),
-                    metadata_rx: None,
+                    metadata_rx: Some(metadata_rx),
                     info: StreamInfo {
                         original_url: url.to_string(),
                         resolved_url: media_url,
@@ -49,10 +54,12 @@ impl StreamResolver {
                     },
                     bytes_received: Some(bytes_received),
                     segments_downloaded: Some(segments_downloaded),
+                    playback_position: Some(playback_position),
                 })
             }
             _ => {
-                let (icy_reader, metadata_rx) = IcyReader::new(&resolved_url)?;
+                let (icy_reader, metadata_rx) =
+                    IcyReader::new(&resolved_url, Some(playback_position.clone()))?;
 
                 let content_type = icy_reader.headers.content_type.clone();
                 let station_name = icy_reader.headers.station_name.clone();
@@ -74,6 +81,7 @@ impl StreamResolver {
                     },
                     bytes_received: Some(bytes_received),
                     segments_downloaded: None,
+                    playback_position: Some(playback_position),
                 })
             }
         }

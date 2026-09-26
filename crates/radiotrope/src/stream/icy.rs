@@ -2,6 +2,10 @@
 //!
 //! Connects to Icecast/Shoutcast streams, extracts ICY metadata,
 //! and provides a Read+Seek interface for the audio engine.
+//!
+//! MP3/AAC streams are also scanned for embedded ID3 tags (stations that
+//! pipe whole files send one per track). The tags are cut out of the audio
+//! and their song info is used when the station has no ICY title.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -14,7 +18,9 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use crate::config::network::{READ_TIMEOUT_SECS, USER_AGENT};
 use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
 use crate::error::{RadioError, Result};
-use crate::stream::metadata::{extract_icy_title, StreamMetadata};
+use crate::stream::id3::Id3Scanner;
+use crate::stream::metadata::{extract_icy_title, MetadataSink, MetadataSource, StreamMetadata};
+use crate::stream::resolver::StreamResolver;
 
 use super::backoff_sleep;
 
@@ -51,8 +57,13 @@ unsafe impl Sync for IcyReader {}
 impl IcyReader {
     /// Connect to a URL with ICY metadata support and start background reading.
     ///
-    /// Returns the reader and a channel that receives metadata updates.
-    pub fn new(url: &str) -> Result<(Self, Receiver<StreamMetadata>)> {
+    /// Returns the reader and a channel that receives metadata updates. With
+    /// `playback_position` (bytes of this reader's output the decoder has
+    /// read), updates are held until playback reaches them.
+    pub fn new(
+        url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+    ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
@@ -67,10 +78,14 @@ impl IcyReader {
         let headers = parse_icy_headers(&response);
 
         let metaint = headers.metaint;
+        let scan_id3 = scans_for_id3(url, headers.content_type.as_deref());
 
         // Channels for audio data and metadata
         let (audio_tx, audio_rx) = bounded::<Vec<u8>>(AUDIO_CHANNEL_BOUND);
-        let (metadata_tx, metadata_rx) = crossbeam_channel::unbounded::<StreamMetadata>();
+        let (metadata_sink, metadata_rx) = match playback_position {
+            Some(position) => MetadataSink::synced(position),
+            None => MetadataSink::channel(),
+        };
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_clone = stop_flag.clone();
@@ -79,12 +94,13 @@ impl IcyReader {
 
         let url_owned = url.to_string();
         let handle = thread::spawn(move || {
+            let audio_out = AudioOut::new(audio_tx, metadata_sink.clone(), scan_id3);
             read_icy_stream(
                 &url_owned,
                 response,
                 metaint,
-                metadata_tx,
-                audio_tx,
+                metadata_sink,
+                audio_out,
                 stop_clone,
                 bytes_clone,
             );
@@ -238,6 +254,63 @@ impl Drop for IcyReader {
     }
 }
 
+/// True if the stream may carry embedded ID3 tags: MP3 or AAC, or a format
+/// we can't tell. The scanner only cuts well-formed tags, so scanning an
+/// unknown format is safe.
+fn scans_for_id3(url: &str, content_type: Option<&str>) -> bool {
+    matches!(
+        StreamResolver::detect_format_hint(url, content_type).as_deref(),
+        None | Some("mp3") | Some("aac")
+    )
+}
+
+/// Where the reader thread sends audio. For MP3/AAC streams it first cuts
+/// out embedded ID3 tags and offers their song info to the metadata sink.
+struct AudioOut {
+    tx: Sender<Vec<u8>>,
+    sink: MetadataSink,
+    id3: Option<Id3Scanner>,
+    /// Audio bytes sent so far: the stream offset song info is stamped with
+    sent: u64,
+}
+
+impl AudioOut {
+    fn new(tx: Sender<Vec<u8>>, sink: MetadataSink, scan_id3: bool) -> Self {
+        Self {
+            tx,
+            sink,
+            id3: scan_id3.then(Id3Scanner::new),
+            sent: 0,
+        }
+    }
+
+    /// Send audio bytes. Returns false if the receiver is gone.
+    fn send(&mut self, bytes: &[u8]) -> bool {
+        let Some(scanner) = &mut self.id3 else {
+            self.sent += bytes.len() as u64;
+            return self.tx.send(bytes.to_vec()).is_ok();
+        };
+        let mut audio = Vec::with_capacity(bytes.len());
+        let mut songs = Vec::new();
+        scanner.push(bytes, &mut audio, &mut songs);
+        // Tags sit between audio frames; stamping them at the end of this
+        // chunk is within one read (a fraction of a second) of exact
+        let at_byte = self.sent + audio.len() as u64;
+        for song in songs {
+            self.sink.offer_at(song, at_byte);
+        }
+        self.sent += audio.len() as u64;
+        audio.is_empty() || self.tx.send(audio).is_ok()
+    }
+
+    /// The connection was replaced: drop any partial tag from the old one
+    fn reset(&mut self) {
+        if let Some(scanner) = &mut self.id3 {
+            *scanner = Id3Scanner::new();
+        }
+    }
+}
+
 fn parse_icy_headers(response: &reqwest::blocking::Response) -> IcyHeaders {
     let headers = response.headers();
 
@@ -277,8 +350,8 @@ fn read_icy_stream(
     url: &str,
     mut response: reqwest::blocking::Response,
     metaint: usize,
-    metadata_tx: Sender<StreamMetadata>,
-    audio_tx: Sender<Vec<u8>>,
+    metadata_sink: MetadataSink,
+    mut audio_out: AudioOut,
     stop_flag: Arc<AtomicBool>,
     bytes_received: Arc<AtomicU64>,
 ) {
@@ -293,7 +366,12 @@ fn read_icy_stream(
         }
 
         let read_result = if metaint == 0 {
-            read_chunk_no_meta(&mut response, &mut chunk_buffer, &audio_tx, &bytes_received)
+            read_chunk_no_meta(
+                &mut response,
+                &mut chunk_buffer,
+                &mut audio_out,
+                &bytes_received,
+            )
         } else {
             read_chunk_with_meta(
                 &mut response,
@@ -301,8 +379,8 @@ fn read_icy_stream(
                 &mut bytes_until_meta,
                 metaint,
                 &mut last_title,
-                &metadata_tx,
-                &audio_tx,
+                &metadata_sink,
+                &mut audio_out,
                 &bytes_received,
             )
         };
@@ -330,6 +408,7 @@ fn read_icy_stream(
                         &mut consecutive_failures,
                         &stop_flag,
                     ) {
+                        audio_out.reset();
                         break; // Reconnected — resume main read loop
                     }
                 }
@@ -350,14 +429,14 @@ enum ReadResult {
 fn read_chunk_no_meta(
     response: &mut reqwest::blocking::Response,
     chunk_buffer: &mut [u8],
-    audio_tx: &Sender<Vec<u8>>,
+    audio_out: &mut AudioOut,
     bytes_received: &Arc<AtomicU64>,
 ) -> ReadResult {
     match response.read(chunk_buffer) {
         Ok(0) => ReadResult::Eof,
         Ok(n) => {
             bytes_received.fetch_add(n as u64, Ordering::Relaxed);
-            if audio_tx.send(chunk_buffer[..n].to_vec()).is_err() {
+            if !audio_out.send(&chunk_buffer[..n]) {
                 ReadResult::ChannelClosed
             } else {
                 ReadResult::Ok
@@ -375,8 +454,8 @@ fn read_chunk_with_meta(
     bytes_until_meta: &mut usize,
     metaint: usize,
     last_title: &mut String,
-    metadata_tx: &Sender<StreamMetadata>,
-    audio_tx: &Sender<Vec<u8>>,
+    metadata_sink: &MetadataSink,
+    audio_out: &mut AudioOut,
     bytes_received: &Arc<AtomicU64>,
 ) -> ReadResult {
     let to_read = if *bytes_until_meta > 0 {
@@ -390,7 +469,7 @@ fn read_chunk_with_meta(
             Ok(0) => return ReadResult::Eof,
             Ok(n) => {
                 bytes_received.fetch_add(n as u64, Ordering::Relaxed);
-                if audio_tx.send(chunk_buffer[..n].to_vec()).is_err() {
+                if !audio_out.send(&chunk_buffer[..n]) {
                     return ReadResult::ChannelClosed;
                 }
                 *bytes_until_meta -= n;
@@ -413,11 +492,23 @@ fn read_chunk_with_meta(
                 return ReadResult::Error;
             }
 
-            if let Some(title) = extract_icy_title(&meta_buf) {
-                if *title != *last_title {
-                    *last_title = title.clone();
-                    let metadata = StreamMetadata::from_icy_title(&title);
-                    let _ = metadata_tx.send(metadata);
+            match extract_icy_title(&meta_buf) {
+                Some(title) => {
+                    if *title != *last_title {
+                        *last_title = title.clone();
+                        metadata_sink
+                            .offer_at(StreamMetadata::from_icy_title(&title), audio_out.sent);
+                    }
+                }
+                None => {
+                    // Blank or missing StreamTitle: let embedded ID3 song info show
+                    if !last_title.is_empty() {
+                        last_title.clear();
+                        metadata_sink.offer_at(
+                            StreamMetadata::new(None, None, MetadataSource::Icy),
+                            audio_out.sent,
+                        );
+                    }
                 }
             }
         }
@@ -892,5 +983,154 @@ mod tests {
             bitrate: None,
         };
         assert_eq!(h.station_name.as_deref(), Some("Радио Россия 🎵"));
+    }
+
+    // --- Embedded ID3 tags ---
+
+    mod embedded_id3 {
+        use super::*;
+        use crate::stream::id3::test_util::{frame, id3v1_song, id3v2_song};
+        use crate::stream::test_server::{Route, TestServer};
+
+        const METAINT: usize = 256;
+
+        /// Interleave ICY metadata blocks into `audio` every METAINT bytes.
+        /// `titles[i]` is the block after the i-th audio run (None = no change).
+        fn with_icy(audio: &[u8], titles: &[Option<&str>]) -> Vec<u8> {
+            let mut out = Vec::new();
+            for (i, run) in audio.chunks(METAINT).enumerate() {
+                out.extend_from_slice(run);
+                if run.len() < METAINT {
+                    break;
+                }
+                match titles.get(i).copied().flatten() {
+                    Some(title) => {
+                        let mut block = format!("StreamTitle='{title}';").into_bytes();
+                        block.resize(block.len().div_ceil(16) * 16, 0);
+                        out.push((block.len() / 16) as u8);
+                        out.extend(block);
+                    }
+                    None => out.push(0),
+                }
+            }
+            out
+        }
+
+        fn read_audio(reader: &mut IcyReader, len: usize) -> Vec<u8> {
+            let mut buf = vec![0u8; len];
+            reader.read_exact(&mut buf).unwrap();
+            buf
+        }
+
+        fn next_title(rx: &Receiver<StreamMetadata>) -> Option<(String, MetadataSource)> {
+            rx.recv_timeout(Duration::from_secs(3))
+                .ok()
+                .map(|m| (m.title.unwrap_or_default(), m.source))
+        }
+
+        /// Two "tracks" as a file-piping station sends them
+        fn two_tracks() -> (Vec<u8>, Vec<u8>) {
+            let a = frame(600);
+            let b = frame(600);
+            let stream = [
+                id3v2_song("Artist", "Track One"),
+                a.clone(),
+                id3v1_song("Artist", "Track One"),
+                id3v2_song("Artist", "Track Two"),
+                b.clone(),
+            ]
+            .concat();
+            (stream, [a, b].concat())
+        }
+
+        #[test]
+        fn mp3_stream_without_icy_uses_id3() {
+            let (stream, audio) = two_tracks();
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new(stream).header("Content-Type", "audio/mpeg"),
+            );
+            let (mut reader, rx) = IcyReader::new(&server.url("/live"), None).unwrap();
+            assert_eq!(read_audio(&mut reader, audio.len()), audio);
+            assert_eq!(
+                next_title(&rx),
+                Some(("Track One".to_string(), MetadataSource::Id3v2))
+            );
+            assert_eq!(
+                next_title(&rx),
+                Some(("Track Two".to_string(), MetadataSource::Id3v2))
+            );
+        }
+
+        #[test]
+        fn icy_title_wins_over_id3() {
+            let (stream, audio) = two_tracks();
+            let body = with_icy(&stream, &[Some("Icy Artist - Icy Song")]);
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new(body)
+                    .header("Content-Type", "audio/mpeg")
+                    .header("icy-metaint", &METAINT.to_string()),
+            );
+            let (mut reader, rx) = IcyReader::new(&server.url("/live"), None).unwrap();
+            assert_eq!(read_audio(&mut reader, audio.len()), audio);
+            let titles: Vec<_> = rx.try_iter().map(|m| (m.title, m.source)).collect();
+            // Track One's ID3 arrives before the first ICY block, then ICY
+            // takes over and Track Two's ID3 is ignored
+            assert_eq!(
+                titles,
+                vec![
+                    (Some("Track One".to_string()), MetadataSource::Id3v2),
+                    (Some("Icy Song".to_string()), MetadataSource::Icy),
+                ]
+            );
+        }
+
+        #[test]
+        fn blank_icy_title_falls_back_to_id3() {
+            let a = frame(700);
+            let b = frame(700);
+            let stream = [a.clone(), id3v2_song("Artist", "From ID3"), b.clone()].concat();
+            // ICY title first, then the station blanks it
+            let body = with_icy(&stream, &[Some("Icy - Song"), Some("")]);
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new(body)
+                    .header("Content-Type", "audio/mpeg")
+                    .header("icy-metaint", &METAINT.to_string()),
+            );
+            let (mut reader, rx) = IcyReader::new(&server.url("/live"), None).unwrap();
+            read_audio(&mut reader, a.len() + b.len());
+            let titles: Vec<_> = rx.try_iter().map(|m| m.title.unwrap()).collect();
+            assert_eq!(titles, vec!["Song".to_string(), "From ID3".to_string()]);
+        }
+
+        #[test]
+        fn ogg_stream_is_not_scanned() {
+            // Bytes that would be a tag in an MP3 stream pass through untouched
+            let body = [frame(100), id3v2_song("A", "B"), frame(100)].concat();
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new(body.clone()).header("Content-Type", "audio/ogg"),
+            );
+            let (mut reader, rx) = IcyReader::new(&server.url("/live"), None).unwrap();
+            assert_eq!(read_audio(&mut reader, body.len()), body);
+            assert!(rx.try_recv().is_err());
+        }
+
+        #[test]
+        fn scan_decision_by_format() {
+            assert!(scans_for_id3("http://x/live", Some("audio/mpeg")));
+            assert!(scans_for_id3("http://x/live", Some("audio/aacp")));
+            assert!(scans_for_id3("http://x/live", None));
+            assert!(scans_for_id3("http://x/live.mp3", None));
+            assert!(!scans_for_id3("http://x/live", Some("audio/ogg")));
+            assert!(!scans_for_id3("http://x/live", Some("audio/flac")));
+            assert!(!scans_for_id3("http://x/live.opus", None));
+        }
     }
 }
