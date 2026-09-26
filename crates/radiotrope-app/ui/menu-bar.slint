@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { VizStyle } from "visualization.slint";
 
 component MenuItem inherits Rectangle {
     in property <string> label;
@@ -304,6 +305,30 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         view-popup.close();
                         root.open-accent-color();
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Wide Visualizer";
+                    checked: VizStyle.wide;
+                    clicked => {
+                        view-popup.close();
+                        VizStyle.wide = !VizStyle.wide;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Logo Colors in Visualizer";
+                    checked: VizStyle.palette == "logo";
+                    clicked => {
+                        view-popup.close();
+                        VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
                     }
                 }
             }

@@ -217,7 +217,7 @@ export component DialogShell inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: 110px;
-                background: @linear-gradient(180deg, Theme.accent-glow 0%, transparent 100%);
+                background: @linear-gradient(180deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 100%);
             }
 
             layout := VerticalLayout {
