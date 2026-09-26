@@ -125,39 +125,45 @@ export component RecordingSettingsDialog inherits Rectangle {
         auto-focus: false;
         close-requested => { root.close(); }
 
-        Field {
-            label: "Format";
-            Picker {
-                choices: [
-                    { id: "mp3", label: "MP3" },
-                    { id: "opus", label: "Opus" },
-                    { id: "wav", label: "WAV" },
-                ];
-                selected: root.format;
-                changed(id) => {
-                    root.format = id;
-                    root.format-changed(id);
+        // Format and bitrate share a row to keep the dialog short
+        HorizontalLayout {
+            spacing: 20px;
+            alignment: start;
+
+            Field {
+                label: "Format";
+                Picker {
+                    choices: [
+                        { id: "mp3", label: "MP3" },
+                        { id: "opus", label: "Opus" },
+                        { id: "wav", label: "WAV" },
+                    ];
+                    selected: root.format;
+                    changed(id) => {
+                        root.format = id;
+                        root.format-changed(id);
+                    }
                 }
             }
-        }
 
-        Field {
-            label: "Bitrate";
-            Picker {
-                choices: [
-                    { id: "0", label: "Auto" },
-                    { id: "96", label: "96" },
-                    { id: "128", label: "128" },
-                    { id: "192", label: "192" },
-                    { id: "256", label: "256" },
-                ];
-                // WAV is uncompressed, so it has no bitrate to pick
-                enabled: root.format != "wav";
-                option-width: 42px;
-                selected: root.bitrate;
-                changed(id) => {
-                    root.bitrate = id.to-float();
-                    root.bitrate-changed(root.bitrate);
+            Field {
+                label: "Bitrate";
+                Picker {
+                    choices: [
+                        { id: "0", label: "Auto" },
+                        { id: "96", label: "96" },
+                        { id: "128", label: "128" },
+                        { id: "192", label: "192" },
+                        { id: "256", label: "256" },
+                    ];
+                    // WAV is uncompressed, so it has no bitrate to pick
+                    enabled: root.format != "wav";
+                    option-width: 42px;
+                    selected: root.bitrate;
+                    changed(id) => {
+                        root.bitrate = id.to-float();
+                        root.bitrate-changed(root.bitrate);
+                    }
                 }
             }
         }
