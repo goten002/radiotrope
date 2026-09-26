@@ -8,6 +8,40 @@ export struct FavoriteStation {
     url: string,
     logo-url: string,
     country: string,
+    // Stats: total listening time ("3 h 25 m"), when last played
+    // ("Yesterday"), both empty when never played
+    listen-time: string,
+    last-played: string,
+    play-count: int,
+}
+
+// Item of a row's menu
+component RowMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: 28px;
+    min-width: 170px;
+    border-radius: 4px;
+    background: touch.has-hover ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        Text {
+            text: root.label;
+            color: root.danger ? Theme.danger
+                : touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            font-size: 13px;
+            vertical-alignment: center;
+        }
+    }
 }
 
 component FavoriteRow inherits Rectangle {
@@ -21,8 +55,17 @@ component FavoriteRow inherits Rectangle {
     in property <bool> is-drag-source;
     in property <bool> dragging;
     in property <int> row-index;
+    in property <string> listen-time;
+    in property <string> last-played;
+    in property <int> play-count;
+    // Show the stats on the right (View > Show Station Stats)
+    in property <bool> show-stats: true;
+    // Keep the menu button visible, not only on hover (touch screens)
+    in property <bool> always-show-menu: false;
     callback clicked();
     callback edit-clicked();
+    callback move-requested(/* to-top */ bool);
+    callback remove-requested();
     // Pointer y in window coordinates, and where in the row it grabbed
     callback grip-moved(/* pointer-y */ length, /* grab-y */ length);
     callback grip-released();
@@ -32,6 +75,20 @@ component FavoriteRow inherits Rectangle {
 
     // Set once a press turns into a drag, so releasing doesn't also play
     property <bool> dragged: false;
+    // Where the menu opens (row coordinates) and whether Remove was
+    // clicked once already
+    property <length> menu-x;
+    property <length> menu-y;
+    property <bool> confirm-remove: false;
+    property <bool> hovered: touch.has-hover || handle.has-hover || menu-button.hovered;
+    property <length> menu-width: 186px;
+
+    public function open-menu(x: length, y: length) {
+        root.confirm-remove = false;
+        root.menu-x = clamp(x, 0, root.width - root.menu-width);
+        root.menu-y = y;
+        menu.show();
+    }
 
     height: 56px;
     background: root.is-drag-source ? Theme.elevated
@@ -61,6 +118,11 @@ component FavoriteRow inherits Rectangle {
     touch := TouchArea {
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
+        pointer-event(event) => {
+            if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                root.open-menu(self.mouse-x, self.mouse-y);
+            }
+        }
     }
 
     HorizontalLayout {
@@ -176,15 +238,104 @@ component FavoriteRow inherits Rectangle {
             }
         }
 
-        // Edit (pencil) button
+        // Stats: listening time over when it was last played
+        if root.show-stats: VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            horizontal-stretch: 0;
+
+            if root.listen-time != "": Text {
+                text: root.listen-time;
+                color: root.is-current ? Theme.accent-text : Theme.text-primary;
+                font-size: 12px;
+                font-weight: 600;
+                horizontal-alignment: right;
+            }
+            Text {
+                text: root.last-played != "" ? root.last-played : "Not played yet";
+                color: Theme.text-tertiary;
+                font-size: 11px;
+                horizontal-alignment: right;
+            }
+        }
+
+        // Menu button: shows on hover (always on touch screens)
         VerticalLayout {
             alignment: center;
 
-            IconButton {
-                icon: @image-url("icons/pencil.svg");
-                icon-size: 14px;
-                icon-color: Theme.text-tertiary;
-                clicked => { root.edit-clicked(); }
+            menu-button := IconButton {
+                icon: @image-url("icons/ellipsis.svg");
+                icon-size: 16px;
+                icon-color: Theme.text-secondary;
+                opacity: root.always-show-menu || root.hovered || root.dragging ? 1 : 0;
+                animate opacity { duration: Theme.fast; }
+                clicked => {
+                    root.open-menu(root.width - root.menu-width - 8px, root.height - 6px);
+                }
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: root.menu-x;
+        y: root.menu-y;
+        width: root.menu-width;
+        close-policy: close-on-click-outside;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: Theme.shadow-soft;
+            drop-shadow-offset-y: 2px;
+
+            VerticalLayout {
+                padding: 4px;
+
+                RowMenuItem {
+                    label: "Edit...";
+                    clicked => {
+                        menu.close();
+                        root.edit-clicked();
+                    }
+                }
+                RowMenuItem {
+                    label: "Move to Top";
+                    clicked => {
+                        menu.close();
+                        root.move-requested(true);
+                    }
+                }
+                RowMenuItem {
+                    label: "Move to Bottom";
+                    clicked => {
+                        menu.close();
+                        root.move-requested(false);
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                // Asks once more before removing
+                RowMenuItem {
+                    label: root.confirm-remove ? "Click Again to Remove" : "Remove from Favorites";
+                    danger: true;
+                    clicked => {
+                        if root.confirm-remove {
+                            menu.close();
+                            root.remove-requested();
+                        } else {
+                            root.confirm-remove = true;
+                        }
+                    }
+                }
             }
         }
     }
@@ -196,6 +347,12 @@ component FavoriteRow inherits Rectangle {
         width: 86px;
         mouse-cursor: root.dragging ? grabbing : grab;
         pointer-event(event) => {
+            if event.button == PointerEventButton.right {
+                if event.kind == PointerEventKind.down {
+                    root.open-menu(self.x + self.mouse-x, self.mouse-y);
+                }
+                return;
+            }
             if event.kind == PointerEventKind.down {
                 root.dragged = false;
                 root.handle-held(true);
@@ -238,9 +395,12 @@ export component Favorites inherits Rectangle {
     // where the wheel and scrollbar scroll and a list that grabs drags
     // would eat quick reorder drags
     in property <bool> touch-scroll: false;
+    in property <bool> show-stats: true;
 
     callback favorite-clicked(FavoriteStation);
     callback favorite-edit-requested(FavoriteStation);
+    callback favorite-move-requested(FavoriteStation, /* to-top */ bool);
+    callback favorite-remove-requested(FavoriteStation);
     callback favorites-reordered(/* from */ int, /* to */ int);
 
     // Drag state
@@ -381,8 +541,19 @@ export component Favorites inherits Rectangle {
                         clicked => {
                             root.favorite-clicked(station);
                         }
+                        listen-time: station.listen-time;
+                        last-played: station.last-played;
+                        play-count: station.play-count;
+                        show-stats: root.show-stats;
+                        always-show-menu: root.touch-scroll;
                         edit-clicked => {
                             root.favorite-edit-requested(station);
+                        }
+                        move-requested(to-top) => {
+                            root.favorite-move-requested(station, to-top);
+                        }
+                        remove-requested => {
+                            root.favorite-remove-requested(station);
                         }
                         grip-moved(pointer-y, grab-y) => {
                             if root.drag-from-index < 0 {

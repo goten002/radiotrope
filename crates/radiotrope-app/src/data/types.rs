@@ -286,8 +286,17 @@ impl Favorite {
 
     /// Record a play session
     pub fn record_play(&mut self, duration_secs: u64) {
-        self.play_count += 1;
-        self.total_listen_time_secs += duration_secs;
+        self.add_listening(duration_secs, true);
+    }
+
+    /// Add listening time, counting a new play when `new_play` is set, and
+    /// mark the station as played now. Long sessions are credited in steps,
+    /// so only their first step counts as a play.
+    pub fn add_listening(&mut self, secs: u64, new_play: bool) {
+        if new_play {
+            self.play_count += 1;
+        }
+        self.total_listen_time_secs += secs;
         self.last_played = Some(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
