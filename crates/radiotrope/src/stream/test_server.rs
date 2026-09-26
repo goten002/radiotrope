@@ -20,6 +20,11 @@ impl Route {
             body: body.into(),
         }
     }
+
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
 }
 
 /// Serves fixed routes on 127.0.0.1 until the test process exits.
