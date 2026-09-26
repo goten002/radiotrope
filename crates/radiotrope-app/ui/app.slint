@@ -42,7 +42,7 @@ export component App inherits Window {
     callback reorder-favorites(/* from */ int, /* to */ int);
     callback move-favorite(FavoriteStation, /* to-top */ bool);
     // Listening stats on favorites rows (View menu)
-    in-out property <bool> show-station-stats: false;
+    in-out property <bool> show-station-stats: true;
     callback load-top-stations();
     callback load-countries();
     callback open-url(string);
