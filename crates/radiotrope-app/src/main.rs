@@ -1818,7 +1818,7 @@ fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
     let text: slint::SharedString = folder.display().to_string().into();
     ui.set_recording_folder(text.clone());
     ui.set_recording_folder_edit(text);
-    ui.set_recording_folder_is_default(custom.is_none());
+    ui.set_recording_default_folder(recordings::default_dir().display().to_string().into());
     ui.set_recording_folder_error(Default::default());
 }
 
