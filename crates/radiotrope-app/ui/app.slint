@@ -168,11 +168,14 @@ export component App inherits Window {
                     }
                     browser-dialog.show-dialog = true;
                 }
+                // Reopen the country picked earlier in this session; the
+                // browser's "Countries" button goes back to the list
                 open-country-picker => {
-                    picker-dialog.loading = true;
-                    picker-dialog.filter-text = "";
-                    picker-dialog.show-dialog = true;
-                    root.load-countries();
+                    if browser-dialog.country-name != "" {
+                        root.open-country(browser-dialog.country-name, browser-dialog.country-code, browser-dialog.country-flag);
+                    } else {
+                        root.show-country-list();
+                    }
                 }
                 open-about => {
                     about-dialog.show-dialog = true;
@@ -257,6 +260,32 @@ export component App inherits Window {
         band-changed(band, gain) => { root.eq-band-changed(band, gain); }
     }
 
+    // Station browser listing one country's stations. Stations already
+    // listed for that country are kept, so reopening it is instant.
+    function open-country(name: string, code: string, flag: image) {
+        if browser-dialog.search-mode != "country" || browser-dialog.country-name != name || browser-dialog.search-results.length == 0 {
+            browser-dialog.search-mode = "country";
+            browser-dialog.reset-query();
+            browser-dialog.country-name = name;
+            browser-dialog.country-code = code;
+            browser-dialog.country-flag = flag;
+            browser-dialog.search-results = [];
+            browser-dialog.browse-logos = [];
+            browser-dialog.search-error = "";
+            browser-dialog.has-more = false;
+            browser-dialog.search-loading = true;
+            root.browse-country(name, code, "");
+        }
+        browser-dialog.show-dialog = true;
+    }
+
+    function show-country-list() {
+        picker-dialog.loading = true;
+        picker-dialog.filter-text = "";
+        picker-dialog.show-dialog = true;
+        root.load-countries();
+    }
+
     browser-dialog := StationBrowserDialog {
         playing-url: root.station-url;
         is-playing: root.is-playing;
@@ -265,6 +294,10 @@ export component App inherits Window {
         play-status: root.status-text;
         search-stations(query) => { root.search-stations(query); }
         search-in-country(name, code, query) => { root.browse-country(name, code, query); }
+        change-country() => {
+            browser-dialog.show-dialog = false;
+            root.show-country-list();
+        }
         load-more() => { root.load-more-stations(); }
         station-selected(station) => { root.play-station(station); }
     }
@@ -285,18 +318,7 @@ export component App inherits Window {
 
     picker-dialog := CountryPickerDialog {
         country-selected(country) => {
-            browser-dialog.search-mode = "country";
-            browser-dialog.reset-query();
-            browser-dialog.country-name = country.name;
-            browser-dialog.country-code = country.code;
-            browser-dialog.country-flag = country.flag;
-            browser-dialog.search-results = [];
-            browser-dialog.browse-logos = [];
-            browser-dialog.search-error = "";
-            browser-dialog.has-more = false;
-            browser-dialog.search-loading = true;
-            browser-dialog.show-dialog = true;
-            root.browse-country(country.name, country.code, "");
+            root.open-country(country.name, country.code, country.flag);
         }
         load-countries() => { root.load-countries(); }
         filter-countries(text) => { root.filter-countries(text); }
