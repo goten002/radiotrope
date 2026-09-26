@@ -25,6 +25,7 @@ use super::analyzer::AnalyzingSource;
 use super::decoder::{start_probe, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
+use super::recording::{Recorder, RecordingTap, TapPoint};
 use super::stats::{
     new_shared_stats, DecoderStats, EventBus, SharedStats, StreamEvent, StreamStats,
 };
@@ -52,6 +53,7 @@ pub struct AudioEngine {
     shared_stats: SharedStats,
     event_bus: Arc<EventBus>,
     eq_params: SharedEqParams,
+    recorder: Recorder,
 }
 
 impl AudioEngine {
@@ -72,6 +74,8 @@ impl AudioEngine {
         let event_bus_thread = event_bus.clone();
         let eq_params = EqParams::new_shared();
         let eq_params_thread = eq_params.clone();
+        let recorder = Recorder::new();
+        let recorder_thread = recorder.clone();
 
         let thread = thread::Builder::new()
             .name("audio-engine".to_string())
@@ -84,6 +88,7 @@ impl AudioEngine {
                     shared_stats_thread,
                     event_bus_thread,
                     eq_params_thread,
+                    recorder_thread,
                 );
             })
             .map_err(|e| RadioError::Audio(format!("Failed to spawn audio thread: {}", e)))?;
@@ -103,6 +108,7 @@ impl AudioEngine {
             shared_stats,
             event_bus,
             eq_params,
+            recorder,
         })
     }
 
@@ -190,6 +196,14 @@ impl AudioEngine {
         self.eq_params.clone()
     }
 
+    /// Get a handle to the station recorder.
+    ///
+    /// Recordings take their audio from the playing station, before or after
+    /// the equalizer (see [`super::recording::TapPoint`]).
+    pub fn recorder(&self) -> Recorder {
+        self.recorder.clone()
+    }
+
     /// Non-blocking poll for the next event
     pub fn try_recv_event(&self) -> Option<AudioEvent> {
         self.event_rx.try_recv().ok()
@@ -228,6 +242,7 @@ impl AudioEngine {
     }
 
     /// The engine's main loop, running on the dedicated thread
+    #[allow(clippy::too_many_arguments)]
     fn run(
         cmd_rx: Receiver<AudioCommand>,
         event_tx: Sender<AudioEvent>,
@@ -236,6 +251,7 @@ impl AudioEngine {
         shared_stats: SharedStats,
         event_bus: Arc<EventBus>,
         eq_params: SharedEqParams,
+        recorder: Recorder,
     ) {
         // Create audio output on this thread (cpal streams may be !Send)
         let mut stream = match DeviceSinkBuilder::open_default_sink() {
@@ -438,7 +454,17 @@ impl AudioEngine {
                                         let error_slot = source.error_slot();
                                         let dec_stats = source.decoder_stats();
                                         let active_flag = Arc::new(AtomicBool::new(true));
+                                        let source = RecordingTap::new(
+                                            source,
+                                            recorder.clone(),
+                                            TapPoint::BeforeEq,
+                                        );
                                         let eq_source = EqSource::new(source, eq_params.clone());
+                                        let eq_source = RecordingTap::new(
+                                            eq_source,
+                                            recorder.clone(),
+                                            TapPoint::AfterEq,
+                                        );
                                         let analyzing = AnalyzingSource::new(
                                             eq_source,
                                             analysis.clone(),
