@@ -2,7 +2,7 @@
 name = "radiotrope-app"
 version = "0.1.0-dev"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.92"
 description = "Desktop internet radio player with Slint UI"
 license = "MIT"
 authors = ["George Alexiou <goten002@gmail.com>"]
@@ -36,4 +36,4 @@ desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-so
 embedded = ["slint/backend-linuxkms", "slint/renderer-software"]
 
 [build-dependencies]
-slint-build = "1.15"
+slint-build = "1.18"
