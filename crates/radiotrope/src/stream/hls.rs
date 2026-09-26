@@ -54,10 +54,19 @@ unsafe impl Sync for HlsReader {}
 impl HlsReader {
     /// Create a new HLS reader for a media playlist URL.
     ///
-    /// Returns the reader and a channel that receives song info updates.
-    pub fn new(media_url: &str, base_url: &str) -> Result<(Self, Receiver<StreamMetadata>)> {
+    /// Returns the reader and a channel that receives song info updates. With
+    /// `playback_position` (bytes of this reader's output the decoder has
+    /// read), updates are held until playback reaches the segment they came with.
+    pub fn new(
+        media_url: &str,
+        base_url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+    ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let (sender, receiver) = bounded::<Vec<u8>>(SEGMENT_BUFFER_SIZE);
-        let (metadata_sink, metadata_rx) = MetadataSink::channel();
+        let (metadata_sink, metadata_rx) = match playback_position {
+            Some(position) => MetadataSink::synced(position),
+            None => MetadataSink::channel(),
+        };
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_clone = stop_flag.clone();
         let bytes_received = Arc::new(AtomicU64::new(0));
@@ -470,6 +479,8 @@ fn segment_downloader(
     let mut init_segment: Option<Vec<u8>> = None;
     let mut init_segment_url: Option<String> = None;
     let mut consecutive_failures: u32 = 0;
+    // Audio bytes sent to the reader so far (stream offset for song info)
+    let mut bytes_sent: u64 = 0;
 
     loop {
         if stop_flag.load(Ordering::SeqCst) {
@@ -616,6 +627,9 @@ fn segment_downloader(
                             return Ok(());
                         }
 
+                        // Song info applies from the start of this segment
+                        let segment_start = bytes_sent;
+                        bytes_sent += audio_data.len() as u64;
                         if sender.send(audio_data).is_err() {
                             return Ok(());
                         }
@@ -627,10 +641,10 @@ fn segment_downloader(
                             .get(segment.uri.trim())
                             .and_then(|t| parse_extinf_title(t))
                         {
-                            metadata_sink.offer(meta);
+                            metadata_sink.offer_at(meta, segment_start);
                         }
                         for meta in segment_meta {
-                            metadata_sink.offer(meta);
+                            metadata_sink.offer_at(meta, segment_start);
                         }
                         if !sent_first {
                             sent_first = true;
@@ -1493,7 +1507,7 @@ mod tests {
             );
 
             let (_reader, rx) =
-                HlsReader::new(&server.url("/live.m3u8"), &server.base_url).unwrap();
+                HlsReader::new(&server.url("/live.m3u8"), &server.base_url, None).unwrap();
             let got: Vec<_> = (0..2)
                 .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
                 .collect();
@@ -1501,6 +1515,45 @@ mod tests {
             assert_eq!(got[0].source, MetadataSource::HlsPlaylist);
             assert_eq!(got[1].title.as_deref(), Some("From ID3"));
             assert_eq!(got[1].source, MetadataSource::Id3v2);
+        }
+
+        #[test]
+        fn hls_song_info_waits_for_playback() {
+            use crate::stream::test_server::{Route, TestServer};
+            use std::sync::atomic::AtomicU64;
+
+            let server = TestServer::start();
+            let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:2\n\
+                #EXTINF:2.0,\nseg1.ts\n#EXTINF:2.0,\nseg2.ts\n#EXT-X-ENDLIST\n";
+            let seg1_audio = frame(300);
+            server.route("/live.m3u8", Route::new(playlist));
+            server.route(
+                "/seg1.ts",
+                Route::new(ts_segment(&seg1_audio, &[id3v2_song("A", "First")])),
+            );
+            server.route(
+                "/seg2.ts",
+                Route::new(ts_segment(&frame(300), &[id3v2_song("B", "Second")])),
+            );
+
+            let position = Arc::new(AtomicU64::new(0));
+            let (_reader, rx) = HlsReader::new(
+                &server.url("/live.m3u8"),
+                &server.base_url,
+                Some(position.clone()),
+            )
+            .unwrap();
+            let title = |ms| {
+                rx.recv_timeout(Duration::from_millis(ms))
+                    .ok()
+                    .and_then(|m| m.title)
+            };
+            // Both segments are downloaded, but only the first is playing
+            assert_eq!(title(2000), Some("First".to_string()));
+            assert_eq!(title(500), None);
+            // Playback reaches the second segment
+            position.store(seg1_audio.len() as u64, Ordering::Relaxed);
+            assert_eq!(title(2000), Some("Second".to_string()));
         }
     }
 }

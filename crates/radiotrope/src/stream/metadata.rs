@@ -2,11 +2,18 @@
 //!
 //! Pure data types and parsing functions for ICY (Icecast/Shoutcast) metadata,
 //! plus [`MetadataArbiter`], which decides which source's song info is shown
-//! when a stream carries more than one.
+//! when a stream carries more than one, and [`MetadataSink`], which can hold
+//! song changes back until playback reaches them.
 
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+
+use crate::config::metadata::{MAX_SYNC_DELAY_SECS, SYNC_POLL_MS};
 
 /// Source of stream metadata
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -195,35 +202,137 @@ impl MetadataArbiter {
 /// Every source in a stream (ICY, embedded ID3, HLS playlist) offers its
 /// updates here; the shared [`MetadataArbiter`] decides what reaches the
 /// receiver. Cheap to clone.
+///
+/// Readers download ahead of what is heard (the stream buffer, and up to
+/// several HLS segments), so a sink made with [`synced`](Self::synced) holds
+/// each update until the decoder has read up to the byte offset where it
+/// appeared in the stream.
 #[derive(Debug, Clone)]
 pub struct MetadataSink {
-    tx: Sender<StreamMetadata>,
-    arbiter: Arc<Mutex<MetadataArbiter>>,
+    inner: SinkInner,
+}
+
+#[derive(Debug, Clone)]
+enum SinkInner {
+    /// Updates are sent as soon as they are offered
+    Immediate {
+        tx: Sender<StreamMetadata>,
+        arbiter: Arc<Mutex<MetadataArbiter>>,
+    },
+    /// Updates go to a scheduler thread that releases them in step with playback
+    Synced { tx: Sender<TimedMetadata> },
+}
+
+#[derive(Debug)]
+struct TimedMetadata {
+    at_byte: u64,
+    meta: StreamMetadata,
+    offered: Instant,
 }
 
 impl MetadataSink {
-    /// Create a sink and the receiver that gets the chosen updates.
+    /// Create a sink whose updates are sent as soon as they are offered.
     pub fn channel() -> (Self, Receiver<StreamMetadata>) {
         let (tx, rx) = crossbeam_channel::unbounded();
-        (
-            Self {
-                tx,
-                arbiter: Arc::new(Mutex::new(MetadataArbiter::new())),
-            },
-            rx,
-        )
+        let inner = SinkInner::Immediate {
+            tx,
+            arbiter: Arc::new(Mutex::new(MetadataArbiter::new())),
+        };
+        (Self { inner }, rx)
     }
 
-    /// Offer an update. Returns true if it was sent to the receiver.
+    /// Create a sink that holds each update until `playback_position` (bytes
+    /// of the stream the decoder has read) reaches the update's offset, or
+    /// until [`MAX_SYNC_DELAY_SECS`] have passed.
+    pub fn synced(playback_position: Arc<AtomicU64>) -> (Self, Receiver<StreamMetadata>) {
+        let (in_tx, in_rx) = crossbeam_channel::unbounded();
+        let (out_tx, out_rx) = crossbeam_channel::unbounded();
+        let spawned = thread::Builder::new()
+            .name("stream-metadata".to_string())
+            .spawn(move || run_scheduler(in_rx, out_tx, playback_position));
+        match spawned {
+            Ok(_) => (
+                Self {
+                    inner: SinkInner::Synced { tx: in_tx },
+                },
+                out_rx,
+            ),
+            // No thread: fall back to unsynced updates rather than none
+            Err(_) => Self::channel(),
+        }
+    }
+
+    /// Offer an update that applies from the start of the stream (or now).
     pub fn offer(&self, meta: StreamMetadata) -> bool {
-        let chosen = self
-            .arbiter
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .offer(meta);
-        match chosen {
-            Some(meta) => self.tx.send(meta).is_ok(),
-            None => false,
+        self.offer_at(meta, 0)
+    }
+
+    /// Offer an update that applies from byte `at_byte` of the reader's
+    /// output. Returns false if it was rejected or the receiver is gone
+    /// (always true for a synced sink whose scheduler is running).
+    pub fn offer_at(&self, meta: StreamMetadata, at_byte: u64) -> bool {
+        match &self.inner {
+            SinkInner::Immediate { tx, arbiter } => {
+                let chosen = arbiter
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .offer(meta);
+                match chosen {
+                    Some(meta) => tx.send(meta).is_ok(),
+                    None => false,
+                }
+            }
+            SinkInner::Synced { tx } => tx
+                .send(TimedMetadata {
+                    at_byte,
+                    meta,
+                    offered: Instant::now(),
+                })
+                .is_ok(),
+        }
+    }
+}
+
+/// Holds offered updates until playback reaches them, then applies the
+/// arbiter. Runs until the receiver is dropped, or the stream's readers
+/// have stopped and every held update has been released.
+fn run_scheduler(
+    rx: Receiver<TimedMetadata>,
+    out: Sender<StreamMetadata>,
+    playback_position: Arc<AtomicU64>,
+) {
+    let poll = Duration::from_millis(SYNC_POLL_MS);
+    let max_delay = Duration::from_secs(MAX_SYNC_DELAY_SECS);
+    let mut arbiter = MetadataArbiter::new();
+    let mut pending: VecDeque<TimedMetadata> = VecDeque::new();
+    let mut producers_open = true;
+
+    loop {
+        if producers_open {
+            match rx.recv_timeout(poll) {
+                Ok(timed) => pending.push_back(timed),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => producers_open = false,
+            }
+        } else if pending.is_empty() {
+            return;
+        } else {
+            thread::sleep(poll);
+        }
+
+        let played = playback_position.load(Ordering::Relaxed);
+        while let Some(front) = pending.front() {
+            if front.at_byte > played && front.offered.elapsed() < max_delay {
+                break;
+            }
+            let Some(timed) = pending.pop_front() else {
+                break;
+            };
+            if let Some(meta) = arbiter.offer(timed.meta) {
+                if out.send(meta).is_err() {
+                    return;
+                }
+            }
         }
     }
 }
@@ -735,5 +844,54 @@ mod tests {
         let (sink, rx) = MetadataSink::channel();
         drop(rx);
         assert!(!sink.offer(meta(MetadataSource::Icy, "A", "icy")));
+    }
+
+    // --- Synced sink ---
+
+    fn recv(rx: &Receiver<StreamMetadata>, ms: u64) -> Option<String> {
+        rx.recv_timeout(Duration::from_millis(ms))
+            .ok()
+            .and_then(|m| m.title)
+    }
+
+    #[test]
+    fn synced_sink_waits_for_playback() {
+        let position = Arc::new(AtomicU64::new(0));
+        let (sink, rx) = MetadataSink::synced(position.clone());
+        assert!(sink.offer_at(meta(MetadataSource::Id3v2, "A", "first"), 0));
+        assert!(sink.offer_at(meta(MetadataSource::Id3v2, "B", "second"), 10_000));
+        assert_eq!(recv(&rx, 1000), Some("first".into()));
+        // Not played yet
+        assert_eq!(recv(&rx, 300), None);
+        position.store(9_999, Ordering::Relaxed);
+        assert_eq!(recv(&rx, 300), None);
+        position.store(10_000, Ordering::Relaxed);
+        assert_eq!(recv(&rx, 1000), Some("second".into()));
+    }
+
+    #[test]
+    fn synced_sink_applies_priority_in_play_order() {
+        let position = Arc::new(AtomicU64::new(0));
+        let (sink, rx) = MetadataSink::synced(position.clone());
+        // ICY title plays first, a later ID3 tag must not replace it
+        sink.offer_at(meta(MetadataSource::Icy, "A", "icy"), 100);
+        sink.offer_at(meta(MetadataSource::Id3v2, "B", "id3"), 200);
+        position.store(1_000, Ordering::Relaxed);
+        assert_eq!(recv(&rx, 1000), Some("icy".into()));
+        assert_eq!(recv(&rx, 300), None);
+    }
+
+    #[test]
+    fn synced_sink_releases_pending_after_producers_stop() {
+        let position = Arc::new(AtomicU64::new(0));
+        let (sink, rx) = MetadataSink::synced(position.clone());
+        sink.offer_at(meta(MetadataSource::Id3v2, "A", "later"), 5_000);
+        // The reader finished downloading (e.g. HLS VOD) but playback continues
+        drop(sink);
+        assert_eq!(recv(&rx, 300), None);
+        position.store(5_000, Ordering::Relaxed);
+        assert_eq!(recv(&rx, 1000), Some("later".into()));
+        // Scheduler exits once nothing is pending
+        assert!(rx.recv_timeout(Duration::from_millis(1000)).is_err());
     }
 }

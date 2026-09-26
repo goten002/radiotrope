@@ -14,7 +14,7 @@ use rodio::{DeviceSinkBuilder, Player};
 
 use crate::config::timeouts::{BUFFERING_STALL_THRESHOLD_SECS, PROBE_TIMEOUT_SECS};
 use crate::error::RadioError;
-use crate::stream::buffer::{SharedBufferStatus, StreamBuffer};
+use crate::stream::buffer::{PlaybackPositionReader, SharedBufferStatus, StreamBuffer};
 
 /// Quadratic volume curve for natural perception (human hearing is logarithmic)
 fn volume_curve(linear: f32) -> f32 {
@@ -124,10 +124,14 @@ impl AudioEngine {
             bitrate,
             bytes_received: None,
             segments_downloaded: None,
+            playback_position: None,
         });
     }
 
-    /// Start playing with bytes_received and segments_downloaded tracking
+    /// Start playing with bytes_received and segments_downloaded tracking.
+    ///
+    /// `playback_position` is updated with how many bytes of `reader` the
+    /// decoder has read (see `ResolvedStream::playback_position`).
     pub fn play_with_stats(
         &self,
         reader: Box<dyn super::types::ReadSeek>,
@@ -135,6 +139,7 @@ impl AudioEngine {
         bitrate: Option<u32>,
         bytes_received: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
         segments_downloaded: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+        playback_position: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     ) {
         self.send(AudioCommand::Play {
             reader,
@@ -142,6 +147,7 @@ impl AudioEngine {
             bitrate,
             bytes_received,
             segments_downloaded,
+            playback_position,
         });
     }
 
@@ -280,6 +286,7 @@ impl AudioEngine {
                         bitrate,
                         bytes_received,
                         segments_downloaded,
+                        playback_position,
                     } => {
                         // Cancel any pending probe
                         if let Some(probe) = pending_probe.take() {
@@ -308,6 +315,12 @@ impl AudioEngine {
                         let probing_flag = Arc::new(AtomicBool::new(true));
                         let (buf_reader, prod_handle, stop_flag) =
                             StreamBuffer::new(reader, buf_status.clone(), probing_flag.clone());
+
+                        // Report how far the decoder has read, for song info timing
+                        let buf_reader = PlaybackPositionReader::new(
+                            buf_reader,
+                            playback_position.unwrap_or_default(),
+                        );
 
                         // Start async probe — returns immediately
                         match start_probe(buf_reader, format_hint) {
@@ -2485,6 +2498,7 @@ mod tests {
             None,
             Some(bytes_counter.clone()),
             None,
+            None,
         );
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
@@ -2527,6 +2541,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
@@ -2541,6 +2556,69 @@ mod tests {
             "bytes_received should stay 0 with no counter"
         );
         drop(s);
+
+        engine.shutdown();
+    }
+
+    #[test]
+    fn playback_position_follows_decoding_not_download() {
+        // Same chain the engine builds, without an audio device: the reported
+        // position must track what has been decoded, not what is buffered.
+        let samples: Vec<i16> = (0..44_100 * 10)
+            .map(|i| ((i as f32 * 0.1).sin() * 10000.0) as i16)
+            .collect();
+        let wav = make_wav(44_100, 1, &samples);
+        let len = wav.len() as u64;
+        let status = Arc::new(Mutex::new(crate::stream::buffer::BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(true));
+        let (buf_reader, _handle, stop) =
+            StreamBuffer::new(Box::new(Cursor::new(wav)), status, probing.clone());
+        let position = Arc::new(AtomicU64::new(0));
+        let reader = PlaybackPositionReader::new(buf_reader, position.clone());
+        let probed = start_probe(reader, Some("wav".to_string()))
+            .unwrap()
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        probing.store(false, Ordering::SeqCst);
+        let mut source = SymphoniaSource::from_probed(probed).unwrap();
+
+        // Decode one second of the ten
+        for _ in 0..44_100 {
+            source.next().unwrap();
+        }
+        let pos = position.load(Ordering::Relaxed);
+        let one_second = len / 10;
+        assert!(
+            pos >= one_second && pos < one_second + 16 * 1024,
+            "decoded 1 s ({one_second} bytes) but position is {pos} of {len}"
+        );
+        stop.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn play_with_stats_reports_playback_position() {
+        let Some(engine) = try_engine() else { return };
+        let position = Arc::new(AtomicU64::new(0));
+        let wav = make_one_second_wav();
+        let len = wav.len() as u64;
+
+        engine.play_with_stats(
+            Box::new(Cursor::new(wav)),
+            None,
+            None,
+            None,
+            None,
+            Some(position.clone()),
+        );
+        match wait_for_event(&engine, 2000) {
+            Some(AudioEvent::Playing(_)) => {}
+            other => panic!("Expected Playing, got {:?}", other),
+        }
+
+        thread::sleep(Duration::from_millis(300));
+        let pos = position.load(Ordering::Relaxed);
+        assert!(pos > 0 && pos <= len, "position {pos} of {len}");
 
         engine.shutdown();
     }
@@ -2917,6 +2995,7 @@ mod tests {
             None,
             None,
             Some(bytes_counter),
+            None,
             None,
         );
         match wait_for_event(&engine, 2000) {

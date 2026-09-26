@@ -322,6 +322,7 @@ impl AppController {
                         resolved.info.bitrate,
                         resolved.bytes_received,
                         resolved.segments_downloaded,
+                        resolved.playback_position,
                     );
                 }
             }
