@@ -105,6 +105,9 @@ pub struct RecordingOptions {
     /// File to create. It must not exist yet.
     pub path: PathBuf,
     pub format: RecordingFormat,
+    /// Bitrate for MP3 and Opus, in kbps (clamped to what each supports);
+    /// WAV ignores it
+    pub bitrate_kbps: u32,
     pub tap: TapPoint,
     pub tags: RecordingTags,
 }
@@ -190,11 +193,11 @@ impl Recorder {
 
         let (tx, rx) = bounded(QUEUE_BATCHES);
         let stats = Arc::new(WriterStats::default());
-        let (format, tags) = (options.format, options.tags);
+        let (format, tags, kbps) = (options.format, options.tags, options.bitrate_kbps);
         let writer_stats = stats.clone();
         let handle = thread::Builder::new()
             .name("recording-writer".to_string())
-            .spawn(move || writer_loop(file, new_encoder(format, tags), rx, writer_stats))
+            .spawn(move || writer_loop(file, new_encoder(format, tags, kbps), rx, writer_stats))
             .map_err(|e| RadioError::Audio(format!("Failed to spawn recording thread: {e}")))?;
 
         let generation = self.shared.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -463,10 +466,10 @@ trait AudioEncoder {
     }
 }
 
-fn new_encoder(format: RecordingFormat, tags: RecordingTags) -> Box<dyn AudioEncoder> {
+fn new_encoder(format: RecordingFormat, tags: RecordingTags, kbps: u32) -> Box<dyn AudioEncoder> {
     match format {
-        RecordingFormat::Mp3 => Box::new(mp3::Mp3Encoder::new(tags)),
-        RecordingFormat::Opus => Box::new(opus::OpusEncoder::new(tags)),
+        RecordingFormat::Mp3 => Box::new(mp3::Mp3Encoder::new(tags, kbps)),
+        RecordingFormat::Opus => Box::new(opus::OpusEncoder::new(tags, kbps)),
         RecordingFormat::Wav => Box::new(wav::WavEncoder::new(tags)),
     }
 }
@@ -595,6 +598,7 @@ mod tests {
         RecordingOptions {
             path: path.to_path_buf(),
             format: RecordingFormat::Mp3,
+            bitrate_kbps: 192,
             tap,
             tags: RecordingTags {
                 title: "Test FM, 2026-09-26 20:15".to_string(),
@@ -881,6 +885,31 @@ mod tests {
             recorder.start(opts).unwrap();
             let status = recorder.stop().unwrap();
             assert_eq!(status.error, None, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn bitrate_setting_changes_file_size() {
+        for format in [RecordingFormat::Mp3, RecordingFormat::Opus] {
+            let size = |kbps: u32| {
+                let path = temp_path(&format!("kbps-{format:?}-{kbps}"))
+                    .with_extension(format.extension());
+                let recorder = Recorder::new();
+                let mut opts = options(&path, TapPoint::BeforeEq);
+                opts.format = format;
+                opts.bitrate_kbps = kbps;
+                recorder.start(opts).unwrap();
+                let source = SamplesBuffer::new(
+                    NonZero::new(2).unwrap(),
+                    NonZero::new(48_000).unwrap(),
+                    sine(48_000, 2, 3.0),
+                );
+                play_through(source, &recorder, TapPoint::BeforeEq);
+                recorder.stop().unwrap().bytes_written as f64
+            };
+            let (low, high) = (size(96), size(256));
+            // CBR MP3 is exact; Opus VBR spends less on a plain sine.
+            assert!(high > low * 1.5, "{format:?}: {low} vs {high}");
         }
     }
 

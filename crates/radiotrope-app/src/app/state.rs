@@ -47,6 +47,8 @@ pub enum AppCommand {
     StartRecording {
         folder: PathBuf,
         format: RecordingFormat,
+        /// MP3/Opus bitrate in kbps; `None` uses the station's bitrate
+        bitrate: Option<u32>,
         /// Record the sound after the equalizer instead of before it
         with_eq: bool,
         /// Station logo as PNG, for the file's cover art

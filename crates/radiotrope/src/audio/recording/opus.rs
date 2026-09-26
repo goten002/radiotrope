@@ -20,11 +20,9 @@ const FRAME: usize = 960;
 /// Largest Opus packet (RFC 6716) times three frames of headroom.
 const MAX_PACKET: usize = 1275 * 3;
 
-/// Opus bitrate for stereo recordings, bits per second.
-const STEREO_BITRATE: i32 = 128_000;
-
-/// Opus bitrate for mono recordings, bits per second.
-const MONO_BITRATE: i32 = 64_000;
+/// Opus bitrates allowed, in kbps.
+const MIN_KBPS: u32 = 6;
+const MAX_KBPS: u32 = 510;
 
 /// Ogg pages are closed after about this much audio (1 s of 20 ms packets).
 const PACKETS_PER_PAGE: usize = 50;
@@ -33,7 +31,7 @@ const PACKETS_PER_PAGE: usize = 50;
 struct Encoder(*mut ffi::OpusEncoder);
 
 impl Encoder {
-    fn new(channels: u16) -> Result<Self, String> {
+    fn new(channels: u16, kbps: u32) -> Result<Self, String> {
         let mut err: c_int = 0;
         // SAFETY: valid rate, channel count and application; err is written.
         let ptr = unsafe {
@@ -48,11 +46,7 @@ impl Encoder {
             return Err(format!("Could not create the Opus encoder ({err})"));
         }
         let enc = Self(ptr);
-        let bitrate = if channels == 1 {
-            MONO_BITRATE
-        } else {
-            STEREO_BITRATE
-        };
+        let bitrate = (kbps.clamp(MIN_KBPS, MAX_KBPS) * 1000) as i32;
         // SAFETY: ptr is a live encoder; these requests take one opus_int32.
         unsafe {
             ffi::opus_encoder_ctl(enc.0, ffi::OPUS_SET_BITRATE_REQUEST, bitrate);
@@ -109,6 +103,7 @@ impl Drop for Encoder {
 
 pub(super) struct OpusEncoder {
     tags: RecordingTags,
+    kbps: u32,
     /// Set up on the first audio, when the channel count is known
     state: Option<Stream>,
 }
@@ -131,12 +126,16 @@ struct Stream {
 }
 
 impl OpusEncoder {
-    pub(super) fn new(tags: RecordingTags) -> Self {
-        Self { tags, state: None }
+    pub(super) fn new(tags: RecordingTags, kbps: u32) -> Self {
+        Self {
+            tags,
+            kbps,
+            state: None,
+        }
     }
 
     fn start(&mut self, sample_rate: u32, channels: u16, out: &mut Vec<u8>) -> Result<(), String> {
-        let encoder = Encoder::new(channels)?;
+        let encoder = Encoder::new(channels, self.kbps)?;
         let pre_skip = encoder.lookahead();
         let mut ogg = OggWriter::new(serial_number());
         ogg.packet(&opus_head(channels, pre_skip, sample_rate), 0, out);
