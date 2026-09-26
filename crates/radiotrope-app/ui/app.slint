@@ -139,55 +139,67 @@ export component App inherits Window {
     in-out property <string> stat-underruns;
 
     VerticalLayout {
-        MenuBar {
-            open-wifi-settings => {
-                root.show-wifi-settings = true;
-                root.wifi-scan-requested();
+        // Header: menu bar and playback panel on one background, with the
+        // soft accent glow from the left running through both
+        Rectangle {
+            background: Theme.panel;
+
+            Rectangle {
+                background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
             }
-            open-network-stream => {
-                stream-dialog.show-dialog = true;
-            }
-            open-station-search => {
-                // Keep the last search when reopening; load top stations on
-                // first open or when coming back from a country list
-                if browser-dialog.search-mode != "search" || browser-dialog.search-results.length == 0 {
-                    browser-dialog.search-mode = "search";
-                    browser-dialog.reset-query();
-                    browser-dialog.search-loading = true;
-                    root.load-top-stations();
+
+            VerticalLayout {
+            MenuBar {
+                open-wifi-settings => {
+                    root.show-wifi-settings = true;
+                    root.wifi-scan-requested();
                 }
-                browser-dialog.show-dialog = true;
+                open-network-stream => {
+                    stream-dialog.show-dialog = true;
+                }
+                open-station-search => {
+                    // Keep the last search when reopening; load top stations on
+                    // first open or when coming back from a country list
+                    if browser-dialog.search-mode != "search" || browser-dialog.search-results.length == 0 {
+                        browser-dialog.search-mode = "search";
+                        browser-dialog.reset-query();
+                        browser-dialog.search-loading = true;
+                        root.load-top-stations();
+                    }
+                    browser-dialog.show-dialog = true;
+                }
+                open-country-picker => {
+                    picker-dialog.loading = true;
+                    picker-dialog.filter-text = "";
+                    picker-dialog.show-dialog = true;
+                    root.load-countries();
+                }
+                open-about => {
+                    about-dialog.show-dialog = true;
+                }
+                open-statistics => {
+                    stats-dialog.show-dialog = true;
+                }
+                open-equalizer => {
+                    eq-dialog.show-dialog = true;
+                }
+                open-accent-color => {
+                    accent-dialog.show-dialog = true;
+                }
             }
-            open-country-picker => {
-                picker-dialog.loading = true;
-                picker-dialog.filter-text = "";
-                picker-dialog.show-dialog = true;
-                root.load-countries();
+            playback := Playback {
+                station-name: root.station-name;
+                codec-info: root.codec-info;
+                status-text: root.status-text;
+                playtime: root.stat-playtime;
+                is-loading: root.is-loading;
+                is-error: root.is-error;
+                station-logo: root.current-logo;
+                is-station-favorited: root.is-station-favorited;
+                has-station: root.station-url != "";
+                toggle-favorite => { root.toggle-favorite(); }
             }
-            open-about => {
-                about-dialog.show-dialog = true;
             }
-            open-statistics => {
-                stats-dialog.show-dialog = true;
-            }
-            open-equalizer => {
-                eq-dialog.show-dialog = true;
-            }
-            open-accent-color => {
-                accent-dialog.show-dialog = true;
-            }
-        }
-        playback := Playback {
-            station-name: root.station-name;
-            codec-info: root.codec-info;
-            status-text: root.status-text;
-            playtime: root.stat-playtime;
-            is-loading: root.is-loading;
-            is-error: root.is-error;
-            station-logo: root.current-logo;
-            is-station-favorited: root.is-station-favorited;
-            has-station: root.station-url != "";
-            toggle-favorite => { root.toggle-favorite(); }
         }
         Favorites {
             vertical-stretch: 1;

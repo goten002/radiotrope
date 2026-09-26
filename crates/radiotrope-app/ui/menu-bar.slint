@@ -75,7 +75,8 @@ component CheckMenuItem inherits Rectangle {
 
 export component MenuBar inherits Rectangle {
     height: 32px;
-    background: Theme.panel;
+    // Transparent: drawn on the header background shared with the playback
+    // panel (app.slint)
 
     callback open-network-stream();
     callback open-station-search();
