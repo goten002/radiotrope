@@ -53,6 +53,8 @@ struct RbTag {
 #[derive(Debug, Deserialize)]
 struct RbCountry {
     name: String,
+    #[serde(default)]
+    iso_3166_1: String,
     stationcount: usize,
 }
 
@@ -213,7 +215,8 @@ impl StationProvider for RadioBrowserProvider {
             if !country.name.is_empty() {
                 categories.push(
                     Category::new(&country.name, &country.name, CategoryType::Country)
-                        .with_station_count(country.stationcount),
+                        .with_station_count(country.stationcount)
+                        .with_code(non_empty(&country.iso_3166_1)),
                 );
             }
         }

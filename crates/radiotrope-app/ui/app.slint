@@ -255,14 +255,15 @@ export component App inherits Window {
     picker-dialog := CountryPickerDialog {
         country-selected(country) => {
             browser-dialog.search-mode = "country";
-            browser-dialog.country-name = country;
+            browser-dialog.country-name = country.name;
+            browser-dialog.country-flag = country.flag;
             browser-dialog.search-results = [];
             browser-dialog.browse-logos = [];
             browser-dialog.search-error = "";
             browser-dialog.has-more = false;
             browser-dialog.search-loading = true;
             browser-dialog.show-dialog = true;
-            root.browse-country(country);
+            root.browse-country(country.name);
         }
         load-countries() => { root.load-countries(); }
     }

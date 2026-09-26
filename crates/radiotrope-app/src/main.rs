@@ -940,6 +940,7 @@ fn main() {
                                     .into_iter()
                                     .filter(|c| c.category_type == CategoryType::Country)
                                     .map(|c| CountryEntry {
+                                        flag: flag_image(c.code.as_deref(), Some(&c.name)),
                                         name: c.name.as_str().into(),
                                         station_count: c.station_count.unwrap_or(0) as i32,
                                     })
@@ -2019,6 +2020,42 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
         logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
         country: f.station.country.as_deref().unwrap_or("").into(),
     }
+}
+
+// Decoded flag images keyed by country code. Flags are tiny and shared by many
+// rows, so each is decoded once. Runs on the Slint event-loop thread only.
+thread_local! {
+    static FLAG_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Flag image for a country (an empty image if there is no flag for it)
+fn flag_image(country_code: Option<&str>, country: Option<&str>) -> slint::Image {
+    use radiotrope_app::data::flags;
+
+    let Some(code) = flags::flag_code(country_code, country) else {
+        return Default::default();
+    };
+    FLAG_IMAGE_CACHE.with(|cache| {
+        cache
+            .borrow_mut()
+            .entry(code)
+            .or_insert_with_key(|code| {
+                flags::flag_png(code)
+                    .and_then(|png| image::load_from_memory(png).ok())
+                    .map(|img| {
+                        let rgba = img.to_rgba8();
+                        let pixel_buf = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                            rgba.as_raw(),
+                            rgba.width(),
+                            rgba.height(),
+                        );
+                        slint::Image::from_rgba8(pixel_buf)
+                    })
+                    .unwrap_or_default()
+            })
+            .clone()
+    })
 }
 
 // In-memory cache of decoded slint::Image keyed by favorite ID.

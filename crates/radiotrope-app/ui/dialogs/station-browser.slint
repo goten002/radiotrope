@@ -128,6 +128,7 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <[image]> browse-logos: [];
     in-out property <bool> has-more: false;
     in-out property <string> country-name: "";
+    in-out property <image> country-flag;
     property <string> search-query: "";
 
     callback search-stations(string);
@@ -166,6 +167,15 @@ export component StationBrowserDialog inherits Rectangle {
                 // Header row: title left, "radio-browser.info" right
                 HorizontalLayout {
                     height: 28px;
+                    spacing: 8px;
+
+                    if root.search-mode == "country" && root.country-flag.width > 0: Image {
+                        source: root.country-flag;
+                        width: 24px;
+                        height: 18px;
+                        image-fit: contain;
+                        y: (parent.height - self.height) / 2;
+                    }
 
                     Text {
                         text: root.search-mode == "country"
