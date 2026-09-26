@@ -2,7 +2,7 @@
 //!
 //! Handles different stream types: HLS, ICY (Icecast/Shoutcast), direct.
 //! Resolves URLs (PLS/M3U playlists, HLS detection), connects to streams,
-//! extracts ICY metadata, downloads HLS segments with MPEG-TS demuxing.
+//! extracts ICY and embedded ID3 metadata, downloads HLS segments with MPEG-TS demuxing.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,13 +13,14 @@ use crate::config::timeouts::{MAX_BACKOFF_SECS, RETRY_BASE_DELAY_SECS};
 pub mod buffer;
 pub mod hls;
 pub mod icy;
+pub mod id3;
 pub mod metadata;
 pub mod playlist;
 pub mod resolver;
 pub mod types;
 
 pub use buffer::{BufferStatus, SharedBufferStatus, StreamBuffer, StreamBufferReader};
-pub use metadata::StreamMetadata;
+pub use metadata::{MetadataSink, MetadataSource, StreamMetadata};
 pub use resolver::StreamResolver;
 pub use types::{ResolvedStream, StreamInfo, StreamType};
 

@@ -14,7 +14,7 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use crate::config::network::{READ_TIMEOUT_SECS, USER_AGENT};
 use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
 use crate::error::{RadioError, Result};
-use crate::stream::metadata::{extract_icy_title, StreamMetadata};
+use crate::stream::metadata::{extract_icy_title, MetadataSink, MetadataSource, StreamMetadata};
 
 use super::backoff_sleep;
 
@@ -70,7 +70,7 @@ impl IcyReader {
 
         // Channels for audio data and metadata
         let (audio_tx, audio_rx) = bounded::<Vec<u8>>(AUDIO_CHANNEL_BOUND);
-        let (metadata_tx, metadata_rx) = crossbeam_channel::unbounded::<StreamMetadata>();
+        let (metadata_sink, metadata_rx) = MetadataSink::channel();
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let stop_clone = stop_flag.clone();
@@ -83,7 +83,7 @@ impl IcyReader {
                 &url_owned,
                 response,
                 metaint,
-                metadata_tx,
+                metadata_sink,
                 audio_tx,
                 stop_clone,
                 bytes_clone,
@@ -277,7 +277,7 @@ fn read_icy_stream(
     url: &str,
     mut response: reqwest::blocking::Response,
     metaint: usize,
-    metadata_tx: Sender<StreamMetadata>,
+    metadata_sink: MetadataSink,
     audio_tx: Sender<Vec<u8>>,
     stop_flag: Arc<AtomicBool>,
     bytes_received: Arc<AtomicU64>,
@@ -301,7 +301,7 @@ fn read_icy_stream(
                 &mut bytes_until_meta,
                 metaint,
                 &mut last_title,
-                &metadata_tx,
+                &metadata_sink,
                 &audio_tx,
                 &bytes_received,
             )
@@ -375,7 +375,7 @@ fn read_chunk_with_meta(
     bytes_until_meta: &mut usize,
     metaint: usize,
     last_title: &mut String,
-    metadata_tx: &Sender<StreamMetadata>,
+    metadata_sink: &MetadataSink,
     audio_tx: &Sender<Vec<u8>>,
     bytes_received: &Arc<AtomicU64>,
 ) -> ReadResult {
@@ -413,11 +413,19 @@ fn read_chunk_with_meta(
                 return ReadResult::Error;
             }
 
-            if let Some(title) = extract_icy_title(&meta_buf) {
-                if *title != *last_title {
-                    *last_title = title.clone();
-                    let metadata = StreamMetadata::from_icy_title(&title);
-                    let _ = metadata_tx.send(metadata);
+            match extract_icy_title(&meta_buf) {
+                Some(title) => {
+                    if *title != *last_title {
+                        *last_title = title.clone();
+                        metadata_sink.offer(StreamMetadata::from_icy_title(&title));
+                    }
+                }
+                None => {
+                    // Blank or missing StreamTitle: let embedded ID3 song info show
+                    if !last_title.is_empty() {
+                        last_title.clear();
+                        metadata_sink.offer(StreamMetadata::new(None, None, MetadataSource::Icy));
+                    }
                 }
             }
         }
