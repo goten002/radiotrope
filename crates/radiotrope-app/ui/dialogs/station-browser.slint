@@ -250,18 +250,14 @@ export component StationBrowserDialog inherits Rectangle {
         card-width: 700px;
         card-height: 640px;
         auto-focus: false;
+        show-back: root.search-mode == "country";
+        back-requested => { root.change-country(); }
         close-requested => { root.show-dialog = false; }
 
         // Search input
         HorizontalLayout {
             spacing: 8px;
             height: 36px;
-
-            if root.search-mode == "country": SecondaryButton {
-                y: (parent.height - self.height) / 2;
-                label: "‹ Countries";
-                clicked => { root.change-country(); }
-            }
 
             search-input := StyledLineEdit {
                 horizontal-stretch: 1;
