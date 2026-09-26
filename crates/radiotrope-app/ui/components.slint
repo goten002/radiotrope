@@ -130,6 +130,9 @@ export component Chip inherits Rectangle {
     // Show a dot before the text (e.g. a live status)
     in property <bool> dot: false;
     in property <bool> pulse: false;
+    // Clickable chips get a pointer and a stronger background on hover
+    in property <bool> clickable: false;
+    callback clicked();
 
     // Grows with its text but gives way (eliding) when space runs out
     preferred-width: row.preferred-width + 16px;
@@ -138,7 +141,14 @@ export component Chip inherits Rectangle {
     horizontal-stretch: 1;
     height: 20px;
     border-radius: Theme.radius-sm;
-    background: root.tone.with-alpha(0.14);
+    background: root.tone.with-alpha(root.clickable && touch.has-hover ? 0.26 : 0.14);
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        enabled: root.clickable;
+        mouse-cursor: root.clickable ? pointer : default;
+        clicked => { root.clicked(); }
+    }
 
     row := HorizontalLayout {
         x: 8px;

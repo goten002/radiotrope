@@ -226,10 +226,11 @@ impl AppController {
             AppCommand::StartRecording {
                 folder,
                 format,
+                bitrate,
                 with_eq,
                 cover,
             } => {
-                self.start_recording(&folder, format, with_eq, cover);
+                self.start_recording(&folder, format, bitrate, with_eq, cover);
             }
             AppCommand::StopRecording => {
                 self.stop_recording();
@@ -472,6 +473,7 @@ impl AppController {
         &mut self,
         folder: &Path,
         format: RecordingFormat,
+        bitrate: Option<u32>,
         with_eq: bool,
         cover: Option<Vec<u8>>,
     ) {
@@ -481,12 +483,13 @@ impl AppController {
             return;
         }
 
-        let (station, url, playing) = {
+        let (station, url, playing, station_kbps) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (
                 state.station_name.clone().unwrap_or_default(),
                 state.station_url.clone().unwrap_or_default(),
                 state.playback == PlaybackState::Playing,
+                state.bitrate,
             )
         };
         if !playing {
@@ -509,6 +512,7 @@ impl AppController {
         let options = RecordingOptions {
             path: path.clone(),
             format,
+            bitrate_kbps: recording_kbps(bitrate, station_kbps),
             tap: if with_eq {
                 TapPoint::AfterEq
             } else {
@@ -611,5 +615,31 @@ impl AppController {
                 state.artist = artist;
             }
         }
+    }
+}
+/// Bitrate used when Auto can't find the station's bitrate, in kbps.
+const AUTO_FALLBACK_KBPS: u32 = 256;
+
+/// The bitrate to record at: the chosen one, or for Auto the station's own
+/// (256 kbps when unknown), kept within 32–320 kbps.
+fn recording_kbps(chosen: Option<u32>, station: Option<u32>) -> u32 {
+    chosen
+        .or(station.filter(|k| *k > 0))
+        .unwrap_or(AUTO_FALLBACK_KBPS)
+        .clamp(32, 320)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recording_bitrate_choice() {
+        assert_eq!(recording_kbps(Some(128), Some(64)), 128);
+        assert_eq!(recording_kbps(None, Some(64)), 64);
+        assert_eq!(recording_kbps(None, None), 256);
+        assert_eq!(recording_kbps(None, Some(0)), 256);
+        assert_eq!(recording_kbps(None, Some(16)), 32);
+        assert_eq!(recording_kbps(None, Some(1411)), 320);
     }
 }

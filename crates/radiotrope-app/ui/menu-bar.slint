@@ -6,6 +6,8 @@ import { Platform } from "@platform/wifi.slint";
 component MenuItem inherits Rectangle {
     in property <string> label;
     in property <image> icon;
+    // Greyed out and not clickable when false
+    in property <bool> enabled: true;
     callback clicked();
 
     height: 28px;
@@ -15,6 +17,7 @@ component MenuItem inherits Rectangle {
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 
@@ -30,13 +33,15 @@ component MenuItem inherits Rectangle {
                 width: 15px;
                 height: 15px;
                 source: root.icon;
-                colorize: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                colorize: !root.enabled ? Theme.disabled-text
+                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
             }
         }
 
         Text {
             text: root.label;
-            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            color: !root.enabled ? Theme.disabled-text
+                : touch.has-hover ? Theme.text-primary : Theme.menu-text;
             font-size: 13px;
             vertical-alignment: center;
         }
@@ -416,8 +421,10 @@ export component MenuBar inherits Rectangle {
                         background: Theme.menu-hover;
                     }
                 }
-                if root.is-recording || root.can-record: MenuItem {
+                MenuItem {
                     label: root.is-recording ? "Stop Recording" : "Start Recording";
+                    // Greyed out until a station plays
+                    enabled: root.is-recording || root.can-record;
                     icon: @image-url("icons/circle.svg");
                     clicked => {
                         root.toggle-recording();
