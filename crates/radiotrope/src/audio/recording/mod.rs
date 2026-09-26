@@ -817,6 +817,7 @@ mod tests {
         assert!(data.starts_with(b"OggS"));
         assert!(data.windows(8).any(|w| w == b"OpusHead"));
         assert!(data.windows(6).any(|w| w == b"TITLE="));
+        assert!(data.windows(26).any(|w| w == b"ENCODER_OPTIONS=--bitrate "));
         assert!(data.windows(23).any(|w| w == b"METADATA_BLOCK_PICTURE="));
 
         let (rate, channels, frames) = decode(&path, "opus");
