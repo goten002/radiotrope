@@ -13,6 +13,12 @@ export component Playback inherits Rectangle {
     in property <image> station-logo;
     in property <bool> is-station-favorited;
     in property <bool> has-station;
+    // Recording: "12:34 · 11.8 MB" while recording, and a short message
+    // after a recording ends or fails
+    in property <bool> is-recording;
+    in property <string> recording-text;
+    in property <string> recording-notice;
+    in property <bool> recording-notice-error;
     callback toggle-favorite();
     in-out property <string> viz-mode: "mirror";
 
@@ -88,12 +94,22 @@ export component Playback inherits Rectangle {
             }
 
             HorizontalLayout {
+                spacing: 6px;
+
                 Chip {
                     text: root.status-text == "Playing" && root.playtime != "--" && root.playtime != ""
                         ? "Playing " + root.playtime : root.status-text;
                     tone: root.is-error ? Theme.danger : Theme.accent-text;
                     dot: true;
                     pulse: root.status-text == "Playing" || root.is-loading;
+                }
+
+                // Recording progress, or what happened to the last recording
+                if root.is-recording || root.recording-notice != "": Chip {
+                    text: root.is-recording ? "REC " + root.recording-text : root.recording-notice;
+                    tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
+                    dot: root.is-recording;
+                    pulse: root.is-recording;
                 }
 
                 // Takes the spare width, so a long status elides in the chip

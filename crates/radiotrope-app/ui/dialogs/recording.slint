@@ -4,8 +4,37 @@ import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { DialogShell, Field, Toggle } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
-// Where recordings are saved, and whether they include the equalizer
-export component RecordingFolderDialog inherits Rectangle {
+// One option of the format picker
+component FormatOption inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    min-width: 72px;
+    height: 30px;
+    border-radius: Theme.radius-sm;
+    background: root.selected ? Theme.accent
+        : touch.has-hover ? Theme.menu-hover
+        : transparent;
+    animate background { duration: Theme.fast; }
+
+    Text {
+        text: root.label;
+        color: root.selected ? Theme.button-text : Theme.text-primary;
+        font-size: 13px;
+        font-weight: root.selected ? 600 : 400;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Recording format, folder, and whether recordings include the equalizer
+export component RecordingSettingsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // The folder in use
     in property <string> folder;
@@ -13,6 +42,8 @@ export component RecordingFolderDialog inherits Rectangle {
     // Problem with the last folder tried, shown under the field
     in property <string> error;
     in-out property <bool> with-eq;
+    // "mp3", "opus" or "wav"
+    in-out property <string> format: "mp3";
 
     // The path being edited; reset to `folder` each time the dialog opens
     in-out property <string> edit-path;
@@ -22,6 +53,7 @@ export component RecordingFolderDialog inherits Rectangle {
     callback restore-default();
     callback open-folder();
     callback with-eq-toggled(bool);
+    callback format-changed(string);
 
     property <bool> edited: root.edit-path != root.folder;
 
@@ -35,11 +67,66 @@ export component RecordingFolderDialog inherits Rectangle {
     }
 
     if show-dialog: DialogShell {
-        title: "Recording Folder";
-        subtitle: "Recordings are saved as MP3 files in this folder";
+        title: "Recording Settings";
+        subtitle: "How and where recordings are saved";
         card-width: 480px;
         auto-focus: false;
         close-requested => { root.close(); }
+
+        Field {
+            label: "Format";
+
+            HorizontalLayout {
+                alignment: start;
+
+                Rectangle {
+                    background: Theme.elevated;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.hairline;
+                    width: formats.preferred-width;
+                    height: formats.preferred-height;
+
+                    formats := HorizontalLayout {
+                        padding: 3px;
+                        spacing: 3px;
+
+                        for option in [
+                            { id: "mp3", label: "MP3" },
+                            { id: "opus", label: "Opus" },
+                            { id: "wav", label: "WAV" },
+                        ]: FormatOption {
+                            label: option.label;
+                            selected: root.format == option.id;
+                            clicked => {
+                                if root.format != option.id {
+                                    root.format = option.id;
+                                    root.format-changed(option.id);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Text {
+            text: root.format == "opus"
+                ? "Opus, 128 kbps. Better sound than MP3 in smaller files, about 58 MB per hour. Plays in VLC, browsers, Android and Windows 10 or later."
+                : root.format == "wav"
+                ? "WAV, uncompressed 16-bit. The sound exactly as decoded, about 635 MB per hour. Files stop at 4 GB, about 6 hours."
+                : "MP3, 192 kbps. Plays on every device and app, about 86 MB per hour.";
+            color: Theme.text-secondary;
+            font-size: 12px;
+            wrap: word-wrap;
+            // Two lines for every format, so the dialog doesn't jump
+            min-height: 30px;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.hairline;
+        }
 
         Field {
             label: root.is-default && !root.edited ? "Folder (default)" : "Folder";

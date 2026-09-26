@@ -11,8 +11,8 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 
 use radiotrope::audio::{
-    AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, RecordingOptions, RecordingStatus,
-    RecordingTags, SharedStats, TapPoint,
+    AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, RecordingFormat, RecordingOptions,
+    RecordingStatus, RecordingTags, SharedStats, TapPoint,
 };
 use radiotrope::stream::metadata::StreamMetadata;
 use radiotrope::stream::{StreamResolver, StreamType};
@@ -225,10 +225,11 @@ impl AppController {
             }
             AppCommand::StartRecording {
                 folder,
+                format,
                 with_eq,
                 cover,
             } => {
-                self.start_recording(&folder, with_eq, cover);
+                self.start_recording(&folder, format, with_eq, cover);
             }
             AppCommand::StopRecording => {
                 self.stop_recording();
@@ -468,7 +469,13 @@ impl AppController {
     }
 
     /// Start recording the playing station into `folder`.
-    fn start_recording(&mut self, folder: &Path, with_eq: bool, cover: Option<Vec<u8>>) {
+    fn start_recording(
+        &mut self,
+        folder: &Path,
+        format: RecordingFormat,
+        with_eq: bool,
+        cover: Option<Vec<u8>>,
+    ) {
         let Some(engine) = &self.engine else { return };
         let recorder = engine.recorder();
         if recorder.is_recording() {
@@ -494,7 +501,7 @@ impl AppController {
         }
 
         let now = chrono::Local::now();
-        let path = recordings::new_file_path(folder, &station, now);
+        let path = recordings::new_file_path(folder, &station, now, format.extension());
         let station_name = if station.is_empty() {
             "Radio".to_string()
         } else {
@@ -502,6 +509,7 @@ impl AppController {
         };
         let options = RecordingOptions {
             path: path.clone(),
+            format,
             tap: if with_eq {
                 TapPoint::AfterEq
             } else {

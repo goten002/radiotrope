@@ -110,6 +110,10 @@ pub struct Settings {
     /// Record the sound after the equalizer instead of the station's sound
     #[serde(default)]
     pub record_with_eq: bool,
+
+    /// File format for new recordings
+    #[serde(default)]
+    pub recording_format: RecordingFormat,
 }
 
 fn default_version() -> u32 {
@@ -157,6 +161,7 @@ impl Default for Settings {
             eq_preset_name: Some("Flat".to_string()),
             recording_dir: None,
             record_with_eq: false,
+            recording_format: RecordingFormat::Mp3,
         }
     }
 }
@@ -223,6 +228,49 @@ impl Settings {
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
         Some((r, g, b))
+    }
+}
+
+/// File format for recordings
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RecordingFormat {
+    /// MP3, 192 kbps
+    #[default]
+    Mp3,
+    /// Opus in Ogg, 128 kbps
+    Opus,
+    /// Uncompressed 16-bit WAV
+    Wav,
+}
+
+impl RecordingFormat {
+    /// Name used in settings and the UI ("mp3", "opus", "wav")
+    pub fn id(self) -> &'static str {
+        match self {
+            RecordingFormat::Mp3 => "mp3",
+            RecordingFormat::Opus => "opus",
+            RecordingFormat::Wav => "wav",
+        }
+    }
+
+    /// Parse a name from [`RecordingFormat::id`]; unknown names give MP3.
+    pub fn from_id(id: &str) -> Self {
+        match id {
+            "opus" => RecordingFormat::Opus,
+            "wav" => RecordingFormat::Wav,
+            _ => RecordingFormat::Mp3,
+        }
+    }
+}
+
+impl From<RecordingFormat> for radiotrope::audio::RecordingFormat {
+    fn from(format: RecordingFormat) -> Self {
+        match format {
+            RecordingFormat::Mp3 => radiotrope::audio::RecordingFormat::Mp3,
+            RecordingFormat::Opus => radiotrope::audio::RecordingFormat::Opus,
+            RecordingFormat::Wav => radiotrope::audio::RecordingFormat::Wav,
+        }
     }
 }
 
@@ -362,11 +410,13 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.recording_dir, None);
         assert!(!settings.record_with_eq);
+        assert_eq!(settings.recording_format, RecordingFormat::Mp3);
 
         // Settings files from before recording existed load unchanged
         let old: Settings = serde_json::from_str(r#"{"version":1,"volume":0.5}"#).unwrap();
         assert_eq!(old.recording_dir, None);
         assert!(!old.record_with_eq);
+        assert_eq!(old.recording_format, RecordingFormat::Mp3);
     }
 
     #[test]
@@ -397,6 +447,7 @@ mod tests {
             settings.accent_color = Some("#3584e4".to_string());
             settings.recording_dir = Some(PathBuf::from("/media/usb/radio"));
             settings.record_with_eq = true;
+            settings.recording_format = RecordingFormat::Opus;
             settings.save_to(&path).unwrap();
         }
 
@@ -420,6 +471,7 @@ mod tests {
             assert_eq!(s.accent_color, Some("#3584e4".to_string()));
             assert_eq!(s.recording_dir, Some(PathBuf::from("/media/usb/radio")));
             assert!(s.record_with_eq);
+            assert_eq!(s.recording_format, RecordingFormat::Opus);
         }
 
         let _ = fs::remove_file(&path);

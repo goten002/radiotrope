@@ -11,7 +11,7 @@ An AI agent-enabled internet radio player built with Rust and [Slint](https://sl
 
 - **MCP server** - AI agents (Claude, etc.) can play stations, control volume, and query status through natural language
 - **10-band equalizer** - 14 presets, per-band gain control, preamp
-- **Recording** - record the playing station to MP3 (LAME, 192 kbps) in `Music/Radiotrope` or a folder you choose, with or without the equalizer
+- **Recording** - record the playing station to MP3 (192 kbps), Opus (128 kbps) or WAV in `Music/Radiotrope` or a folder you choose, with or without the equalizer
 - **Desktop GUI** - built with Slint, dark/light themes, user-selectable accent color, real-time spectrum visualization, stream statistics
 - **Terminal player** - lightweight TUI with ratatui for headless/SSH use
 - **Resilient streaming** - automatic reconnection with exponential backoff, stall detection, health monitoring

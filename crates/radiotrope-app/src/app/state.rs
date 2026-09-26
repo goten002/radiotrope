@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use radiotrope::audio::PlaybackState;
+use radiotrope::audio::{PlaybackState, RecordingFormat};
 
 /// Commands sent by any frontend (GUI, MCP, tray)
 pub enum AppCommand {
@@ -43,9 +43,10 @@ pub enum AppCommand {
     SetEqEnabled(bool),
 
     // Recording
-    /// Record the playing station to `<folder>/<Station> - <time>.mp3`
+    /// Record the playing station to `<folder>/<Station> - <time>.<ext>`
     StartRecording {
         folder: PathBuf,
+        format: RecordingFormat,
         /// Record the sound after the equalizer instead of before it
         with_eq: bool,
         /// Station logo as PNG, for the file's cover art
