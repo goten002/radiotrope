@@ -27,6 +27,7 @@ component FavoriteRow inherits Rectangle {
     background: is-current ? Theme.accent.with-alpha(0.15)
               : touch.has-hover ? Theme.menu-hover
               : transparent;
+    animate background { duration: Theme.fast; }
     border-radius: 4px;
 
     // Accent left border for current station
@@ -147,6 +148,7 @@ component FavoriteRow inherits Rectangle {
                 height: 28px;
                 border-radius: 4px;
                 background: pencil-touch.has-hover ? Theme.menu-hover : transparent;
+                animate background { duration: Theme.fast; }
 
                 pencil-touch := TouchArea {
                     mouse-cursor: pointer;

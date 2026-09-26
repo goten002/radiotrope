@@ -8,6 +8,7 @@ component KeyButton inherits Rectangle {
     min-width: 28px;
     border-radius: 4px;
     background: ta.pressed ? Theme.accent : Theme.panel;
+    animate background { duration: Theme.fast; }
 
     ta := TouchArea {
         clicked => { root.pressed(); }
@@ -166,6 +167,7 @@ export component VirtualKeyboard inherits Rectangle {
             Rectangle {
                 border-radius: 4px;
                 background: bksp-ta.pressed ? Theme.accent : Theme.panel;
+                animate background { duration: Theme.fast; }
                 min-width: 50px;
                 height: 38px;
 
@@ -193,6 +195,7 @@ export component VirtualKeyboard inherits Rectangle {
             Rectangle {
                 border-radius: 4px;
                 background: sym-ta.pressed ? Theme.accent : Theme.panel;
+                animate background { duration: Theme.fast; }
                 min-width: 50px;
 
                 sym-ta := TouchArea { clicked => { root.symbols-mode = !root.symbols-mode; } }
@@ -209,6 +212,7 @@ export component VirtualKeyboard inherits Rectangle {
             Rectangle {
                 border-radius: 4px;
                 background: space-ta.pressed ? Theme.accent : Theme.panel;
+                animate background { duration: Theme.fast; }
                 horizontal-stretch: 1;
 
                 space-ta := TouchArea { clicked => { root.text += " "; } }
@@ -225,6 +229,7 @@ export component VirtualKeyboard inherits Rectangle {
             Rectangle {
                 border-radius: 4px;
                 background: done-ta.pressed ? Theme.accent-hover : Theme.accent;
+                animate background { duration: Theme.fast; }
                 min-width: 60px;
 
                 done-ta := TouchArea { clicked => { root.submitted(root.text); } }
@@ -242,6 +247,7 @@ export component VirtualKeyboard inherits Rectangle {
             Rectangle {
                 border-radius: 4px;
                 background: cancel-ta.pressed ? Theme.accent : Theme.panel;
+                animate background { duration: Theme.fast; }
                 min-width: 54px;
 
                 cancel-ta := TouchArea { clicked => { root.cancelled(); } }

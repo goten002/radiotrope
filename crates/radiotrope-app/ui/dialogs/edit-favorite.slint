@@ -26,7 +26,7 @@ export component EditFavoriteDialog inherits Rectangle {
     if show-dialog: Rectangle {
         width: 100%;
         height: 100%;
-        background: #000000aa;
+        background: Theme.scrim;
 
         TouchArea {
             clicked => {
@@ -39,10 +39,12 @@ export component EditFavoriteDialog inherits Rectangle {
             y: (parent.height - self.height) / 2;
             width: 450px;
             height: edit-layout.preferred-height + 40px;
-            background: Theme.panel;
-            border-radius: 8px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.shadow;
 
             TouchArea {}
 
@@ -118,9 +120,10 @@ export component EditFavoriteDialog inherits Rectangle {
                         height: 32px;
                         width: delete-layout.preferred-width + 24px;
                         border-radius: 4px;
-                        background: delete-touch.pressed ? #c04040
-                                    : delete-touch.has-hover ? #cc4c4c
-                                    : #e05555;
+                        background: delete-touch.pressed ? Theme.danger-hover.darker(0.1)
+                                    : delete-touch.has-hover ? Theme.danger-hover
+                                    : Theme.danger;
+                        animate background { duration: Theme.fast; }
 
                         delete-touch := TouchArea {
                             mouse-cursor: pointer;

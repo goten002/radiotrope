@@ -23,7 +23,7 @@ export component Playback inherits Rectangle {
     Rectangle {
         y: parent.height - 1px;
         height: 1px;
-        background: Theme.dark-mode ? #141516 : #c5c6cb;
+        background: Theme.hairline;
     }
 
     HorizontalLayout {
@@ -82,7 +82,7 @@ export component Playback inherits Rectangle {
 
             Text {
                 text: root.status-text;
-                color: root.is-error ? #e05555 : Theme.accent-text;
+                color: root.is-error ? Theme.danger : Theme.accent-text;
                 font-size: 14px;
                 overflow: elide;
             }
@@ -96,6 +96,7 @@ export component Playback inherits Rectangle {
                 height: 32px;
                 border-radius: 4px;
                 background: star-touch.has-hover ? Theme.surface : transparent;
+                animate background { duration: Theme.fast; }
 
                 star-touch := TouchArea {
                     mouse-cursor: pointer;

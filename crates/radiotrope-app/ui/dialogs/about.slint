@@ -68,7 +68,7 @@ export component AboutDialog inherits Rectangle {
     if show-dialog: Rectangle {
         width: 100%;
         height: 100%;
-        background: #000000aa;
+        background: Theme.scrim;
 
         TouchArea {
             clicked => { root.show-dialog = false; }
@@ -79,10 +79,12 @@ export component AboutDialog inherits Rectangle {
             y: max(8px, (parent.height - self.height) / 2);
             width: 400px;
             height: card-layout.preferred-height;
-            background: Theme.panel;
-            border-radius: 12px;
+            background: Theme.card;
+            border-radius: Theme.radius-lg;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.shadow;
             clip: true;
 
             TouchArea {}
@@ -93,7 +95,7 @@ export component AboutDialog inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: 140px;
-                background: @linear-gradient(180deg, Theme.accent.with-alpha(0.18) 0%, transparent 100%);
+                background: @linear-gradient(180deg, Theme.accent-glow 0%, transparent 100%);
             }
 
             card-layout := VerticalLayout {
@@ -138,7 +140,7 @@ export component AboutDialog inherits Rectangle {
                             width: version-text.preferred-width + 20px;
                             height: 22px;
                             border-radius: 11px;
-                            background: Theme.accent.with-alpha(0.15);
+                            background: Theme.accent-soft;
 
                             version-text := Text {
                                 text: "Version \{AboutInfo.version}";
