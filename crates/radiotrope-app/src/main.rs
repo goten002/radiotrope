@@ -2205,8 +2205,7 @@ fn format_listen_time(secs: u64) -> String {
         _ if secs == 0 => String::new(),
         0 => "<1 m".into(),
         1..=59 => format!("{mins} m"),
-        60..=5999 => format!("{} h {} m", mins / 60, mins % 60),
-        _ => format!("{} h", mins / 60),
+        _ => format!("{} h {} m", mins / 60, mins % 60),
     }
 }
 
