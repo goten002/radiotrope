@@ -19,6 +19,9 @@ pub enum AppError {
 
     #[error("Image error: {0}")]
     Image(String),
+
+    #[error("Invalid response: {0}")]
+    InvalidResponse(String),
 }
 
 impl From<reqwest::Error> for AppError {
