@@ -33,7 +33,7 @@ tokio = { version = "1", features = ["rt", "macros"], optional = true }
 
 [features]
 default = ["desktop"]
-desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/unstable-winit-030"]
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "dep:tokio"]
 
 [build-dependencies]
