@@ -19,6 +19,8 @@ symphonia-adapter-fdk-aac = { workspace = true }
 rustfft = { workspace = true }
 biquad = { workspace = true }
 mp3lame-encoder = { workspace = true }
+opusic-sys = { workspace = true }
+rubato = { workspace = true }
 m3u8-rs = { workspace = true }
 mpeg2ts = { workspace = true }
 crossbeam-channel = { workspace = true }

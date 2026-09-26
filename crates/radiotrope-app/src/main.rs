@@ -1703,8 +1703,8 @@ const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
 /// Largest station logo embedded as cover art in a recording
 const MAX_COVER_BYTES: usize = 512 * 1024;
 
-/// Wire the Record button, the Tools menu items and the Recording Folder
-/// dialog. The folder and the before/after-EQ choice are saved right away.
+/// Wire the Tools menu recording items and the Recording Settings
+/// dialog. The format, folder and before/after-EQ choice are saved right away.
 fn setup_recording(
     ui: &App,
     settings: &radiotrope_app::data::settings::Settings,
@@ -1714,6 +1714,7 @@ fn setup_recording(
 ) {
     show_recording_folder(ui, settings.recording_dir.as_deref());
     ui.set_record_with_eq(settings.record_with_eq);
+    ui.set_recording_format(settings.recording_format.id().into());
 
     ui.on_toggle_recording({
         let ui_weak = ui.as_weak();
@@ -1734,6 +1735,7 @@ fn setup_recording(
             );
             let _ = cmd_tx.send(app::state::AppCommand::StartRecording {
                 folder: recordings::folder(settings.recording_dir.as_deref()),
+                format: settings.recording_format.into(),
                 with_eq: settings.record_with_eq,
                 cover: station_cover_png(&logo_service, &station),
             });
@@ -1778,6 +1780,11 @@ fn setup_recording(
         save_recording_settings(|s| s.record_with_eq = on);
     });
 
+    ui.on_recording_format_changed(|id| {
+        let format = radiotrope_app::data::settings::RecordingFormat::from_id(id.as_str());
+        save_recording_settings(|s| s.recording_format = format);
+    });
+
     ui.on_open_recordings_folder({
         let ui_weak = ui.as_weak();
         move || {
@@ -1798,7 +1805,7 @@ fn setup_recording(
     });
 }
 
-/// Show `custom` (or the default folder) in the Recording Folder dialog.
+/// Show `custom` (or the default folder) in the Recording Settings dialog.
 fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
     let folder = recordings::folder(custom);
     let text: slint::SharedString = folder.display().to_string().into();

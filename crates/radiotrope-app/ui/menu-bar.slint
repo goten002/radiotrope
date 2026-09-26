@@ -114,7 +114,7 @@ export component MenuBar inherits Rectangle {
     in property <bool> is-recording;
     in property <bool> can-record;
     callback toggle-recording();
-    callback open-recording-folder-dialog();
+    callback open-recording-settings();
     callback open-recordings-folder();
 
 
@@ -425,10 +425,10 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 MenuItem {
-                    label: "Recording Folder...";
-                    icon: @image-url("icons/folder.svg");
+                    label: "Recording Settings...";
+                    icon: @image-url("icons/gear.svg");
                     clicked => {
-                        root.open-recording-folder-dialog();
+                        root.open-recording-settings();
                         tools-popup.close();
                     }
                 }
