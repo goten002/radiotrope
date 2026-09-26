@@ -5,14 +5,17 @@ export component AccentButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    height: 32px;
+    height: 34px;
     width: btn-text.preferred-width + 32px;
-    border-radius: 4px;
+    border-radius: 8px;
     background: !root.enabled ? Theme.disabled-bg
-                : touch.pressed ? Theme.accent-hover
+                : touch.pressed ? Theme.accent-hover.darker(0.1)
                 : touch.has-hover ? Theme.accent-hover
                 : Theme.accent;
     animate background { duration: Theme.fast; }
+    drop-shadow-blur: root.enabled && touch.has-hover ? 12px : 0px;
+    drop-shadow-color: Theme.accent.with-alpha(0.35);
+    animate drop-shadow-blur { duration: Theme.fast; }
 
     touch := TouchArea {
         enabled: root.enabled;
@@ -24,7 +27,7 @@ export component AccentButton inherits Rectangle {
         text: root.label;
         color: root.enabled ? Theme.button-text : Theme.disabled-text;
         font-size: 13px;
-        font-weight: 500;
+        font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -34,12 +37,14 @@ export component SecondaryButton inherits Rectangle {
     in property <string> label;
     callback clicked();
 
-    height: 32px;
+    height: 34px;
     width: btn-text.preferred-width + 32px;
-    border-radius: 4px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.hairline;
     background: touch.pressed ? Theme.menu-hover
                 : touch.has-hover ? Theme.menu-bar-hover
-                : Theme.surface;
+                : Theme.elevated;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
@@ -49,10 +54,53 @@ export component SecondaryButton inherits Rectangle {
 
     btn-text := Text {
         text: root.label;
-        color: Theme.text-secondary;
+        color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         font-size: 13px;
         font-weight: 500;
         horizontal-alignment: center;
         vertical-alignment: center;
+    }
+}
+
+// Destructive action, with an optional icon before the label
+export component DangerButton inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    callback clicked();
+
+    height: 34px;
+    width: row.preferred-width + 28px;
+    border-radius: 8px;
+    background: touch.pressed ? Theme.danger.with-alpha(0.3)
+                : touch.has-hover ? Theme.danger.with-alpha(0.22)
+                : Theme.danger.with-alpha(0.14);
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    row := HorizontalLayout {
+        x: 14px;
+        spacing: 6px;
+
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Image {
+                source: root.icon;
+                width: 11px;
+                height: 11px;
+                colorize: Theme.danger;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: Theme.danger;
+            font-size: 13px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
     }
 }
