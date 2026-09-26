@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { DialogShell } from "../components.slint";
+import { DialogShell, NowPlayingBars } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -22,11 +22,17 @@ component StationRow inherits Rectangle {
     in property <int> bitrate;
     in property <image> logo-image;
     in property <bool> has-logo;
+    // Playback state of this station: "", "loading", "playing" or "error"
+    in property <string> state;
+    // Status line shown instead of the country while loading or failed
+    in property <string> status;
     callback clicked();
 
     height: 56px;
     border-radius: Theme.radius-md;
-    background: touch.has-hover ? Theme.menu-hover : transparent;
+    background: root.state == "error" ? Theme.danger.with-alpha(0.12)
+        : root.state != "" ? Theme.accent-soft
+        : touch.has-hover ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
@@ -76,17 +82,56 @@ component StationRow inherits Rectangle {
             alignment: center;
             spacing: 2px;
 
-            Text {
-                text: root.name;
-                color: Theme.text-primary;
-                font-size: 13px;
-                font-weight: 600;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    horizontal-stretch: 0;
+                    text: root.name;
+                    color: root.state == "error" ? Theme.danger
+                        : root.state != "" ? Theme.accent-text : Theme.text-primary;
+                    font-size: 13px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                // Playback state: bouncing bars, a spinner or an error mark
+                if root.state == "playing": VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    NowPlayingBars {}
+                }
+
+                if root.state == "loading": VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    Image {
+                        source: @image-url("../icons/spinner.svg");
+                        width: 12px;
+                        height: 12px;
+                        colorize: Theme.accent;
+                        transform-rotation: mod(animation-tick() / 900ms, 1) * 360deg;
+                    }
+                }
+
+                if root.state == "error": VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    Image {
+                        source: @image-url("../icons/circle-exclamation.svg");
+                        width: 13px;
+                        height: 13px;
+                        colorize: Theme.danger;
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
             }
 
             Text {
-                text: root.country;
-                color: Theme.text-secondary;
+                text: (root.state == "loading" || root.state == "error") && root.status != ""
+                    ? root.status : root.country;
+                color: root.state == "error" ? Theme.danger : Theme.text-secondary;
                 font-size: 11px;
                 overflow: elide;
             }
@@ -151,6 +196,21 @@ export component StationBrowserDialog inherits Rectangle {
     // ISO 3166-1 code of the country, empty if unknown
     in-out property <string> country-code: "";
     in-out property <image> country-flag;
+    // Current playback, so the row of the station being played shows its
+    // state even while the dialog hides the player
+    in property <string> playing-url;
+    in property <bool> is-playing;
+    in property <bool> play-loading;
+    in property <bool> play-error;
+    in property <string> play-status;
+    // Row picked last (provider ID or URL); the played URL may differ
+    // after resolving a playlist or matching a favorite
+    property <string> picked: "";
+    changed show-dialog => {
+        if !self.show-dialog {
+            root.picked = "";
+        }
+    }
     property <string> search-query: "";
     // Query of the results on screen; empty means the default list
     property <string> shown-query: "";
@@ -296,7 +356,20 @@ export component StationBrowserDialog inherits Rectangle {
                             has-logo: idx < root.browse-logos.length
                                 ? root.browse-logos[idx].width > 0
                                 : false;
-                            clicked => { root.station-selected(station); }
+                            // The row clicked here; before any click, the row
+                            // whose URL is playing
+                            property <bool> active: root.picked != ""
+                                ? root.picked == (station.provider-id != "" ? station.provider-id : station.url)
+                                : station.url == root.playing-url;
+                            state: !self.active ? ""
+                                : root.play-error ? "error"
+                                : root.play-loading ? "loading"
+                                : root.is-playing ? "playing" : "";
+                            status: root.play-status;
+                            clicked => {
+                                root.picked = station.provider-id != "" ? station.provider-id : station.url;
+                                root.station-selected(station);
+                            }
                         }
 
                         // Footer while the next page loads

@@ -1,144 +1,189 @@
-//! Visualizer display state
+//! Visualizer helpers
 //!
-//! Turns the analyzer's spectrum into what the visualizer draws: bars that
-//! ease down between frames, peak dots that hold briefly and then fall, and
-//! a noise gate so quiet bands (like the empty top of a low-passed MP3)
-//! drop to nothing instead of sitting as frozen stubs.
+//! A noise gate so quiet bands (like the empty top of a low-passed MP3) drop
+//! to nothing instead of sitting as frozen stubs, and the palette sampled
+//! from a station logo that colours the bars.
 
-/// Share of the gap a falling bar closes per frame (higher = slower fall)
-const BAR_RELEASE: f32 = 0.82;
-/// Frames a peak dot stays put before falling
-const PEAK_HOLD_FRAMES: u32 = 12;
-/// How far a peak dot falls per frame once released
-const PEAK_FALL: f32 = 0.025;
 /// Levels at or below this are noise; the rest is rescaled to 0-1
 const NOISE_FLOOR: f32 = 0.08;
 
 /// Remove the noise floor and stretch what is left back to 0-1
-fn gate(level: f32) -> f32 {
+pub fn gate(level: f32) -> f32 {
     ((level.clamp(0.0, 1.0) - NOISE_FLOOR) / (1.0 - NOISE_FLOOR)).max(0.0)
 }
 
-/// Per-frame spectrum state for the visualizer
-#[derive(Debug, Clone)]
-pub struct SpectrumDisplay {
-    bars: Vec<f32>,
-    peaks: Vec<f32>,
-    hold: Vec<u32>,
+/// Hue buckets used to group logo colours (30 degrees each)
+const HUE_BINS: usize = 12;
+/// Pixels darker than this (HSV value) are ignored
+const MIN_VALUE: f32 = 0.25;
+/// Pixels greyer than this (HSV saturation) are ignored, which also drops white
+const MIN_SATURATION: f32 = 0.3;
+/// A colour needs this share of the colourful pixels to make the palette
+const MIN_SHARE: f32 = 0.08;
+/// Logos with fewer colourful pixels than this share have no palette
+const MIN_COLOURFUL: f32 = 0.03;
+/// Palette colours are brightened to at least this value so bars stay
+/// visible on the dark tile
+const PALETTE_MIN_VALUE: f32 = 0.7;
+
+/// Up to three main colours of a logo, most common first, as RGB.
+///
+/// `rgba` is the image's pixels in RGBA order. Transparent, very dark and
+/// grey or white pixels are skipped, the rest are grouped by hue and each
+/// group is averaged. Returns an empty list for black-and-white logos.
+pub fn logo_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
+    let mut sums = [[0f64; 3]; HUE_BINS];
+    let mut counts = [0usize; HUE_BINS];
+    let mut total = 0usize;
+
+    for px in rgba.chunks_exact(4) {
+        if px[3] < 128 {
+            continue;
+        }
+        total += 1;
+        let (h, s, v) = rgb_to_hsv(px[0], px[1], px[2]);
+        if v < MIN_VALUE || s < MIN_SATURATION {
+            continue;
+        }
+        let bin = ((h / 360.0 * HUE_BINS as f32) as usize).min(HUE_BINS - 1);
+        for c in 0..3 {
+            sums[bin][c] += px[c] as f64;
+        }
+        counts[bin] += 1;
+    }
+
+    let colourful: usize = counts.iter().sum();
+    if total == 0 || (colourful as f32) < total as f32 * MIN_COLOURFUL {
+        return Vec::new();
+    }
+
+    let mut bins: Vec<usize> = (0..HUE_BINS)
+        .filter(|&b| counts[b] as f32 >= colourful as f32 * MIN_SHARE)
+        .collect();
+    bins.sort_by(|a, b| counts[*b].cmp(&counts[*a]));
+    bins.truncate(3);
+
+    bins.into_iter()
+        .map(|b| {
+            let n = counts[b] as f64;
+            let avg = [
+                (sums[b][0] / n) as u8,
+                (sums[b][1] / n) as u8,
+                (sums[b][2] / n) as u8,
+            ];
+            brighten(avg)
+        })
+        .collect()
 }
 
-impl SpectrumDisplay {
-    /// Create the state for `bands` spectrum bands, all at zero
-    pub fn new(bands: usize) -> Self {
-        Self {
-            bars: vec![0.0; bands],
-            peaks: vec![0.0; bands],
-            hold: vec![0; bands],
-        }
-    }
+/// Hue (0-360), saturation and value (0-1)
+fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
+    let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let d = max - min;
+    let h = if d == 0.0 {
+        0.0
+    } else if max == r {
+        60.0 * ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        60.0 * ((b - r) / d + 2.0)
+    } else {
+        60.0 * ((r - g) / d + 4.0)
+    };
+    let s = if max == 0.0 { 0.0 } else { d / max };
+    (h, s, max)
+}
 
-    /// Advance one frame with the latest analyzer levels (0.0-1.0)
-    pub fn update(&mut self, levels: &[f32]) {
-        for (i, &level) in levels.iter().enumerate().take(self.bars.len()) {
-            let level = gate(level);
-            let bar = &mut self.bars[i];
-            *bar = if level >= *bar {
-                level
-            } else {
-                *bar * BAR_RELEASE + level * (1.0 - BAR_RELEASE)
-            };
-
-            if *bar >= self.peaks[i] {
-                self.peaks[i] = *bar;
-                self.hold[i] = PEAK_HOLD_FRAMES;
-            } else if self.hold[i] > 0 {
-                self.hold[i] -= 1;
-            } else {
-                self.peaks[i] = (self.peaks[i] - PEAK_FALL).max(*bar);
-            }
-        }
+/// Scale a colour up so its brightest channel reaches PALETTE_MIN_VALUE
+fn brighten(rgb: [u8; 3]) -> [u8; 3] {
+    let max = *rgb.iter().max().unwrap_or(&0) as f32 / 255.0;
+    if max >= PALETTE_MIN_VALUE || max == 0.0 {
+        return rgb;
     }
-
-    /// Drop everything to zero (playback stopped)
-    pub fn reset(&mut self) {
-        self.bars.fill(0.0);
-        self.peaks.fill(0.0);
-        self.hold.fill(0);
-    }
-
-    pub fn bars(&self) -> &[f32] {
-        &self.bars
-    }
-
-    pub fn peaks(&self) -> &[f32] {
-        &self.peaks
-    }
+    let k = PALETTE_MIN_VALUE / max;
+    rgb.map(|c| ((c as f32 * k).round()).min(255.0) as u8)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn bars_jump_up_immediately() {
-        let mut d = SpectrumDisplay::new(2);
-        d.update(&[1.0, 0.54]);
-        assert_eq!(d.bars()[0], 1.0);
-        assert!((d.bars()[1] - 0.5).abs() < 1e-6);
+    fn image(pixels: &[([u8; 3], usize)]) -> Vec<u8> {
+        pixels
+            .iter()
+            .flat_map(|&(rgb, n)| std::iter::repeat([rgb[0], rgb[1], rgb[2], 255]).take(n))
+            .flatten()
+            .collect()
     }
 
     #[test]
-    fn noise_floor_is_zero() {
-        let mut d = SpectrumDisplay::new(3);
-        d.update(&[0.0, 0.03, NOISE_FLOOR]);
-        assert_eq!(d.bars(), &[0.0, 0.0, 0.0]);
-        assert_eq!(d.peaks(), &[0.0, 0.0, 0.0]);
+    fn gate_drops_noise_and_rescales() {
+        assert_eq!(gate(0.0), 0.0);
+        assert_eq!(gate(NOISE_FLOOR), 0.0);
+        assert_eq!(gate(1.0), 1.0);
+        assert!((gate(0.54) - 0.5).abs() < 1e-6);
+        assert_eq!(gate(5.0), 1.0);
     }
 
     #[test]
-    fn bars_ease_down() {
-        let mut d = SpectrumDisplay::new(1);
-        d.update(&[1.0]);
-        d.update(&[0.0]);
-        assert!((d.bars()[0] - BAR_RELEASE).abs() < 1e-6);
+    fn green_logo_gives_green() {
+        let img = image(&[([255, 255, 255], 500), ([90, 190, 90], 300)]);
+        let p = logo_palette(&img);
+        assert_eq!(p.len(), 1);
+        let [r, g, b] = p[0];
+        assert!(g > r && g > b);
     }
 
     #[test]
-    fn peak_holds_then_falls() {
-        let mut d = SpectrumDisplay::new(1);
-        d.update(&[1.0]);
-        for _ in 0..PEAK_HOLD_FRAMES {
-            d.update(&[0.0]);
-            assert_eq!(d.peaks()[0], 1.0);
-        }
-        d.update(&[0.0]);
-        assert!(d.peaks()[0] < 1.0);
-        assert!(d.peaks()[0] >= d.bars()[0]);
+    fn colours_ordered_by_share() {
+        let img = image(&[([220, 30, 30], 100), ([30, 60, 220], 300), ([0, 0, 0], 400)]);
+        let p = logo_palette(&img);
+        assert_eq!(p.len(), 2);
+        assert!(p[0][2] > p[0][0], "blue first");
+        assert!(p[1][0] > p[1][2], "red second");
     }
 
     #[test]
-    fn peak_never_below_bar() {
-        let mut d = SpectrumDisplay::new(1);
-        d.update(&[0.6]);
-        for _ in 0..200 {
-            d.update(&[0.3]);
-            assert!(d.peaks()[0] >= d.bars()[0]);
-        }
+    fn black_and_white_logo_has_no_palette() {
+        let img = image(&[
+            ([0, 0, 0], 300),
+            ([255, 255, 255], 300),
+            ([128, 128, 128], 50),
+        ]);
+        assert!(logo_palette(&img).is_empty());
     }
 
     #[test]
-    fn levels_are_clamped() {
-        let mut d = SpectrumDisplay::new(2);
-        d.update(&[5.0, -1.0]);
-        assert_eq!(d.bars(), &[1.0, 0.0]);
+    fn at_most_three_colours() {
+        let img = image(&[
+            ([230, 30, 30], 100),
+            ([30, 230, 30], 100),
+            ([30, 30, 230], 100),
+            ([230, 230, 30], 100),
+        ]);
+        assert_eq!(logo_palette(&img).len(), 3);
     }
 
     #[test]
-    fn reset_zeroes_everything() {
-        let mut d = SpectrumDisplay::new(2);
-        d.update(&[0.9, 0.9]);
-        d.reset();
-        assert_eq!(d.bars(), &[0.0, 0.0]);
-        assert_eq!(d.peaks(), &[0.0, 0.0]);
+    fn transparent_pixels_ignored() {
+        let mut img = image(&[([200, 40, 40], 50)]);
+        img.extend([30, 200, 30, 0].repeat(1000));
+        let p = logo_palette(&img);
+        assert_eq!(p.len(), 1);
+        assert!(p[0][0] > p[0][1]);
+    }
+
+    #[test]
+    fn dark_colours_brightened() {
+        let img = image(&[([20, 20, 120], 100)]);
+        let p = logo_palette(&img);
+        assert_eq!(p.len(), 1);
+        assert!(p[0][2] as f32 / 255.0 >= PALETTE_MIN_VALUE - 0.01);
+    }
+
+    #[test]
+    fn empty_image() {
+        assert!(logo_palette(&[]).is_empty());
     }
 }

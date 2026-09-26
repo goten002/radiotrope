@@ -22,7 +22,7 @@ use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
 use radiotrope_app::providers::ProviderRegistry;
-use radiotrope_app::visual::SpectrumDisplay;
+use radiotrope_app::visual::{gate, logo_palette};
 
 use app::controller::AppController;
 use app::state::AppSnapshot;
@@ -150,6 +150,16 @@ fn main() {
     }
 
     ui.set_touch_scroll(cfg!(feature = "embedded"));
+
+    // Re-sample the visualizer colours whenever the station logo changes
+    {
+        let ui_weak = ui.as_weak();
+        ui.on_logo_changed(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                apply_logo_palette(&ui);
+            }
+        });
+    }
 
     // Apply saved theme and viz mode
     ui.set_dark_mode(settings.theme.is_dark());
@@ -816,14 +826,10 @@ fn main() {
     if let Some(analysis) = analysis {
         let ui_weak = ui.as_weak();
         let bands = radiotrope::config::audio::SPECTRUM_BANDS;
-        // Pre-allocate the models once; update in-place each tick
+        // Pre-allocate the model once; update in place each tick
         let spectrum_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; bands]));
-        let peaks_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; bands]));
         let viz = ui.global::<VizData>();
         viz.set_spectrum(ModelRc::from(spectrum_model.clone()));
-        viz.set_peaks(ModelRc::from(peaks_model.clone()));
-        let mut spectrum_display = SpectrumDisplay::new(bands);
-        let mut vu_display = SpectrumDisplay::new(2);
         let mut idle = false;
         _viz_timer.start(
             slint::TimerMode::Repeated,
@@ -835,14 +841,12 @@ fn main() {
                 if !ui.get_is_playing() {
                     if !idle {
                         idle = true;
-                        spectrum_display.reset();
-                        vu_display.reset();
                         show_viz_frame(
                             &viz,
-                            &spectrum_display,
-                            &vu_display,
+                            0.0,
+                            0.0,
+                            &[0.0; radiotrope::config::audio::SPECTRUM_BANDS],
                             &spectrum_model,
-                            &peaks_model,
                         );
                     }
                     return;
@@ -852,15 +856,7 @@ fn main() {
                 let Ok(a) = analysis.try_lock() else { return };
                 let (vu_l, vu_r, spectrum) = (a.vu_left, a.vu_right, a.spectrum);
                 drop(a);
-                spectrum_display.update(&spectrum);
-                vu_display.update(&[vu_l, vu_r]);
-                show_viz_frame(
-                    &viz,
-                    &spectrum_display,
-                    &vu_display,
-                    &spectrum_model,
-                    &peaks_model,
-                );
+                show_viz_frame(&viz, vu_l, vu_r, &spectrum, &spectrum_model);
             },
         );
     }
@@ -1257,23 +1253,35 @@ fn setup_rotary_encoder(
         .ok();
 }
 
-/// Push one visualizer frame to the UI. Models are updated in place, so
-/// nothing is allocated per frame.
+/// Push one visualizer frame to the UI. The analyzer already smooths the
+/// levels (fast rise, quick fall), so bars follow it directly; only the
+/// noise floor is removed. The model is updated in place.
 fn show_viz_frame(
     viz: &VizData,
-    spectrum: &SpectrumDisplay,
-    vu: &SpectrumDisplay,
+    vu_left: f32,
+    vu_right: f32,
+    spectrum: &[f32],
     spectrum_model: &VecModel<f32>,
-    peaks_model: &VecModel<f32>,
 ) {
-    for (i, (&bar, &peak)) in spectrum.bars().iter().zip(spectrum.peaks()).enumerate() {
-        spectrum_model.set_row_data(i, bar);
-        peaks_model.set_row_data(i, peak);
+    for (i, &level) in spectrum.iter().enumerate() {
+        spectrum_model.set_row_data(i, gate(level));
     }
-    viz.set_vu_left(vu.bars()[0]);
-    viz.set_vu_right(vu.bars()[1]);
-    viz.set_vu_peak_left(vu.peaks()[0]);
-    viz.set_vu_peak_right(vu.peaks()[1]);
+    viz.set_vu_left(vu_left.clamp(0.0, 1.0));
+    viz.set_vu_right(vu_right.clamp(0.0, 1.0));
+}
+
+/// Colour the visualizer with the main colours of the station logo
+fn apply_logo_palette(ui: &App) {
+    let colors: Vec<slint::Color> = ui
+        .get_current_logo()
+        .to_rgba8()
+        .map(|buf| logo_palette(buf.as_bytes()))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|[r, g, b]| slint::Color::from_rgb_u8(r, g, b))
+        .collect();
+    ui.global::<VizStyle>()
+        .set_logo_colors(ModelRc::from(std::rc::Rc::new(VecModel::from(colors))));
 }
 
 /// Fill in the About dialog and handle its links
