@@ -102,6 +102,28 @@ component CheckMenuItem inherits Rectangle {
     }
 }
 
+// Window button in our own title bar (minimize, maximize, close, pin)
+component CaptionButton inherits Rectangle {
+    in property <bool> danger;
+    callback clicked();
+    out property <bool> hovered: touch.has-hover;
+    out property <color> glyph: root.danger && touch.has-hover ? #ffffff : Theme.menu-text;
+
+    width: 42px;
+    height: 32px;
+    background: root.danger && touch.pressed ? #c42b1c
+        : root.danger && touch.has-hover ? #e81123
+        : touch.pressed ? Theme.menu-hover
+        : touch.has-hover ? Theme.menu-bar-hover : transparent;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    @children
+}
+
 export component MenuBar inherits Rectangle {
     height: 32px;
     // Transparent: drawn on the header background shared with the playback
@@ -122,10 +144,19 @@ export component MenuBar inherits Rectangle {
     callback open-recording-settings();
     callback open-recordings-folder();
 
+    // Our own title bar: the bar moves the window and ends with the window
+    // buttons (desktop only, when the system frame is turned off)
+    in property <bool> custom-frame;
+    in-out property <bool> maximized;
+    in-out property <bool> always-on-top;
+    callback minimize();
+    callback toggle-custom-frame();
+    callback close-window();
+
 
     HorizontalLayout {
         padding-left: 4px;
-        padding-right: 4px;
+        padding-right: root.custom-frame ? 0 : 4px;
         alignment: stretch;
 
         Rectangle {
@@ -204,7 +235,16 @@ export component MenuBar inherits Rectangle {
             }
         }
 
-        Rectangle { horizontal-stretch: 1; }
+        // Empty part of the bar: drag to move, double-click to maximize
+        WindowMoveArea {
+            horizontal-stretch: 1;
+            enabled: root.custom-frame;
+
+            TouchArea {
+                enabled: root.custom-frame;
+                double-clicked => { root.maximized = !root.maximized; }
+            }
+        }
 
         // About button at the right end
         Rectangle {
@@ -228,6 +268,83 @@ export component MenuBar inherits Rectangle {
                     height: 16px;
                     source: @image-url("icons/circle-info.svg");
                     colorize: about-touch.has-hover ? Theme.accent : Theme.menu-text;
+                }
+            }
+        }
+
+        if root.custom-frame: HorizontalLayout {
+            padding-left: 6px;
+
+            pin := CaptionButton {
+                clicked => { root.always-on-top = !root.always-on-top; }
+
+                Icon {
+                    width: 13px;
+                    height: 13px;
+                    source: @image-url("icons/thumbtack.svg");
+                    colorize: root.always-on-top ? Theme.accent : pin.glyph;
+                }
+            }
+
+            min := CaptionButton {
+                clicked => { root.minimize(); }
+
+                Rectangle {
+                    width: 10px;
+                    height: 1px;
+                    background: min.glyph;
+                }
+            }
+
+            max := CaptionButton {
+                clicked => { root.maximized = !root.maximized; }
+
+                if !root.maximized: Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-width: 1px;
+                    border-radius: 1px;
+                    border-color: max.glyph;
+                }
+                // Restore: two overlapping squares
+                if root.maximized: Rectangle {
+                    width: 10px;
+                    height: 10px;
+
+                    Rectangle {
+                        x: 2px;
+                        y: 0;
+                        width: 8px;
+                        height: 8px;
+                        border-width: 1px;
+                        border-radius: 1px;
+                        border-color: max.glyph;
+                    }
+                    Rectangle {
+                        x: 0;
+                        y: 2px;
+                        width: 8px;
+                        height: 8px;
+                        border-width: 1px;
+                        border-radius: 1px;
+                        border-color: max.glyph;
+                        background: Theme.panel;
+                    }
+                }
+            }
+
+            close := CaptionButton {
+                danger: true;
+                clicked => { root.close-window(); }
+
+                Path {
+                    width: 10px;
+                    height: 10px;
+                    viewbox-width: 10;
+                    viewbox-height: 10;
+                    commands: "M 0 0 L 10 10 M 10 0 L 0 10";
+                    stroke: close.glyph;
+                    stroke-width: 1.2px;
                 }
             }
         }
@@ -351,6 +468,34 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                if Platform.has-window-frame: CheckMenuItem {
+                    label: "Always on Top";
+                    icon: @image-url("icons/thumbtack.svg");
+                    checked: root.always-on-top;
+                    clicked => {
+                        // Act before closing: closing the popup drops this
+                        // conditional item and the rest of the handler
+                        root.always-on-top = !root.always-on-top;
+                        view-popup.close();
+                    }
+                }
+                if Platform.has-window-frame: CheckMenuItem {
+                    label: "Custom Title Bar";
+                    icon: @image-url("icons/window-maximize.svg");
+                    checked: root.custom-frame;
+                    clicked => {
+                        root.toggle-custom-frame();
+                        view-popup.close();
+                    }
+                }
+                if Platform.has-window-frame: Rectangle {
                     height: 9px;
                     Rectangle {
                         y: 4px;

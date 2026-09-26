@@ -5,6 +5,8 @@ export global Platform {
     out property <bool> has-wifi: true;
     // No folder picker or file manager on the kiosk
     out property <bool> has-file-manager: false;
+    // Full screen on the Pi: no title bar or window buttons
+    out property <bool> has-window-frame: false;
 }
 
 export { WifiSettingsDialog, WifiNetworkEntry } from "../../dialogs/wifi-settings.slint";

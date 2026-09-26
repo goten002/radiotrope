@@ -27,6 +27,14 @@ export component App inherits Window {
     preferred-width: 800px;
     preferred-height: 600px;
 
+    // Own title bar in place of the system frame (desktop; saved in settings)
+    in-out property <bool> custom-frame: Platform.has-window-frame;
+    in-out property <bool> keep-on-top: false;
+    no-frame: root.custom-frame;
+    // Edges to grab for resizing, since there is no system frame
+    resize-border-width: root.custom-frame && !root.maximized ? 6px : 0px;
+    always-on-top: root.keep-on-top;
+
     callback play-url(string);
     callback stop-clicked();
     callback volume-changed(float);
@@ -179,6 +187,12 @@ export component App inherits Window {
             VerticalLayout {
             MenuBar {
                 show-station-stats <=> root.show-station-stats;
+                custom-frame: root.custom-frame;
+                maximized <=> root.maximized;
+                always-on-top <=> root.keep-on-top;
+                minimize => { root.minimized = true; }
+                close-window => { root.close(); }
+                toggle-custom-frame => { root.custom-frame = !root.custom-frame; }
                 open-wifi-settings => {
                     root.show-wifi-settings = true;
                     root.wifi-scan-requested();
@@ -392,5 +406,11 @@ export component App inherits Window {
         disconnect-requested() => { root.wifi-disconnect-requested(); }
         close-requested() => { root.show-wifi-settings = false; }
         wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+    }
+
+    // Thin outline so the edge stays visible without the system frame
+    if root.custom-frame && !root.maximized && !root.full-screen: Rectangle {
+        border-width: 1px;
+        border-color: Theme.dark-mode ? #ffffff1f : #0000002e;
     }
 }
