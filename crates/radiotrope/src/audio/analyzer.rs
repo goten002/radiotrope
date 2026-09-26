@@ -12,7 +12,8 @@ use rodio::Source;
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use crate::config::audio::{
-    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, VU_ATTACK, VU_DECAY,
+    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, VU_ADAPT_DOWN_SECS,
+    VU_ADAPT_UP_SECS, VU_ATTACK, VU_DECAY, VU_HEADROOM_DB, VU_RANGE_DB, VU_SILENCE_DB, VU_START_DB,
 };
 
 use super::types::AudioAnalysis;
@@ -24,6 +25,48 @@ fn smooth_level(current: f32, target: f32) -> f32 {
         current + (target - current) * VU_ATTACK
     } else {
         current * VU_DECAY + target * (1.0 - VU_DECAY)
+    }
+}
+
+fn to_db(rms: f32) -> f32 {
+    20.0 * rms.max(1e-9).log10()
+}
+
+/// Auto-ranging decibel scale for the VU meters. It follows the station's
+/// typical loudness and spans [`VU_RANGE_DB`] below a point just above it,
+/// so a quiet station and a loud, heavily compressed one both swing across
+/// the meter instead of sitting low or pinned at the top.
+#[derive(Debug, Clone)]
+struct VuScale {
+    /// Recent typical loudness (dBFS RMS)
+    reference_db: f32,
+}
+
+impl VuScale {
+    fn new() -> Self {
+        Self {
+            reference_db: VU_START_DB,
+        }
+    }
+
+    /// Move the reference towards a block of `secs` seconds at `rms`
+    fn track(&mut self, rms: f32, secs: f32) {
+        let db = to_db(rms);
+        if db < VU_SILENCE_DB {
+            return;
+        }
+        let tau = if db > self.reference_db {
+            VU_ADAPT_UP_SECS
+        } else {
+            VU_ADAPT_DOWN_SECS
+        };
+        self.reference_db += (db - self.reference_db) * (1.0 - (-secs / tau).exp());
+    }
+
+    /// Meter position (0-1) for an RMS level
+    fn level(&self, rms: f32) -> f32 {
+        let top = self.reference_db + VU_HEADROOM_DB;
+        ((to_db(rms) - (top - VU_RANGE_DB)) / VU_RANGE_DB).clamp(0.0, 1.0)
     }
 }
 
@@ -39,6 +82,7 @@ pub struct AnalyzingSource<S> {
     sample_rate: NonZero<u32>,
     fft_planner: FftPlanner<f32>,
     local_sample_count: u64,
+    vu_scale: VuScale,
 }
 
 impl<S> AnalyzingSource<S>
@@ -63,6 +107,7 @@ where
             sample_rate,
             fft_planner: FftPlanner::new(),
             local_sample_count: 0,
+            vu_scale: VuScale::new(),
         }
     }
 
@@ -130,8 +175,14 @@ where
         }
 
         if let Ok(mut analysis) = self.analysis.lock() {
-            analysis.vu_left = smooth_level(analysis.vu_left, rms_left * 3.0);
-            analysis.vu_right = smooth_level(analysis.vu_right, rms_right * 3.0);
+            let block_secs = FFT_SIZE as f32 / self.sample_rate.get() as f32;
+            self.vu_scale.track(rms_left.max(rms_right), block_secs);
+            let (vu_left, vu_right) = (
+                self.vu_scale.level(rms_left),
+                self.vu_scale.level(rms_right),
+            );
+            analysis.vu_left = smooth_level(analysis.vu_left, vu_left);
+            analysis.vu_right = smooth_level(analysis.vu_right, vu_right);
 
             for (i, spectrum_val) in spectrum.iter().enumerate() {
                 analysis.spectrum[i] = smooth_level(analysis.spectrum[i], spectrum_val.min(1.0));
@@ -207,6 +258,47 @@ mod tests {
     fn smooth_level_rises_fast() {
         let v = smooth_level(0.0, 1.0);
         assert!((v - VU_ATTACK).abs() < 1e-6);
+    }
+
+    fn from_db(db: f32) -> f32 {
+        10f32.powf(db / 20.0)
+    }
+
+    /// Feed `secs` seconds of a steady level through the scale
+    fn settle(scale: &mut VuScale, db: f32, secs: f32) {
+        for _ in 0..(secs * 100.0) as usize {
+            scale.track(from_db(db), 0.01);
+        }
+    }
+
+    #[test]
+    fn vu_scale_loud_station_not_pinned() {
+        let mut scale = VuScale::new();
+        settle(&mut scale, -9.0, 5.0);
+        let typical = scale.level(from_db(-9.0));
+        assert!(typical > 0.5 && typical < 0.85, "{typical}");
+        // A few dB of movement moves the meter a good way
+        let swing = scale.level(from_db(-7.0)) - scale.level(from_db(-12.0));
+        assert!(swing > 0.3, "{swing}");
+    }
+
+    #[test]
+    fn vu_scale_quiet_station_fills_meter() {
+        let mut loud = VuScale::new();
+        settle(&mut loud, -9.0, 30.0);
+        let mut quiet = VuScale::new();
+        settle(&mut quiet, -28.0, 30.0);
+        let (a, b) = (loud.level(from_db(-9.0)), quiet.level(from_db(-28.0)));
+        assert!((a - b).abs() < 0.05, "{a} vs {b}");
+    }
+
+    #[test]
+    fn vu_scale_ignores_silence() {
+        let mut scale = VuScale::new();
+        settle(&mut scale, -90.0, 10.0);
+        assert_eq!(scale.reference_db, VU_START_DB);
+        assert_eq!(scale.level(0.0), 0.0);
+        assert_eq!(scale.level(1.0), 1.0);
     }
 
     #[test]

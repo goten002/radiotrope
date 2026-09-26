@@ -6,6 +6,8 @@ export component Playback inherits Rectangle {
     in property <string> station-name;
     in property <string> codec-info;
     in property <string> status-text;
+    // Time on the current station, shown in the chip while playing
+    in property <string> playtime;
     in property <bool> is-loading;
     in property <bool> is-error;
     in property <image> station-logo;
@@ -91,7 +93,8 @@ export component Playback inherits Rectangle {
 
             HorizontalLayout {
                 Chip {
-                    text: root.status-text;
+                    text: root.status-text == "Playing" && root.playtime != "--" && root.playtime != ""
+                        ? "Playing " + root.playtime : root.status-text;
                     tone: root.is-error ? Theme.danger : Theme.accent-text;
                     dot: true;
                     pulse: root.status-text == "Playing" || root.is-loading;

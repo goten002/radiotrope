@@ -12,6 +12,22 @@ pub mod audio {
     /// Extra gain for the top band, scaled down linearly to none at the bottom
     pub const SPECTRUM_TREBLE_BOOST: f32 = 3.0;
 
+    /// Decibels the VU meter spans from empty to full. The scale follows
+    /// each station's own loudness, so quiet and loud (heavily compressed)
+    /// stations both swing across the meter.
+    pub const VU_RANGE_DB: f32 = 15.0;
+    /// How far above the station's typical loudness the meter tops out (dB)
+    pub const VU_HEADROOM_DB: f32 = 4.0;
+    /// Typical loudness assumed when a stream starts (dBFS RMS)
+    pub const VU_START_DB: f32 = -20.0;
+    /// Seconds the loudness reference takes to follow a louder station
+    pub const VU_ADAPT_UP_SECS: f32 = 0.5;
+    /// Seconds the loudness reference takes to follow a quieter station
+    pub const VU_ADAPT_DOWN_SECS: f32 = 5.0;
+    /// Blocks quieter than this (dBFS RMS) are silence and don't move the
+    /// reference
+    pub const VU_SILENCE_DB: f32 = -60.0;
+
     /// VU meter decay factor (0.0-1.0, higher = slower decay)
     pub const VU_DECAY: f32 = 0.7;
 

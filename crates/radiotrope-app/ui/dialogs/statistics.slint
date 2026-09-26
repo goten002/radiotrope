@@ -69,7 +69,7 @@ export component StatisticsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
     in property <string> stat-health: "--";
-    in property <string> stat-uptime: "--";
+    in property <string> stat-playtime: "--";
     in property <string> stat-codec: "--";
     in property <string> stat-bitrate: "--";
     in property <string> stat-sample-rate: "--";
@@ -98,7 +98,7 @@ export component StatisticsDialog inherits Rectangle {
                 tone: root.stat-health == "Healthy" ? Theme.success
                     : root.stat-health == "--" ? Theme.text-primary : Theme.accent-text;
             }
-            StatTile { label: "UPTIME"; value: root.stat-uptime; }
+            StatTile { label: "PLAYTIME"; value: root.stat-playtime; }
             StatTile { label: "THROUGHPUT"; value: root.stat-throughput; }
             StatTile { label: "BUFFER"; value: root.stat-buffer-level; }
         }
