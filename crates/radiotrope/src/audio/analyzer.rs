@@ -11,7 +11,9 @@ use std::time::Duration;
 use rodio::Source;
 use rustfft::{num_complex::Complex, FftPlanner};
 
-use crate::config::audio::{FFT_SIZE, SPECTRUM_BANDS, VU_ATTACK, VU_DECAY};
+use crate::config::audio::{
+    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, VU_ATTACK, VU_DECAY,
+};
 
 use super::types::AudioAnalysis;
 
@@ -34,6 +36,7 @@ pub struct AnalyzingSource<S> {
     buffer_left: Vec<f32>,
     buffer_right: Vec<f32>,
     channels: NonZero<u16>,
+    sample_rate: NonZero<u32>,
     fft_planner: FftPlanner<f32>,
     local_sample_count: u64,
 }
@@ -49,6 +52,7 @@ where
     /// thread from overwriting a reset.
     pub fn new(source: S, analysis: Arc<Mutex<AudioAnalysis>>, active: Arc<AtomicBool>) -> Self {
         let channels = source.channels();
+        let sample_rate = source.sample_rate();
         Self {
             inner: source,
             analysis,
@@ -56,6 +60,7 @@ where
             buffer_left: Vec::with_capacity(FFT_SIZE),
             buffer_right: Vec::with_capacity(FFT_SIZE),
             channels,
+            sample_rate,
             fft_planner: FftPlanner::new(),
             local_sample_count: 0,
         }
@@ -97,14 +102,18 @@ where
         let mut spectrum = [0.0f32; SPECTRUM_BANDS];
         let nyquist = FFT_SIZE / 2;
         let fft_norm = 1.0 / FFT_SIZE as f32;
+        // Spread the bands up to SPECTRUM_MAX_HZ only: most streams are
+        // low-passed around 16 kHz, so bands above that never move
+        let hz_per_bin = self.sample_rate.get() as f32 / FFT_SIZE as f32;
+        let top_bin = ((SPECTRUM_MAX_HZ / hz_per_bin) as usize).clamp(SPECTRUM_BANDS, nyquist);
 
-        // Logarithmic frequency distribution
+        // Quadratic (roughly logarithmic) frequency distribution
         for (band, spectrum_val) in spectrum.iter_mut().enumerate() {
             let low_freq = (band as f32 / SPECTRUM_BANDS as f32).powf(2.0);
             let high_freq = ((band + 1) as f32 / SPECTRUM_BANDS as f32).powf(2.0);
 
-            let start = (low_freq * nyquist as f32) as usize;
-            let end = ((high_freq * nyquist as f32) as usize)
+            let start = (low_freq * top_bin as f32) as usize;
+            let end = ((high_freq * top_bin as f32) as usize)
                 .max(start + 1)
                 .min(nyquist);
 
@@ -114,7 +123,10 @@ where
                 max_mag = max_mag.max(mag);
             }
 
-            *spectrum_val = (max_mag * 8.0).sqrt().min(1.0);
+            // Music has far less energy up high; lift the treble so the
+            // right-hand bars move too
+            let tilt = 1.0 + SPECTRUM_TREBLE_BOOST * band as f32 / (SPECTRUM_BANDS - 1) as f32;
+            *spectrum_val = (max_mag * 8.0 * tilt).sqrt().min(1.0);
         }
 
         if let Ok(mut analysis) = self.analysis.lock() {

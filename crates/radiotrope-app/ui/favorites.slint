@@ -34,19 +34,33 @@ component FavoriteRow inherits Rectangle {
     in property <image> logo-image;
     in property <bool> has-logo;
     in property <bool> is-drag-source;
+    in property <bool> dragging;
     in property <int> row-index;
     callback clicked();
     callback edit-clicked();
     callback grip-moved(/* total y offset from press point */ length);
     callback grip-released();
+    // The handle was pressed or let go; the list stops scrolling meanwhile
+    // so it doesn't steal the drag
+    callback handle-held(bool);
+
+    // Set once a press turns into a drag, so releasing doesn't also play
+    property <bool> dragged: false;
 
     height: 56px;
-    opacity: is-drag-source ? 0.35 : 1.0;
-    background: is-current ? Theme.accent-soft
-              : touch.has-hover ? Theme.menu-hover
+    background: root.is-drag-source ? Theme.elevated
+              : is-current ? Theme.accent-soft
+              : touch.has-hover || handle.has-hover ? Theme.menu-hover
               : transparent;
     animate background { duration: Theme.fast; }
     border-radius: Theme.radius-md;
+    border-width: root.is-drag-source ? 1px : 0;
+    border-color: Theme.accent;
+    // Lifted look while dragged (no shadow otherwise: it would show
+    // through the transparent background)
+    drop-shadow-blur: root.is-drag-source ? 16px : 0;
+    drop-shadow-offset-y: root.is-drag-source ? 4px : 0;
+    drop-shadow-color: root.is-drag-source ? Theme.shadow : transparent;
 
     // Accent left border for current station
     if is-current: Rectangle {
@@ -59,48 +73,28 @@ component FavoriteRow inherits Rectangle {
     }
 
     touch := TouchArea {
-        clicked => { root.clicked(); }
         mouse-cursor: pointer;
+        clicked => { root.clicked(); }
     }
 
     HorizontalLayout {
-        padding-left: 12px;
+        padding-left: 10px;
         padding-right: 12px;
         spacing: 8px;
         alignment: stretch;
 
-        // Grip handle — draggable
+        // Drag hint
         VerticalLayout {
             alignment: center;
-            width: 24px;
+            width: 20px;
 
-            Rectangle {
-                width: 24px;
-                height: 36px;
-
-                grip-touch := TouchArea {
-                    mouse-cursor: self.pressed ? grabbing : grab;
-                    moved => {
-                        if self.pressed {
-                            root.grip-moved(self.mouse-y - self.pressed-y);
-                        }
-                    }
-                    pointer-event(event) => {
-                        if event.kind == PointerEventKind.up {
-                            root.grip-released();
-                        }
-                    }
-                }
-
-                Image {
-                    source: @image-url("icons/grip-vertical.svg");
-                    width: 16px;
-                    height: 16px;
-                    colorize: grip-touch.has-hover || grip-touch.pressed
-                              ? Theme.text-primary : Theme.text-tertiary;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+            Image {
+                source: @image-url("icons/grip-lines.svg");
+                width: 20px;
+                height: 20px;
+                colorize: root.is-drag-source ? Theme.accent
+                    : handle.has-hover ? Theme.text-primary
+                    : touch.has-hover ? Theme.text-secondary : Theme.text-tertiary;
             }
         }
 
@@ -113,7 +107,7 @@ component FavoriteRow inherits Rectangle {
                 width: 40px;
                 height: 40px;
                 background: Theme.elevated;
-                border-radius: 8px;
+                border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.hairline;
                 clip: true;
@@ -183,6 +177,37 @@ component FavoriteRow inherits Rectangle {
             }
         }
     }
+
+    // Drag handle: the grip and the logo. Press and move to reorder; a
+    // click without moving still plays
+    handle := TouchArea {
+        x: 0;
+        width: 86px;
+        mouse-cursor: root.dragging ? grabbing : grab;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.dragged = false;
+                root.handle-held(true);
+            }
+            if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                root.handle-held(false);
+                if root.dragged {
+                    root.grip-released();
+                }
+            }
+        }
+        moved => {
+            if self.pressed && (root.dragged || abs(self.mouse-y - self.pressed-y) > 3px) {
+                root.dragged = true;
+                root.grip-moved(self.mouse-y - self.pressed-y);
+            }
+        }
+        clicked => {
+            if !root.dragged {
+                root.clicked();
+            }
+        }
+    }
 }
 
 // Row height (56px) + spacing (4px)
@@ -195,6 +220,10 @@ export component Favorites inherits Rectangle {
     in-out property <[FavoriteStation]> favorites;
     in-out property <[image]> favorite-logos;
     in property <string> current-station-url;
+    // Drag the list itself to scroll (touch screens). Off on the desktop,
+    // where the wheel and scrollbar scroll and a list that grabs drags
+    // would eat quick reorder drags
+    in property <bool> touch-scroll: false;
 
     callback favorite-clicked(FavoriteStation);
     callback favorite-edit-requested(FavoriteStation);
@@ -203,10 +232,10 @@ export component Favorites inherits Rectangle {
     // Drag state
     property <int> drag-from-index: -1;
     property <int> drag-target-index: -1;
-    // Mouse y in viewport coordinates (for auto-scroll)
-    property <length> drag-mouse-in-viewport: 0;
-    // Scroll offset exposed for auto-scroll from grip handlers
-    property <length> scroll-y: 0;
+    // How far the dragged row has moved from where it was picked up
+    property <length> drag-offset: 0;
+    // A row's drag handle is held down
+    property <bool> handle-held: false;
 
     background: Theme.surface;
 
@@ -243,81 +272,87 @@ export component Favorites inherits Rectangle {
     // Favorites list
     if favorites.length > 0: Rectangle {
         fav-flickable := Flickable {
-            interactive: root.drag-from-index < 0;
+            interactive: root.touch-scroll && root.drag-from-index < 0 && !root.handle-held;
             content-height: fav-layout.preferred-height;
-            changed content-y => { root.scroll-y = self.content-y; }
 
             fav-layout := VerticalLayout {
                 padding: 8px;
                 padding-right: 14px;
                 spacing: 4px;
 
-                for station[idx] in root.favorites: FavoriteRow {
-                    name: station.name;
-                    country: station.country;
-                    is-current: station.url == root.current-station-url;
-                    logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
-                    has-logo: idx < root.favorite-logos.length
-                        ? root.favorite-logos[idx].width > 0
-                        : false;
-                    is-drag-source: root.drag-from-index == idx;
-                    row-index: idx;
-                    clicked => {
-                        root.favorite-clicked(station);
-                    }
-                    edit-clicked => {
-                        root.favorite-edit-requested(station);
-                    }
-                    grip-moved(offset-y) => {
-                        // Start drag on first movement
-                        if root.drag-from-index < 0 {
-                            root.drag-from-index = idx;
-                            root.drag-target-index = idx;
+                for station[idx] in root.favorites: Rectangle {
+                    height: 56px;
+                    // The dragged row draws above the others
+                    z: root.drag-from-index == idx ? 1 : 0;
+
+                    FavoriteRow {
+                        // Dragged row follows the pointer; rows between its
+                        // old and new place slide over to open a gap
+                        y: root.drag-from-index == idx ? root.drag-offset
+                            : root.drag-from-index < 0 ? 0
+                            : root.drag-from-index < idx && idx <= root.drag-target-index ? -RowMetrics.row-stride
+                            : root.drag-target-index <= idx && idx < root.drag-from-index ? RowMetrics.row-stride
+                            : 0;
+                        // Only the neighbours glide; on drop everything snaps,
+                        // since the list is reordered in the same moment
+                        animate y {
+                            duration: root.drag-from-index < 0 || root.drag-from-index == idx ? 0ms : Theme.normal;
+                            easing: ease-out;
                         }
-                        // Mouse position in viewport coordinates
-                        root.drag-mouse-in-viewport = RowMetrics.list-padding
-                            + idx * RowMetrics.row-stride + 28px + offset-y;
-                        // Target index from viewport position
-                        root.drag-target-index = Math.clamp(
-                            Math.round((root.drag-mouse-in-viewport - RowMetrics.list-padding)
-                                / RowMetrics.row-stride),
-                            0,
-                            root.favorites.length - 1
-                        );
-                        // Auto-scroll near edges (visible pos = viewport pos + content-y)
-                        if root.drag-mouse-in-viewport + fav-flickable.content-y < 40px {
-                            fav-flickable.content-y = Math.min(0px,
-                                fav-flickable.content-y + 16px);
+                        width: parent.width;
+
+                        name: station.name;
+                        country: station.country;
+                        is-current: station.url == root.current-station-url;
+                        logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
+                        has-logo: idx < root.favorite-logos.length
+                            ? root.favorite-logos[idx].width > 0
+                            : false;
+                        is-drag-source: root.drag-from-index == idx;
+                        dragging: root.drag-from-index >= 0;
+                        row-index: idx;
+                        clicked => {
+                            root.favorite-clicked(station);
                         }
-                        if root.drag-mouse-in-viewport + fav-flickable.content-y
-                           > fav-flickable.height - 40px {
-                            fav-flickable.content-y = Math.max(
-                                fav-flickable.height - fav-flickable.content-height,
-                                fav-flickable.content-y - 16px);
+                        edit-clicked => {
+                            root.favorite-edit-requested(station);
                         }
-                    }
-                    grip-released => {
-                        if root.drag-from-index >= 0 && root.drag-target-index >= 0
-                           && root.drag-from-index != root.drag-target-index {
-                            root.favorites-reordered(root.drag-from-index, root.drag-target-index);
+                        grip-moved(offset-y) => {
+                            if root.drag-from-index < 0 {
+                                root.drag-from-index = idx;
+                                root.drag-target-index = idx;
+                            }
+                            // Keep the row inside the list
+                            root.drag-offset = clamp(offset-y,
+                                -idx * RowMetrics.row-stride,
+                                (root.favorites.length - 1 - idx) * RowMetrics.row-stride);
+                            root.drag-target-index = clamp(
+                                idx + round(root.drag-offset / RowMetrics.row-stride),
+                                0, root.favorites.length - 1);
+                            // Auto-scroll near the edges (visible pos = content pos + content-y)
+                            if RowMetrics.list-padding + idx * RowMetrics.row-stride + root.drag-offset
+                               + fav-flickable.content-y < 20px {
+                                fav-flickable.content-y = min(0px, fav-flickable.content-y + 12px);
+                            }
+                            if RowMetrics.list-padding + (idx + 1) * RowMetrics.row-stride + root.drag-offset
+                               + fav-flickable.content-y > fav-flickable.height - 20px {
+                                fav-flickable.content-y = max(
+                                    min(0px, fav-flickable.height - fav-flickable.content-height),
+                                    fav-flickable.content-y - 12px);
+                            }
                         }
-                        root.drag-from-index = -1;
-                        root.drag-target-index = -1;
+                        handle-held(held) => { root.handle-held = held; }
+                        grip-released => {
+                            if root.drag-from-index >= 0 && root.drag-target-index >= 0
+                               && root.drag-from-index != root.drag-target-index {
+                                root.favorites-reordered(root.drag-from-index, root.drag-target-index);
+                            }
+                            root.drag-from-index = -1;
+                            root.drag-target-index = -1;
+                            root.drag-offset = 0;
+                        }
                     }
                 }
-            }
-
-            // Drop indicator line — inside Flickable so it scrolls with content
-            if root.drag-from-index >= 0 && root.drag-target-index >= 0
-               && root.drag-from-index != root.drag-target-index: Rectangle {
-                property <int> insert-visual: root.drag-target-index > root.drag-from-index
-                    ? root.drag-target-index + 1 : root.drag-target-index;
-                x: 12px;
-                y: RowMetrics.list-padding + insert-visual * RowMetrics.row-stride - 1px;
-                width: root.width - 24px;
-                height: 2px;
-                background: Theme.accent;
-                border-radius: 1px;
             }
         }
 
@@ -330,5 +365,4 @@ export component Favorites inherits Rectangle {
             content-y <=> fav-flickable.content-y;
         }
     }
-
 }

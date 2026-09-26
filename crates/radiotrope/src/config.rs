@@ -7,6 +7,10 @@ pub mod audio {
 
     /// Number of frequency bands in spectrum display
     pub const SPECTRUM_BANDS: usize = 16;
+    /// Highest frequency the spectrum bands cover (Hz)
+    pub const SPECTRUM_MAX_HZ: f32 = 16_000.0;
+    /// Extra gain for the top band, scaled down linearly to none at the bottom
+    pub const SPECTRUM_TREBLE_BOOST: f32 = 3.0;
 
     /// VU meter decay factor (0.0-1.0, higher = slower decay)
     pub const VU_DECAY: f32 = 0.7;
