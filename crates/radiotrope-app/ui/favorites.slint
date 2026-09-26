@@ -23,7 +23,8 @@ component FavoriteRow inherits Rectangle {
     in property <int> row-index;
     callback clicked();
     callback edit-clicked();
-    callback grip-moved(/* total y offset from press point */ length);
+    // Pointer y in window coordinates, and where in the row it grabbed
+    callback grip-moved(/* pointer-y */ length, /* grab-y */ length);
     callback grip-released();
     // The handle was pressed or let go; the list stops scrolling meanwhile
     // so it doesn't steal the drag
@@ -209,7 +210,7 @@ component FavoriteRow inherits Rectangle {
         moved => {
             if self.pressed && (root.dragged || abs(self.mouse-y - self.pressed-y) > 3px) {
                 root.dragged = true;
-                root.grip-moved(self.mouse-y - self.pressed-y);
+                root.grip-moved(self.absolute-position.y + self.mouse-y, self.pressed-y);
             }
         }
         clicked => {
@@ -249,7 +250,9 @@ export component Favorites inherits Rectangle {
     property <length> drag-offset: 0;
     // A row's drag handle is held down
     property <bool> handle-held: false;
-
+    // Pointer y (window coordinates) and where in the row it grabbed
+    property <length> drag-pointer-y;
+    property <length> drag-grab-y;
     background: Theme.surface;
 
     // Empty state
@@ -283,7 +286,55 @@ export component Favorites inherits Rectangle {
     }
 
     // Favorites list
-    if favorites.length > 0: Rectangle {
+    if favorites.length > 0: list := Rectangle {
+        // Auto-scroll speed while the pointer is near or past the list's top or
+        // bottom edge: positive scrolls up, faster the further out it is
+        property <length> edge-zone: 48px;
+        property <length> max-scroll-step: 18px;
+        property <length> scroll-step: {
+            if root.drag-from-index < 0 { return 0px; }
+            let y = root.drag-pointer-y - fav-flickable.absolute-position.y;
+            if y < list.edge-zone {
+                return list.max-scroll-step * min(1, (list.edge-zone - y) / list.edge-zone);
+            }
+            if y > fav-flickable.height - list.edge-zone {
+                return -list.max-scroll-step * min(1, (y - fav-flickable.height + list.edge-zone) / list.edge-zone);
+            }
+            return 0px;
+        }
+
+        // Place the dragged row under the pointer and pick its drop slot. Also
+        // runs after auto-scroll, so the row stays under a pointer that is not
+        // moving (e.g. pinned at the screen edge).
+        function update-drag() {
+            let idx = root.drag-from-index;
+            let pointer = root.drag-pointer-y - fav-flickable.absolute-position.y - fav-flickable.content-y;
+            let home = RowMetrics.list-padding + idx * RowMetrics.row-stride;
+            // Stay inside the list, and in view when the pointer leaves it
+            let visible-top = -fav-flickable.content-y - home;
+            let visible-bottom = visible-top + fav-flickable.height - RowMetrics.row-stride;
+            root.drag-offset = clamp(
+                clamp(pointer - root.drag-grab-y - home, visible-top, visible-bottom),
+                -idx * RowMetrics.row-stride,
+                (root.favorites.length - 1 - idx) * RowMetrics.row-stride);
+            root.drag-target-index = clamp(
+                idx + round(root.drag-offset / RowMetrics.row-stride),
+                0, root.favorites.length - 1);
+        }
+
+        // Keeps scrolling while the pointer rests near an edge
+        Timer {
+            interval: 16ms;
+            running: list.scroll-step != 0px;
+            triggered => {
+                fav-flickable.content-y = clamp(
+                    fav-flickable.content-y + list.scroll-step,
+                    min(0px, fav-flickable.height - fav-flickable.content-height),
+                    0px);
+                list.update-drag();
+            }
+        }
+
         fav-flickable := Flickable {
             interactive: root.touch-scroll && root.drag-from-index < 0 && !root.handle-held;
             content-height: fav-layout.preferred-height;
@@ -333,29 +384,14 @@ export component Favorites inherits Rectangle {
                         edit-clicked => {
                             root.favorite-edit-requested(station);
                         }
-                        grip-moved(offset-y) => {
+                        grip-moved(pointer-y, grab-y) => {
                             if root.drag-from-index < 0 {
                                 root.drag-from-index = idx;
                                 root.drag-target-index = idx;
                             }
-                            // Keep the row inside the list
-                            root.drag-offset = clamp(offset-y,
-                                -idx * RowMetrics.row-stride,
-                                (root.favorites.length - 1 - idx) * RowMetrics.row-stride);
-                            root.drag-target-index = clamp(
-                                idx + round(root.drag-offset / RowMetrics.row-stride),
-                                0, root.favorites.length - 1);
-                            // Auto-scroll near the edges (visible pos = content pos + content-y)
-                            if RowMetrics.list-padding + idx * RowMetrics.row-stride + root.drag-offset
-                               + fav-flickable.content-y < 20px {
-                                fav-flickable.content-y = min(0px, fav-flickable.content-y + 12px);
-                            }
-                            if RowMetrics.list-padding + (idx + 1) * RowMetrics.row-stride + root.drag-offset
-                               + fav-flickable.content-y > fav-flickable.height - 20px {
-                                fav-flickable.content-y = max(
-                                    min(0px, fav-flickable.height - fav-flickable.content-height),
-                                    fav-flickable.content-y - 12px);
-                            }
+                            root.drag-pointer-y = pointer-y;
+                            root.drag-grab-y = grab-y;
+                            list.update-drag();
                         }
                         handle-held(held) => { root.handle-held = held; }
                         grip-released => {
