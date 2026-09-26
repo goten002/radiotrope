@@ -22,7 +22,7 @@ use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
 use radiotrope_app::providers::ProviderRegistry;
-use radiotrope_app::visual::{gate, logo_palette, LevelSmoother};
+use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
 use app::controller::AppController;
 use app::state::AppSnapshot;
@@ -821,7 +821,7 @@ fn main() {
     let analysis = analysis_rx.recv_timeout(Duration::from_secs(5)).ok();
     let shared_stats = stats_rx.recv_timeout(Duration::from_secs(5)).ok();
 
-    // Visualization timer, about 60 frames a second
+    // Visualization timer, about 30 frames a second
     let _viz_timer = slint::Timer::default();
     if let Some(analysis) = analysis {
         let ui_weak = ui.as_weak();
@@ -830,14 +830,18 @@ fn main() {
         let spectrum_model = std::rc::Rc::new(VecModel::from(vec![0.0f32; bands]));
         let viz = ui.global::<VizData>();
         viz.set_spectrum(ModelRc::from(spectrum_model.clone()));
-        let mut spectrum_smooth = LevelSmoother::new(bands);
-        let mut vu_smooth = LevelSmoother::new(2);
+        let mut spectrum_smooth = LevelSmoother::new(
+            bands,
+            visual::SPECTRUM_RISE_SECS,
+            visual::SPECTRUM_FALL_SECS,
+        );
+        let mut vu_smooth = LevelSmoother::new(2, visual::VU_RISE_SECS, visual::VU_FALL_SECS);
         let mut gated = vec![0.0f32; bands];
         let mut idle = false;
         let mut last_frame = Instant::now();
         _viz_timer.start(
             slint::TimerMode::Repeated,
-            Duration::from_millis(16),
+            Duration::from_millis(33),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
                 let viz = ui.global::<VizData>();
