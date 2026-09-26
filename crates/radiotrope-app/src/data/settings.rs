@@ -83,6 +83,14 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub panel_gradient: bool,
 
+    /// Draw our own title bar instead of the system frame (desktop)
+    #[serde(default = "default_true")]
+    pub custom_title_bar: bool,
+
+    /// Keep the window above other windows
+    #[serde(default)]
+    pub always_on_top: bool,
+
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,6 +148,8 @@ impl Default for Settings {
             viz_palette: default_viz_palette(),
             show_station_stats: true,
             panel_gradient: true,
+            custom_title_bar: true,
+            always_on_top: false,
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
@@ -421,6 +431,8 @@ mod tests {
         assert!(settings.minimize_to_tray);
         assert!(settings.show_station_stats);
         assert!(settings.panel_gradient);
+        assert!(settings.custom_title_bar);
+        assert!(!settings.always_on_top);
 
         let _ = fs::remove_file(&path);
     }

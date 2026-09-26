@@ -176,6 +176,20 @@ fn main() {
         .set_palette(settings.viz_palette.as_str().into());
     ui.set_show_station_stats(settings.show_station_stats);
     ui.set_panel_gradient(settings.panel_gradient);
+    // The Pi build is full screen with no frame to replace
+    if cfg!(not(feature = "embedded")) {
+        ui.set_custom_frame(settings.custom_title_bar);
+        // Window managers ignore the level on a window that isn't mapped
+        // yet (seen on X11), so raise it once the window is up
+        if settings.always_on_top {
+            let ui_weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_keep_on_top(true);
+                }
+            });
+        }
+    }
 
     // Apply saved window size
     if let (Some(w), Some(h)) = (settings.window_width, settings.window_height) {
@@ -1688,6 +1702,10 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
     settings.show_station_stats = ui.get_show_station_stats();
     settings.panel_gradient = ui.get_panel_gradient();
+    if cfg!(not(feature = "embedded")) {
+        settings.custom_title_bar = ui.get_custom_frame();
+        settings.always_on_top = ui.get_keep_on_top();
+    }
 
     if let Some(ref url) = s.station_url {
         if !url.is_empty() {

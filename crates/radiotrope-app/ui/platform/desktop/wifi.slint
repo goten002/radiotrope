@@ -5,6 +5,8 @@
 export global Platform {
     // The Tools menu offers WiFi settings
     out property <bool> has-wifi: false;
+    // A desktop window: the app can draw its own title bar
+    out property <bool> has-window-frame: true;
 }
 
 export struct WifiNetworkEntry {
