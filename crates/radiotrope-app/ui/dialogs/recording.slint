@@ -9,9 +9,10 @@ component PickerOption inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
     in property <bool> enabled: true;
+    in property <length> option-width: 56px;
     callback clicked();
 
-    min-width: 56px;
+    min-width: root.option-width;
     height: 30px;
     border-radius: Theme.radius-sm;
     background: root.selected && root.enabled ? Theme.accent
@@ -47,6 +48,7 @@ component Picker inherits HorizontalLayout {
     in property <[PickerChoice]> choices;
     in-out property <string> selected;
     in property <bool> enabled: true;
+    in property <length> option-width: 56px;
     callback changed(string);
 
     alignment: start;
@@ -67,6 +69,7 @@ component Picker inherits HorizontalLayout {
                 label: choice.label;
                 selected: root.selected == choice.id;
                 enabled: root.enabled;
+                option-width: root.option-width;
                 clicked => {
                     if root.selected != choice.id {
                         root.selected = choice.id;
@@ -83,7 +86,8 @@ export component RecordingSettingsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // The folder in use
     in property <string> folder;
-    in property <bool> is-default;
+    // The default folder, to offer Restore Default whenever the path differs
+    in property <string> default-folder;
     // Problem with the last folder tried, shown under the field
     in property <string> error;
     in-out property <bool> with-eq;
@@ -149,6 +153,7 @@ export component RecordingSettingsDialog inherits Rectangle {
                 ];
                 // WAV is uncompressed, so it has no bitrate to pick
                 enabled: root.format != "wav";
+                option-width: 42px;
                 selected: root.bitrate;
                 changed(id) => {
                     root.bitrate = id.to-float();
@@ -157,29 +162,13 @@ export component RecordingSettingsDialog inherits Rectangle {
             }
         }
 
-        Text {
-            text: (root.format == "opus"
-                ? "Opus sounds better than MP3 at the same bitrate. Plays in VLC, browsers, Android and Windows 10 or later. "
-                : root.format == "wav"
-                ? "WAV is uncompressed 16-bit, the sound exactly as decoded. "
-                : "MP3 plays on every device and app. ")
-                + (root.format == "wav" ? "About 635 MB per hour; files stop at 4 GB, about 6 hours."
-                : root.bitrate == 0 ? "Auto uses the station's bitrate, or 256 kbps when the station doesn't say."
-                : root.bitrate + " kbps is about " + Math.round(root.bitrate * 0.45) + " MB per hour.");
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-            // Same height for every choice, so the dialog doesn't jump
-            min-height: 30px;
-        }
-
         Rectangle {
             height: 1px;
             background: Theme.hairline;
         }
 
         Field {
-            label: root.is-default && !root.edited ? "Folder (default)" : "Folder";
+            label: root.edit-path == root.default-folder ? "Folder (default)" : "Folder";
             StyledLineEdit {
                 text <=> root.edit-path;
                 placeholder-text: "Folder for recordings";
@@ -202,9 +191,12 @@ export component RecordingSettingsDialog inherits Rectangle {
                 label: "Browse...";
                 clicked => { root.browse(); }
             }
-            if !root.is-default: SecondaryButton {
+            if root.edit-path != root.default-folder || root.folder != root.default-folder: SecondaryButton {
                 label: "Restore Default";
-                clicked => { root.restore-default(); }
+                clicked => {
+                    root.edit-path = root.default-folder;
+                    root.restore-default();
+                }
             }
             if Platform.has-file-manager: SecondaryButton {
                 label: "Open Folder";
@@ -217,22 +209,10 @@ export component RecordingSettingsDialog inherits Rectangle {
             background: Theme.hairline;
         }
 
-        VerticalLayout {
-            spacing: 4px;
-
-            Toggle {
-                label: "Include equalizer in recordings";
-                checked <=> root.with-eq;
-                toggled(on) => { root.with-eq-toggled(on); }
-            }
-            Text {
-                text: root.with-eq
-                    ? "Recordings sound like what you hear. Lower the EQ preamp if they sound distorted."
-                    : "Recordings keep the station's own sound. Volume never affects them.";
-                color: Theme.text-secondary;
-                font-size: 12px;
-                wrap: word-wrap;
-            }
+        Toggle {
+            label: "Include equalizer in recordings";
+            checked <=> root.with-eq;
+            toggled(on) => { root.with-eq-toggled(on); }
         }
 
         HorizontalLayout {
