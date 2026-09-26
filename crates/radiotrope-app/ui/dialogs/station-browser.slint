@@ -220,6 +220,8 @@ export component StationBrowserDialog inherits Rectangle {
     // Search by name within a country (name, code, query); an empty query
     // lists the country's stations
     callback search-in-country(string, string, string);
+    // Back to the country list (country mode only)
+    callback change-country();
     callback load-more();
     callback station-selected(BrowseStation);
 
@@ -248,6 +250,8 @@ export component StationBrowserDialog inherits Rectangle {
         card-width: 700px;
         card-height: 640px;
         auto-focus: false;
+        show-back: root.search-mode == "country";
+        back-requested => { root.change-country(); }
         close-requested => { root.show-dialog = false; }
 
         // Search input
