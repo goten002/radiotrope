@@ -137,7 +137,7 @@ export component CountryPickerDialog inherits Rectangle {
 
                     // Country list
                     if root.countries.length > 0 && !root.loading: Flickable {
-                        viewport-height: country-layout.preferred-height;
+                        content-height: country-layout.preferred-height;
 
                         country-layout := VerticalLayout {
                             padding: 4px;
