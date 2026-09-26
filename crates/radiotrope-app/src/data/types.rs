@@ -60,12 +60,9 @@ pub struct Station {
     pub logo_url: Option<String>,
 
     // === Metadata ===
-    /// Country name (may include a state, e.g. "Germany, Bavaria")
+    /// Country code (ISO 3166-1 alpha-2)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub country: Option<String>,
-    /// Country code (ISO 3166-1 alpha-2), used to pick the flag
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub country_code: Option<String>,
     /// Primary language
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -103,7 +100,6 @@ impl Station {
             url: url.into(),
             logo_url: None,
             country: None,
-            country_code: None,
             language: None,
             genres: HashSet::new(),
             codec: None,

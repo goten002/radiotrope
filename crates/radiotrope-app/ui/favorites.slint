@@ -6,13 +6,11 @@ export struct FavoriteStation {
     url: string,
     logo-url: string,
     country: string,
-    flag: image,
 }
 
 component FavoriteRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
-    in property <image> flag;
     in property <bool> is-current;
     in property <image> logo-image;
     in property <bool> has-logo;
@@ -130,23 +128,11 @@ component FavoriteRow inherits Rectangle {
                 overflow: elide;
             }
 
-            if root.country != "": HorizontalLayout {
-                spacing: 4px;
-
-                if root.flag.width > 0: Image {
-                    source: root.flag;
-                    width: 16px;
-                    height: 12px;
-                    image-fit: contain;
-                    y: (parent.height - self.height) / 2;
-                }
-
-                Text {
-                    text: root.country;
-                    color: Theme.text-secondary;
-                    font-size: 11px;
-                    overflow: elide;
-                }
+            if root.country != "": Text {
+                text: root.country;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                overflow: elide;
             }
         }
 
@@ -249,7 +235,6 @@ export component Favorites inherits Rectangle {
             for station[idx] in root.favorites: FavoriteRow {
                 name: station.name;
                 country: station.country;
-                flag: station.flag;
                 is-current: station.url == root.current-station-url;
                 logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
                 has-logo: idx < root.favorite-logos.length

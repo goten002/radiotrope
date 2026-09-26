@@ -1923,7 +1923,6 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         country: s.country.as_deref().unwrap_or("").into(),
         codec: s.codec.as_deref().unwrap_or("").into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
-        flag: flag_image(s.country_code.as_deref(), s.country.as_deref()),
     }
 }
 
@@ -2020,10 +2019,6 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
         url: f.url().into(),
         logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
         country: f.station.country.as_deref().unwrap_or("").into(),
-        flag: flag_image(
-            f.station.country_code.as_deref(),
-            f.station.country.as_deref(),
-        ),
     }
 }
 

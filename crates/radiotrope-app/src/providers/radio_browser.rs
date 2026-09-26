@@ -33,8 +33,6 @@ struct RbStation {
     #[serde(default)]
     country: String,
     #[serde(default)]
-    countrycode: String,
-    #[serde(default)]
     state: String,
     #[serde(default)]
     language: String,
@@ -110,14 +108,12 @@ impl From<RbStation> for Station {
             (None, None) => None,
         };
 
-        let mut station = Station::new(rb.name, stream_url)
+        Station::new(rb.name, stream_url)
             .with_provider("radio-browser", Some(rb.stationuuid))
             .with_logo_opt(non_empty(&rb.favicon))
             .with_metadata(country, non_empty(&rb.language), genres)
             .with_audio_info(non_empty(&rb.codec), bitrate)
-            .with_homepage_opt(non_empty(&rb.homepage));
-        station.country_code = non_empty(&rb.countrycode);
-        station
+            .with_homepage_opt(non_empty(&rb.homepage))
     }
 }
 
@@ -307,7 +303,6 @@ mod tests {
             favicon: "http://test.com/logo.png".to_string(),
             tags: "rock,pop,indie".to_string(),
             country: "Germany".to_string(),
-            countrycode: "DE".to_string(),
             state: String::new(),
             language: "german".to_string(),
             codec: "MP3".to_string(),
@@ -387,7 +382,6 @@ mod tests {
     fn test_rb_station_country_and_language() {
         let station: Station = sample_rb_station().into();
         assert_eq!(station.country, Some("Germany".to_string()));
-        assert_eq!(station.country_code, Some("DE".to_string()));
         assert_eq!(station.language, Some("german".to_string()));
     }
 
@@ -416,10 +410,8 @@ mod tests {
     fn test_rb_station_empty_country() {
         let mut rb = sample_rb_station();
         rb.country = String::new();
-        rb.countrycode = String::new();
         let station: Station = rb.into();
         assert_eq!(station.country, None);
-        assert_eq!(station.country_code, None);
     }
 
     #[test]
@@ -482,7 +474,6 @@ mod tests {
             favicon: String::new(),
             tags: String::new(),
             country: String::new(),
-            countrycode: String::new(),
             state: String::new(),
             language: String::new(),
             codec: String::new(),
@@ -513,7 +504,6 @@ mod tests {
             favicon: "  ".to_string(),
             tags: " , , ".to_string(),
             country: "  ".to_string(),
-            countrycode: String::new(),
             state: "  ".to_string(),
             language: "  ".to_string(),
             codec: "  ".to_string(),

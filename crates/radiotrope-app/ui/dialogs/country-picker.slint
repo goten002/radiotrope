@@ -65,7 +65,7 @@ export component CountryPickerDialog inherits Rectangle {
     in-out property <string> error: "";
     in-out property <[CountryEntry]> countries: [];
 
-    callback country-selected(string);
+    callback country-selected(CountryEntry);
     callback load-countries();
 
     if show-dialog: Rectangle {
@@ -163,7 +163,7 @@ export component CountryPickerDialog inherits Rectangle {
                                 flag: entry.flag;
                                 clicked => {
                                     root.show-dialog = false;
-                                    root.country-selected(entry.name);
+                                    root.country-selected(entry);
                                 }
                             }
                         }

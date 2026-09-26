@@ -9,13 +9,11 @@ export struct BrowseStation {
     country: string,
     codec: string,
     bitrate: int,
-    flag: image,
 }
 
 component StationRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
-    in property <image> flag;
     in property <string> codec;
     in property <int> bitrate;
     in property <image> logo-image;
@@ -77,23 +75,11 @@ component StationRow inherits Rectangle {
                 overflow: elide;
             }
 
-            HorizontalLayout {
-                spacing: 4px;
-
-                if root.flag.width > 0: Image {
-                    source: root.flag;
-                    width: 16px;
-                    height: 12px;
-                    image-fit: contain;
-                    y: (parent.height - self.height) / 2;
-                }
-
-                Text {
-                    text: root.country;
-                    color: Theme.text-secondary;
-                    font-size: 11px;
-                    overflow: elide;
-                }
+            Text {
+                text: root.country;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                overflow: elide;
             }
         }
 
@@ -142,6 +128,7 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <[image]> browse-logos: [];
     in-out property <bool> has-more: false;
     in-out property <string> country-name: "";
+    in-out property <image> country-flag;
     property <string> search-query: "";
 
     callback search-stations(string);
@@ -180,6 +167,15 @@ export component StationBrowserDialog inherits Rectangle {
                 // Header row: title left, "radio-browser.info" right
                 HorizontalLayout {
                     height: 28px;
+                    spacing: 8px;
+
+                    if root.search-mode == "country" && root.country-flag.width > 0: Image {
+                        source: root.country-flag;
+                        width: 24px;
+                        height: 18px;
+                        image-fit: contain;
+                        y: (parent.height - self.height) / 2;
+                    }
 
                     Text {
                         text: root.search-mode == "country"
@@ -297,7 +293,6 @@ export component StationBrowserDialog inherits Rectangle {
                             for station[idx] in root.search-results: StationRow {
                                 name: station.name;
                                 country: station.country;
-                                flag: station.flag;
                                 codec: station.codec;
                                 bitrate: station.bitrate;
                                 logo-image: idx < root.browse-logos.length ? root.browse-logos[idx] : @image-url("");
