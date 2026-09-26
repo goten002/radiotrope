@@ -75,6 +75,10 @@ pub struct Settings {
     #[serde(default = "default_viz_palette")]
     pub viz_palette: String,
 
+    /// Show listening stats on favorites rows
+    #[serde(default = "default_true")]
+    pub show_station_stats: bool,
+
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -130,6 +134,7 @@ impl Default for Settings {
             show_notifications: true,
             viz_mode: default_viz_mode(),
             viz_palette: default_viz_palette(),
+            show_station_stats: true,
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,

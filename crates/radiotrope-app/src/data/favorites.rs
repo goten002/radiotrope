@@ -446,6 +446,43 @@ impl FavoritesManager {
         }
     }
 
+    /// Add listening time to the favorite playing from `url`, if any
+    ///
+    /// Unlike [`record_play`](Self::record_play) this does not bump the
+    /// generation: stats change every minute while playing, and a full
+    /// favorites refresh would interrupt a drag in progress. Returns the
+    /// updated favorite so the caller can refresh its row.
+    pub fn add_listening(&mut self, url: &str, secs: u64, new_play: bool) -> Option<&Favorite> {
+        let id = self.find_match(url, None)?.id();
+        let favorite = self.favorites.get_mut(&id)?;
+        favorite.add_listening(secs, new_play);
+        self.dirty = true;
+        Some(favorite)
+    }
+
+    /// Move a favorite to the start or the end of the manual order
+    pub fn move_to_edge(&mut self, id: &str, to_top: bool) -> Result<()> {
+        let mut ids: Vec<String> = self
+            .sorted(FavoriteSort::Manual)
+            .iter()
+            .map(|f| f.id())
+            .filter(|i| i != id)
+            .collect();
+        if !self.favorites.contains_key(id) {
+            return Err(AppError::Config(format!(
+                "Favorite with ID '{}' not found",
+                id
+            )));
+        }
+        if to_top {
+            ids.insert(0, id.to_string());
+        } else {
+            ids.push(id.to_string());
+        }
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        self.reorder(&refs)
+    }
+
     /// Reorder favorites (set sort_order based on provided ID order)
     pub fn reorder(&mut self, ids: &[&str]) -> Result<()> {
         for (i, id) in ids.iter().enumerate() {
@@ -510,6 +547,52 @@ mod tests {
 
     fn empty_manager() -> FavoritesManager {
         FavoritesManager::new()
+    }
+
+    #[test]
+    fn test_add_listening_counts_one_play_per_session() {
+        let mut manager = empty_manager();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        let gen = manager.generation();
+
+        manager.add_listening("http://a.test", 60, true).unwrap();
+        manager.add_listening("http://a.test", 60, false).unwrap();
+        let fav = manager.get_by_url("http://a.test").unwrap();
+        assert_eq!(fav.play_count, 1);
+        assert_eq!(fav.total_listen_time_secs, 120);
+        assert!(fav.last_played.is_some());
+        assert!(manager.is_dirty());
+        // No full refresh while listening
+        assert_eq!(manager.generation(), gen);
+
+        assert!(manager
+            .add_listening("http://other.test", 60, true)
+            .is_none());
+    }
+
+    #[test]
+    fn test_move_to_edge() {
+        let mut manager = empty_manager();
+        for (i, url) in ["http://a.test", "http://b.test", "http://c.test"]
+            .iter()
+            .enumerate()
+        {
+            let mut fav = Favorite::new(format!("S{i}"), *url);
+            fav.sort_order = i as i32;
+            manager.add(fav).unwrap();
+        }
+        let names = |m: &FavoritesManager| -> Vec<String> {
+            m.sorted(FavoriteSort::Manual)
+                .iter()
+                .map(|f| f.name().to_string())
+                .collect()
+        };
+        let c = url_to_id("http://c.test");
+        manager.move_to_edge(&c, true).unwrap();
+        assert_eq!(names(&manager), ["S2", "S0", "S1"]);
+        manager.move_to_edge(&c, false).unwrap();
+        assert_eq!(names(&manager), ["S0", "S1", "S2"]);
+        assert!(manager.move_to_edge("missing", true).is_err());
     }
 
     #[test]
