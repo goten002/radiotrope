@@ -11,7 +11,7 @@ component VolumeSlider inherits Rectangle {
     width: 120px;
     height: 20px;
 
-    property <bool> active: touch.has-hover || touch.pressed || keys.has-focus;
+    property <bool> active: touch.has-hover || touch.pressed;
     property <float> shown: Math.clamp(root.value, 0, 100) / 100;
     property <color> fill-color: root.muted ? Theme.text-tertiary : Theme.accent;
     property <length> knob: root.active ? 16px : 12px;
@@ -39,10 +39,8 @@ component VolumeSlider inherits Rectangle {
         }
     }
 
-    // Track, thicker while hovered or dragged
     track := Rectangle {
-        height: root.active ? 6px : 4px;
-        animate height { duration: Theme.fast; }
+        height: 6px;
         y: (root.height - self.height) / 2;
         border-radius: self.height / 2;
         background: Theme.text-primary.with-alpha(0.12);
