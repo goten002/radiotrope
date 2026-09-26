@@ -6,9 +6,10 @@ use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
 
-/// A canned response: extra headers and body
+/// A canned response: status, extra headers and body
 #[derive(Clone)]
 pub struct Route {
+    pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
 }
@@ -16,9 +17,23 @@ pub struct Route {
 impl Route {
     pub fn new(body: impl Into<Vec<u8>>) -> Self {
         Self {
+            status: 200,
             headers: Vec::new(),
             body: body.into(),
         }
+    }
+
+    /// An empty response with this status code
+    pub fn status(status: u16) -> Self {
+        Self {
+            status,
+            ..Self::new(Vec::new())
+        }
+    }
+
+    /// A 302 redirect to `location`
+    pub fn redirect(location: &str) -> Self {
+        Self::status(302).header("Location", location)
     }
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
@@ -31,6 +46,7 @@ impl Route {
 pub struct TestServer {
     pub base_url: String,
     routes: Arc<Mutex<HashMap<String, Route>>>,
+    hits: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 impl TestServer {
@@ -38,11 +54,14 @@ impl TestServer {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let routes: Arc<Mutex<HashMap<String, Route>>> = Arc::default();
+        let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::default();
         let routes_clone = routes.clone();
+        let hits_clone = hits.clone();
         thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
                 let routes = routes_clone.clone();
+                let hits = hits_clone.clone();
                 thread::spawn(move || {
                     let mut reader = BufReader::new(stream.try_clone().unwrap());
                     let mut request_line = String::new();
@@ -55,11 +74,13 @@ impl TestServer {
                         line.clear();
                     }
                     let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+                    *hits.lock().unwrap().entry(path.to_string()).or_default() += 1;
                     let route = routes.lock().unwrap().get(path).cloned();
                     let response = match route {
                         Some(route) => {
                             let mut head = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n",
+                                "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
+                                route.status,
                                 route.body.len()
                             );
                             for (name, value) in &route.headers {
@@ -77,7 +98,16 @@ impl TestServer {
                 });
             }
         });
-        Self { base_url, routes }
+        Self {
+            base_url,
+            routes,
+            hits,
+        }
+    }
+
+    /// How many requests `path` has had
+    pub fn hits(&self, path: &str) -> usize {
+        self.hits.lock().unwrap().get(path).copied().unwrap_or(0)
     }
 
     pub fn route(&self, path: &str, route: Route) {

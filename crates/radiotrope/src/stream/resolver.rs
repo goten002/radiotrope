@@ -27,10 +27,10 @@ impl StreamResolver {
 
         match check_playlist_type(&resolved_url) {
             PlaylistCheck::Hls => {
-                let (media_url, base_url) = crate::stream::hls::resolve_hls_url(&resolved_url)?;
+                let media_url = crate::stream::hls::resolve_hls_url(&resolved_url)?;
 
                 let (hls_reader, metadata_rx) =
-                    HlsReader::new(&media_url, &base_url, Some(playback_position.clone()))?;
+                    HlsReader::new(&media_url, Some(playback_position.clone()))?;
 
                 let format_hint = match hls_reader.detected_format {
                     HlsSegmentFormat::Fmp4 => Some("mp4".to_string()),

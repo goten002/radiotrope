@@ -8,15 +8,15 @@
 use std::collections::HashSet;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crossbeam_channel::{bounded, Receiver, Sender};
-use m3u8_rs::Playlist;
-use mpeg2ts::ts::{ReadTsPacket, TsPacketReader, TsPayload};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use m3u8_rs::{MediaPlaylist, Playlist};
+use reqwest::Url;
 
-use crate::config::hls::{SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS};
+use crate::config::hls::{FIRST_SEGMENT_TIMEOUT_SECS, SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS};
 use crate::config::network::USER_AGENT;
 use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
 use crate::error::{RadioError, Result};
@@ -25,7 +25,6 @@ use crate::stream::hls_metadata::{
 };
 use crate::stream::id3::{parse_id3v2_payload, Id3Scanner};
 use crate::stream::metadata::{MetadataSink, StreamMetadata};
-use crate::stream::playlist::{get_base_url, make_absolute_url};
 
 /// Detected segment container format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,44 +56,57 @@ impl HlsReader {
     /// Returns the reader and a channel that receives song info updates. With
     /// `playback_position` (bytes of this reader's output the decoder has
     /// read), updates are held until playback reaches the segment they came with.
+    ///
+    /// Fails with the downloader's reason (a segment's HTTP status, no audio
+    /// track, encryption, ...) when no audio arrives, rather than a bare timeout.
     pub fn new(
         media_url: &str,
-        base_url: &str,
         playback_position: Option<Arc<AtomicU64>>,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
+        let playlist_url = Url::parse(media_url)
+            .map_err(|e| RadioError::Stream(format!("Invalid HLS URL {media_url}: {e}")))?;
         let (sender, receiver) = bounded::<Vec<u8>>(SEGMENT_BUFFER_SIZE);
         let (metadata_sink, metadata_rx) = match playback_position {
             Some(position) => MetadataSink::synced(position),
             None => MetadataSink::channel(),
         };
         let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_flag.clone();
         let bytes_received = Arc::new(AtomicU64::new(0));
-        let bytes_clone = bytes_received.clone();
         let segments_downloaded = Arc::new(AtomicU64::new(0));
-        let segments_clone = segments_downloaded.clone();
+        let problem: Arc<Mutex<Option<String>>> = Arc::default();
 
-        let media_url_owned = media_url.to_string();
-        let base_url_owned = base_url.to_string();
+        let downloader = SegmentDownloader {
+            playlist_url,
+            sender,
+            metadata_sink,
+            stop_flag: stop_flag.clone(),
+            bytes_received: bytes_received.clone(),
+            segments_downloaded: segments_downloaded.clone(),
+            problem: problem.clone(),
+        };
+        let handle = thread::Builder::new()
+            .name("hls-downloader".into())
+            .spawn(move || downloader.run())?;
 
-        let handle = thread::spawn(move || {
-            let _ = segment_downloader(
-                &media_url_owned,
-                &base_url_owned,
-                sender,
-                metadata_sink,
-                stop_clone,
-                bytes_clone,
-                segments_clone,
-            );
-        });
-
-        // Wait for first segment
-        let initial_data = receiver
-            .recv_timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS * 2))
-            .map_err(|_| {
-                RadioError::Timeout("Timeout waiting for first HLS segment".to_string())
-            })?;
+        // Wait for the first segment. On failure, stop the downloader so it
+        // doesn't keep polling the playlist for a reader that never existed.
+        let initial_data =
+            match receiver.recv_timeout(Duration::from_secs(FIRST_SEGMENT_TIMEOUT_SECS)) {
+                Ok(data) => data,
+                Err(e) => {
+                    stop_flag.store(true, Ordering::SeqCst);
+                    let reason = problem.lock().ok().and_then(|mut p| p.take());
+                    return Err(match (e, reason) {
+                        (_, Some(reason)) => RadioError::Stream(reason),
+                        (RecvTimeoutError::Timeout, None) => {
+                            RadioError::Timeout("Timeout waiting for first HLS segment".to_string())
+                        }
+                        (RecvTimeoutError::Disconnected, None) => {
+                            RadioError::Stream("HLS stream ended before any audio".to_string())
+                        }
+                    });
+                }
+            };
 
         let detected_format = detect_segment_format(&initial_data, media_url);
 
@@ -251,36 +263,31 @@ pub fn detect_segment_format(data: &[u8], url: &str) -> HlsSegmentFormat {
     HlsSegmentFormat::Raw
 }
 
-/// Check if a segment URI looks valid (not metadata or garbage)
+/// Check if a segment URI can be a real segment.
+///
+/// RFC 8216 makes every non-blank line that isn't a tag a URI, and servers
+/// name segments anything (`seg.ts`, `chunk.mp4?t=1`, `1727384723`), so only
+/// empty lines and `key="value"` fragments are rejected. The fragments came
+/// from m3u8-rs splitting `#EXTINF` titles at commas, which
+/// [`parse_hls_playlist`] now avoids; the check stays as a safety net.
 pub fn is_valid_segment_uri(uri: &str) -> bool {
     let trimmed = uri.trim();
-    if trimmed.is_empty() {
-        return false;
-    }
-
-    // Skip metadata lines (key="value" patterns)
-    if trimmed.contains("=\"") || trimmed.contains("='") {
-        return false;
-    }
-
-    let is_absolute = trimmed.starts_with("http://") || trimmed.starts_with("https://");
-    if is_absolute {
-        return true;
-    }
-
-    // For relative URIs, check for media extensions or path separators
-    let has_media_extension = trimmed.ends_with(".ts")
-        || trimmed.ends_with(".aac")
-        || trimmed.ends_with(".m4s")
-        || trimmed.ends_with(".mp4")
-        || trimmed.ends_with(".m4a")
-        || trimmed.contains(".ts?")
-        || trimmed.contains(".aac?")
-        || trimmed.contains(".m4s?");
-    let has_path = trimmed.contains('/');
-
-    has_media_extension || has_path
+    !trimmed.is_empty() && !trimmed.contains("=\"") && !trimmed.contains("='")
 }
+
+/// Size of an MPEG-TS packet
+const TS_PACKET_LEN: usize = 188;
+
+/// PMT stream types of audio we can decode, most preferred first: AAC ADTS,
+/// AAC LATM, MPEG-4 audio, MPEG-1/2 audio.
+const TS_AUDIO_TYPES: [u8; 5] = [0x0F, 0x11, 0x1C, 0x03, 0x04];
+
+/// Audio stream types used as a last resort (AC-3, and 0x80 which some
+/// muxers use for private audio)
+const TS_FALLBACK_AUDIO_TYPES: [u8; 2] = [0x81, 0x80];
+
+/// PMT stream type of ID3 timed metadata in HLS
+const TS_METADATA_TYPE: u8 = 0x15;
 
 /// Demux an MPEG-TS segment and extract audio data
 pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
@@ -290,87 +297,188 @@ pub fn demux_ts_segment(ts_data: &[u8]) -> Vec<u8> {
 /// Demux an MPEG-TS segment, returning its audio data and the payload of
 /// each timed-metadata PES packet (PMT stream type 0x15, which HLS uses for
 /// ID3 tags).
+///
+/// Lenient on purpose: packets it doesn't understand (unknown stream types,
+/// PES header extensions, broken or missing sync) are skipped, never fatal
+/// for the rest of the segment. The PAT/PMT are read first, since streams
+/// may send packets before them (RTL's segments start with the ID3 packet).
+/// Only the first audio stream is taken, so a second language track can't
+/// interleave with the first. Without a PMT, the first PES stream with an
+/// MPEG audio stream id (0xC0-0xDF) is used.
 pub fn demux_ts_segment_with_metadata(ts_data: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>) {
-    let mut audio_data = Vec::new();
-    let mut metadata = Vec::new();
-    let mut audio_pids: HashSet<u16> = HashSet::new();
+    // First pass: find the audio and metadata PIDs
+    let mut pmt_pids: HashSet<u16> = HashSet::new();
+    let mut audio_pid: Option<u16> = None;
     let mut metadata_pids: HashSet<u16> = HashSet::new();
-
-    // First pass: find audio PIDs from PMT
-    let mut reader = TsPacketReader::new(Cursor::new(ts_data));
-    loop {
-        match reader.read_ts_packet() {
-            Ok(Some(packet)) => {
-                if let Some(TsPayload::Pmt(pmt)) = packet.payload {
-                    for es in &pmt.es_info {
-                        let stream_type = es.stream_type as u8;
-                        // Audio stream types: MPEG1/2 (0x03, 0x04), AAC ADTS (0x0F),
-                        // AAC LOAS (0x11), AC-3 (0x81), private (0x80)
-                        if matches!(stream_type, 0x03 | 0x04 | 0x0F | 0x11 | 0x81 | 0x80) {
-                            audio_pids.insert(es.elementary_pid.as_u16());
-                        } else if stream_type == 0x15 {
-                            // Packetized metadata: ID3 timed metadata in HLS
-                            metadata_pids.insert(es.elementary_pid.as_u16());
-                        }
-                    }
+    for (pid, unit_start, payload) in ts_packets(ts_data) {
+        if !unit_start {
+            continue;
+        }
+        if pid == 0 {
+            pmt_pids.extend(parse_pat(payload));
+        } else if pmt_pids.contains(&pid) {
+            if let Some((audio, meta)) = parse_pmt(payload) {
+                metadata_pids.extend(meta);
+                if audio.is_some() {
+                    audio_pid = audio;
+                    break;
                 }
             }
-            Ok(None) => break,
-            Err(_) => break,
         }
     }
 
-    // Fallback: common default audio PIDs
-    if audio_pids.is_empty() {
-        audio_pids.insert(257); // 0x101
-        audio_pids.insert(258); // 0x102
-    }
-
-    // Second pass: extract audio data from identified PIDs
-    let mut reader = TsPacketReader::new(Cursor::new(ts_data));
-    loop {
-        match reader.read_ts_packet() {
-            Ok(Some(packet)) => {
-                let pid = packet.header.pid.as_u16();
-                if audio_pids.contains(&pid) {
-                    if let Some(payload) = packet.payload {
-                        match payload {
-                            TsPayload::PesStart(pes) => {
-                                audio_data.extend_from_slice(pes.data.as_ref());
-                            }
-                            TsPayload::PesContinuation(data) => {
-                                audio_data.extend_from_slice(data.as_ref());
-                            }
-                            TsPayload::Raw(data) => {
-                                audio_data.extend_from_slice(data.as_ref());
-                            }
-                            _ => {}
-                        }
-                    }
-                } else if metadata_pids.contains(&pid) {
-                    match packet.payload {
-                        Some(TsPayload::PesStart(pes)) => metadata.push(pes.data.as_ref().to_vec()),
-                        Some(TsPayload::PesContinuation(data)) => {
-                            if let Some(last) = metadata.last_mut() {
-                                last.extend_from_slice(data.as_ref());
-                            }
-                        }
-                        _ => {}
-                    }
+    // Second pass: collect the audio and metadata payloads
+    let mut audio_data = Vec::with_capacity(ts_data.len());
+    let mut metadata: Vec<Vec<u8>> = Vec::new();
+    // A metadata PES that is still receiving continuation packets
+    let mut metadata_open = false;
+    for (pid, unit_start, payload) in ts_packets(ts_data) {
+        if pid == 0 || pmt_pids.contains(&pid) {
+            continue;
+        }
+        if metadata_pids.contains(&pid) {
+            if unit_start {
+                metadata_open = false;
+                if let Some(data) = pes_payload(payload) {
+                    metadata.push(data.to_vec());
+                    metadata_open = true;
+                }
+            } else if metadata_open {
+                if let Some(last) = metadata.last_mut() {
+                    last.extend_from_slice(payload);
                 }
             }
-            Ok(None) => break,
-            Err(_) => break,
+            continue;
+        }
+        if audio_pid.is_none() && unit_start && is_audio_pes(payload) {
+            // No PMT: take the first MPEG audio PES stream
+            audio_pid = Some(pid);
+        }
+        if audio_pid == Some(pid) {
+            if unit_start {
+                if let Some(data) = pes_payload(payload) {
+                    audio_data.extend_from_slice(data);
+                }
+            } else {
+                audio_data.extend_from_slice(payload);
+            }
         }
     }
 
     (audio_data, metadata)
 }
 
+/// The TS packets in `ts_data` as (PID, payload unit start, payload).
+/// Resyncs on lost sync; skips corrupt packets and ones without a payload.
+fn ts_packets(ts_data: &[u8]) -> impl Iterator<Item = (u16, bool, &[u8])> {
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        while pos + TS_PACKET_LEN <= ts_data.len() {
+            if ts_data[pos] != 0x47 {
+                // Lost sync: find the next sync byte
+                pos += 1;
+                continue;
+            }
+            let packet = &ts_data[pos..pos + TS_PACKET_LEN];
+            pos += TS_PACKET_LEN;
+
+            let transport_error = packet[1] & 0x80 != 0;
+            let unit_start = packet[1] & 0x40 != 0;
+            let pid = u16::from(packet[1] & 0x1F) << 8 | u16::from(packet[2]);
+            let adaptation_control = (packet[3] >> 4) & 0x03;
+            if transport_error || adaptation_control & 0x01 == 0 {
+                continue; // corrupt, or adaptation field only
+            }
+            let mut start = 4;
+            if adaptation_control & 0x02 != 0 {
+                start += 1 + usize::from(packet[4]);
+            }
+            if start < TS_PACKET_LEN {
+                return Some((pid, unit_start, &packet[start..]));
+            }
+        }
+        None
+    })
+}
+
+/// The body of the PSI section starting in `payload` (after the pointer
+/// field), up to but excluding the CRC. `None` if it doesn't fit the packet.
+fn psi_section(payload: &[u8], table_id: u8) -> Option<&[u8]> {
+    let pointer = usize::from(*payload.first()?);
+    let section = payload.get(1 + pointer..)?;
+    if *section.first()? != table_id {
+        return None;
+    }
+    let length = usize::from(section.get(1)? & 0x0F) << 8 | usize::from(*section.get(2)?);
+    // header (3 bytes) + length, minus the 4-byte CRC
+    section.get(3..(3 + length).checked_sub(4)?)
+}
+
+/// PMT PIDs listed in a PAT
+fn parse_pat(payload: &[u8]) -> Vec<u16> {
+    let Some(section) = psi_section(payload, 0x00) else {
+        return Vec::new();
+    };
+    // transport_stream_id(2) version(1) section_number(1) last_section(1)
+    section
+        .get(5..)
+        .unwrap_or_default()
+        .chunks_exact(4)
+        .filter(|entry| entry[0] != 0 || entry[1] != 0) // program 0 = network PID
+        .map(|entry| u16::from(entry[2] & 0x1F) << 8 | u16::from(entry[3]))
+        .collect()
+}
+
+/// The audio PID and the ID3 metadata PIDs listed in a PMT
+fn parse_pmt(payload: &[u8]) -> Option<(Option<u16>, Vec<u16>)> {
+    let section = psi_section(payload, 0x02)?;
+    // program_number(2) version(1) section_number(1) last_section(1) PCR_PID(2)
+    let program_info_len = usize::from(section.get(7)? & 0x0F) << 8 | usize::from(*section.get(8)?);
+    let mut es = section.get(9 + program_info_len..)?;
+    let mut streams = Vec::new();
+    while es.len() >= 5 {
+        let stream_type = es[0];
+        let pid = u16::from(es[1] & 0x1F) << 8 | u16::from(es[2]);
+        let info_len = usize::from(es[3] & 0x0F) << 8 | usize::from(es[4]);
+        streams.push((stream_type, pid));
+        es = es.get(5 + info_len..).unwrap_or_default();
+    }
+    let pick = |types: &[u8]| {
+        types
+            .iter()
+            .find_map(|t| streams.iter().find(|(st, _)| st == t).map(|&(_, pid)| pid))
+    };
+    let audio = pick(&TS_AUDIO_TYPES).or_else(|| pick(&TS_FALLBACK_AUDIO_TYPES));
+    let metadata = streams
+        .iter()
+        .filter(|(st, _)| *st == TS_METADATA_TYPE)
+        .map(|&(_, pid)| pid)
+        .collect();
+    Some((audio, metadata))
+}
+
+/// True if `payload` starts a PES packet with an MPEG audio stream id
+fn is_audio_pes(payload: &[u8]) -> bool {
+    payload.len() >= 4 && payload[..3] == [0, 0, 1] && (0xC0..=0xDF).contains(&payload[3])
+}
+
+/// The data of the PES packet starting in `payload`, after its header
+fn pes_payload(payload: &[u8]) -> Option<&[u8]> {
+    if payload.len() < 9 || payload[..3] != [0, 0, 1] {
+        return None;
+    }
+    match payload[3] {
+        // Stream ids without the optional PES header
+        0xBC | 0xBE | 0xBF | 0xF0 | 0xF1 | 0xF2 | 0xF8 | 0xFF => payload.get(6..),
+        _ => payload.get(9 + usize::from(payload[8])..),
+    }
+}
+
 /// Split a downloaded segment into its audio bytes and the song info it carries.
 ///
-/// `is_fmp4` is the downloader's URL-based fMP4 decision; fMP4 audio is
-/// passed through untouched (the caller prepends the init segment).
+/// `is_fmp4` is true when the playlist declares an init segment
+/// (`EXT-X-MAP`); fMP4 audio is passed through untouched (the caller
+/// prepends the init segment).
 pub fn split_segment(data: &[u8], is_fmp4: bool) -> (Vec<u8>, Vec<StreamMetadata>) {
     if !data.is_empty() && data[0] == 0x47 {
         // MPEG-TS: demux audio and the ID3 metadata stream
@@ -398,8 +506,60 @@ pub fn split_segment(data: &[u8], is_fmp4: bool) -> (Vec<u8>, Vec<StreamMetadata
     }
 }
 
-/// Resolve an HLS URL — follows master playlists to find the media playlist
-pub fn resolve_hls_url(url: &str) -> Result<(String, String)> {
+/// Parse playlist text with m3u8-rs, after removing what trips it up: a
+/// UTF-8 byte order mark, and `#EXTINF` titles. m3u8-rs ends a title at its
+/// first comma and reads the rest of the line as a segment URI; the titles
+/// are read from the raw text by [`extinf_titles`] instead.
+pub fn parse_hls_playlist(content: &[u8]) -> std::result::Result<Playlist, String> {
+    let text = String::from_utf8_lossy(content);
+    let text = text.trim_start_matches('\u{feff}').trim_start();
+    let mut clean = String::with_capacity(text.len());
+    for line in text.lines() {
+        let line = line.trim_end();
+        match line.strip_prefix("#EXTINF:") {
+            Some(rest) => {
+                let duration = rest
+                    .split(',')
+                    .next()
+                    .and_then(|d| d.split_whitespace().next())
+                    .unwrap_or("0");
+                clean.push_str("#EXTINF:");
+                clean.push_str(duration);
+                clean.push(',');
+            }
+            None => clean.push_str(line),
+        }
+        clean.push('\n');
+    }
+    m3u8_rs::parse_playlist_res(clean.as_bytes()).map_err(|_| "Invalid HLS playlist".to_string())
+}
+
+/// GET `url`, returning the final URL (after redirects) and the body.
+/// Errors are short, user-facing reasons.
+fn http_get(
+    client: &reqwest::blocking::Client,
+    url: &str,
+) -> std::result::Result<(Url, Vec<u8>), String> {
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|e| RadioError::from(e).to_string())?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("HTTP {status}"));
+    }
+    let final_url = response.url().clone();
+    let body = response
+        .bytes()
+        .map_err(|e| RadioError::from(e).to_string())?;
+    Ok((final_url, body.to_vec()))
+}
+
+/// Resolve an HLS URL — follows master playlists to find the media playlist.
+///
+/// Returns the media playlist's final URL, after any HTTP redirects, since
+/// relative segment URIs are relative to where the playlist really is.
+pub fn resolve_hls_url(url: &str) -> Result<String> {
     let lower = url.to_lowercase();
     if !lower.ends_with(".m3u8") && !lower.contains(".m3u8?") {
         return Err(RadioError::Stream("Not an HLS URL".to_string()));
@@ -410,45 +570,49 @@ pub fn resolve_hls_url(url: &str) -> Result<(String, String)> {
         .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS))
         .build()?;
 
-    resolve_hls_recursive(url, &client, 5)
-}
-
-fn resolve_hls_recursive(
-    url: &str,
-    client: &reqwest::blocking::Client,
-    depth: usize,
-) -> Result<(String, String)> {
-    if depth == 0 {
-        return Err(RadioError::Stream(
-            "HLS playlist nesting too deep".to_string(),
-        ));
-    }
-
-    let response = client.get(url).send()?;
-    if !response.status().is_success() {
-        return Err(RadioError::Stream(format!("HTTP {}", response.status())));
-    }
-
-    let content = response.bytes()?;
-    let base_url = get_base_url(url);
-
-    match m3u8_rs::parse_playlist(&content) {
-        Ok((_, Playlist::MasterPlaylist(master))) => {
-            if let Some(variant) = master.variants.first() {
-                let media_url = make_absolute_url(&variant.uri, &base_url);
-                resolve_hls_recursive(&media_url, client, depth - 1)
-            } else {
-                Err(RadioError::Stream(
-                    "No variants in master playlist".to_string(),
-                ))
-            }
+    let mut url = url.to_string();
+    for _ in 0..5 {
+        let response = client.get(&url).send()?;
+        if !response.status().is_success() {
+            return Err(RadioError::Stream(format!("HTTP {}", response.status())));
         }
-        Ok((_, Playlist::MediaPlaylist(_))) => Ok((url.to_string(), base_url)),
-        Err(e) => Err(RadioError::Stream(format!("Playlist parse error: {:?}", e))),
+        let playlist_url = response.url().clone();
+        let content = response.bytes()?;
+
+        match parse_hls_playlist(&content).map_err(RadioError::Stream)? {
+            Playlist::MasterPlaylist(master) => {
+                let variant = master
+                    .variants
+                    .iter()
+                    .find(|v| !v.is_i_frame)
+                    .ok_or_else(|| {
+                        RadioError::Stream("No variants in master playlist".to_string())
+                    })?;
+                url = playlist_url
+                    .join(variant.uri.trim())
+                    .map_err(|e| RadioError::Stream(format!("Bad variant URI: {e}")))?
+                    .to_string();
+            }
+            Playlist::MediaPlaylist(_) => return Ok(playlist_url.to_string()),
+        }
     }
+    Err(RadioError::Stream(
+        "HLS playlist nesting too deep".to_string(),
+    ))
 }
 
 use super::backoff_sleep;
+
+/// Why a playlist can't be played, if it is encrypted
+fn encryption_method(playlist: &MediaPlaylist) -> Option<String> {
+    // m3u8-rs attaches EXT-X-KEY to the first segment after it only
+    playlist.segments.iter().find_map(|s| {
+        s.key
+            .as_ref()
+            .filter(|k| k.method != m3u8_rs::KeyMethod::None)
+            .map(|k| k.method.to_string())
+    })
+}
 
 /// Background segment downloader
 ///
@@ -456,248 +620,280 @@ use super::backoff_sleep;
 /// This handles both compliant and non-compliant HLS servers — some servers
 /// keep `EXT-X-MEDIA-SEQUENCE` at 0 across playlist refreshes even as they
 /// rotate segment URLs, which breaks sequence-number-based dedup.
-fn segment_downloader(
-    media_url: &str,
-    base_url: &str,
+///
+/// Segment URIs are resolved against the playlist's final URL (after
+/// redirects) with RFC 3986 rules, so `/abs/path`, `../dir/seg` and
+/// `//host/seg` work. Problems are written to `problem`, which
+/// [`HlsReader::new`] reports if no audio arrives.
+struct SegmentDownloader {
+    playlist_url: Url,
     sender: Sender<Vec<u8>>,
     metadata_sink: MetadataSink,
     stop_flag: Arc<AtomicBool>,
     bytes_received: Arc<AtomicU64>,
     segments_downloaded: Arc<AtomicU64>,
-) -> std::result::Result<(), String> {
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-        .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS * 2))
-        .build()
-        .map_err(|e| format!("HTTP client error: {}", e))?;
+    problem: Arc<Mutex<Option<String>>>,
+}
 
-    // URL-based dedup: tracks already-downloaded segment URLs
-    let mut downloaded_urls: HashSet<String> = HashSet::new();
-    let mut first_fetch = true;
-    let mut sent_first = false;
-    let mut init_segment: Option<Vec<u8>> = None;
-    let mut init_segment_url: Option<String> = None;
-    let mut consecutive_failures: u32 = 0;
-    // Audio bytes sent to the reader so far (stream offset for song info)
-    let mut bytes_sent: u64 = 0;
-
-    loop {
-        if stop_flag.load(Ordering::SeqCst) {
-            return Ok(());
+impl SegmentDownloader {
+    fn run(self) {
+        if let Err(reason) = self.download() {
+            self.report(reason);
         }
+    }
 
-        // Fetch playlist
-        let response = match client.get(media_url).send() {
-            Ok(r) => r,
-            Err(_) => {
-                consecutive_failures += 1;
-                if !backoff_sleep(consecutive_failures, &stop_flag) {
-                    return Ok(());
-                }
-                continue;
-            }
-        };
-
-        if !response.status().is_success() {
-            consecutive_failures += 1;
-            if !backoff_sleep(consecutive_failures, &stop_flag) {
-                return Ok(());
-            }
-            continue;
+    fn report(&self, reason: String) {
+        if let Ok(mut problem) = self.problem.lock() {
+            *problem = Some(reason);
         }
+    }
 
-        let content = match response.bytes() {
-            Ok(b) => b,
-            Err(_) => {
-                consecutive_failures += 1;
-                if !backoff_sleep(consecutive_failures, &stop_flag) {
-                    return Ok(());
-                }
-                continue;
+    fn stopped(&self) -> bool {
+        self.stop_flag.load(Ordering::SeqCst)
+    }
+
+    /// Sleep for `duration` unless stopped first. Returns false if stopped.
+    fn sleep(&self, duration: Duration) -> bool {
+        let deadline = std::time::Instant::now() + duration;
+        loop {
+            if self.stopped() {
+                return false;
             }
-        };
-
-        let playlist = match m3u8_rs::parse_playlist(&content) {
-            Ok((_, Playlist::MediaPlaylist(pl))) => pl,
-            Ok(_) => return Err("Expected media playlist".to_string()),
-            Err(_) => {
-                consecutive_failures += 1;
-                if !backoff_sleep(consecutive_failures, &stop_flag) {
-                    return Ok(());
-                }
-                continue;
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                return true;
             }
-        };
-
-        // Playlist fetched successfully — reset backoff
-        consecutive_failures = 0;
-
-        // m3u8-rs cuts #EXTINF titles at the first comma, so read the full
-        // titles (which may carry title="…",artist="…") from the raw text
-        let segment_titles = extinf_titles(&content);
-
-        let is_live = !playlist.end_list;
-        let target_duration = playlist.target_duration as u64;
-
-        // Handle fMP4 init segment (EXT-X-MAP)
-        if init_segment.is_none() {
-            if let Some(first_seg) = playlist.segments.first() {
-                if let Some(ref map) = first_seg.map {
-                    let map_url = make_absolute_url(&map.uri, base_url);
-                    if init_segment_url.as_ref() != Some(&map_url) {
-                        if let Ok(resp) = client.get(&map_url).send() {
-                            if resp.status().is_success() {
-                                if let Ok(data) = resp.bytes() {
-                                    init_segment = Some(data.to_vec());
-                                    init_segment_url = Some(map_url);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            thread::sleep(left.min(Duration::from_millis(250)));
         }
+    }
 
-        // On first fetch, set starting position.
-        // For live: start a few segments back from the end to fill the pipeline.
-        // Starting at only the last segment would mean 1 segment in the pipeline,
-        // and new segments only arrive each playlist refresh — buffer starves.
-        // Starting SEGMENT_BUFFER_SIZE back fills the bounded channel immediately.
-        // For VOD: start from the beginning.
-        let start_idx = if first_fetch && is_live {
-            let start_back = SEGMENT_BUFFER_SIZE.min(playlist.segments.len());
-            playlist.segments.len().saturating_sub(start_back)
-        } else {
-            0
-        };
-        // Mark skipped segments as "already seen" to prevent out-of-order
-        // delivery on subsequent fetches when start_idx returns to 0
-        for segment in playlist.segments.iter().take(start_idx) {
-            if is_valid_segment_uri(&segment.uri) {
-                downloaded_urls.insert(make_absolute_url(&segment.uri, base_url));
-            }
-        }
-        first_fetch = false;
+    /// Download until stopped or the stream ends. `Err` is a reason the
+    /// stream can't be played at all.
+    fn download(&self) -> std::result::Result<(), String> {
+        let client = reqwest::blocking::Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS * 2))
+            .build()
+            .map_err(|e| format!("HTTP client error: {}", e))?;
 
-        let mut fetched_new = false;
+        // URL-based dedup: tracks already-downloaded segment URLs
+        let mut downloaded_urls: HashSet<String> = HashSet::new();
+        let mut first_fetch = true;
+        let mut sent_first = false;
+        // fMP4 init segment (EXT-X-MAP) and its URL, until the first segment
+        let mut init_segment: Option<(String, Vec<u8>)> = None;
+        let mut consecutive_failures: u32 = 0;
+        // Audio bytes sent to the reader so far (stream offset for song info)
+        let mut bytes_sent: u64 = 0;
 
-        // Process segments, skipping already-downloaded URLs
-        for segment in playlist.segments.iter().skip(start_idx) {
-            if stop_flag.load(Ordering::SeqCst) {
+        loop {
+            if self.stopped() {
                 return Ok(());
             }
 
-            if !is_valid_segment_uri(&segment.uri) {
-                continue;
-            }
-
-            let segment_url = make_absolute_url(&segment.uri, base_url);
-
-            // URL-based dedup: skip segments we've already downloaded
-            if downloaded_urls.contains(&segment_url) {
-                continue;
-            }
-
-            match client.get(&segment_url).send() {
-                Ok(resp) if resp.status().is_success() => {
-                    if let Ok(data) = resp.bytes() {
-                        bytes_received.fetch_add(data.len() as u64, Ordering::Relaxed);
-                        fetched_new = true;
-
-                        let is_fmp4 =
-                            segment_url.ends_with(".m4s") || segment_url.contains(".m4s?");
-                        downloaded_urls.insert(segment_url);
-
-                        let (mut audio_data, segment_meta) = split_segment(&data, is_fmp4);
-                        if is_fmp4 && !sent_first {
-                            // fMP4: prepend init segment for first segment
-                            if let Some(ref init) = init_segment {
-                                let mut combined = init.clone();
-                                combined.append(&mut audio_data);
-                                audio_data = combined;
-                            }
-                        }
-
-                        if audio_data.is_empty() {
-                            continue;
-                        }
-
-                        if stop_flag.load(Ordering::SeqCst) {
-                            return Ok(());
-                        }
-
-                        // Song info applies from the start of this segment
-                        let segment_start = bytes_sent;
-                        bytes_sent += audio_data.len() as u64;
-                        if sender.send(audio_data).is_err() {
-                            return Ok(());
-                        }
-                        segments_downloaded.fetch_add(1, Ordering::Relaxed);
-
-                        // Song info: playlist attributes first, since ID3
-                        // from the segment itself takes priority over them
-                        if let Some(meta) = segment_titles
-                            .get(segment.uri.trim())
-                            .and_then(|t| parse_extinf_title(t))
-                        {
-                            metadata_sink.offer_at(meta, segment_start);
-                        }
-                        for meta in segment_meta {
-                            metadata_sink.offer_at(meta, segment_start);
-                        }
-                        if !sent_first {
-                            sent_first = true;
-                            // Init segment only needed for first fMP4 segment — free it
-                            init_segment = None;
-                            init_segment_url = None;
-                        }
+            // Fetch the playlist
+            let fetched = http_get(&client, self.playlist_url.as_str()).and_then(|(url, body)| {
+                parse_hls_playlist(&body).map(|playlist| (url, body, playlist))
+            });
+            let (playlist_url, content, playlist) = match fetched {
+                Ok((url, body, Playlist::MediaPlaylist(pl))) => (url, body, pl),
+                Ok((_, _, Playlist::MasterPlaylist(_))) => {
+                    return Err("Expected an HLS media playlist, got a master playlist".into())
+                }
+                Err(reason) => {
+                    self.report(format!("HLS playlist {}: {reason}", self.playlist_url));
+                    consecutive_failures += 1;
+                    if !backoff_sleep(consecutive_failures, &self.stop_flag) {
+                        return Ok(());
                     }
+                    continue;
                 }
-                Ok(_) | Err(_) => {
-                    // Segment failed (404, network error, etc.)
-                    // Mark as downloaded to skip on next refresh — the content is
-                    // time-sensitive and retrying would cause a glitch anyway.
-                    downloaded_urls.insert(segment_url);
-                    fetched_new = true;
-                }
+            };
+
+            // Playlist fetched successfully — reset backoff
+            consecutive_failures = 0;
+
+            if let Some(method) = encryption_method(&playlist) {
+                return Err(format!(
+                    "Encrypted HLS streams ({method}) are not supported"
+                ));
             }
-        }
 
-        // Bound the HashSet: keep only URLs still in the current playlist.
-        // Old URLs that scrolled off the live window are removed.
-        let current_urls: HashSet<String> = playlist
-            .segments
-            .iter()
-            .map(|s| make_absolute_url(&s.uri, base_url))
-            .collect();
-        downloaded_urls.retain(|url| current_urls.contains(url));
+            // m3u8-rs cuts #EXTINF titles at the first comma, so read the full
+            // titles (which may carry title="…",artist="…") from the raw text
+            let segment_titles = extinf_titles(&content);
 
-        // VOD: done after all segments downloaded
-        if !is_live {
-            let all_done = playlist
+            let is_live = !playlist.end_list;
+            let target_duration = playlist.target_duration;
+
+            // fMP4 (EXT-X-MAP): fetch the init segment before the first media
+            // segment, since the decoder can't start without it
+            let map_url = playlist
                 .segments
                 .iter()
-                .all(|s| downloaded_urls.contains(&make_absolute_url(&s.uri, base_url)));
-            if all_done {
+                .find_map(|s| s.map.as_ref())
+                .and_then(|map| playlist_url.join(map.uri.trim()).ok())
+                .map(String::from);
+            if !sent_first {
+                if let Some(map_url) = &map_url {
+                    if init_segment.as_ref().map(|(url, _)| url) != Some(map_url) {
+                        match http_get(&client, map_url) {
+                            Ok((_, data)) => init_segment = Some((map_url.clone(), data)),
+                            Err(reason) => {
+                                self.report(format!("HLS init segment {map_url}: {reason}"));
+                                consecutive_failures += 1;
+                                if !backoff_sleep(consecutive_failures, &self.stop_flag) {
+                                    return Ok(());
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Segments with their absolute URLs
+            let segments: Vec<_> = playlist
+                .segments
+                .iter()
+                .filter(|s| is_valid_segment_uri(&s.uri))
+                .filter_map(|s| {
+                    let url = playlist_url.join(s.uri.trim()).ok()?;
+                    Some((String::from(url), s))
+                })
+                .collect();
+
+            // On first fetch, set starting position.
+            // For live: start a few segments back from the end to fill the pipeline.
+            // Starting at only the last segment would mean 1 segment in the pipeline,
+            // and new segments only arrive each playlist refresh — buffer starves.
+            // Starting SEGMENT_BUFFER_SIZE back fills the bounded channel immediately.
+            // For VOD: start from the beginning.
+            let start_idx = if first_fetch && is_live {
+                segments.len().saturating_sub(SEGMENT_BUFFER_SIZE)
+            } else {
+                0
+            };
+            // Mark skipped segments as "already seen" to prevent out-of-order
+            // delivery on subsequent fetches when start_idx returns to 0
+            for (url, _) in segments.iter().take(start_idx) {
+                downloaded_urls.insert(url.clone());
+            }
+            first_fetch = false;
+
+            let mut fetched_new = false;
+            // Why the segments of this pass gave no audio
+            let mut last_failure: Option<String> = None;
+
+            // Process segments, skipping already-downloaded URLs
+            for (segment_url, segment) in segments.iter().skip(start_idx) {
+                if self.stopped() {
+                    return Ok(());
+                }
+
+                // URL-based dedup: skip segments we've already downloaded.
+                // Failed segments count as downloaded too: the content is
+                // time-sensitive and retrying would cause a glitch anyway.
+                if !downloaded_urls.insert(segment_url.clone()) {
+                    continue;
+                }
+                fetched_new = true;
+
+                let data = match http_get(&client, segment_url) {
+                    Ok((_, data)) => data,
+                    Err(reason) => {
+                        last_failure = Some(format!("HLS segment {segment_url}: {reason}"));
+                        continue;
+                    }
+                };
+                self.bytes_received
+                    .fetch_add(data.len() as u64, Ordering::Relaxed);
+
+                let (mut audio_data, segment_meta) = split_segment(&data, map_url.is_some());
+                if audio_data.is_empty() {
+                    last_failure = Some(format!(
+                        "HLS segment {segment_url}: no audio found in {} bytes ({:?})",
+                        data.len(),
+                        detect_segment_format(&data, segment_url)
+                    ));
+                    continue;
+                }
+                if !sent_first {
+                    // fMP4: prepend the init segment to the first segment
+                    if let Some((_, mut init)) = init_segment.take() {
+                        init.append(&mut audio_data);
+                        audio_data = init;
+                    }
+                }
+
+                if self.stopped() {
+                    return Ok(());
+                }
+
+                // Song info applies from the start of this segment
+                let segment_start = bytes_sent;
+                bytes_sent += audio_data.len() as u64;
+                if self.sender.send(audio_data).is_err() {
+                    return Ok(());
+                }
+                self.segments_downloaded.fetch_add(1, Ordering::Relaxed);
+                sent_first = true;
+
+                // Song info: playlist attributes first, since ID3
+                // from the segment itself takes priority over them
+                if let Some(meta) = segment_titles
+                    .get(segment.uri.trim())
+                    .and_then(|t| parse_extinf_title(t))
+                {
+                    self.metadata_sink.offer_at(meta, segment_start);
+                }
+                for meta in segment_meta {
+                    self.metadata_sink.offer_at(meta, segment_start);
+                }
+            }
+
+            if let Some(reason) = last_failure {
+                if !sent_first {
+                    // Every segment tried so far failed: this won't play
+                    return Err(reason);
+                }
+                self.report(reason);
+            } else if !sent_first && segments.is_empty() && !playlist.segments.is_empty() {
+                self.report("HLS playlist has no usable segment URIs".to_string());
+            }
+
+            // Bound the HashSet: keep only URLs still in the current playlist.
+            // Old URLs that scrolled off the live window are removed.
+            let current_urls: HashSet<&str> = segments.iter().map(|(u, _)| u.as_str()).collect();
+            downloaded_urls.retain(|url| current_urls.contains(url.as_str()));
+
+            // VOD: done after all segments downloaded
+            if !is_live
+                && segments
+                    .iter()
+                    .all(|(url, _)| downloaded_urls.contains(url))
+            {
+                return Ok(());
+            }
+
+            // RFC 8216 Section 6.3.4 — playlist reload timing:
+            // - After playlist changed (new segments found): wait target_duration
+            // - After playlist unchanged (no new segments): wait target_duration / 2
+            let wait = if is_live {
+                let base = target_duration.max(2);
+                if fetched_new {
+                    Duration::from_secs(base)
+                } else {
+                    Duration::from_secs(base / 2)
+                }
+            } else {
+                Duration::from_secs(1)
+            };
+            if !self.sleep(wait) {
                 return Ok(());
             }
         }
-
-        // RFC 8216 Section 6.3.4 — playlist reload timing:
-        // - After playlist changed (new segments found): wait target_duration
-        // - After playlist unchanged (no new segments): wait target_duration / 2
-        let wait = if is_live {
-            let base = target_duration.max(2);
-            if fetched_new {
-                Duration::from_secs(base)
-            } else {
-                Duration::from_secs(base / 2)
-            }
-        } else {
-            Duration::from_secs(1)
-        };
-        thread::sleep(wait);
     }
 }
 
@@ -879,8 +1075,9 @@ mod tests {
     }
 
     #[test]
-    fn invalid_bare_name_no_extension() {
-        assert!(!is_valid_segment_uri("somename"));
+    fn valid_bare_name_no_extension() {
+        // RFC 8216: any non-tag line is a URI; servers use extensionless names
+        assert!(is_valid_segment_uri("somename"));
     }
 
     // --- demux_ts_segment ---
@@ -1090,13 +1287,13 @@ mod tests {
     }
 
     #[test]
-    fn invalid_single_word() {
-        assert!(!is_valid_segment_uri("BANDWIDTH"));
+    fn valid_single_word() {
+        assert!(is_valid_segment_uri("BANDWIDTH"));
     }
 
     #[test]
-    fn invalid_number() {
-        assert!(!is_valid_segment_uri("12345"));
+    fn valid_number() {
+        assert!(is_valid_segment_uri("12345"));
     }
 
     // --- demux_ts_segment edge cases ---
@@ -1301,7 +1498,7 @@ mod tests {
         use mpeg2ts::ts::payload::{Bytes, Pat, Pes, Pmt};
         use mpeg2ts::ts::{
             ContinuityCounter, EsInfo, Pid, ProgramAssociation, TransportScramblingControl,
-            TsHeader, TsPacket, TsPacketWriter, VersionNumber, WriteTsPacket,
+            TsHeader, TsPacket, TsPacketWriter, TsPayload, VersionNumber, WriteTsPacket,
         };
 
         const PMT_PID: u16 = 0x1000;
@@ -1506,8 +1703,7 @@ mod tests {
                 Route::new(ts_segment(&frame(300), &[id3v2_song("Artist", "From ID3")])),
             );
 
-            let (_reader, rx) =
-                HlsReader::new(&server.url("/live.m3u8"), &server.base_url, None).unwrap();
+            let (_reader, rx) = HlsReader::new(&server.url("/live.m3u8"), None).unwrap();
             let got: Vec<_> = (0..2)
                 .map(|_| rx.recv_timeout(Duration::from_secs(5)).unwrap())
                 .collect();
@@ -1537,12 +1733,8 @@ mod tests {
             );
 
             let position = Arc::new(AtomicU64::new(0));
-            let (_reader, rx) = HlsReader::new(
-                &server.url("/live.m3u8"),
-                &server.base_url,
-                Some(position.clone()),
-            )
-            .unwrap();
+            let (_reader, rx) =
+                HlsReader::new(&server.url("/live.m3u8"), Some(position.clone())).unwrap();
             let title = |ms| {
                 rx.recv_timeout(Duration::from_millis(ms))
                     .ok()
@@ -1554,6 +1746,477 @@ mod tests {
             // Playback reaches the second segment
             position.store(seg1_audio.len() as u64, Ordering::Relaxed);
             assert_eq!(title(2000), Some("Second".to_string()));
+        }
+    }
+
+    // --- Segment downloader against real-world stream shapes ---
+    //
+    // Each of these used to end in "Stream resolution timed out" (no segment
+    // ever reached the reader) or in a silent stall.
+
+    mod downloader {
+        use super::*;
+        use crate::stream::id3::test_util::{frame, id3v2_song};
+        use crate::stream::test_server::{Route, TestServer};
+        use std::time::Instant;
+
+        /// MPEG-2 CRC32 for PSI sections
+        fn crc32_mpeg(data: &[u8]) -> u32 {
+            let mut crc = 0xFFFF_FFFFu32;
+            for &byte in data {
+                crc ^= u32::from(byte) << 24;
+                for _ in 0..8 {
+                    crc = if crc & 0x8000_0000 != 0 {
+                        (crc << 1) ^ 0x04C1_1DB7
+                    } else {
+                        crc << 1
+                    };
+                }
+            }
+            crc
+        }
+
+        /// One TS packet; short payloads are padded with adaptation-field
+        /// stuffing, as real muxers do
+        fn ts_packet(pid: u16, unit_start: bool, payload: &[u8]) -> Vec<u8> {
+            assert!(payload.len() <= 184);
+            let mut p = vec![
+                0x47,
+                (u8::from(unit_start) << 6) | (pid >> 8) as u8,
+                pid as u8,
+            ];
+            if payload.len() == 184 {
+                p.push(0x10);
+            } else {
+                let af_len = 183 - payload.len();
+                p.push(0x30);
+                p.push(af_len as u8);
+                if af_len > 0 {
+                    p.push(0x00);
+                    p.resize(p.len() + af_len - 1, 0xFF);
+                }
+            }
+            p.extend_from_slice(payload);
+            assert_eq!(p.len(), 188);
+            p
+        }
+
+        /// A PSI section in a TS packet payload (pointer field included)
+        fn psi(table_id: u8, body: &[u8]) -> Vec<u8> {
+            let len = body.len() + 4;
+            let mut section = vec![table_id, 0xB0 | (len >> 8) as u8, len as u8];
+            section.extend_from_slice(body);
+            let crc = crc32_mpeg(&section);
+            section.extend_from_slice(&crc.to_be_bytes());
+            [vec![0], section].concat()
+        }
+
+        fn pat(pmt_pid: u16) -> Vec<u8> {
+            let body = [
+                0x00,
+                0x01,
+                0xC1,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0xE0 | (pmt_pid >> 8) as u8,
+                pmt_pid as u8,
+            ];
+            ts_packet(0, true, &psi(0x00, &body))
+        }
+
+        /// A PMT listing `(stream_type, pid)` streams
+        fn pmt(pmt_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
+            let pcr = streams.first().map_or(0x1FFF, |s| s.1);
+            let mut body = vec![
+                0x00,
+                0x01,
+                0xC1,
+                0x00,
+                0x00,
+                0xE0 | (pcr >> 8) as u8,
+                pcr as u8,
+                0xF0,
+                0x00,
+            ];
+            for &(stream_type, pid) in streams {
+                body.extend_from_slice(&[
+                    stream_type,
+                    0xE0 | (pid >> 8) as u8,
+                    pid as u8,
+                    0xF0,
+                    0x00,
+                ]);
+            }
+            ts_packet(pmt_pid, true, &psi(0x02, &body))
+        }
+
+        /// PES packets (with a PTS) carrying `data` on `pid`
+        fn pes(pid: u16, stream_id: u8, data: &[u8]) -> Vec<u8> {
+            let mut pes = vec![0, 0, 1, stream_id, 0, 0, 0x80, 0x80, 5, 0x21, 0, 1, 0, 1];
+            pes.extend_from_slice(data);
+            let mut out = Vec::new();
+            for (i, chunk) in pes.chunks(184).enumerate() {
+                out.extend(ts_packet(pid, i == 0, chunk));
+            }
+            out
+        }
+
+        /// A TS segment with one AAC stream
+        fn plain_ts(audio: &[u8]) -> Vec<u8> {
+            [
+                pat(0x1000),
+                pmt(0x1000, &[(0x0F, 0x100)]),
+                pes(0x100, 0xC0, audio),
+            ]
+            .concat()
+        }
+
+        /// A TS segment whose only audio (AAC, PID 0x100) sits next to a
+        /// stream type the old demuxer rejected (MPEG-H 0x2D), which made it
+        /// drop the whole segment
+        fn ts_segment_unusual(audio: &[u8]) -> Vec<u8> {
+            [
+                pat(0x1000),
+                pmt(0x1000, &[(0x2D, 0x102), (0x0F, 0x100)]),
+                pes(0x100, 0xC0, audio),
+            ]
+            .concat()
+        }
+
+        /// Read everything the reader has buffered so far
+        fn first_chunk(reader: &mut HlsReader) -> Vec<u8> {
+            let mut buf = vec![0u8; 64 * 1024];
+            let n = reader.read(&mut buf).unwrap();
+            buf.truncate(n);
+            buf
+        }
+
+        fn vod(segments: &[&str]) -> String {
+            let mut pl = String::from("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n");
+            for s in segments {
+                pl.push_str(&format!("#EXTINF:4.0,\n{s}\n"));
+            }
+            pl.push_str("#EXT-X-ENDLIST\n");
+            pl
+        }
+
+        #[test]
+        fn plays_extensionless_and_query_segment_names() {
+            for name in [
+                "chunk_1727384723",
+                "seg-1.mp4?session=abc",
+                "seg.m4a?t=1",
+                "seg.mp3",
+            ] {
+                let server = TestServer::start();
+                let audio = frame(300);
+                let path = format!("/live/{name}");
+                server.route("/live/index.m3u8", Route::new(vod(&[name])));
+                server.route(&path, Route::new(plain_ts(&audio)));
+                let (mut reader, _) = HlsReader::new(&server.url("/live/index.m3u8"), None)
+                    .unwrap_or_else(|e| {
+                        panic!("{name}: {e}");
+                    });
+                assert_eq!(first_chunk(&mut reader), audio, "{name}");
+            }
+        }
+
+        #[test]
+        fn resolves_root_relative_and_dot_segment_uris() {
+            for (uri, served_at) in [
+                ("/cdn/audio/seg1.ts", "/cdn/audio/seg1.ts"),
+                ("../other/seg1.ts", "/radio/other/seg1.ts"),
+            ] {
+                let server = TestServer::start();
+                let audio = frame(300);
+                server.route("/radio/live/index.m3u8", Route::new(vod(&[uri])));
+                server.route(served_at, Route::new(plain_ts(&audio)));
+                let (mut reader, _) =
+                    HlsReader::new(&server.url("/radio/live/index.m3u8"), None).unwrap();
+                assert_eq!(first_chunk(&mut reader), audio, "{uri}");
+            }
+        }
+
+        #[test]
+        fn resolves_segments_against_redirected_playlist() {
+            let server = TestServer::start();
+            let audio = frame(300);
+            server.route("/live.m3u8", Route::redirect("/edge/42/live.m3u8"));
+            server.route("/edge/42/live.m3u8", Route::new(vod(&["seg1.ts"])));
+            server.route("/edge/42/seg1.ts", Route::new(plain_ts(&audio)));
+            let (mut reader, _) = HlsReader::new(&server.url("/live.m3u8"), None).unwrap();
+            assert_eq!(first_chunk(&mut reader), audio);
+            assert_eq!(server.hits("/seg1.ts"), 0);
+        }
+
+        #[test]
+        fn resolve_hls_url_follows_redirects_and_relative_variants() {
+            let server = TestServer::start();
+            let master = "#EXTM3U\n\
+                #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1000,URI=\"iframes.m3u8\"\n\
+                #EXT-X-STREAM-INF:BANDWIDTH=64000,CODECS=\"mp4a.40.5\"\n\
+                /cdn/audio-64000/index.m3u8\n";
+            server.route("/radio.m3u8", Route::redirect("/geo/radio.m3u8"));
+            server.route("/geo/radio.m3u8", Route::new(master));
+            server.route("/cdn/audio-64000/index.m3u8", Route::new(vod(&["seg1.ts"])));
+            assert_eq!(
+                resolve_hls_url(&server.url("/radio.m3u8")).unwrap(),
+                server.url("/cdn/audio-64000/index.m3u8")
+            );
+        }
+
+        #[test]
+        fn demuxes_audio_next_to_unknown_stream_types() {
+            let audio = frame(700);
+            assert_eq!(demux_ts_segment(&ts_segment_unusual(&audio)), audio);
+        }
+
+        #[test]
+        fn demuxes_audio_without_pat_or_pmt() {
+            let audio = frame(500);
+            assert_eq!(demux_ts_segment(&pes(0x44, 0xC0, &audio)), audio);
+        }
+
+        #[test]
+        fn demux_takes_only_the_first_audio_track() {
+            let (main, second) = (frame(300), vec![0x11; 300]);
+            let seg = [
+                pat(0x1000),
+                pmt(0x1000, &[(0x0F, 0x100), (0x0F, 0x101)]),
+                pes(0x100, 0xC0, &main),
+                pes(0x101, 0xC1, &second),
+            ]
+            .concat();
+            assert_eq!(demux_ts_segment(&seg), main);
+        }
+
+        #[test]
+        fn demux_resyncs_after_garbage() {
+            let audio = frame(400);
+            let seg = [vec![0x00, 0x12, 0x34], ts_segment_unusual(&audio)].concat();
+            assert_eq!(demux_ts_segment(&seg), audio);
+        }
+
+        /// A TS segment laid out like RTL's (Quortex): the ID3 song info
+        /// packet comes first, before the PAT and PMT. The old demuxer
+        /// failed on that first packet ("Unknown PID") and returned no audio
+        /// for every segment, so RTL never started.
+        fn ts_segment_rtl_layout(audio: &[u8], tag: &[u8]) -> Vec<u8> {
+            [
+                pes(0x3E8, 0xBD, tag),
+                pat(0x1000),
+                pmt(0x1000, &[(0x0F, 0x100), (0x15, 0x3E8)]),
+                pes(0x100, 0xC0, audio),
+            ]
+            .concat()
+        }
+
+        #[test]
+        fn demuxes_rtl_layout_with_id3_before_pat() {
+            let audio = frame(900);
+            let seg = ts_segment_rtl_layout(&audio, &id3v2_song("Georges Lang", "W RTL Country"));
+            let (out, meta) = split_segment(&seg, false);
+            assert_eq!(out, audio);
+            assert_eq!(meta.len(), 1);
+            assert_eq!(meta[0].artist.as_deref(), Some("Georges Lang"));
+            assert_eq!(meta[0].title.as_deref(), Some("W RTL Country"));
+        }
+
+        #[test]
+        fn plays_rtl_quortex_stream_end_to_end() {
+            let server = TestServer::start();
+            // Master playlist from the redirector: one variant on another
+            // path, with a signed query string
+            let master = format!(
+                "#EXTM3U\n#EXT-X-VERSION:7\n## RedirectorRewritten\n\
+                 #EXT-X-SESSION-DATA:DATA-ID=\"fr.rtl.hls.cdn\",VALUE=\"qtx\"\n\
+                 #EXT-X-INDEPENDENT-SEGMENTS\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=64000,FRAME-RATE=25,CODECS=\"mp4a.40.29\"\n\
+                 {}\n",
+                server.url("/radio/rtl/audio-64000/index.m3u8?Policy=abc&Signature=x~y")
+            );
+            // Media playlist as served by Quortex (live, trimmed to 3 segments)
+            let media = "#EXTM3U\n#EXT-X-VERSION:7\n\
+                ## Just In Time Delivered by Quortex Solution\n\
+                #EXT-X-TARGETDURATION:6\n#EXT-X-DISCONTINUITY-SEQUENCE:0\n\
+                #EXT-X-MEDIA-SEQUENCE:310843946\n\n\
+                #EXT-X-PROGRAM-DATE-TIME:2026-09-26T22:18:48.960000Z\n\
+                #EXTINF:5.760,\nsegment_310843946.ts\n#EXTINF:5.760,\nsegment_310843947.ts\n\
+                #EXT-X-PROGRAM-DATE-TIME:2026-09-26T22:19:00.480000Z\n\
+                #EXTINF:5.760,\nsegment_310843948.ts\n";
+            server.route(
+                "/webXYZ/grouprtl/audio-64000/index.m3u8",
+                Route::new(master),
+            );
+            server.route(
+                "/radio/rtl/audio-64000/index.m3u8?Policy=abc&Signature=x~y",
+                Route::new(media),
+            );
+            let audio = frame(300);
+            for n in 46..=48 {
+                server.route(
+                    &format!("/radio/rtl/audio-64000/segment_3108439{n}.ts"),
+                    Route::new(ts_segment_rtl_layout(
+                        &audio,
+                        &id3v2_song("Georges Lang", "W RTL Country"),
+                    )),
+                );
+            }
+
+            let media_url =
+                resolve_hls_url(&server.url("/webXYZ/grouprtl/audio-64000/index.m3u8")).unwrap();
+            let (mut reader, rx) = HlsReader::new(&media_url, None).unwrap();
+            assert_eq!(reader.detected_format, HlsSegmentFormat::Raw);
+            assert_eq!(first_chunk(&mut reader)[..audio.len()], audio[..]);
+            let meta = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+            assert_eq!(meta.title.as_deref(), Some("W RTL Country"));
+        }
+
+        #[test]
+        fn plays_unusual_ts_segments() {
+            let server = TestServer::start();
+            let audio = frame(300);
+            server.route("/index.m3u8", Route::new(vod(&["seg1.ts"])));
+            server.route("/seg1.ts", Route::new(ts_segment_unusual(&audio)));
+            let (mut reader, _) = HlsReader::new(&server.url("/index.m3u8"), None).unwrap();
+            assert_eq!(first_chunk(&mut reader), audio);
+        }
+
+        #[test]
+        fn fmp4_segments_of_any_name_get_the_init_segment() {
+            let server = TestServer::start();
+            let init = [&[0, 0, 0, 16][..], b"ftypiso6", &[0, 0, 0, 0]].concat();
+            let media = [&[0, 0, 0, 8][..], b"moof", &[0x42; 32]].concat();
+            let playlist = "#EXTM3U\n#EXT-X-VERSION:7\n#EXT-X-TARGETDURATION:4\n\
+                #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:4.0,\nseg1.mp4\n#EXT-X-ENDLIST\n";
+            server.route("/index.m3u8", Route::new(playlist));
+            server.route("/init.mp4", Route::new(init.clone()));
+            server.route("/seg1.mp4", Route::new(media.clone()));
+            let (mut reader, _) = HlsReader::new(&server.url("/index.m3u8"), None).unwrap();
+            assert_eq!(reader.detected_format, HlsSegmentFormat::Fmp4);
+            assert_eq!(first_chunk(&mut reader), [init, media].concat());
+        }
+
+        #[test]
+        fn init_segment_is_fetched_once_on_live_streams() {
+            let server = TestServer::start();
+            let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n\
+                #EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:1.0,\nseg1.m4s\n";
+            server.route("/index.m3u8", Route::new(playlist));
+            server.route(
+                "/init.mp4",
+                Route::new([&[0, 0, 0, 8][..], b"ftyp"].concat()),
+            );
+            server.route(
+                "/seg1.m4s",
+                Route::new([&[0, 0, 0, 8][..], b"moof"].concat()),
+            );
+            let (_reader, _) = HlsReader::new(&server.url("/index.m3u8"), None).unwrap();
+            // Wait for at least one playlist refresh (every 2 s at minimum)
+            let start = Instant::now();
+            while server.hits("/index.m3u8") < 2 && start.elapsed() < Duration::from_secs(5) {
+                thread::sleep(Duration::from_millis(50));
+            }
+            assert!(server.hits("/index.m3u8") >= 2);
+            assert_eq!(server.hits("/init.mp4"), 1);
+        }
+
+        #[test]
+        fn failing_segments_report_the_http_status_quickly() {
+            let server = TestServer::start();
+            server.route("/index.m3u8", Route::new(vod(&["seg1.ts", "seg2.ts"])));
+            server.route("/seg1.ts", Route::status(403));
+            server.route("/seg2.ts", Route::status(404));
+            let start = Instant::now();
+            let err = HlsReader::new(&server.url("/index.m3u8"), None)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "took {:?}",
+                start.elapsed()
+            );
+            assert!(err.contains("HTTP 404"), "{err}");
+            assert!(err.contains("seg2.ts"), "{err}");
+        }
+
+        #[test]
+        fn segments_without_audio_are_reported() {
+            let server = TestServer::start();
+            server.route("/index.m3u8", Route::new(vod(&["seg1.ts"])));
+            // PAT and PMT only
+            let seg = [pat(0x1000), pmt(0x1000, &[(0x1B, 0x100)])].concat();
+            server.route("/seg1.ts", Route::new(seg));
+            let err = HlsReader::new(&server.url("/index.m3u8"), None)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(err.contains("no audio found"), "{err}");
+        }
+
+        #[test]
+        fn encrypted_streams_are_reported() {
+            let server = TestServer::start();
+            let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n\
+                #EXT-X-KEY:METHOD=AES-128,URI=\"key.bin\"\n#EXTINF:4.0,\nseg1.ts\n#EXT-X-ENDLIST\n";
+            server.route("/index.m3u8", Route::new(playlist));
+            let err = HlsReader::new(&server.url("/index.m3u8"), None)
+                .err()
+                .unwrap()
+                .to_string();
+            assert!(err.contains("AES-128"), "{err}");
+            assert_eq!(server.hits("/seg1.ts"), 0);
+        }
+
+        #[test]
+        fn failed_start_stops_the_downloader() {
+            let server = TestServer::start();
+            // A live playlist that never lists a segment the reader can use
+            let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nseg1.ts\n";
+            server.route("/index.m3u8", Route::new(playlist));
+            server.route("/seg1.ts", Route::status(404));
+            assert!(HlsReader::new(&server.url("/index.m3u8"), None).is_err());
+            let hits = server.hits("/index.m3u8");
+            thread::sleep(Duration::from_millis(2500));
+            assert_eq!(server.hits("/index.m3u8"), hits);
+        }
+
+        // --- parse_hls_playlist ---
+
+        fn uris(content: &str) -> Vec<String> {
+            match parse_hls_playlist(content.as_bytes()).unwrap() {
+                Playlist::MediaPlaylist(pl) => pl.segments.into_iter().map(|s| s.uri).collect(),
+                Playlist::MasterPlaylist(_) => panic!("expected a media playlist"),
+            }
+        }
+
+        #[test]
+        fn titles_with_commas_do_not_become_segments() {
+            let pl = "#EXTM3U\n#EXT-X-TARGETDURATION:10\n\
+                #EXTINF:10.0,title=\"Hello, Goodbye\",artist=\"The Beatles\"\nseg1.aac\n\
+                #EXTINF:10.0,Artist - Song, Live\nseg2.aac\n\
+                #EXTINF:-1 tvg-id=\"x\",Name\nseg3.aac\n";
+            assert_eq!(uris(pl), vec!["seg1.aac", "seg2.aac", "seg3.aac"]);
+        }
+
+        #[test]
+        fn parses_bom_crlf_and_extinf_without_comma() {
+            let pl = "\u{feff}#EXTM3U\r\n#EXT-X-TARGETDURATION:4\r\n\
+                #EXTINF:4\r\nseg1.ts\r\n#EXTINF:4.0,\r\n\r\nseg2.ts\r\n";
+            assert_eq!(uris(pl), vec!["seg1.ts", "seg2.ts"]);
+        }
+
+        #[test]
+        fn keeps_low_latency_and_unknown_tags_out_of_segments() {
+            let pl =
+                "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-SERVER-CONTROL:CAN-BLOCK-RELOAD=YES\n\
+                #EXT-X-PROGRAM-DATE-TIME:2026-09-26T21:52:05.123+0000\n\
+                #EXT-X-PART:DURATION=1.0,URI=\"part1.mp4\"\n#EXTINF:4.0,\nseg1.mp4\n\
+                #EXT-X-PRELOAD-HINT:TYPE=PART,URI=\"part2.mp4\"\n";
+            assert_eq!(uris(pl), vec!["seg1.mp4"]);
         }
     }
 }

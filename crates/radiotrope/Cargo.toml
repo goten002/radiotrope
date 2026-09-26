@@ -19,7 +19,9 @@ symphonia-adapter-fdk-aac = { workspace = true }
 rustfft = { workspace = true }
 biquad = { workspace = true }
 m3u8-rs = { workspace = true }
-mpeg2ts = { workspace = true }
 crossbeam-channel = { workspace = true }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+mpeg2ts = { workspace = true }
