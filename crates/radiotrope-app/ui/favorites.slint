@@ -60,8 +60,10 @@ component FavoriteRow inherits Rectangle {
     in property <int> play-count;
     // Show the stats on the right (View > Show Station Stats)
     in property <bool> show-stats: true;
-    // Keep the menu button visible, not only on hover (touch screens)
-    in property <bool> always-show-menu: false;
+    // Touch screens: pick a station up only after holding the logo
+    // briefly, so a swipe that starts on the logo still scrolls the list,
+    // and open the menu by holding the rest of the row
+    in property <bool> hold-to-drag: false;
     callback clicked();
     callback edit-clicked();
     callback move-requested(/* to-top */ bool);
@@ -80,7 +82,8 @@ component FavoriteRow inherits Rectangle {
     property <length> menu-x;
     property <length> menu-y;
     property <bool> confirm-remove: false;
-    property <bool> hovered: touch.has-hover || handle.has-hover || menu-button.hovered;
+    // The menu opened from a hold, so letting go must not also play
+    property <bool> menu-held: false;
     property <length> menu-width: 186px;
 
     public function open-menu(x: length, y: length) {
@@ -115,12 +118,43 @@ component FavoriteRow inherits Rectangle {
         border-radius: 1.5px;
     }
 
+    // Holding the row opens the menu on touch screens (right-click does
+    // on the desktop)
+    menu-timer := Timer {
+        interval: 500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if touch.pressed {
+                root.menu-held = true;
+                root.open-menu(touch.pressed-x, touch.pressed-y);
+            }
+        }
+    }
+
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            if !root.menu-held {
+                root.clicked();
+            }
+        }
         pointer-event(event) => {
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.open-menu(self.mouse-x, self.mouse-y);
+            }
+            if event.button == PointerEventButton.left && event.kind == PointerEventKind.down {
+                root.menu-held = false;
+                menu-timer.running = root.hold-to-drag;
+            }
+            if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                menu-timer.running = false;
+            }
+        }
+        moved => {
+            // Moving is a swipe: leave it to the list
+            if abs(self.mouse-y - self.pressed-y) > 6px || abs(self.mouse-x - self.pressed-x) > 6px {
+                menu-timer.running = false;
             }
         }
     }
@@ -130,21 +164,6 @@ component FavoriteRow inherits Rectangle {
         padding-right: 12px;
         spacing: 8px;
         alignment: stretch;
-
-        // Drag hint
-        VerticalLayout {
-            alignment: center;
-            width: 20px;
-
-            Icon {
-                source: @image-url("icons/grip-lines.svg");
-                width: 20px;
-                height: 20px;
-                colorize: root.is-drag-source ? Theme.accent
-                    : handle.has-hover ? Theme.text-primary
-                    : touch.has-hover ? Theme.text-secondary : Theme.text-tertiary;
-            }
-        }
 
         // Logo
         VerticalLayout {
@@ -258,22 +277,6 @@ component FavoriteRow inherits Rectangle {
                 horizontal-alignment: right;
             }
         }
-
-        // Menu button: shows on hover (always on touch screens)
-        VerticalLayout {
-            alignment: center;
-
-            menu-button := IconButton {
-                icon: @image-url("icons/ellipsis.svg");
-                icon-size: 16px;
-                icon-color: Theme.text-secondary;
-                opacity: root.always-show-menu || root.hovered || root.dragging ? 1 : 0;
-                animate opacity { duration: Theme.fast; }
-                clicked => {
-                    root.open-menu(root.width - root.menu-width - 8px, root.height - 6px);
-                }
-            }
-        }
     }
 
     menu := PopupWindow {
@@ -340,11 +343,26 @@ component FavoriteRow inherits Rectangle {
         }
     }
 
-    // Drag handle: the grip and the logo. Press and move to reorder; a
-    // click without moving still plays
+    // After a hold on the logo (touch screens), pick the row up where
+    // the finger is, without waiting for it to move
+    hold-timer := Timer {
+        interval: 300ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            if handle.pressed && !root.dragged {
+                root.dragged = true;
+                root.handle-held(true);
+                root.grip-moved(handle.absolute-position.y + handle.mouse-y, handle.pressed-y);
+            }
+        }
+    }
+
+    // Drag handle: the logo. Press and move to reorder (or hold first on
+    // touch screens); a click without moving still plays
     handle := TouchArea {
         x: 0;
-        width: 86px;
+        width: 58px;
         mouse-cursor: root.dragging ? grabbing : grab;
         pointer-event(event) => {
             if event.button == PointerEventButton.right {
@@ -355,9 +373,14 @@ component FavoriteRow inherits Rectangle {
             }
             if event.kind == PointerEventKind.down {
                 root.dragged = false;
-                root.handle-held(true);
+                if root.hold-to-drag {
+                    hold-timer.running = true;
+                } else {
+                    root.handle-held(true);
+                }
             }
             if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                hold-timer.running = false;
                 root.handle-held(false);
                 if root.dragged {
                     root.grip-released();
@@ -365,6 +388,13 @@ component FavoriteRow inherits Rectangle {
             }
         }
         moved => {
+            if root.hold-to-drag && !root.dragged {
+                // Moving before the hold ends is a swipe: leave it to the list
+                if abs(self.mouse-y - self.pressed-y) > 6px || abs(self.mouse-x - self.pressed-x) > 6px {
+                    hold-timer.running = false;
+                }
+                return;
+            }
             if self.pressed && (root.dragged || abs(self.mouse-y - self.pressed-y) > 3px) {
                 root.dragged = true;
                 root.grip-moved(self.absolute-position.y + self.mouse-y, self.pressed-y);
@@ -545,7 +575,7 @@ export component Favorites inherits Rectangle {
                         last-played: station.last-played;
                         play-count: station.play-count;
                         show-stats: root.show-stats;
-                        always-show-menu: root.touch-scroll;
+                        hold-to-drag: root.touch-scroll;
                         edit-clicked => {
                             root.favorite-edit-requested(station);
                         }

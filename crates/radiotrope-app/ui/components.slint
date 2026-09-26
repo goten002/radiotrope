@@ -51,7 +51,6 @@ export component IconButton inherits Rectangle {
     in property <color> icon-color: Theme.text-secondary;
     in property <color> hover-color: Theme.text-primary;
     in property <bool> active: false;
-    out property <bool> hovered: touch.has-hover;
     callback clicked();
 
     width: 30px;
