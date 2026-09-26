@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { Icon } from "components.slint";
 
 export component AccentButton inherits Rectangle {
     in property <string> label;
@@ -87,7 +88,7 @@ export component DangerButton inherits Rectangle {
 
         if root.icon.width > 0: VerticalLayout {
             alignment: center;
-            Image {
+            Icon {
                 source: root.icon;
                 width: 11px;
                 height: 11px;

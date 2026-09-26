@@ -195,6 +195,9 @@ export component App inherits Window {
             favorites: root.favorites-list;
             favorite-logos: root.favorite-logos;
             current-station-url: root.station-url;
+            is-playing: root.is-playing;
+            play-loading: root.is-loading;
+            play-error: root.is-error;
             touch-scroll: root.touch-scroll;
             favorite-clicked(station) => { root.play-favorite(station); }
             favorite-edit-requested(station) => { edit-dialog.open(station); }

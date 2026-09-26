@@ -1,5 +1,5 @@
 import { Theme } from "theme.slint";
-import { IconButton } from "components.slint";
+import { IconButton, Icon } from "components.slint";
 
 component VolumeSlider inherits Rectangle {
     in-out property <float> value: 50;  // 0–100
@@ -117,7 +117,7 @@ export component Controls inherits Rectangle {
                 drop-shadow-color: Theme.accent.with-alpha(0.45);
                 animate drop-shadow-blur { duration: Theme.normal; }
 
-                Image {
+                Icon {
                     width: 18px;
                     height: 18px;
                     x: (parent.width - self.width) / 2;
@@ -152,7 +152,7 @@ export component Controls inherits Rectangle {
                 HorizontalLayout {
                     spacing: 4px;
                     alignment: start;
-                    Image {
+                    Icon {
                         width: 12px;
                         height: 12px;
                         source: @image-url("icons/music-note.svg");
