@@ -1,50 +1,87 @@
 import { Theme } from "theme.slint";
-import { Visualization } from "visualization.slint";
+import { Visualization, VizContent, VizStyle } from "visualization.slint";
+import { Chip, IconButton } from "components.slint";
 
 export component Playback inherits Rectangle {
     in property <string> station-name;
     in property <string> codec-info;
     in property <string> status-text;
-    in property <float> vu-left;
-    in property <float> vu-right;
-    in property <[float]> spectrum;
     in property <bool> is-loading;
     in property <bool> is-error;
     in property <image> station-logo;
     in property <bool> is-station-favorited;
     in property <bool> has-station;
     callback toggle-favorite();
-    in-out property <string> viz-mode <=> viz.viz-mode;
+    in-out property <string> viz-mode: "mirror";
 
-    height: 100px;
+    height: 108px;
     background: Theme.panel;
+
+    // Soft accent glow from the left, behind the logo
+    Rectangle {
+        background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
+    }
+
+    // Wide visualizer: runs faintly across the whole header; click the
+    // empty header space to switch between mirror and spectrum
+    if VizStyle.wide: Rectangle {
+        TouchArea {
+            clicked => { root.viz-mode = root.viz-mode == "spectrum" ? "mirror" : "spectrum"; }
+        }
+
+        VizContent {
+            x: 0;
+            y: 10px;
+            width: parent.width;
+            height: parent.height - 10px;
+            // Only the bar modes suit the wide strip: meters would sit behind
+            // the text and the curve can't stretch (paths scale evenly)
+            mode: root.viz-mode == "spectrum" ? "spectrum" : "mirror";
+            is-loading: root.is-loading;
+            gap: 4px;
+            peaks: false;
+            tracks: false;
+            opacity: Theme.dark-mode ? 0.5 : 0.4;
+        }
+
+        // Fade the left side so the logo and title stay readable
+        Rectangle {
+            background: @linear-gradient(90deg, Theme.panel 0%, Theme.panel.with-alpha(0.75) 22%, Theme.panel.with-alpha(0) 50%);
+        }
+    }
 
     // 1px bottom separator — shadow edge casting onto favorites
     Rectangle {
         y: parent.height - 1px;
         height: 1px;
-        background: Theme.dark-mode ? #141516 : #c5c6cb;
+        background: Theme.hairline;
     }
 
     HorizontalLayout {
-        padding: 12px;
-        spacing: 12px;
+        padding: 14px;
+        padding-left: 16px;
+        spacing: 14px;
         alignment: stretch;
 
         // Station logo / placeholder
         VerticalLayout {
             alignment: center;
             Rectangle {
-                width: 70px;
-                height: 70px;
-                background: Theme.surface;
-                border-radius: 4px;
+                width: 76px;
+                height: 76px;
+                background: Theme.elevated;
+                border-radius: 12px;
+                border-width: 1px;
+                border-color: Theme.hairline;
+                drop-shadow-blur: 14px;
+                drop-shadow-offset-y: 3px;
+                drop-shadow-color: Theme.shadow-soft;
                 clip: true;
 
                 if root.station-logo.width > 0: Image {
                     source: root.station-logo;
-                    width: 70px;
-                    height: 70px;
+                    width: 76px;
+                    height: 76px;
                     image-fit: contain;
                 }
 
@@ -63,65 +100,53 @@ export component Playback inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 4px;
+            spacing: 5px;
 
             Text {
                 text: root.station-name;
                 color: Theme.text-primary;
-                font-size: 16px;
+                font-size: 18px;
                 font-weight: 600;
                 overflow: elide;
             }
 
-            Text {
+            if root.codec-info != "": Text {
                 text: root.codec-info;
                 color: Theme.text-secondary;
                 font-size: 12px;
                 overflow: elide;
             }
 
-            Text {
-                text: root.status-text;
-                color: root.is-error ? #e05555 : Theme.accent-text;
-                font-size: 14px;
-                overflow: elide;
+            HorizontalLayout {
+                alignment: start;
+
+                Chip {
+                    text: root.status-text;
+                    tone: root.is-error ? Theme.danger : Theme.accent-text;
+                    dot: true;
+                    pulse: root.status-text == "Playing" || root.is-loading;
+                }
             }
         }
 
         // Star (favorite) button
         if root.has-station: VerticalLayout {
             alignment: center;
-            Rectangle {
-                width: 32px;
-                height: 32px;
-                border-radius: 4px;
-                background: star-touch.has-hover ? Theme.surface : transparent;
-
-                star-touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.toggle-favorite();
-                    }
-                }
-
-                Image {
-                    source: @image-url("icons/star.svg");
-                    width: 20px;
-                    height: 20px;
-                    colorize: root.is-station-favorited ? Theme.accent : Theme.text-secondary;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+            IconButton {
+                width: 36px;
+                height: 36px;
+                icon: @image-url("icons/star.svg");
+                icon-size: 20px;
+                active: root.is-station-favorited;
+                clicked => { root.toggle-favorite(); }
             }
         }
 
-        // Visualization
-        VerticalLayout {
+        // Visualization tile (hidden while the wide visualizer runs)
+        if !VizStyle.wide: VerticalLayout {
             alignment: center;
             viz := Visualization {
-                vu-left: root.vu-left;
-                vu-right: root.vu-right;
-                spectrum: root.spectrum;
+                viz-mode <=> root.viz-mode;
                 is-loading: root.is-loading;
             }
         }

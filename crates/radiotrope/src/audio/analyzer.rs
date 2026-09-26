@@ -11,9 +11,19 @@ use std::time::Duration;
 use rodio::Source;
 use rustfft::{num_complex::Complex, FftPlanner};
 
-use crate::config::audio::{FFT_SIZE, SPECTRUM_BANDS, VU_DECAY};
+use crate::config::audio::{FFT_SIZE, SPECTRUM_BANDS, VU_ATTACK, VU_DECAY};
 
 use super::types::AudioAnalysis;
+
+/// Follow a level quickly when it rises and let it fall off smoothly, so
+/// meters snap to beats instead of lagging behind them
+fn smooth_level(current: f32, target: f32) -> f32 {
+    if target > current {
+        current + (target - current) * VU_ATTACK
+    } else {
+        current * VU_DECAY + target * (1.0 - VU_DECAY)
+    }
+}
 
 /// Wrapper source that captures samples for visualization
 pub struct AnalyzingSource<S> {
@@ -108,12 +118,11 @@ where
         }
 
         if let Ok(mut analysis) = self.analysis.lock() {
-            analysis.vu_left = analysis.vu_left * VU_DECAY + rms_left * 3.0 * (1.0 - VU_DECAY);
-            analysis.vu_right = analysis.vu_right * VU_DECAY + rms_right * 3.0 * (1.0 - VU_DECAY);
+            analysis.vu_left = smooth_level(analysis.vu_left, rms_left * 3.0);
+            analysis.vu_right = smooth_level(analysis.vu_right, rms_right * 3.0);
 
             for (i, spectrum_val) in spectrum.iter().enumerate() {
-                analysis.spectrum[i] =
-                    analysis.spectrum[i] * VU_DECAY + spectrum_val.min(1.0) * (1.0 - VU_DECAY);
+                analysis.spectrum[i] = smooth_level(analysis.spectrum[i], spectrum_val.min(1.0));
             }
 
             analysis.sample_count = self.local_sample_count;
@@ -181,6 +190,18 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smooth_level_rises_fast() {
+        let v = smooth_level(0.0, 1.0);
+        assert!((v - VU_ATTACK).abs() < 1e-6);
+    }
+
+    #[test]
+    fn smooth_level_falls_slowly() {
+        let v = smooth_level(1.0, 0.0);
+        assert!((v - VU_DECAY).abs() < 1e-6);
+    }
     use crate::config::audio::{FFT_SIZE, SPECTRUM_BANDS};
     use rodio::buffer::SamplesBuffer;
     use std::num::NonZero;

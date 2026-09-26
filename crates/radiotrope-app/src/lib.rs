@@ -8,6 +8,7 @@ pub mod data;
 pub mod error;
 pub mod network;
 pub mod providers;
+pub mod visual;
 
 // TODO: gate with #[cfg(feature = "embedded")] once verified
 pub mod wifi;

@@ -1,26 +1,68 @@
-// Theme colors — reactive dark/light mode
+// Theme tokens: reactive dark/light mode
+//
+// Components use these instead of literal colors, so both themes (and the
+// accent color) apply everywhere.
 
 export global Theme {
     in-out property <bool> dark-mode: true;
 
-    out property <color> panel: dark-mode ? #25272a : #d4d5da;
-    out property <color> surface: dark-mode ? #191a1c : #f5f5f5;
+    // ── Layers, back to front ──
+    // Main list area
+    out property <color> surface: dark-mode ? #18191b : #f3f3f6;
+    // Header and bottom bar
+    out property <color> panel: dark-mode ? #222427 : #ffffff;
+    // Dialogs and popups
+    out property <color> card: dark-mode ? #25272b : #ffffff;
+    // Inputs, tracks and wells inside a card
+    out property <color> elevated: dark-mode ? #1b1c1f : #f0f0f4;
+    // 1px borders and separators
+    out property <color> hairline: dark-mode ? #ffffff14 : #00000014;
+    // Backdrop behind dialogs
+    out property <color> scrim: dark-mode ? #000000aa : #1a1b2066;
+    out property <color> shadow: dark-mode ? #00000080 : #1a1b2033;
+    out property <color> shadow-soft: dark-mode ? #00000040 : #1a1b201f;
+
+    // ── Text ──
+    out property <color> text-primary: dark-mode ? #f4f4f5 : #16171a;
+    out property <color> text-secondary: dark-mode ? #a0a2a8 : #5c5f66;
+    out property <color> text-tertiary: dark-mode ? #6c6f76 : #8d9097;
+
+    // ── Accent ──
     in-out property <color> accent-base: #f7931e;
     out property <color> accent: accent-base;
     out property <color> accent-hover: accent-base.darker(0.15);
-    out property <color> accent-text: accent-base;
-    out property <color> text-primary: dark-mode ? #ffffff : #1a1a1a;
-    out property <color> text-secondary: dark-mode ? #a0a0a0 : #666666;
+    // Accent for text and icons on surfaces; darker in light mode so it stays readable
+    out property <color> accent-text: dark-mode ? accent-base : accent-base.darker(0.5);
+    // Tints for badges, selected rows and header glows
+    out property <color> accent-soft: accent-base.with-alpha(dark-mode ? 0.16 : 0.12);
+    out property <color> accent-glow: accent-base.with-alpha(dark-mode ? 0.18 : 0.14);
 
-    // Button colors
+    // ── Status ──
+    out property <color> danger: dark-mode ? #ef5b5b : #d33b3b;
+    out property <color> danger-hover: danger.darker(0.15);
+    out property <color> success: dark-mode ? #4cc38a : #1f9d5a;
+
+    // ── Buttons ──
     out property <color> button-text: #1a1a1a;  // dark text on accent buttons (both themes)
-    out property <color> disabled-bg: dark-mode ? #555555 : #cccccc;
-    out property <color> disabled-text: dark-mode ? #888888 : #999999;
+    out property <color> disabled-bg: dark-mode ? #3a3c40 : #e1e2e6;
+    out property <color> disabled-text: dark-mode ? #7a7d83 : #a3a6ac;
 
-    // Menu / popup colors
-    out property <color> popup-bg: dark-mode ? #2b2d31 : #ffffff;
-    out property <color> menu-hover: dark-mode ? #3a3d42 : #c0c1c6;
-    out property <color> menu-bar-hover: dark-mode ? #2f3136 : #d0d1d6;
-    out property <color> menu-text: dark-mode ? #c8c8c8 : #444444;
+    // ── Menus and hover states ──
+    out property <color> popup-bg: card;
+    out property <color> menu-hover: dark-mode ? #33363b : #ebebef;
+    out property <color> menu-bar-hover: dark-mode ? #2d3034 : #f0f0f4;
+    out property <color> menu-text: dark-mode ? #c8c9cc : #3a3c41;
 
+    // ── Visualizer ──
+    out property <color> viz-bg: dark-mode ? #141517 : #f0f0f4;
+    out property <color> viz-track: dark-mode ? #ffffff0d : #0000000d;
+
+    // ── Shape ──
+    out property <length> radius-sm: 6px;
+    out property <length> radius-md: 10px;
+    out property <length> radius-lg: 14px;
+
+    // ── Motion ──
+    out property <duration> fast: 120ms;
+    out property <duration> normal: 180ms;
 }

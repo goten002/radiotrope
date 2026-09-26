@@ -1,4 +1,5 @@
 import { Theme } from "theme.slint";
+import { VizStyle } from "visualization.slint";
 
 component MenuItem inherits Rectangle {
     in property <string> label;
@@ -8,6 +9,7 @@ component MenuItem inherits Rectangle {
     min-width: 160px;
     border-radius: 4px;
     background: touch.has-hover ? Theme.menu-hover : transparent;
+    animate background { duration: Theme.fast; }
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -36,6 +38,7 @@ component CheckMenuItem inherits Rectangle {
     min-width: 160px;
     border-radius: 4px;
     background: touch.has-hover ? Theme.menu-hover : transparent;
+    animate background { duration: Theme.fast; }
 
     touch := TouchArea {
         clicked => { root.clicked(); }
@@ -92,6 +95,7 @@ export component MenuBar inherits Rectangle {
             width: open-label.preferred-width + 20px;
             height: 32px;
             background: open-touch.has-hover ? Theme.menu-bar-hover : transparent;
+            animate background { duration: Theme.fast; }
 
             open-touch := TouchArea {
                 clicked => { open-popup.show(); }
@@ -110,6 +114,7 @@ export component MenuBar inherits Rectangle {
             width: stations-label.preferred-width + 20px;
             height: 32px;
             background: stations-touch.has-hover ? Theme.menu-bar-hover : transparent;
+            animate background { duration: Theme.fast; }
 
             stations-touch := TouchArea {
                 clicked => { stations-popup.show(); }
@@ -128,6 +133,7 @@ export component MenuBar inherits Rectangle {
             width: view-label.preferred-width + 20px;
             height: 32px;
             background: view-touch.has-hover ? Theme.menu-bar-hover : transparent;
+            animate background { duration: Theme.fast; }
 
             view-touch := TouchArea {
                 clicked => { view-popup.show(); }
@@ -146,6 +152,7 @@ export component MenuBar inherits Rectangle {
             width: tools-label.preferred-width + 20px;
             height: 32px;
             background: tools-touch.has-hover ? Theme.menu-bar-hover : transparent;
+            animate background { duration: Theme.fast; }
 
             tools-touch := TouchArea {
                 clicked => { tools-popup.show(); }
@@ -177,6 +184,7 @@ export component MenuBar inherits Rectangle {
                 height: 26px;
                 border-radius: 13px;
                 background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
+                animate background { duration: Theme.fast; }
 
                 Image {
                     width: 16px;
@@ -195,8 +203,11 @@ export component MenuBar inherits Rectangle {
 
         Rectangle {
             background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000033;
+            drop-shadow-color: Theme.shadow-soft;
             drop-shadow-offset-y: 2px;
 
             popup-layout := VerticalLayout {
@@ -220,8 +231,11 @@ export component MenuBar inherits Rectangle {
 
         Rectangle {
             background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000033;
+            drop-shadow-color: Theme.shadow-soft;
             drop-shadow-offset-y: 2px;
 
             stations-popup-layout := VerticalLayout {
@@ -252,8 +266,11 @@ export component MenuBar inherits Rectangle {
 
         Rectangle {
             background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000033;
+            drop-shadow-color: Theme.shadow-soft;
             drop-shadow-offset-y: 2px;
 
             view-popup-layout := VerticalLayout {
@@ -290,6 +307,30 @@ export component MenuBar inherits Rectangle {
                         root.open-accent-color();
                     }
                 }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Wide Visualizer";
+                    checked: VizStyle.wide;
+                    clicked => {
+                        view-popup.close();
+                        VizStyle.wide = !VizStyle.wide;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Logo Colors in Visualizer";
+                    checked: VizStyle.palette == "logo";
+                    clicked => {
+                        view-popup.close();
+                        VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
+                    }
+                }
             }
         }
     }
@@ -301,8 +342,11 @@ export component MenuBar inherits Rectangle {
 
         Rectangle {
             background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
             drop-shadow-blur: 8px;
-            drop-shadow-color: #00000033;
+            drop-shadow-color: Theme.shadow-soft;
             drop-shadow-offset-y: 2px;
 
             tools-popup-layout := VerticalLayout {

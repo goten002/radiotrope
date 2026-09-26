@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { DialogShell, InfoRow, SectionHeader } from "../components.slint";
 
 // Build and environment details, filled in from Rust at startup
 export global AboutInfo {
@@ -16,187 +17,112 @@ export global AboutInfo {
     in property <string> authors;
 }
 
-component InfoRow inherits Rectangle {
-    in property <string> label;
-    in property <string> value;
-
-    height: 22px;
-
-    HorizontalLayout {
-        spacing: 12px;
-
-        Text {
-            width: 88px;
-            text: root.label;
-            color: Theme.text-secondary;
-            font-size: 11px;
-            vertical-alignment: center;
-        }
-
-        Text {
-            text: root.value;
-            color: Theme.text-primary;
-            font-size: 11px;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            overflow: elide;
-        }
-    }
-}
-
-component SectionHeader inherits Rectangle {
-    in property <string> title;
-
-    height: 26px;
-
-    Text {
-        x: 0;
-        y: parent.height - self.height;
-        text: root.title;
-        color: Theme.accent-text;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 1px;
-    }
-}
-
 export component AboutDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
     callback open-url(string);
 
-    if show-dialog: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #000000aa;
+    if show-dialog: DialogShell {
+        card-width: 400px;
+        close-requested => { root.show-dialog = false; }
 
-        TouchArea {
-            clicked => { root.show-dialog = false; }
+        // Logo, name, version
+        VerticalLayout {
+            spacing: 6px;
+            alignment: start;
+
+            HorizontalLayout {
+                alignment: center;
+                Image {
+                    source: @image-url("../../../../assets/icons/icon-128.png");
+                    width: 72px;
+                    height: 72px;
+                }
+            }
+
+            Text {
+                text: "Radiotrope";
+                color: Theme.text-primary;
+                font-size: 22px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+
+            Text {
+                text: "Internet radio player";
+                color: Theme.text-secondary;
+                font-size: 12px;
+                horizontal-alignment: center;
+            }
+
+            HorizontalLayout {
+                alignment: center;
+                padding-top: 4px;
+
+                Rectangle {
+                    width: version-text.preferred-width + 20px;
+                    height: 22px;
+                    border-radius: 11px;
+                    background: Theme.accent-soft;
+
+                    version-text := Text {
+                        text: "Version \{AboutInfo.version}";
+                        color: Theme.accent-text;
+                        font-size: 11px;
+                        font-weight: 600;
+                    }
+                }
+            }
         }
 
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: max(8px, (parent.height - self.height) / 2);
-            width: 400px;
-            height: card-layout.preferred-height;
-            background: Theme.panel;
-            border-radius: 12px;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
-            clip: true;
+        // Details
+        VerticalLayout {
+            spacing: 0;
 
-            TouchArea {}
-
-            // Accent glow behind the logo
-            Rectangle {
-                x: 0;
-                y: 0;
-                width: parent.width;
-                height: 140px;
-                background: @linear-gradient(180deg, Theme.accent.with-alpha(0.18) 0%, transparent 100%);
+            SectionHeader { title: "BUILD"; }
+            if AboutInfo.commit != "": InfoRow {
+                label: "Commit";
+                value: AboutInfo.commit-date != ""
+                    ? "\{AboutInfo.commit} (\{AboutInfo.commit-date})"
+                    : AboutInfo.commit;
             }
+            InfoRow { label: "Platform"; value: AboutInfo.platform; }
+            InfoRow { label: "Settings"; value: AboutInfo.config-dir; }
+            InfoRow { label: "Cache"; value: AboutInfo.cache-dir; }
 
-            card-layout := VerticalLayout {
-                padding: 20px;
-                padding-top: 24px;
-                spacing: 0;
+            SectionHeader { title: "CREDITS"; }
+            InfoRow { label: "Stations"; value: "radio-browser.info community directory"; }
+            InfoRow { label: "UI toolkit"; value: "Slint"; }
+            InfoRow { label: "Audio"; value: "Symphonia, rodio, fdk-aac, libopus"; }
+            InfoRow { label: "Flags"; value: "flag-icons (MIT)"; }
+            InfoRow { label: "Font"; value: "Inter (SIL Open Font License)"; }
+        }
 
-                // Logo, name, version
-                VerticalLayout {
-                    spacing: 6px;
-                    alignment: start;
+        // Links
+        HorizontalLayout {
+            padding-top: 4px;
+            spacing: 8px;
+            alignment: center;
 
-                    HorizontalLayout {
-                        alignment: center;
-                        Image {
-                            source: @image-url("../../../../assets/icons/icon-128.png");
-                            width: 72px;
-                            height: 72px;
-                        }
-                    }
-
-                    Text {
-                        text: "Radiotrope";
-                        color: Theme.text-primary;
-                        font-size: 22px;
-                        font-weight: 600;
-                        horizontal-alignment: center;
-                    }
-
-                    Text {
-                        text: "Internet radio player";
-                        color: Theme.text-secondary;
-                        font-size: 12px;
-                        horizontal-alignment: center;
-                    }
-
-                    HorizontalLayout {
-                        alignment: center;
-                        padding-top: 4px;
-
-                        Rectangle {
-                            width: version-text.preferred-width + 20px;
-                            height: 22px;
-                            border-radius: 11px;
-                            background: Theme.accent.with-alpha(0.15);
-
-                            version-text := Text {
-                                text: "Version \{AboutInfo.version}";
-                                color: Theme.accent-text;
-                                font-size: 11px;
-                                font-weight: 600;
-                            }
-                        }
-                    }
-                }
-
-                SectionHeader { title: "BUILD"; }
-                if AboutInfo.commit != "": InfoRow {
-                    label: "Commit";
-                    value: AboutInfo.commit-date != ""
-                        ? "\{AboutInfo.commit} (\{AboutInfo.commit-date})"
-                        : AboutInfo.commit;
-                }
-                InfoRow { label: "Platform"; value: AboutInfo.platform; }
-                InfoRow { label: "Settings"; value: AboutInfo.config-dir; }
-                InfoRow { label: "Cache"; value: AboutInfo.cache-dir; }
-
-                SectionHeader { title: "CREDITS"; }
-                InfoRow { label: "Stations"; value: "radio-browser.info community directory"; }
-                InfoRow { label: "UI toolkit"; value: "Slint"; }
-                InfoRow { label: "Audio"; value: "Symphonia, rodio, fdk-aac, libopus"; }
-                InfoRow { label: "Flags"; value: "flag-icons (MIT)"; }
-                InfoRow { label: "Font"; value: "Inter (SIL Open Font License)"; }
-
-                // Links
-                HorizontalLayout {
-                    padding-top: 16px;
-                    spacing: 8px;
-                    alignment: center;
-
-                    AccentButton {
-                        label: "Source code";
-                        clicked => { root.open-url(AboutInfo.repository); }
-                    }
-                    SecondaryButton {
-                        label: "Report an issue";
-                        clicked => { root.open-url(AboutInfo.repository + "/issues"); }
-                    }
-                    SecondaryButton {
-                        label: "Close";
-                        clicked => { root.show-dialog = false; }
-                    }
-                }
-
-                Rectangle { height: 12px; }
-
-                Text {
-                    text: "\{AboutInfo.license} License · © \{AboutInfo.authors}";
-                    color: Theme.text-secondary;
-                    font-size: 10px;
-                    horizontal-alignment: center;
-                }
+            AccentButton {
+                label: "Source code";
+                clicked => { root.open-url(AboutInfo.repository); }
             }
+            SecondaryButton {
+                label: "Report an issue";
+                clicked => { root.open-url(AboutInfo.repository + "/issues"); }
+            }
+            SecondaryButton {
+                label: "Close";
+                clicked => { root.show-dialog = false; }
+            }
+        }
+
+        Text {
+            text: "\{AboutInfo.license} License · © \{AboutInfo.authors}";
+            color: Theme.text-secondary;
+            font-size: 10px;
+            horizontal-alignment: center;
         }
     }
 }

@@ -1,46 +1,59 @@
 import { Theme } from "../theme.slint";
+import { DialogShell, InfoRow, SectionHeader } from "../components.slint";
 
-component StatRow inherits Rectangle {
+// Headline number with a caption
+component StatTile inherits Rectangle {
     in property <string> label;
     in property <string> value;
+    in property <color> tone: Theme.text-primary;
 
-    height: 20px;
+    horizontal-stretch: 1;
+    height: 62px;
+    border-radius: Theme.radius-md;
+    background: Theme.elevated;
+    border-width: 1px;
+    border-color: Theme.hairline;
 
-    HorizontalLayout {
+    VerticalLayout {
+        padding: 10px;
+        padding-left: 12px;
+        spacing: 2px;
+        alignment: center;
+
         Text {
-            width: 90px;
             text: root.label;
             color: Theme.text-secondary;
-            font-size: 11px;
-            vertical-alignment: center;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.5px;
         }
 
         Text {
             text: root.value;
-            color: Theme.text-primary;
-            font-size: 11px;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
+            color: root.tone;
+            font-size: 17px;
+            font-weight: 600;
+            overflow: elide;
         }
     }
 }
 
-component SectionHeader inherits Rectangle {
+// Titled group of rows
+component StatGroup inherits Rectangle {
     in property <string> title;
 
-    height: 24px;
+    border-radius: Theme.radius-md;
+    background: Theme.elevated;
+    border-width: 1px;
+    border-color: Theme.hairline;
 
-    HorizontalLayout {
-        padding-top: 6px;
+    VerticalLayout {
+        padding: 12px;
+        padding-top: 4px;
+        spacing: 0;
 
-        Text {
-            text: root.title;
-            color: Theme.accent-text;
-            font-size: 10px;
-            font-weight: 600;
-            letter-spacing: 1px;
-            vertical-alignment: center;
-        }
+        SectionHeader { title: root.title; }
+        @children
     }
 }
 
@@ -62,103 +75,63 @@ export component StatisticsDialog inherits Rectangle {
     in property <string> stat-decode-errors: "--";
     in property <string> stat-underruns: "--";
 
-    if show-dialog: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #000000aa;
+    if show-dialog: DialogShell {
+        title: "Statistics";
+        subtitle: "Live stream, buffer and decoder details";
+        card-width: 540px;
+        close-requested => { root.show-dialog = false; }
 
-        TouchArea {
-            clicked => {
-                root.show-dialog = false;
+        HorizontalLayout {
+            spacing: 10px;
+
+            StatTile {
+                label: "HEALTH";
+                value: root.stat-health;
+                tone: root.stat-health == "Healthy" ? Theme.success
+                    : root.stat-health == "--" ? Theme.text-primary : Theme.accent-text;
             }
+            StatTile { label: "UPTIME"; value: root.stat-uptime; }
+            StatTile { label: "THROUGHPUT"; value: root.stat-throughput; }
+            StatTile { label: "BUFFER"; value: root.stat-buffer-level; }
         }
 
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 480px;
-            height: card-layout.preferred-height + 24px;
-            background: Theme.panel;
-            border-radius: 8px;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
+        HorizontalLayout {
+            spacing: 10px;
 
-            TouchArea {}
+            VerticalLayout {
+                spacing: 10px;
+                horizontal-stretch: 1;
 
-            card-layout := VerticalLayout {
-                padding: 16px;
-                spacing: 0;
-
-                // Title bar with close button
-                HorizontalLayout {
-                    height: 28px;
-
-                    Text {
-                        text: "Statistics";
-                        color: Theme.text-primary;
-                        font-size: 14px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
-                    }
-
-                    Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 4px;
-                        background: close-touch.has-hover ? Theme.menu-hover : transparent;
-
-                        close-touch := TouchArea {
-                            clicked => { root.show-dialog = false; }
-                        }
-
-                        Image {
-                            width: 12px;
-                            height: 12px;
-                            source: @image-url("../icons/xmark.svg");
-                            colorize: close-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-                        }
-                    }
+                StatGroup {
+                    title: "CODEC";
+                    InfoRow { label: "Codec"; value: root.stat-codec; }
+                    InfoRow { label: "Bitrate"; value: root.stat-bitrate; }
+                    InfoRow { label: "Sample rate"; value: root.stat-sample-rate; }
+                    InfoRow { label: "Channels"; value: root.stat-channels; }
                 }
 
-                // Two-column layout
-                HorizontalLayout {
-                    spacing: 16px;
+                StatGroup {
+                    title: "NETWORK";
+                    InfoRow { label: "Received"; value: root.stat-received; }
+                    InfoRow { label: "Segments"; value: root.stat-segments; }
+                }
+            }
 
-                    // Left column: Stream + Codec
-                    VerticalLayout {
-                        width: 216px;
-                        spacing: 0;
+            VerticalLayout {
+                spacing: 10px;
+                horizontal-stretch: 1;
 
-                        SectionHeader { title: "STREAM"; }
-                        StatRow { label: "Health"; value: root.stat-health; }
-                        StatRow { label: "Uptime"; value: root.stat-uptime; }
+                StatGroup {
+                    title: "BUFFER";
+                    InfoRow { label: "Level"; value: root.stat-buffer-level; }
+                    InfoRow { label: "Capacity"; value: root.stat-buffer-capacity; }
+                }
 
-                        SectionHeader { title: "CODEC"; }
-                        StatRow { label: "Codec"; value: root.stat-codec; }
-                        StatRow { label: "Bitrate"; value: root.stat-bitrate; }
-                        StatRow { label: "Sample Rate"; value: root.stat-sample-rate; }
-                        StatRow { label: "Channels"; value: root.stat-channels; }
-                    }
-
-                    // Right column: Network + Buffer + Decode
-                    VerticalLayout {
-                        width: 216px;
-                        spacing: 0;
-
-                        SectionHeader { title: "NETWORK"; }
-                        StatRow { label: "Received"; value: root.stat-received; }
-                        StatRow { label: "Segments"; value: root.stat-segments; }
-                        StatRow { label: "Throughput"; value: root.stat-throughput; }
-
-                        SectionHeader { title: "BUFFER"; }
-                        StatRow { label: "Level"; value: root.stat-buffer-level; }
-                        StatRow { label: "Capacity"; value: root.stat-buffer-capacity; }
-                        SectionHeader { title: "DECODE"; }
-                        StatRow { label: "Frames"; value: root.stat-frames-played; }
-                        StatRow { label: "Errors"; value: root.stat-decode-errors; }
-                        StatRow { label: "Underruns"; value: root.stat-underruns; }
-                    }
+                StatGroup {
+                    title: "DECODE";
+                    InfoRow { label: "Frames"; value: root.stat-frames-played; }
+                    InfoRow { label: "Errors"; value: root.stat-decode-errors; }
+                    InfoRow { label: "Underruns"; value: root.stat-underruns; }
                 }
             }
         }

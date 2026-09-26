@@ -16,22 +16,17 @@ export component StyledLineEdit inherits Rectangle {
     property <length> right-margin: root.show-clear ? 32px : root.margin;
 
     height: 36px;
-    border-radius: 4px;
-    background: Theme.surface;
+    border-radius: 8px;
+    background: Theme.elevated;
+    border-width: input.has-focus ? 1.5px : 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.hairline;
+    animate border-color { duration: Theme.fast; }
     clip: true;
-
-    // Bottom accent line — visible only when focused
-    Rectangle {
-        y: parent.height - 2px;
-        height: 2px;
-        width: parent.width;
-        background: input.has-focus ? Theme.accent : transparent;
-    }
 
     // Placeholder
     if input.text == "" && !input.has-focus: Text {
         text: root.placeholder-text;
-        color: Theme.text-secondary;
+        color: Theme.text-tertiary;
         font-size: 13px;
         vertical-alignment: center;
         x: root.margin;
@@ -73,6 +68,7 @@ export component StyledLineEdit inherits Rectangle {
         height: 24px;
         border-radius: 12px;
         background: clear-touch.has-hover ? Theme.menu-hover : transparent;
+        animate background { duration: Theme.fast; }
 
         clear-touch := TouchArea {
             mouse-cursor: pointer;

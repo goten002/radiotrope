@@ -25,7 +25,7 @@ export component ScrollBar inherits Rectangle {
     width: 8px;
     visible: root.max-scroll > 0;
     border-radius: 4px;
-    background: Theme.dark-mode ? #ffffff14 : #0000001a;
+    background: Theme.viz-track;
 
     touch := TouchArea {
         pointer-event(e) => {

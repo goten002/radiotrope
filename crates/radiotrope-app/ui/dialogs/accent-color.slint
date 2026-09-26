@@ -1,32 +1,40 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { Chip, DialogShell, SectionHeader } from "../components.slint";
 
 component ColorSwatch inherits Rectangle {
     in property <color> swatch-color;
     in property <bool> is-selected;
     callback clicked();
 
-    width: 28px;
-    height: 28px;
-    border-radius: 14px;
-    background: swatch-color;
-    border-width: is-selected ? 2px : 0px;
-    border-color: white;
+    width: 38px;
+    height: 38px;
+    border-radius: 19px;
+    // Ring around the selected color
+    border-width: 2px;
+    border-color: root.is-selected ? root.swatch-color : transparent;
+    animate border-color { duration: Theme.fast; }
 
     touch := TouchArea {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
     }
 
-    // Inner dot for selected state
-    if is-selected: Rectangle {
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-        width: 8px;
-        height: 8px;
-        border-radius: 4px;
-        background: white;
+    Rectangle {
+        property <length> size: touch.has-hover || root.is-selected ? 28px : 26px;
+        animate size { duration: Theme.fast; }
+        width: self.size;
+        height: self.size;
+        border-radius: self.size / 2;
+        background: root.swatch-color;
+    }
+
+    if root.is-selected: Image {
+        width: 12px;
+        height: 12px;
+        source: @image-url("../icons/tick.svg");
+        colorize: #ffffff;
     }
 }
 
@@ -40,156 +48,114 @@ export component AccentColorDialog inherits Rectangle {
     property <string> hex-input;
     // Rust callback validates actual hex digits; Slint gates on length only
     property <bool> hex-valid: hex-input.character-count == 7;
+    property <[color]> swatches: [
+        #f7931e, #ed5b00, #e62d42, #d56199, #9141ac,
+        #3584e4, #2190a4, #3a944a, #c88800, #6f8396,
+    ];
 
-    if show-dialog: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #000000aa;
+    if show-dialog: DialogShell {
+        title: "Accent Color";
+        subtitle: "Used for highlights, buttons and the visualizer";
+        card-width: 400px;
+        close-requested => { root.show-dialog = false; }
 
-        TouchArea {
-            clicked => { root.show-dialog = false; }
+        // Swatches, two rows of five
+        VerticalLayout {
+            spacing: 6px;
+
+            for row in [0, 1]: HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+
+                for i in [0, 1, 2, 3, 4]: ColorSwatch {
+                    swatch-color: root.swatches[row * 5 + i];
+                    is-selected: Theme.accent-base == root.swatches[row * 5 + i];
+                    clicked => {
+                        Theme.accent-base = root.swatches[row * 5 + i];
+                        root.color-changed(root.swatches[row * 5 + i]);
+                    }
+                }
+            }
         }
 
-        Rectangle {
-            x: (parent.width - self.width) / 2;
-            y: (parent.height - self.height) / 2;
-            width: 380px;
-            height: card-layout.preferred-height + 24px;
-            background: Theme.panel;
-            border-radius: 8px;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: #00000080;
+        // Custom color
+        VerticalLayout {
+            spacing: 6px;
 
-            // Block clicks from closing dialog
-            TouchArea {}
+            SectionHeader { title: "CUSTOM"; }
 
-            card-layout := VerticalLayout {
-                padding: 16px;
-                spacing: 16px;
+            HorizontalLayout {
+                spacing: 8px;
 
-                // Title bar
-                HorizontalLayout {
-                    height: 28px;
-
-                    Text {
-                        text: "Accent Color";
-                        color: Theme.text-primary;
-                        font-size: 14px;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        horizontal-stretch: 1;
+                hex-edit := StyledLineEdit {
+                    horizontal-stretch: 1;
+                    placeholder-text: "#f7931e";
+                    text <=> root.hex-input;
+                    clearable: true;
+                    accepted(val) => {
+                        if root.hex-valid { root.custom-hex-requested(root.hex-input); }
                     }
+                }
+
+                AccentButton {
+                    label: "Apply";
+                    enabled: root.hex-valid;
+                    clicked => { root.custom-hex-requested(root.hex-input); }
+                }
+            }
+        }
+
+        // Live preview of the current accent
+        VerticalLayout {
+            spacing: 8px;
+
+            SectionHeader { title: "PREVIEW"; }
+
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: start;
+
+                AccentButton { label: "Play"; }
+                Chip {
+                    text: "Playing";
+                    tone: Theme.accent-text;
+                    dot: true;
+                    pulse: true;
+                    y: (parent.height - self.height) / 2;
+                }
+                Rectangle {
+                    width: 110px;
+                    height: 34px;
 
                     Rectangle {
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 4px;
-                        background: close-touch.has-hover ? Theme.menu-hover : transparent;
+                        x: 0;
+                        width: parent.width;
+                        y: (parent.height - self.height) / 2;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Theme.elevated;
 
-                        close-touch := TouchArea {
-                            clicked => { root.show-dialog = false; }
-                        }
-
-                        Image {
-                            width: 12px;
-                            height: 12px;
-                            source: @image-url("../icons/xmark.svg");
-                            colorize: close-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        Rectangle {
+                            x: 0;
+                            y: 0;
+                            width: parent.width * 0.65;
+                            height: parent.height;
+                            border-radius: 3px;
+                            background: Theme.accent;
                         }
                     }
                 }
+            }
+        }
 
-                // Color swatches row
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: center;
+        HorizontalLayout {
+            alignment: end;
 
-                    ColorSwatch {
-                        swatch-color: #3584e4;
-                        is-selected: Theme.accent-base == #3584e4;
-                        clicked => { Theme.accent-base = #3584e4; root.color-changed(#3584e4); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #2190a4;
-                        is-selected: Theme.accent-base == #2190a4;
-                        clicked => { Theme.accent-base = #2190a4; root.color-changed(#2190a4); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #3a944a;
-                        is-selected: Theme.accent-base == #3a944a;
-                        clicked => { Theme.accent-base = #3a944a; root.color-changed(#3a944a); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #c88800;
-                        is-selected: Theme.accent-base == #c88800;
-                        clicked => { Theme.accent-base = #c88800; root.color-changed(#c88800); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #ed5b00;
-                        is-selected: Theme.accent-base == #ed5b00;
-                        clicked => { Theme.accent-base = #ed5b00; root.color-changed(#ed5b00); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #e62d42;
-                        is-selected: Theme.accent-base == #e62d42;
-                        clicked => { Theme.accent-base = #e62d42; root.color-changed(#e62d42); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #d56199;
-                        is-selected: Theme.accent-base == #d56199;
-                        clicked => { Theme.accent-base = #d56199; root.color-changed(#d56199); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #9141ac;
-                        is-selected: Theme.accent-base == #9141ac;
-                        clicked => { Theme.accent-base = #9141ac; root.color-changed(#9141ac); }
-                    }
-                    ColorSwatch {
-                        swatch-color: #6f8396;
-                        is-selected: Theme.accent-base == #6f8396;
-                        clicked => { Theme.accent-base = #6f8396; root.color-changed(#6f8396); }
-                    }
-                }
-
-                // Custom hex input row
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: center;
-
-                    Text {
-                        text: "Hex:";
-                        color: Theme.text-secondary;
-                        font-size: 13px;
-                        vertical-alignment: center;
-                    }
-
-                    hex-edit := StyledLineEdit {
-                        width: 120px;
-                        placeholder-text: "#f7931e";
-                        text <=> root.hex-input;
-                        accepted(val) => {
-                            if root.hex-valid { root.custom-hex-requested(root.hex-input); }
-                        }
-                    }
-
-                    AccentButton {
-                        label: "Apply";
-                        enabled: root.hex-valid;
-                        clicked => { root.custom-hex-requested(root.hex-input); }
-                    }
-                }
-
-                // Reset button
-                HorizontalLayout {
-                    alignment: center;
-
-                    SecondaryButton {
-                        label: "Reset Default";
-                        clicked => {
-                            Theme.accent-base = #f7931e;
-                            root.color-changed(#f7931e);
-                        }
-                    }
+            SecondaryButton {
+                label: "Reset to default";
+                clicked => {
+                    Theme.accent-base = #f7931e;
+                    root.color-changed(#f7931e);
                 }
             }
         }

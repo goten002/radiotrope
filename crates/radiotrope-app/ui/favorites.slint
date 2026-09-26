@@ -1,5 +1,23 @@
 import { Theme } from "theme.slint";
 import { ScrollBar } from "scroll-bar.slint";
+import { IconButton } from "components.slint";
+
+// Three small bars that bounce while a station plays
+component NowPlayingBars inherits HorizontalLayout {
+    spacing: 2px;
+    alignment: start;
+    height: 12px;
+
+    for i in [0, 1, 2]: VerticalLayout {
+        alignment: end;
+        Rectangle {
+            width: 3px;
+            height: 3px + 9px * abs(sin(animation-tick() / (520ms + i * 140ms) * 180deg + i * 50deg));
+            border-radius: 1.5px;
+            background: Theme.accent;
+        }
+    }
+}
 
 export struct FavoriteStation {
     id: string,
@@ -22,19 +40,20 @@ component FavoriteRow inherits Rectangle {
     callback grip-moved(/* total y offset from press point */ length);
     callback grip-released();
 
-    height: 52px;
+    height: 56px;
     opacity: is-drag-source ? 0.35 : 1.0;
-    background: is-current ? Theme.accent.with-alpha(0.15)
+    background: is-current ? Theme.accent-soft
               : touch.has-hover ? Theme.menu-hover
               : transparent;
-    border-radius: 4px;
+    animate background { duration: Theme.fast; }
+    border-radius: Theme.radius-md;
 
     // Accent left border for current station
     if is-current: Rectangle {
         x: 0;
-        y: 4px;
+        y: 12px;
         width: 3px;
-        height: parent.height - 8px;
+        height: parent.height - 24px;
         background: Theme.accent;
         border-radius: 1.5px;
     }
@@ -78,7 +97,7 @@ component FavoriteRow inherits Rectangle {
                     width: 16px;
                     height: 16px;
                     colorize: grip-touch.has-hover || grip-touch.pressed
-                              ? Theme.text-primary : Theme.text-secondary;
+                              ? Theme.text-primary : Theme.text-tertiary;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                 }
@@ -88,19 +107,21 @@ component FavoriteRow inherits Rectangle {
         // Logo
         VerticalLayout {
             alignment: center;
-            width: 36px;
+            width: 40px;
 
             Rectangle {
-                width: 36px;
-                height: 36px;
-                background: Theme.surface;
-                border-radius: 4px;
+                width: 40px;
+                height: 40px;
+                background: Theme.elevated;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.hairline;
                 clip: true;
 
                 if root.has-logo: Image {
                     source: root.logo-image;
-                    width: 36px;
-                    height: 36px;
+                    width: 40px;
+                    height: 40px;
                     image-fit: contain;
                 }
 
@@ -121,12 +142,25 @@ component FavoriteRow inherits Rectangle {
             alignment: center;
             spacing: 2px;
 
-            Text {
-                text: root.name;
-                color: Theme.text-primary;
-                font-size: 13px;
-                font-weight: 600;
-                overflow: elide;
+            HorizontalLayout {
+                spacing: 8px;
+
+                Text {
+                    horizontal-stretch: 0;
+                    text: root.name;
+                    color: root.is-current ? Theme.accent-text : Theme.text-primary;
+                    font-size: 13px;
+                    font-weight: 600;
+                    overflow: elide;
+                }
+
+                if root.is-current: VerticalLayout {
+                    horizontal-stretch: 0;
+                    alignment: center;
+                    NowPlayingBars {}
+                }
+
+                Rectangle { horizontal-stretch: 1; }
             }
 
             if root.country != "": Text {
@@ -140,38 +174,21 @@ component FavoriteRow inherits Rectangle {
         // Edit (pencil) button
         VerticalLayout {
             alignment: center;
-            width: 28px;
 
-            Rectangle {
-                width: 28px;
-                height: 28px;
-                border-radius: 4px;
-                background: pencil-touch.has-hover ? Theme.menu-hover : transparent;
-
-                pencil-touch := TouchArea {
-                    mouse-cursor: pointer;
-                    clicked => {
-                        root.edit-clicked();
-                    }
-                }
-
-                Image {
-                    source: @image-url("icons/pencil.svg");
-                    width: 14px;
-                    height: 14px;
-                    colorize: pencil-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+            IconButton {
+                icon: @image-url("icons/pencil.svg");
+                icon-size: 14px;
+                icon-color: Theme.text-tertiary;
+                clicked => { root.edit-clicked(); }
             }
         }
     }
 }
 
-// Row height (52px) + spacing (2px)
+// Row height (56px) + spacing (4px)
 global RowMetrics {
-    out property <length> row-stride: 54px;
-    out property <length> list-padding: 4px;
+    out property <length> row-stride: 60px;
+    out property <length> list-padding: 8px;
 }
 
 export component Favorites inherits Rectangle {
@@ -231,8 +248,9 @@ export component Favorites inherits Rectangle {
             changed content-y => { root.scroll-y = self.content-y; }
 
             fav-layout := VerticalLayout {
-                padding: 4px;
-                spacing: 2px;
+                padding: 8px;
+                padding-right: 14px;
+                spacing: 4px;
 
                 for station[idx] in root.favorites: FavoriteRow {
                     name: station.name;
@@ -258,7 +276,7 @@ export component Favorites inherits Rectangle {
                         }
                         // Mouse position in viewport coordinates
                         root.drag-mouse-in-viewport = RowMetrics.list-padding
-                            + idx * RowMetrics.row-stride + 26px + offset-y;
+                            + idx * RowMetrics.row-stride + 28px + offset-y;
                         // Target index from viewport position
                         root.drag-target-index = Math.clamp(
                             Math.round((root.drag-mouse-in-viewport - RowMetrics.list-padding)
