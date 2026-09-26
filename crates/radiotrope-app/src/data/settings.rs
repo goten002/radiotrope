@@ -79,6 +79,10 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub show_station_stats: bool,
 
+    /// Accent glow on the header, the controls and dialogs
+    #[serde(default = "default_true")]
+    pub panel_gradient: bool,
+
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,6 +139,7 @@ impl Default for Settings {
             viz_mode: default_viz_mode(),
             viz_palette: default_viz_palette(),
             show_station_stats: true,
+            panel_gradient: true,
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
@@ -414,6 +419,8 @@ mod tests {
         assert_eq!(settings.theme, Theme::System);
         assert!(settings.show_tray_icon);
         assert!(settings.minimize_to_tray);
+        assert!(settings.show_station_stats);
+        assert!(settings.panel_gradient);
 
         let _ = fs::remove_file(&path);
     }

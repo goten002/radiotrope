@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { Chip, DialogShell, SectionHeader, Icon } from "../components.slint";
+import { Chip, DialogShell, SectionHeader, Icon, Toggle } from "../components.slint";
 
 component ColorSwatch inherits Rectangle {
     in property <color> swatch-color;
@@ -105,6 +105,18 @@ export component AccentColorDialog inherits Rectangle {
             }
         }
 
+        // Accent glow on the panels and dialogs
+        VerticalLayout {
+            spacing: 6px;
+
+            SectionHeader { title: "STYLE"; }
+
+            Toggle {
+                label: "Gradient on panels and dialogs";
+                checked <=> Theme.panel-gradient;
+            }
+        }
+
         // Live preview of the current accent
         VerticalLayout {
             spacing: 8px;
@@ -155,6 +167,7 @@ export component AccentColorDialog inherits Rectangle {
                 label: "Reset to default";
                 clicked => {
                     Theme.accent-base = #f7931e;
+                    Theme.panel-gradient = true;
                     root.color-changed(#f7931e);
                 }
             }

@@ -175,6 +175,7 @@ export component Controls inherits Rectangle {
 
     // Same soft accent glow from the left as the header
     Rectangle {
+        visible: Theme.panel-gradient;
         background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
     }
 
