@@ -10,12 +10,13 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use rodio::Source;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{CodecRegistry, DecoderOptions};
-use symphonia::core::formats::FormatOptions;
+use symphonia::core::codecs::audio::{AudioCodecId, AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::registry::CodecRegistry;
+use symphonia::core::codecs::CodecParameters;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::{Hint, ProbeResult};
 use symphonia_adapter_fdk_aac::AacDecoder as LibAacDecoder;
 use symphonia_adapter_libopus::OpusDecoder as LibOpusDecoder;
 
@@ -25,24 +26,27 @@ use crate::error::RadioError;
 use super::stats::DecoderStats;
 use super::types::CodecInfo;
 
-/// Convert a symphonia codec type to a human-readable name
-pub fn codec_type_to_name(codec: symphonia::core::codecs::CodecType) -> String {
-    use symphonia::core::codecs::*;
+/// The format reader produced by a successful probe
+pub type ProbedFormat = Box<dyn FormatReader>;
+
+/// Convert a symphonia codec ID to a human-readable name
+pub fn codec_type_to_name(codec: AudioCodecId) -> String {
+    use symphonia::core::codecs::audio::well_known::*;
     match codec {
-        CODEC_TYPE_AAC => "AAC".to_string(),
-        CODEC_TYPE_FLAC => "FLAC".to_string(),
-        CODEC_TYPE_MP3 => "MP3".to_string(),
-        CODEC_TYPE_OPUS => "Opus".to_string(),
-        CODEC_TYPE_VORBIS => "Vorbis".to_string(),
-        CODEC_TYPE_PCM_U8 => "PCM 8-bit".to_string(),
-        CODEC_TYPE_PCM_S16LE | CODEC_TYPE_PCM_S16BE => "PCM 16-bit".to_string(),
-        CODEC_TYPE_PCM_S24LE | CODEC_TYPE_PCM_S24BE => "PCM 24-bit".to_string(),
-        CODEC_TYPE_PCM_S32LE | CODEC_TYPE_PCM_S32BE => "PCM 32-bit".to_string(),
-        CODEC_TYPE_PCM_F32LE | CODEC_TYPE_PCM_F32BE => "PCM 32-bit Float".to_string(),
-        CODEC_TYPE_PCM_F64LE | CODEC_TYPE_PCM_F64BE => "PCM 64-bit Float".to_string(),
-        CODEC_TYPE_PCM_ALAW => "PCM A-law".to_string(),
-        CODEC_TYPE_PCM_MULAW => "PCM u-law".to_string(),
-        CODEC_TYPE_ALAC => "ALAC".to_string(),
+        CODEC_ID_AAC => "AAC".to_string(),
+        CODEC_ID_FLAC => "FLAC".to_string(),
+        CODEC_ID_MP3 => "MP3".to_string(),
+        CODEC_ID_OPUS => "Opus".to_string(),
+        CODEC_ID_VORBIS => "Vorbis".to_string(),
+        CODEC_ID_PCM_U8 => "PCM 8-bit".to_string(),
+        CODEC_ID_PCM_S16LE | CODEC_ID_PCM_S16BE => "PCM 16-bit".to_string(),
+        CODEC_ID_PCM_S24LE | CODEC_ID_PCM_S24BE => "PCM 24-bit".to_string(),
+        CODEC_ID_PCM_S32LE | CODEC_ID_PCM_S32BE => "PCM 32-bit".to_string(),
+        CODEC_ID_PCM_F32LE | CODEC_ID_PCM_F32BE => "PCM 32-bit Float".to_string(),
+        CODEC_ID_PCM_F64LE | CODEC_ID_PCM_F64BE => "PCM 64-bit Float".to_string(),
+        CODEC_ID_PCM_ALAW => "PCM A-law".to_string(),
+        CODEC_ID_PCM_MULAW => "PCM u-law".to_string(),
+        CODEC_ID_ALAC => "ALAC".to_string(),
         _ => "Audio".to_string(),
     }
 }
@@ -53,8 +57,8 @@ pub fn create_codec_registry() -> CodecRegistry {
     // Register built-in codecs first (includes symphonia's AAC)
     symphonia::default::register_enabled_codecs(&mut registry);
     // Override AAC with FDK AAC (supports HE-AAC v1/v2 with SBR)
-    registry.register_all::<LibAacDecoder>();
-    registry.register_all::<LibOpusDecoder>();
+    registry.register_audio_decoder::<LibAacDecoder>();
+    registry.register_audio_decoder::<LibOpusDecoder>();
     registry
 }
 
@@ -65,7 +69,7 @@ pub fn create_codec_registry() -> CodecRegistry {
 pub fn start_probe<R: Read + Seek + Send + Sync + 'static>(
     reader: R,
     format_hint: Option<String>,
-) -> Result<Receiver<Result<ProbeResult, RadioError>>, RadioError> {
+) -> Result<Receiver<Result<ProbedFormat, RadioError>>, RadioError> {
     let source = ReadOnlySource::new(reader);
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
 
@@ -82,7 +86,7 @@ pub fn start_probe<R: Read + Seek + Send + Sync + 'static>(
         .name("symphonia-probe".to_string())
         .spawn(move || {
             let probe = symphonia::default::get_probe();
-            let result = probe.format(&hint, mss, &format_opts, &metadata_opts);
+            let result = probe.probe(&hint, mss, format_opts, metadata_opts);
             let _ = tx.send(result.map_err(|e| RadioError::Decode(format!("Probe error: {}", e))));
         })
         .map_err(|e| RadioError::Audio(format!("Failed to spawn probe thread: {}", e)))?;
@@ -92,10 +96,10 @@ pub fn start_probe<R: Read + Seek + Send + Sync + 'static>(
 
 /// A symphonia-based audio source that supports Opus and other formats
 pub struct SymphoniaSource {
-    decoder: Box<dyn symphonia::core::codecs::Decoder>,
-    format: Box<dyn symphonia::core::formats::FormatReader>,
+    decoder: Box<dyn AudioDecoder>,
+    format: ProbedFormat,
     track_id: u32,
-    sample_buf: Option<SampleBuffer<f32>>,
+    sample_buf: Option<Vec<f32>>,
     sample_idx: usize,
     channels: u16,
     sample_rate: u32,
@@ -140,25 +144,28 @@ impl SymphoniaSource {
         Self::from_probed(probed)
     }
 
-    /// Create a `SymphoniaSource` from a completed `ProbeResult` (fast, no I/O).
+    /// Create a `SymphoniaSource` from a completed probe (fast, no I/O).
     ///
     /// Used by the engine after the async probe completes.
-    pub fn from_probed(probed: ProbeResult) -> Result<Self, RadioError> {
+    pub fn from_probed(format: ProbedFormat) -> Result<Self, RadioError> {
         let registry = create_codec_registry();
-        let format = probed.format;
 
-        let track = format
+        let (track_id, codec_params) = format
             .tracks()
             .iter()
-            .find(|t| t.codec_params.codec != symphonia::core::codecs::CODEC_TYPE_NULL)
+            .find_map(|t| match &t.codec_params {
+                Some(CodecParameters::Audio(params))
+                    if params.codec != symphonia::core::codecs::audio::CODEC_ID_NULL_AUDIO =>
+                {
+                    Some((t.id, params.clone()))
+                }
+                _ => None,
+            })
             .ok_or_else(|| RadioError::Decode("No audio track found".to_string()))?;
-
-        let track_id = track.id;
-        let codec_params = track.codec_params.clone();
 
         let codec_name = codec_type_to_name(codec_params.codec);
         let decoder = registry
-            .make(&codec_params, &DecoderOptions::default())
+            .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
             .map_err(|_| RadioError::Decode(format!("Unsupported codec: {codec_name}")))?;
 
         let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
@@ -226,33 +233,29 @@ impl SymphoniaSource {
     fn decode_next_packet(&mut self) -> bool {
         loop {
             match self.format.next_packet() {
-                Ok(packet) => {
-                    if packet.track_id() != self.track_id {
+                Ok(None) => {
+                    // Clean EOF — stream ended naturally, no error stored
+                    return false;
+                }
+                Ok(Some(packet)) => {
+                    if packet.track_id != self.track_id {
                         continue;
                     }
 
                     match self.decoder.decode(&packet) {
                         Ok(decoded) => {
                             self.decoder_stats.record_frame();
-                            let spec = *decoded.spec();
-                            let duration = decoded.capacity() as u64;
+                            let spec = decoded.spec();
 
                             // Update sample rate and channels from decoder output —
                             // FDK AAC may change these after SBR/PS processing
-                            self.sample_rate = spec.rate;
-                            self.channels = spec.channels.count() as u16;
+                            self.sample_rate = spec.rate();
+                            self.channels = spec.channels().count() as u16;
 
-                            if self.sample_buf.is_none()
-                                || self.sample_buf.as_ref().unwrap().capacity() < duration as usize
-                            {
-                                self.sample_buf = Some(SampleBuffer::new(duration, spec));
-                            }
-
-                            if let Some(ref mut buf) = self.sample_buf {
-                                buf.copy_interleaved_ref(decoded);
-                                self.sample_idx = 0;
-                                return true;
-                            }
+                            let buf = self.sample_buf.get_or_insert_with(Vec::new);
+                            decoded.copy_to_vec_interleaved(buf);
+                            self.sample_idx = 0;
+                            return true;
                         }
                         Err(symphonia::core::errors::Error::DecodeError(_)) => {
                             self.decoder_stats.record_error();
@@ -290,8 +293,8 @@ impl Iterator for SymphoniaSource {
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             if let Some(ref buf) = self.sample_buf {
-                if self.sample_idx < buf.samples().len() {
-                    let sample = buf.samples()[self.sample_idx];
+                if self.sample_idx < buf.len() {
+                    let sample = buf[self.sample_idx];
                     self.sample_idx += 1;
                     return Some(sample);
                 }
@@ -313,7 +316,7 @@ impl Source for SymphoniaSource {
         // output sample rate after SBR processing kicks in.
         self.sample_buf
             .as_ref()
-            .map(|buf| buf.samples().len().saturating_sub(self.sample_idx))
+            .map(|buf| buf.len().saturating_sub(self.sample_idx))
     }
 
     fn channels(&self) -> NonZero<u16> {
@@ -561,42 +564,42 @@ mod tests {
 
     #[test]
     fn codec_name_lookup() {
-        use symphonia::core::codecs::*;
-        assert_eq!(codec_type_to_name(CODEC_TYPE_MP3), "MP3");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_AAC), "AAC");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_OPUS), "Opus");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_FLAC), "FLAC");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_VORBIS), "Vorbis");
+        use symphonia::core::codecs::audio::well_known::*;
+        assert_eq!(codec_type_to_name(CODEC_ID_MP3), "MP3");
+        assert_eq!(codec_type_to_name(CODEC_ID_AAC), "AAC");
+        assert_eq!(codec_type_to_name(CODEC_ID_OPUS), "Opus");
+        assert_eq!(codec_type_to_name(CODEC_ID_FLAC), "FLAC");
+        assert_eq!(codec_type_to_name(CODEC_ID_VORBIS), "Vorbis");
     }
 
     #[test]
     fn codec_name_pcm_variants() {
-        use symphonia::core::codecs::*;
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_U8), "PCM 8-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_S16LE), "PCM 16-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_S16BE), "PCM 16-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_S24LE), "PCM 24-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_S24BE), "PCM 24-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_S32LE), "PCM 32-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_S32BE), "PCM 32-bit");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_F32LE), "PCM 32-bit Float");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_F32BE), "PCM 32-bit Float");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_F64LE), "PCM 64-bit Float");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_F64BE), "PCM 64-bit Float");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_ALAW), "PCM A-law");
-        assert_eq!(codec_type_to_name(CODEC_TYPE_PCM_MULAW), "PCM u-law");
+        use symphonia::core::codecs::audio::well_known::*;
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_U8), "PCM 8-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_S16LE), "PCM 16-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_S16BE), "PCM 16-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_S24LE), "PCM 24-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_S24BE), "PCM 24-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_S32LE), "PCM 32-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_S32BE), "PCM 32-bit");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_F32LE), "PCM 32-bit Float");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_F32BE), "PCM 32-bit Float");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_F64LE), "PCM 64-bit Float");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_F64BE), "PCM 64-bit Float");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_ALAW), "PCM A-law");
+        assert_eq!(codec_type_to_name(CODEC_ID_PCM_MULAW), "PCM u-law");
     }
 
     #[test]
     fn codec_name_alac() {
-        use symphonia::core::codecs::*;
-        assert_eq!(codec_type_to_name(CODEC_TYPE_ALAC), "ALAC");
+        use symphonia::core::codecs::audio::well_known::*;
+        assert_eq!(codec_type_to_name(CODEC_ID_ALAC), "ALAC");
     }
 
     #[test]
     fn codec_name_unknown_returns_audio() {
-        use symphonia::core::codecs::*;
-        assert_eq!(codec_type_to_name(CODEC_TYPE_NULL), "Audio");
+        use symphonia::core::codecs::audio::CODEC_ID_NULL_AUDIO;
+        assert_eq!(codec_type_to_name(CODEC_ID_NULL_AUDIO), "Audio");
     }
 
     // --- Error paths ---

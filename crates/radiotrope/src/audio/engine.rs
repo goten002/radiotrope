@@ -22,7 +22,7 @@ fn volume_curve(linear: f32) -> f32 {
 }
 
 use super::analyzer::AnalyzingSource;
-use super::decoder::{start_probe, SymphoniaSource};
+use super::decoder::{start_probe, ProbedFormat, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::stats::{
@@ -32,7 +32,7 @@ use super::types::{AudioAnalysis, AudioCommand, AudioEvent, PlaybackState};
 
 /// State held while an async probe is in progress
 struct PendingProbe {
-    probe_rx: Receiver<Result<symphonia::core::probe::ProbeResult, RadioError>>,
+    probe_rx: Receiver<Result<ProbedFormat, RadioError>>,
     buf_status: SharedBufferStatus,
     probing_flag: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
