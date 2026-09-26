@@ -47,6 +47,8 @@ export component StyledLineEdit inherits Rectangle {
         vertical-alignment: center;
         single-line: true;
         enabled: root.enabled;
+        selection-background-color: Theme.selection-bg;
+        selection-foreground-color: Theme.selection-fg;
 
         cursor-position-changed(cursor-position) => {
             if cursor-position.x + self.computed-x < root.margin {

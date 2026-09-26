@@ -69,6 +69,9 @@ export component App inherits Window {
     in-out property <bool> is-muted;
     in-out property <string> station-url;
     in-out property <image> current-logo;
+    // The station logo changed (the visualizer samples its colours)
+    callback logo-changed();
+    changed current-logo => { root.logo-changed(); }
     in-out property <bool> is-station-favorited;
     in-out property <string> station-logo-url;
     in-out property <string> station-country;
@@ -241,6 +244,11 @@ export component App inherits Window {
     }
 
     browser-dialog := StationBrowserDialog {
+        playing-url: root.station-url;
+        is-playing: root.is-playing;
+        play-loading: root.is-loading;
+        play-error: root.is-error;
+        play-status: root.status-text;
         search-stations(query) => { root.search-stations(query); }
         search-in-country(name, code, query) => { root.browse-country(name, code, query); }
         load-more() => { root.load-more-stations(); }
