@@ -239,8 +239,8 @@ export component Favorites inherits Rectangle {
     // Favorites list
     if favorites.length > 0: fav-flickable := Flickable {
         interactive: root.drag-from-index < 0;
-        viewport-height: fav-layout.preferred-height;
-        changed viewport-y => { root.scroll-y = self.viewport-y; }
+        content-height: fav-layout.preferred-height;
+        changed content-y => { root.scroll-y = self.content-y; }
 
         fav-layout := VerticalLayout {
             padding: 4px;
@@ -279,16 +279,16 @@ export component Favorites inherits Rectangle {
                         0,
                         root.favorites.length - 1
                     );
-                    // Auto-scroll near edges (visible pos = viewport pos + viewport-y)
-                    if root.drag-mouse-in-viewport + fav-flickable.viewport-y < 40px {
-                        fav-flickable.viewport-y = Math.min(0px,
-                            fav-flickable.viewport-y + 16px);
+                    // Auto-scroll near edges (visible pos = viewport pos + content-y)
+                    if root.drag-mouse-in-viewport + fav-flickable.content-y < 40px {
+                        fav-flickable.content-y = Math.min(0px,
+                            fav-flickable.content-y + 16px);
                     }
-                    if root.drag-mouse-in-viewport + fav-flickable.viewport-y
+                    if root.drag-mouse-in-viewport + fav-flickable.content-y
                        > fav-flickable.height - 40px {
-                        fav-flickable.viewport-y = Math.max(
-                            fav-flickable.height - fav-flickable.viewport-height,
-                            fav-flickable.viewport-y - 16px);
+                        fav-flickable.content-y = Math.max(
+                            fav-flickable.height - fav-flickable.content-height,
+                            fav-flickable.content-y - 16px);
                     }
                 }
                 grip-released => {

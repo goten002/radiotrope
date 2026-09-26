@@ -289,7 +289,7 @@ export component StationBrowserDialog inherits Rectangle {
 
                     // Results list
                     if root.search-results.length > 0: Flickable {
-                        viewport-height: results-layout.preferred-height;
+                        content-height: results-layout.preferred-height;
 
                         results-layout := VerticalLayout {
                             padding: 4px;
