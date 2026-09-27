@@ -387,9 +387,8 @@ impl Read for StreamBufferReader {
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         loop {
-            // Stopped: end the stream now. The decoder runs on the audio
-            // output thread, and rodio can't drop this source (or start the
-            // next station) until this read returns.
+            // Stopped: end the stream now, so the decode thread reading it
+            // ends too instead of waiting for a station that went down
             if self.cancel.is_cancelled() {
                 return Ok(0);
             }
@@ -2497,9 +2496,9 @@ mod tests {
 
     #[test]
     fn stop_wakes_a_consumer_waiting_on_a_dead_station() {
-        // The decoder reads on the audio output thread. If this read never
-        // returns, rodio can't finish the old source and the engine hangs in
-        // the next `append` (switching away from a station that went down).
+        // If this read never returned, the station's decode thread would
+        // wait on it for good after switching away from a station that
+        // went down.
         let (consumer, _handle, stop, _dropped) = dead_station_buffer(false);
         let rx = read_with_deadline(consumer, |_| {});
         thread::sleep(Duration::from_millis(100));

@@ -1,7 +1,9 @@
 //! Audio engine
 //!
 //! Runs audio playback on a dedicated thread, accepting commands via crossbeam
-//! channels and emitting events back. Visualization data is shared via
+//! channels and emitting events back. Each station is decoded on a thread of
+//! its own, a little ahead of the output (see `pcm`), so the audio callback
+//! never waits on the network. Visualization data is shared via
 //! `Arc<Mutex<AudioAnalysis>>`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -26,7 +28,8 @@ use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
-use super::output::{open_output, Relay, SharedSource};
+use super::output::open_output;
+use super::pcm::{decode_ahead, PcmFeed};
 use super::recording::{Recorder, RecordingTap, TapPoint};
 use super::stats::{
     new_shared_stats, DecoderStats, EventBus, SharedStats, StreamEvent, StreamStats,
@@ -398,7 +401,7 @@ impl AudioEngine {
         let mut last_throughput_time = Instant::now();
         let mut pending_probe: Option<PendingProbe> = None;
         // What is playing, kept here so it can move to another device
-        let mut playing_source: Option<SharedSource> = None;
+        let mut playing_source: Option<PcmFeed> = None;
         // The output device went away and no other could be opened yet
         let mut waiting_for_output = false;
         let mut next_output_try = Instant::now();
@@ -593,8 +596,9 @@ impl AudioEngine {
                                 if state == PlaybackState::Paused {
                                     new_sink.pause();
                                 }
-                                if let Some(ref source) = playing_source {
-                                    new_sink.append(Relay::resume(source));
+                                if let Some(ref feed) = playing_source {
+                                    feed.set_ahead(decode_ahead(Some(&new_stream)));
+                                    new_sink.append(feed.output());
                                 }
                                 // The old player goes before its device
                                 sink = new_sink;
@@ -648,13 +652,30 @@ impl AudioEngine {
                                     analysis.clone(),
                                     active_flag.clone(),
                                 );
-                                let relay = Relay::new(analyzing);
-                                playing_source = Some(relay.source());
+                                // Decode on its own thread, ahead of the
+                                // output: the audio callback never waits
+                                let started = PcmFeed::start(
+                                    analyzing,
+                                    decode_ahead(stream.as_ref()),
+                                    p.cancel.clone(),
+                                );
+                                let feed = match started {
+                                    Ok(feed) => feed,
+                                    Err(e) => {
+                                        p.cancel.cancel();
+                                        state = PlaybackState::Stopped;
+                                        let msg = format!("Unable to start decoding: {e}");
+                                        let _ = event_tx.send(AudioEvent::Error(msg.clone()));
+                                        event_bus.emit(StreamEvent::Error(msg));
+                                        continue;
+                                    }
+                                };
                                 // A new player for each station: appending to
                                 // a stopped player waits until its queue has
                                 // played out, which a dead device never does
                                 sink = new_player(stream.as_ref());
-                                sink.append(relay);
+                                sink.append(feed.output());
+                                playing_source = Some(feed);
                                 sink.set_volume(volume_curve(current_volume));
                                 sink.play();
                                 state = PlaybackState::Playing;
@@ -829,6 +850,8 @@ impl AudioEngine {
                             }
                             // Analysis data (sample count) — read above, no nested lock
                             stats.sample_count = sample_count;
+                            stats.output_underruns =
+                                playing_source.as_ref().map_or(0, PcmFeed::underruns);
                             // Health state
                             if prolonged_buffering_stall {
                                 stats.health_state = HealthState::Stalled;
@@ -3333,6 +3356,90 @@ mod tests {
 
         engine.stop();
         assert!(gets_cancelled(&cancel), "stop must cancel the stream");
+        engine.shutdown();
+    }
+
+    // === Decoding off the audio thread ===
+
+    /// An endless WAV from a station that stops sending after `after` bytes
+    /// until `resume` is raised
+    struct StallingWav {
+        wav: Box<EndlessWav>,
+        after: u64,
+        resume: Arc<AtomicBool>,
+    }
+
+    impl std::io::Read for StallingWav {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let mut buf = buf;
+            if !self.resume.load(Ordering::SeqCst) {
+                let left = self.after.saturating_sub(self.wav.pos) as usize;
+                if left == 0 {
+                    // What the ICY and HLS readers do while nothing arrives
+                    thread::sleep(Duration::from_millis(10));
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                let len = buf.len().min(left);
+                buf = &mut buf[..len];
+            }
+            self.wav.read(buf)
+        }
+    }
+
+    impl std::io::Seek for StallingWav {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.wav.seek(pos)
+        }
+    }
+
+    fn output_underruns(engine: &AudioEngine) -> u64 {
+        engine.shared_stats().lock().unwrap().output_underruns
+    }
+
+    #[test]
+    fn a_stalled_station_plays_silence_and_carries_on() {
+        let Some(engine) = try_engine() else { return };
+        let resume = Arc::new(AtomicBool::new(false));
+        let reader = StallingWav {
+            wav: EndlessWav::new(),
+            // About 2 s of audio, then nothing
+            after: 200_000,
+            resume: resume.clone(),
+        };
+        let cancel = StreamCancel::new();
+        engine.play_stream(resolved_stream(Box::new(reader), &cancel));
+        expect_playing(&engine);
+        let mut events = Vec::new();
+
+        // The output plays out what was decoded, then keeps running on
+        // silence instead of waiting on the station
+        assert!(
+            wait_until(&engine, &mut events, Duration::from_secs(5), |_| {
+                output_underruns(&engine) > 0
+            }),
+            "the output never ran dry"
+        );
+        let stalled_at = sample_count(&engine);
+        thread::sleep(Duration::from_millis(600));
+        assert_eq!(sample_count(&engine), stalled_at, "nothing new to play");
+
+        // The station sends again: playback carries on
+        resume.store(true, Ordering::SeqCst);
+        assert!(
+            wait_until(&engine, &mut events, Duration::from_secs(10), |_| {
+                sample_count(&engine) > stalled_at
+            }),
+            "playback didn't carry on: {events:?}"
+        );
+        assert!(
+            !has(&events, |e| matches!(
+                e,
+                AudioEvent::Error(_) | AudioEvent::Stopped
+            )),
+            "{events:?}"
+        );
+        engine.stop();
+        assert!(gets_cancelled(&cancel));
         engine.shutdown();
     }
 
