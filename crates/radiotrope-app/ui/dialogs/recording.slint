@@ -215,10 +215,25 @@ export component RecordingSettingsDialog inherits Rectangle {
             background: Theme.hairline;
         }
 
-        Toggle {
-            label: "Include equalizer in recordings";
-            checked <=> root.with-eq;
-            toggled(on) => { root.with-eq-toggled(on); }
+        VerticalLayout {
+            spacing: 2px;
+
+            Toggle {
+                label: "Apply equalizer to recording";
+                checked <=> root.with-eq;
+                toggled(on) => { root.with-eq-toggled(on); }
+            }
+            // Lines up with the label (36px switch + 8px gap)
+            HorizontalLayout {
+                padding-left: 44px;
+
+                Text {
+                    text: "Record audio with your current equalizer settings.";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
+            }
         }
 
         HorizontalLayout {
