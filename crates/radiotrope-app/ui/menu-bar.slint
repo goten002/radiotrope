@@ -532,9 +532,10 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 if Platform.has-window-frame: CheckMenuItem {
-                    label: "Custom Title Bar";
+                    // Chrome's wording: ticked means the system frame
+                    label: "Use System Title Bar";
                     icon: @image-url("icons/window-maximize.svg");
-                    checked: root.custom-frame;
+                    checked: !root.custom-frame;
                     clicked => {
                         root.toggle-custom-frame();
                         view-popup.close();
