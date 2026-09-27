@@ -25,6 +25,7 @@ use crate::stream::hls_metadata::{
 };
 use crate::stream::id3::{parse_id3v2_payload, Id3Scanner};
 use crate::stream::metadata::{MetadataSink, StreamMetadata};
+use crate::stream::READ_POLL_INTERVAL;
 
 /// Detected segment container format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,47 +164,43 @@ impl HlsReader {
             self.buffer.get_mut().extend(data);
         }
 
-        // If buffer exhausted, wait for more.
-        // Loop on timeout — the segment_downloader is resilient and keeps
-        // retrying on network errors, so we should wait for it to recover
-        // rather than giving up after a single timeout.
+        // If buffer exhausted, wait briefly for the next segment. The
+        // downloader keeps retrying on network errors, so a timeout is not
+        // the end: return `Interrupted` and let the caller (the stream
+        // buffer's producer) check its stop flag and read again. Blocking
+        // here instead would keep a stopped station's threads alive for as
+        // long as it stays down.
         let remaining = self
             .buffer
             .get_ref()
             .len()
             .saturating_sub(self.buffer.position() as usize);
         if remaining == 0 {
-            loop {
-                // Check stop flag between waits
-                if self.stop_flag.load(Ordering::Relaxed) {
+            if self.stop_flag.load(Ordering::Relaxed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "HLS stream stopped",
+                ));
+            }
+
+            match self.receiver.recv_timeout(READ_POLL_INTERVAL) {
+                Ok(data) => {
+                    self.buffer.get_mut().clear();
+                    self.buffer.set_position(0);
+                    self.buffer.get_mut().extend(data);
+                }
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
                     return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "HLS stream stopped",
+                        io::ErrorKind::Interrupted,
+                        "waiting for the next HLS segment",
                     ));
                 }
-
-                match self
-                    .receiver
-                    .recv_timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS))
-                {
-                    Ok(data) => {
-                        self.buffer.get_mut().clear();
-                        self.buffer.set_position(0);
-                        self.buffer.get_mut().extend(data);
-                        break;
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                        // Downloader is still alive but no segment yet.
-                        // Keep waiting — network may recover.
-                        continue;
-                    }
-                    Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                        // Downloader exited — stream is truly over.
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "HLS stream ended",
-                        ));
-                    }
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                    // Downloader exited — stream is truly over.
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "HLS stream ended",
+                    ));
                 }
             }
         }
@@ -1156,6 +1153,21 @@ mod tests {
         let n = reader.read(&mut buf2).unwrap();
         assert_eq!(n, 3);
         assert_eq!(buf2, [3, 4, 5]);
+    }
+
+    #[test]
+    fn read_returns_interrupted_while_waiting_for_a_segment() {
+        let (tx, rx) = bounded::<Vec<u8>>(8);
+        let (mut reader, _stop) = HlsReader::from_test_channel(rx, Vec::new());
+        let start = std::time::Instant::now();
+        let mut buf = [0u8; 16];
+        let err = reader.read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(start.elapsed() < Duration::from_secs(2));
+
+        tx.send(vec![7, 8]).unwrap();
+        assert_eq!(reader.read(&mut buf).unwrap(), 2);
+        assert_eq!(&buf[..2], &[7, 8]);
     }
 
     #[test]

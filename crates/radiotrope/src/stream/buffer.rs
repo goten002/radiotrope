@@ -186,6 +186,7 @@ impl StreamBuffer {
 
         let consumer = StreamBufferReader {
             state: state.clone(),
+            stop_flag: stop_flag.clone(),
             status,
             read_pos: 0,
             probing_flag,
@@ -199,11 +200,18 @@ impl StreamBuffer {
     }
 
     /// Producer loop: reads chunks from inner reader, appends to shared buffer.
+    ///
+    /// The inner reader may return `ErrorKind::Interrupted` while it waits for
+    /// the network (the ICY and HLS readers do, a few times a second). The
+    /// producer then checks its stop flag and reads again, so a stop reaches
+    /// it even when the station sends nothing. Every exit marks the producer
+    /// done, so a waiting consumer never blocks on a producer that is gone.
     fn producer_loop(
         mut reader: Box<dyn ReadSeek>,
         state: Arc<BufferState>,
         stop_flag: Arc<AtomicBool>,
     ) {
+        let _done = ProducerDone(state.clone());
         let mut chunk = vec![0u8; PRODUCER_CHUNK_SIZE];
 
         loop {
@@ -212,25 +220,14 @@ impl StreamBuffer {
             }
 
             match reader.read(&mut chunk) {
-                Ok(0) => {
-                    // EOF
-                    if let Ok(mut inner) = state.inner.lock() {
-                        inner.producer_done = true;
-                    }
-                    state.data_available.notify_all();
-                    break;
-                }
+                Ok(0) => break, // EOF
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Ok(n) => {
                     // Retry loop: keep trying to write this chunk until buffer has space.
                     // We must NOT re-read from the inner reader before writing this chunk,
                     // or we'd lose the data we already read.
                     loop {
                         if stop_flag.load(Ordering::Relaxed) {
-                            // Signal done and exit both loops
-                            if let Ok(mut inner) = state.inner.lock() {
-                                inner.producer_done = true;
-                            }
-                            state.data_available.notify_all();
                             return;
                         }
 
@@ -258,9 +255,7 @@ impl StreamBuffer {
                 Err(e) => {
                     if let Ok(mut inner) = state.inner.lock() {
                         inner.producer_error = Some(e.to_string());
-                        inner.producer_done = true;
                     }
-                    state.data_available.notify_all();
                     break;
                 }
             }
@@ -268,9 +263,27 @@ impl StreamBuffer {
     }
 }
 
+/// Marks the producer done and wakes the consumer when the producer exits,
+/// whichever way it exits (EOF, error, stop or panic).
+struct ProducerDone(Arc<BufferState>);
+
+impl Drop for ProducerDone {
+    fn drop(&mut self) {
+        let mut inner = match self.0.inner.lock() {
+            Ok(inner) => inner,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        inner.producer_done = true;
+        drop(inner);
+        self.0.data_available.notify_all();
+    }
+}
+
 /// Consumer side: implements Read + Seek, passed to symphonia.
 pub struct StreamBufferReader {
     state: Arc<BufferState>,
+    /// Set by the engine to stop this stream: reads then return end of stream
+    stop_flag: Arc<AtomicBool>,
     status: SharedBufferStatus,
     /// Absolute read position (across compactions)
     read_pos: u64,
@@ -351,6 +364,13 @@ impl Read for StreamBufferReader {
             .map_err(|e| io::Error::other(e.to_string()))?;
 
         loop {
+            // Stopped: end the stream now. The decoder runs on the audio
+            // output thread, and rodio can't drop this source (or start the
+            // next station) until this read returns.
+            if self.stop_flag.load(Ordering::Relaxed) {
+                return Ok(0);
+            }
+
             let local_read = (self.read_pos - inner.base_offset) as usize;
             let available = inner.write_pos.saturating_sub(local_read);
 
@@ -2381,5 +2401,131 @@ mod tests {
         assert_eq!(shared.load(Ordering::Relaxed), 9096);
         reader.seek(SeekFrom::Start(100)).unwrap();
         assert_eq!(shared.load(Ordering::Relaxed), 100);
+    }
+
+    // --- Stopping while the network reader is stuck ---
+
+    /// Inner reader that behaves like a station that went off air: it never
+    /// delivers data. `interrupt` makes it return `Interrupted` every 20 ms
+    /// (how the ICY and HLS readers let the producer check its stop flag);
+    /// otherwise it blocks for an hour. Records when it is dropped.
+    struct DeadStationReader {
+        interrupt: bool,
+        dropped: Arc<AtomicBool>,
+    }
+
+    impl Read for DeadStationReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            if self.interrupt {
+                thread::sleep(Duration::from_millis(20));
+                Err(io::Error::from(io::ErrorKind::Interrupted))
+            } else {
+                thread::sleep(Duration::from_secs(3600));
+                Ok(0)
+            }
+        }
+    }
+
+    impl Seek for DeadStationReader {
+        fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    impl Drop for DeadStationReader {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn dead_station_buffer(
+        interrupt: bool,
+    ) -> (
+        StreamBufferReader,
+        JoinHandle<()>,
+        Arc<AtomicBool>,
+        Arc<AtomicBool>,
+    ) {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let reader = DeadStationReader {
+            interrupt,
+            dropped: dropped.clone(),
+        };
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (consumer, handle, stop) = StreamBuffer::new(Box::new(reader), status, probing);
+        (consumer, handle, stop, dropped)
+    }
+
+    /// Read once on another thread, so a read that never returns fails the
+    /// test instead of hanging the test run.
+    fn read_with_deadline(
+        mut consumer: StreamBufferReader,
+        before_read: impl FnOnce(&mut StreamBufferReader) + Send + 'static,
+    ) -> crossbeam_channel::Receiver<Result<usize, io::ErrorKind>> {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        thread::spawn(move || {
+            before_read(&mut consumer);
+            let mut buf = [0u8; 64];
+            let _ = tx.send(consumer.read(&mut buf).map_err(|e| e.kind()));
+        });
+        rx
+    }
+
+    #[test]
+    fn stop_wakes_a_consumer_waiting_on_a_dead_station() {
+        // The decoder reads on the audio output thread. If this read never
+        // returns, rodio can't finish the old source and the engine hangs in
+        // the next `append` (switching away from a station that went down).
+        let (consumer, _handle, stop, _dropped) = dead_station_buffer(false);
+        let rx = read_with_deadline(consumer, |_| {});
+        thread::sleep(Duration::from_millis(100));
+        stop.store(true, Ordering::SeqCst);
+        let result = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("read must return once the buffer is stopped");
+        assert_eq!(result, Ok(0), "a stopped buffer reads as end of stream");
+    }
+
+    #[test]
+    fn stop_while_buffering_after_an_underrun_returns_end_of_stream() {
+        let (consumer, _handle, stop, _dropped) = dead_station_buffer(false);
+        stop.store(true, Ordering::SeqCst);
+        // Put the consumer in the state it is in after an underrun
+        let rx = read_with_deadline(consumer, |c| c.buffering_active = true);
+        let result = rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("read must return once the buffer is stopped");
+        assert_eq!(result, Ok(0));
+    }
+
+    #[test]
+    fn producer_retries_interrupted_reads_and_exits_on_stop() {
+        let (_consumer, handle, stop, dropped) = dead_station_buffer(true);
+        thread::sleep(Duration::from_millis(100));
+        assert!(
+            !handle.is_finished(),
+            "Interrupted is not an error: the producer keeps waiting for data"
+        );
+        stop.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !handle.is_finished() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        assert!(handle.is_finished(), "producer must exit after stop");
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the inner reader is dropped, which stops its network thread"
+        );
+    }
+
+    #[test]
+    fn producer_marks_done_when_stopped_between_reads() {
+        // Stop lands while the producer is outside the write loop: the
+        // consumer must still see the producer as finished.
+        let (consumer, handle, stop, _dropped) = dead_station_buffer(true);
+        stop.store(true, Ordering::SeqCst);
+        handle.join().unwrap();
+        assert!(consumer.state.inner.lock().unwrap().producer_done);
     }
 }
