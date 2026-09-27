@@ -90,7 +90,10 @@ impl StreamHealthMonitor {
             }
             HealthState::Healthy => {
                 if samples_changed {
+                    // Progress restarts the stall timer: a stall is this
+                    // long *without* new samples, not this long overall
                     self.last_sample_count = sample_count;
+                    self.state_entered = now;
                     None
                 } else if elapsed >= self.stall_timeout {
                     self.transition(HealthState::Stalled, now);
@@ -830,5 +833,23 @@ mod tests {
         thread::sleep(Duration::from_millis(150));
         monitor.update(100);
         assert_eq!(*monitor.state(), HealthState::Stalled);
+    }
+
+    #[test]
+    fn healthy_stream_with_one_quiet_tick_stays_healthy() {
+        // After playing longer than the stall timeout, one poll without new
+        // samples must not count as a stall
+        let stall = Duration::from_millis(300);
+        let mut m = StreamHealthMonitor::with_timeouts(Duration::from_secs(10), stall);
+        m.update(100);
+        assert_eq!(*m.state(), HealthState::Healthy);
+        for count in [200, 300, 400] {
+            std::thread::sleep(Duration::from_millis(150));
+            assert_eq!(m.update(count), None);
+        }
+        // Played for 450 ms now; this poll has no new samples
+        std::thread::sleep(Duration::from_millis(30));
+        m.update(400);
+        assert_eq!(*m.state(), HealthState::Healthy);
     }
 }

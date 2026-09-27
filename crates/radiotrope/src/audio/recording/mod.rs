@@ -32,6 +32,9 @@ mod opus;
 mod resample;
 mod wav;
 
+#[cfg(test)]
+pub(crate) use opus::encode_ogg_opus;
+
 /// Samples per batch sent to the writer (about 46 ms of 44.1 kHz stereo).
 const BATCH_SAMPLES: usize = 4096;
 
