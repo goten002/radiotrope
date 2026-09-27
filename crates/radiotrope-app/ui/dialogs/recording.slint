@@ -4,23 +4,27 @@ import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { DialogShell, Field, Toggle } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
-// One option of the format picker
-component FormatOption inherits Rectangle {
+// One option of a Picker
+component PickerOption inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
+    in property <bool> enabled: true;
+    in property <length> option-width: 56px;
     callback clicked();
 
-    min-width: 72px;
+    min-width: root.option-width;
     height: 30px;
     border-radius: Theme.radius-sm;
-    background: root.selected ? Theme.accent
+    background: root.selected && root.enabled ? Theme.accent
+        : root.selected ? Theme.disabled-bg
         : touch.has-hover ? Theme.menu-hover
         : transparent;
     animate background { duration: Theme.fast; }
 
     Text {
         text: root.label;
-        color: root.selected ? Theme.button-text : Theme.text-primary;
+        color: !root.enabled ? Theme.disabled-text
+            : root.selected ? Theme.button-text : Theme.text-primary;
         font-size: 13px;
         font-weight: root.selected ? 600 : 400;
         horizontal-alignment: center;
@@ -28,8 +32,52 @@ component FormatOption inherits Rectangle {
     }
 
     touch := TouchArea {
-        mouse-cursor: pointer;
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
+    }
+}
+
+struct PickerChoice {
+    id: string,
+    label: string,
+}
+
+// A row of options, one selected
+component Picker inherits HorizontalLayout {
+    in property <[PickerChoice]> choices;
+    in-out property <string> selected;
+    in property <bool> enabled: true;
+    in property <length> option-width: 56px;
+    callback changed(string);
+
+    alignment: start;
+
+    Rectangle {
+        background: Theme.elevated;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        width: row.preferred-width;
+        height: row.preferred-height;
+
+        row := HorizontalLayout {
+            padding: 3px;
+            spacing: 3px;
+
+            for choice in root.choices: PickerOption {
+                label: choice.label;
+                selected: root.selected == choice.id;
+                enabled: root.enabled;
+                option-width: root.option-width;
+                clicked => {
+                    if root.selected != choice.id {
+                        root.selected = choice.id;
+                        root.changed(choice.id);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -38,12 +86,15 @@ export component RecordingSettingsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // The folder in use
     in property <string> folder;
-    in property <bool> is-default;
+    // The default folder, to offer Restore Default whenever the path differs
+    in property <string> default-folder;
     // Problem with the last folder tried, shown under the field
     in property <string> error;
     in-out property <bool> with-eq;
     // "mp3", "opus" or "wav"
     in-out property <string> format: "mp3";
+    // MP3/Opus bitrate in kbps; 0 is Auto (the station's bitrate)
+    in-out property <int> bitrate: 0;
 
     // The path being edited; reset to `folder` each time the dialog opens
     in-out property <string> edit-path;
@@ -54,6 +105,7 @@ export component RecordingSettingsDialog inherits Rectangle {
     callback open-folder();
     callback with-eq-toggled(bool);
     callback format-changed(string);
+    callback bitrate-changed(int);
 
     property <bool> edited: root.edit-path != root.folder;
 
@@ -73,54 +125,47 @@ export component RecordingSettingsDialog inherits Rectangle {
         auto-focus: false;
         close-requested => { root.close(); }
 
-        Field {
-            label: "Format";
+        // Format and bitrate share a row to keep the dialog short
+        HorizontalLayout {
+            spacing: 20px;
+            alignment: start;
 
-            HorizontalLayout {
-                alignment: start;
-
-                Rectangle {
-                    background: Theme.elevated;
-                    border-radius: Theme.radius-md;
-                    border-width: 1px;
-                    border-color: Theme.hairline;
-                    width: formats.preferred-width;
-                    height: formats.preferred-height;
-
-                    formats := HorizontalLayout {
-                        padding: 3px;
-                        spacing: 3px;
-
-                        for option in [
-                            { id: "mp3", label: "MP3" },
-                            { id: "opus", label: "Opus" },
-                            { id: "wav", label: "WAV" },
-                        ]: FormatOption {
-                            label: option.label;
-                            selected: root.format == option.id;
-                            clicked => {
-                                if root.format != option.id {
-                                    root.format = option.id;
-                                    root.format-changed(option.id);
-                                }
-                            }
-                        }
+            Field {
+                label: "Format";
+                Picker {
+                    choices: [
+                        { id: "mp3", label: "MP3" },
+                        { id: "opus", label: "Opus" },
+                        { id: "wav", label: "WAV" },
+                    ];
+                    selected: root.format;
+                    changed(id) => {
+                        root.format = id;
+                        root.format-changed(id);
                     }
                 }
             }
-        }
 
-        Text {
-            text: root.format == "opus"
-                ? "Opus, 128 kbps. Better sound than MP3 in smaller files, about 58 MB per hour. Plays in VLC, browsers, Android and Windows 10 or later."
-                : root.format == "wav"
-                ? "WAV, uncompressed 16-bit. The sound exactly as decoded, about 635 MB per hour. Files stop at 4 GB, about 6 hours."
-                : "MP3, 192 kbps. Plays on every device and app, about 86 MB per hour.";
-            color: Theme.text-secondary;
-            font-size: 12px;
-            wrap: word-wrap;
-            // Two lines for every format, so the dialog doesn't jump
-            min-height: 30px;
+            Field {
+                label: "Bitrate";
+                Picker {
+                    choices: [
+                        { id: "0", label: "Auto" },
+                        { id: "96", label: "96" },
+                        { id: "128", label: "128" },
+                        { id: "192", label: "192" },
+                        { id: "256", label: "256" },
+                    ];
+                    // WAV is uncompressed, so it has no bitrate to pick
+                    enabled: root.format != "wav";
+                    option-width: 42px;
+                    selected: root.bitrate;
+                    changed(id) => {
+                        root.bitrate = id.to-float();
+                        root.bitrate-changed(root.bitrate);
+                    }
+                }
+            }
         }
 
         Rectangle {
@@ -129,7 +174,7 @@ export component RecordingSettingsDialog inherits Rectangle {
         }
 
         Field {
-            label: root.is-default && !root.edited ? "Folder (default)" : "Folder";
+            label: root.edit-path == root.default-folder ? "Folder (default)" : "Folder";
             StyledLineEdit {
                 text <=> root.edit-path;
                 placeholder-text: "Folder for recordings";
@@ -152,9 +197,12 @@ export component RecordingSettingsDialog inherits Rectangle {
                 label: "Browse...";
                 clicked => { root.browse(); }
             }
-            if !root.is-default: SecondaryButton {
+            if root.edit-path != root.default-folder || root.folder != root.default-folder: SecondaryButton {
                 label: "Restore Default";
-                clicked => { root.restore-default(); }
+                clicked => {
+                    root.edit-path = root.default-folder;
+                    root.restore-default();
+                }
             }
             if Platform.has-file-manager: SecondaryButton {
                 label: "Open Folder";
@@ -168,20 +216,23 @@ export component RecordingSettingsDialog inherits Rectangle {
         }
 
         VerticalLayout {
-            spacing: 4px;
+            spacing: 2px;
 
             Toggle {
-                label: "Include equalizer in recordings";
+                label: "Apply equalizer to recording";
                 checked <=> root.with-eq;
                 toggled(on) => { root.with-eq-toggled(on); }
             }
-            Text {
-                text: root.with-eq
-                    ? "Recordings sound like what you hear. Lower the EQ preamp if they sound distorted."
-                    : "Recordings keep the station's own sound. Volume never affects them.";
-                color: Theme.text-secondary;
-                font-size: 12px;
-                wrap: word-wrap;
+            // Lines up with the label (36px switch + 8px gap)
+            HorizontalLayout {
+                padding-left: 44px;
+
+                Text {
+                    text: "Record audio with your current equalizer settings.";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    wrap: word-wrap;
+                }
             }
         }
 

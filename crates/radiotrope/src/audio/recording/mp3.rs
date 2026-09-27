@@ -1,24 +1,49 @@
-//! MP3 recordings: LAME at 192 kbps, with an ID3v2.4 tag
+//! MP3 recordings: LAME at a constant bitrate, with an ID3v2.4 tag
 
 use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushNoGap, InterleavedPcm, Mode, MonoPcm};
 
 use super::{AudioEncoder, RecordingTags};
 
-/// MP3 bitrate for stereo recordings.
-const STEREO_BITRATE: Bitrate = Bitrate::Kbps192;
+/// Bitrates LAME can write, in kbps.
+const BITRATES: [(u32, Bitrate); 16] = [
+    (8, Bitrate::Kbps8),
+    (16, Bitrate::Kbps16),
+    (24, Bitrate::Kbps24),
+    (32, Bitrate::Kbps32),
+    (40, Bitrate::Kbps40),
+    (48, Bitrate::Kbps48),
+    (64, Bitrate::Kbps64),
+    (80, Bitrate::Kbps80),
+    (96, Bitrate::Kbps96),
+    (112, Bitrate::Kbps112),
+    (128, Bitrate::Kbps128),
+    (160, Bitrate::Kbps160),
+    (192, Bitrate::Kbps192),
+    (224, Bitrate::Kbps224),
+    (256, Bitrate::Kbps256),
+    (320, Bitrate::Kbps320),
+];
 
-/// MP3 bitrate for mono recordings.
-const MONO_BITRATE: Bitrate = Bitrate::Kbps96;
+/// The MP3 bitrate closest to `kbps` (the higher one on a tie).
+fn nearest_bitrate(kbps: u32) -> Bitrate {
+    BITRATES
+        .iter()
+        .min_by_key(|(k, _)| (k.abs_diff(kbps), u32::MAX - k))
+        .map(|(_, b)| *b)
+        .unwrap_or(Bitrate::Kbps192)
+}
 
 pub(super) struct Mp3Encoder {
     tags: Option<RecordingTags>,
+    bitrate: Bitrate,
     lame: Option<Lame>,
 }
 
 impl Mp3Encoder {
-    pub(super) fn new(tags: RecordingTags) -> Self {
+    pub(super) fn new(tags: RecordingTags, kbps: u32) -> Self {
         Self {
             tags: Some(tags),
+            bitrate: nearest_bitrate(kbps),
             lame: None,
         }
     }
@@ -52,7 +77,7 @@ impl AudioEncoder for Mp3Encoder {
             }
         }
         if self.lame.is_none() {
-            self.lame = Some(Lame::new(sample_rate, channels)?);
+            self.lame = Some(Lame::new(sample_rate, channels, self.bitrate)?);
         }
         match self.lame.as_mut() {
             Some(lame) => lame.encode(samples, out),
@@ -77,7 +102,7 @@ struct Lame {
 }
 
 impl Lame {
-    fn new(sample_rate: u32, channels: u16) -> Result<Self, String> {
+    fn new(sample_rate: u32, channels: u16, bitrate: Bitrate) -> Result<Self, String> {
         let mono = channels == 1;
         let mut builder = Builder::new().ok_or("Could not create the MP3 encoder")?;
         builder
@@ -87,7 +112,7 @@ impl Lame {
             .set_num_channels(if mono { 1 } else { 2 })
             .map_err(|e| format!("MP3 encoder: {e}"))?;
         builder
-            .set_brate(if mono { MONO_BITRATE } else { STEREO_BITRATE })
+            .set_brate(bitrate)
             .map_err(|e| format!("MP3 encoder: {e}"))?;
         builder
             .set_mode(if mono { Mode::Mono } else { Mode::JointStereo })
@@ -197,6 +222,15 @@ fn synchsafe(n: u32) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bitrate_snaps_to_nearest_mp3_rate() {
+        assert_eq!(nearest_bitrate(192) as u32, 192);
+        assert_eq!(nearest_bitrate(150) as u32, 160);
+        assert_eq!(nearest_bitrate(144) as u32, 160, "tie goes up");
+        assert_eq!(nearest_bitrate(1000) as u32, 320);
+        assert_eq!(nearest_bitrate(0) as u32, 8);
+    }
 
     #[test]
     fn id3_tag_layout() {

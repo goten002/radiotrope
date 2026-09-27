@@ -13,7 +13,7 @@ import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
-import { WifiSettingsDialog, WifiNetworkEntry } from "@platform/wifi.slint";
+import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { VizData, VizStyle } from "visualization.slint";
 export { AboutInfo, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
@@ -62,17 +62,19 @@ export component App inherits Window {
     callback restore-recording-folder();
     callback record-with-eq-toggled(bool);
     callback recording-format-changed(string);
+    callback recording-bitrate-changed(int);
     in-out property <bool> is-recording;
     in-out property <bool> can-record;
     in-out property <string> recording-text;
     in-out property <string> recording-notice;
     in-out property <bool> recording-notice-error;
     in-out property <string> recording-folder <=> recording-dialog.folder;
-    in-out property <bool> recording-folder-is-default <=> recording-dialog.is-default;
+    in-out property <string> recording-default-folder <=> recording-dialog.default-folder;
     in-out property <string> recording-folder-error <=> recording-dialog.error;
     in-out property <string> recording-folder-edit <=> recording-dialog.edit-path;
     in-out property <bool> record-with-eq <=> recording-dialog.with-eq;
     in-out property <string> recording-format <=> recording-dialog.format;
+    in-out property <int> recording-bitrate <=> recording-dialog.bitrate;
     in-out property <bool> show-recording-dialog <=> recording-dialog.show-dialog;
 
     // WiFi (embedded only — connected from Rust when feature = "embedded")
@@ -239,6 +241,8 @@ export component App inherits Window {
                 recording-text: root.recording-text;
                 recording-notice: root.recording-notice;
                 recording-notice-error: root.recording-notice-error;
+                can-open-recordings: Platform.has-file-manager;
+                open-recordings-folder => { root.open-recordings-folder(); }
                 toggle-favorite => { root.toggle-favorite(); }
             }
             }
@@ -373,6 +377,7 @@ export component App inherits Window {
         open-folder() => { root.open-recordings-folder(); }
         with-eq-toggled(on) => { root.record-with-eq-toggled(on); }
         format-changed(id) => { root.recording-format-changed(id); }
+        bitrate-changed(kbps) => { root.recording-bitrate-changed(kbps); }
     }
 
     about-dialog := AboutDialog {

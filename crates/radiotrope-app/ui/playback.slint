@@ -19,6 +19,9 @@ export component Playback inherits Rectangle {
     in property <string> recording-text;
     in property <string> recording-notice;
     in property <bool> recording-notice-error;
+    // A "Saved ..." notice opens the recordings folder when clicked
+    in property <bool> can-open-recordings;
+    callback open-recordings-folder();
     callback toggle-favorite();
     in-out property <string> viz-mode: "mirror";
 
@@ -110,6 +113,8 @@ export component Playback inherits Rectangle {
                     tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
                     dot: root.is-recording;
                     pulse: root.is-recording;
+                    clickable: !root.is-recording && !root.recording-notice-error && root.can-open-recordings;
+                    clicked => { root.open-recordings-folder(); }
                 }
 
                 // Takes the spare width, so a long status elides in the chip

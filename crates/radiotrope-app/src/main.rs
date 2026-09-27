@@ -1715,6 +1715,7 @@ fn setup_recording(
     show_recording_folder(ui, settings.recording_dir.as_deref());
     ui.set_record_with_eq(settings.record_with_eq);
     ui.set_recording_format(settings.recording_format.id().into());
+    ui.set_recording_bitrate(settings.recording_bitrate.unwrap_or(0) as i32);
 
     ui.on_toggle_recording({
         let ui_weak = ui.as_weak();
@@ -1736,6 +1737,7 @@ fn setup_recording(
             let _ = cmd_tx.send(app::state::AppCommand::StartRecording {
                 folder: recordings::folder(settings.recording_dir.as_deref()),
                 format: settings.recording_format.into(),
+                bitrate: settings.recording_bitrate,
                 with_eq: settings.record_with_eq,
                 cover: station_cover_png(&logo_service, &station),
             });
@@ -1785,6 +1787,11 @@ fn setup_recording(
         save_recording_settings(|s| s.recording_format = format);
     });
 
+    // 0 is Auto
+    ui.on_recording_bitrate_changed(|kbps| {
+        save_recording_settings(|s| s.recording_bitrate = (kbps > 0).then_some(kbps as u32));
+    });
+
     ui.on_open_recordings_folder({
         let ui_weak = ui.as_weak();
         move || {
@@ -1811,7 +1818,7 @@ fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
     let text: slint::SharedString = folder.display().to_string().into();
     ui.set_recording_folder(text.clone());
     ui.set_recording_folder_edit(text);
-    ui.set_recording_folder_is_default(custom.is_none());
+    ui.set_recording_default_folder(recordings::default_dir().display().to_string().into());
     ui.set_recording_folder_error(Default::default());
 }
 

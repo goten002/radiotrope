@@ -114,6 +114,10 @@ pub struct Settings {
     /// File format for new recordings
     #[serde(default)]
     pub recording_format: RecordingFormat,
+
+    /// MP3/Opus bitrate in kbps; `None` means Auto (the station's bitrate)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recording_bitrate: Option<u32>,
 }
 
 fn default_version() -> u32 {
@@ -162,6 +166,7 @@ impl Default for Settings {
             recording_dir: None,
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,
+            recording_bitrate: None,
         }
     }
 }
@@ -411,6 +416,7 @@ mod tests {
         assert_eq!(settings.recording_dir, None);
         assert!(!settings.record_with_eq);
         assert_eq!(settings.recording_format, RecordingFormat::Mp3);
+        assert_eq!(settings.recording_bitrate, None);
 
         // Settings files from before recording existed load unchanged
         let old: Settings = serde_json::from_str(r#"{"version":1,"volume":0.5}"#).unwrap();
@@ -448,6 +454,7 @@ mod tests {
             settings.recording_dir = Some(PathBuf::from("/media/usb/radio"));
             settings.record_with_eq = true;
             settings.recording_format = RecordingFormat::Opus;
+            settings.recording_bitrate = Some(256);
             settings.save_to(&path).unwrap();
         }
 
@@ -472,6 +479,7 @@ mod tests {
             assert_eq!(s.recording_dir, Some(PathBuf::from("/media/usb/radio")));
             assert!(s.record_with_eq);
             assert_eq!(s.recording_format, RecordingFormat::Opus);
+            assert_eq!(s.recording_bitrate, Some(256));
         }
 
         let _ = fs::remove_file(&path);
