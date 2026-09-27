@@ -27,6 +27,10 @@ pub use metadata::{MetadataSink, MetadataSource, StreamMetadata};
 pub use resolver::StreamResolver;
 pub use types::{ResolvedStream, StreamInfo, StreamType};
 
+/// How long a network reader waits for data before returning
+/// `ErrorKind::Interrupted`, so its caller can check for a stop and retry.
+pub(crate) const READ_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
 /// Calculate exponential backoff delay: min(2^(n-1) * base, max)
 /// e.g., with base=2s: 2s, 4s, 8s, 10s, 10s, ...
 pub(crate) fn backoff_delay(consecutive_failures: u32) -> Duration {

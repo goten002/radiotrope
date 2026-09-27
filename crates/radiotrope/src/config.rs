@@ -136,8 +136,10 @@ pub mod buffer {
     pub const COMPACTION_SAFETY_MARGIN: usize = 64 * 1024;
     /// Chunk size for producer reads from inner reader (bytes)
     pub const PRODUCER_CHUNK_SIZE: usize = 8 * 1024;
-    /// Maximum time consumer blocks waiting for data (milliseconds)
-    pub const CONSUMER_WAIT_TIMEOUT_MS: u64 = 500;
+    /// Maximum time consumer blocks waiting for data before it re-checks the
+    /// stop flag (milliseconds). Bounds how long a stop takes while the
+    /// station delivers nothing.
+    pub const CONSUMER_WAIT_TIMEOUT_MS: u64 = 100;
     /// EMA smoothing factor for throughput (0.0–1.0)
     pub const EMA_ALPHA_THROUGHPUT: f64 = 0.3;
     /// EMA smoothing factor for jitter (0.0–1.0)

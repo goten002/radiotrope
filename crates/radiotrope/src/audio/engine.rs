@@ -22,7 +22,7 @@ fn volume_curve(linear: f32) -> f32 {
 }
 
 use super::analyzer::AnalyzingSource;
-use super::decoder::{start_probe, ProbedFormat, SymphoniaSource};
+use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::recording::{Recorder, RecordingTap, TapPoint};
@@ -33,7 +33,7 @@ use super::types::{AudioAnalysis, AudioCommand, AudioEvent, PlaybackState};
 
 /// State held while an async probe is in progress
 struct PendingProbe {
-    probe_rx: Receiver<Result<ProbedFormat, RadioError>>,
+    probe_rx: Receiver<Result<SymphoniaSource, RadioError>>,
     buf_status: SharedBufferStatus,
     probing_flag: Arc<AtomicBool>,
     stop_flag: Arc<AtomicBool>,
@@ -338,8 +338,10 @@ impl AudioEngine {
                             playback_position.unwrap_or_default(),
                         );
 
-                        // Start async probe — returns immediately
-                        match start_probe(buf_reader, format_hint) {
+                        // Start async probe — returns immediately. The probe
+                        // thread also decodes the first packet, so this thread
+                        // never waits on the network.
+                        match start_open(buf_reader, format_hint) {
                             Ok(probe_rx) => {
                                 pending_probe = Some(PendingProbe {
                                     probe_rx,
@@ -455,81 +457,63 @@ impl AudioEngine {
                     // Poll pending probe for completion
                     if let Some(ref pending) = pending_probe {
                         match pending.probe_rx.try_recv() {
-                            Ok(Ok(probed)) => {
+                            Ok(Ok(source)) => {
                                 let p = pending_probe.take().unwrap();
-                                match SymphoniaSource::from_probed(probed) {
-                                    Ok(source) => {
-                                        // Probe succeeded — allow buffer compaction
-                                        p.probing_flag.store(false, Ordering::SeqCst);
+                                // Probe succeeded — allow buffer compaction
+                                p.probing_flag.store(false, Ordering::SeqCst);
 
-                                        let mut codec_info = source.codec_info();
-                                        codec_info.bitrate = p.bitrate;
-                                        let error_slot = source.error_slot();
-                                        let dec_stats = source.decoder_stats();
-                                        let active_flag = Arc::new(AtomicBool::new(true));
-                                        let source = RecordingTap::new(
-                                            source,
-                                            recorder.clone(),
-                                            TapPoint::BeforeEq,
-                                        );
-                                        let eq_source = EqSource::new(source, eq_params.clone());
-                                        let eq_source = RecordingTap::new(
-                                            eq_source,
-                                            recorder.clone(),
-                                            TapPoint::AfterEq,
-                                        );
-                                        let analyzing = AnalyzingSource::new(
-                                            eq_source,
-                                            analysis.clone(),
-                                            active_flag.clone(),
-                                        );
-                                        sink.append(analyzing);
-                                        sink.set_volume(volume_curve(current_volume));
-                                        sink.play();
-                                        state = PlaybackState::Playing;
-                                        health_monitor = Some(StreamHealthMonitor::new());
-                                        stream_error_slot = Some(error_slot);
-                                        current_decoder_stats = Some(dec_stats);
-                                        current_bytes_received = p.bytes_received;
-                                        current_segments_downloaded = p.segments_downloaded;
-                                        current_buffer_status = Some(p.buf_status);
-                                        was_buffering = false;
-                                        buffering_since = None;
-                                        prolonged_buffering_stall = false;
-                                        last_throughput_bytes = 0;
-                                        last_throughput_time = Instant::now();
-                                        analysis_active = Some(active_flag);
-                                        producer_stop_flag = Some(p.stop_flag);
-                                        _producer_probing_flag = Some(p.probing_flag);
-                                        _producer_handle = Some(p.prod_handle);
+                                let mut codec_info = source.codec_info();
+                                codec_info.bitrate = p.bitrate;
+                                let error_slot = source.error_slot();
+                                let dec_stats = source.decoder_stats();
+                                let active_flag = Arc::new(AtomicBool::new(true));
+                                let source =
+                                    RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
+                                let eq_source = EqSource::new(source, eq_params.clone());
+                                let eq_source = RecordingTap::new(
+                                    eq_source,
+                                    recorder.clone(),
+                                    TapPoint::AfterEq,
+                                );
+                                let analyzing = AnalyzingSource::new(
+                                    eq_source,
+                                    analysis.clone(),
+                                    active_flag.clone(),
+                                );
+                                sink.append(analyzing);
+                                sink.set_volume(volume_curve(current_volume));
+                                sink.play();
+                                state = PlaybackState::Playing;
+                                health_monitor = Some(StreamHealthMonitor::new());
+                                stream_error_slot = Some(error_slot);
+                                current_decoder_stats = Some(dec_stats);
+                                current_bytes_received = p.bytes_received;
+                                current_segments_downloaded = p.segments_downloaded;
+                                current_buffer_status = Some(p.buf_status);
+                                was_buffering = false;
+                                buffering_since = None;
+                                prolonged_buffering_stall = false;
+                                last_throughput_bytes = 0;
+                                last_throughput_time = Instant::now();
+                                analysis_active = Some(active_flag);
+                                producer_stop_flag = Some(p.stop_flag);
+                                _producer_probing_flag = Some(p.probing_flag);
+                                _producer_handle = Some(p.prod_handle);
 
-                                        // Update shared stats
-                                        if let Ok(mut stats) = shared_stats.lock() {
-                                            *stats = StreamStats::default();
-                                            stats.codec_info = Some(codec_info.clone());
-                                            stats.play_started_at = Some(Instant::now());
-                                        }
-
-                                        // Emit event
-                                        event_bus.emit(StreamEvent::PlaybackStarted {
-                                            codec_info: codec_info.clone(),
-                                            stream_url: String::new(),
-                                        });
-
-                                        let _ = event_tx.send(AudioEvent::Playing(codec_info));
-                                    }
-                                    Err(e) => {
-                                        p.stop_flag.store(true, Ordering::SeqCst);
-                                        state = PlaybackState::Stopped;
-                                        if let Ok(mut stats) = shared_stats.lock() {
-                                            *stats = StreamStats::default();
-                                            stats.health_state =
-                                                HealthState::Failed(FailureReason::ProbeFailed);
-                                        }
-                                        let _ = event_tx.send(AudioEvent::Error(e.to_string()));
-                                        event_bus.emit(StreamEvent::Error(e.to_string()));
-                                    }
+                                // Update shared stats
+                                if let Ok(mut stats) = shared_stats.lock() {
+                                    *stats = StreamStats::default();
+                                    stats.codec_info = Some(codec_info.clone());
+                                    stats.play_started_at = Some(Instant::now());
                                 }
+
+                                // Emit event
+                                event_bus.emit(StreamEvent::PlaybackStarted {
+                                    codec_info: codec_info.clone(),
+                                    stream_url: String::new(),
+                                });
+
+                                let _ = event_tx.send(AudioEvent::Playing(codec_info));
                             }
                             Ok(Err(e)) => {
                                 let p = pending_probe.take().unwrap();
@@ -1971,6 +1955,82 @@ mod tests {
         engine.shutdown();
     }
 
+    // --- Switching away from a stalled station ---
+
+    /// Serves `limit` bytes, then blocks like a station that went off air
+    /// while its connection stays open.
+    struct StallAfterReader {
+        inner: Cursor<Vec<u8>>,
+        limit: usize,
+    }
+
+    impl std::io::Read for StallAfterReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let pos = self.inner.position() as usize;
+            if pos >= self.limit {
+                thread::sleep(Duration::from_secs(3600));
+                return Ok(0);
+            }
+            let len = buf.len().min(self.limit - pos);
+            std::io::Read::read(&mut self.inner, &mut buf[..len])
+        }
+    }
+
+    impl std::io::Seek for StallAfterReader {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn switching_away_from_a_stalled_station_plays_the_next() {
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
+
+        // Station A: 10 s of audio announced, ~3 s arrives, then nothing.
+        // More than the largest buffer watermark, so A starts whether or not
+        // the probe raced ahead of the producer.
+        let wav = make_wav(48_000, 2, &vec![1000i16; 960_000]);
+        engine.play(
+            Box::new(StallAfterReader {
+                inner: Cursor::new(wav),
+                limit: 600_000,
+            }),
+            None,
+            None,
+        );
+        /// Wait for Playing, skipping other events (Buffering, Stopped)
+        fn playing_within(engine: &AudioEngine, secs: u64) -> bool {
+            let deadline = Instant::now() + Duration::from_secs(secs);
+            while Instant::now() < deadline {
+                if let Some(AudioEvent::Playing(_)) = engine.try_recv_event() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(25));
+            }
+            false
+        }
+
+        assert!(playing_within(&engine, 10), "station A never started");
+        // Let A's buffer run dry, so the decoder waits for data that never comes
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !engine.shared_stats().lock().unwrap().is_buffering {
+            assert!(Instant::now() < deadline, "station A never ran dry");
+            thread::sleep(Duration::from_millis(50));
+        }
+
+        engine.stop();
+        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+
+        if !playing_within(&engine, 10) {
+            // The engine thread is stuck; dropping the engine would hang the test
+            std::mem::forget(engine);
+            panic!("the next station never started after switching away from a stalled one");
+        }
+        engine.shutdown();
+    }
+
     // --- Stream error propagation ---
 
     /// A reader that serves valid WAV data then returns a network error
@@ -2601,7 +2661,7 @@ mod tests {
             StreamBuffer::new(Box::new(Cursor::new(wav)), status, probing.clone());
         let position = Arc::new(AtomicU64::new(0));
         let reader = PlaybackPositionReader::new(buf_reader, position.clone());
-        let probed = start_probe(reader, Some("wav".to_string()))
+        let probed = super::super::decoder::start_probe(reader, Some("wav".to_string()))
             .unwrap()
             .recv_timeout(Duration::from_secs(5))
             .unwrap()

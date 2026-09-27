@@ -70,6 +70,32 @@ pub fn start_probe<R: Read + Seek + Send + Sync + 'static>(
     reader: R,
     format_hint: Option<String>,
 ) -> Result<Receiver<Result<ProbedFormat, RadioError>>, RadioError> {
+    spawn_probe(reader, format_hint, Ok)
+}
+
+/// Like [`start_probe`], but also builds the [`SymphoniaSource`] on the probe
+/// thread.
+///
+/// Building the source decodes the first packet, which reads from the
+/// stream and can block for as long as the station takes to send it. Doing
+/// that here keeps the caller (the engine's command loop) responsive.
+pub fn start_open<R: Read + Seek + Send + Sync + 'static>(
+    reader: R,
+    format_hint: Option<String>,
+) -> Result<Receiver<Result<SymphoniaSource, RadioError>>, RadioError> {
+    spawn_probe(reader, format_hint, SymphoniaSource::from_probed)
+}
+
+fn spawn_probe<R, T, F>(
+    reader: R,
+    format_hint: Option<String>,
+    finish: F,
+) -> Result<Receiver<Result<T, RadioError>>, RadioError>
+where
+    R: Read + Seek + Send + Sync + 'static,
+    T: Send + 'static,
+    F: FnOnce(ProbedFormat) -> Result<T, RadioError> + Send + 'static,
+{
     let source = ReadOnlySource::new(reader);
     let mss = MediaSourceStream::new(Box::new(source), Default::default());
 
@@ -86,8 +112,11 @@ pub fn start_probe<R: Read + Seek + Send + Sync + 'static>(
         .name("symphonia-probe".to_string())
         .spawn(move || {
             let probe = symphonia::default::get_probe();
-            let result = probe.probe(&hint, mss, format_opts, metadata_opts);
-            let _ = tx.send(result.map_err(|e| RadioError::Decode(format!("Probe error: {}", e))));
+            let result = probe
+                .probe(&hint, mss, format_opts, metadata_opts)
+                .map_err(|e| RadioError::Decode(format!("Probe error: {}", e)))
+                .and_then(finish);
+            let _ = tx.send(result);
         })
         .map_err(|e| RadioError::Audio(format!("Failed to spawn probe thread: {}", e)))?;
 
@@ -144,9 +173,10 @@ impl SymphoniaSource {
         Self::from_probed(probed)
     }
 
-    /// Create a `SymphoniaSource` from a completed probe (fast, no I/O).
+    /// Create a `SymphoniaSource` from a completed probe.
     ///
-    /// Used by the engine after the async probe completes.
+    /// Decodes the first packet, so it reads from the stream and may block
+    /// until the station sends data. [`start_open`] runs it off-thread.
     pub fn from_probed(format: ProbedFormat) -> Result<Self, RadioError> {
         let registry = create_codec_registry();
 

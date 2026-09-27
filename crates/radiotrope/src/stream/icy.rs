@@ -22,7 +22,7 @@ use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{extract_icy_title, MetadataSink, MetadataSource, StreamMetadata};
 use crate::stream::resolver::StreamResolver;
 
-use super::backoff_sleep;
+use super::{backoff_sleep, READ_POLL_INTERVAL};
 
 const AUDIO_CHANNEL_BOUND: usize = 32;
 
@@ -106,10 +106,17 @@ impl IcyReader {
             );
         });
 
-        // Wait for initial data
-        let initial_data = audio_rx
-            .recv_timeout(Duration::from_secs(READ_TIMEOUT_SECS))
-            .map_err(|_| RadioError::Timeout("Timeout waiting for stream data".to_string()))?;
+        // Wait for initial data. On failure stop the thread, which would
+        // otherwise keep reconnecting for the life of the process.
+        let initial_data = match audio_rx.recv_timeout(Duration::from_secs(READ_TIMEOUT_SECS)) {
+            Ok(data) => data,
+            Err(_) => {
+                stop_flag.store(true, Ordering::SeqCst);
+                return Err(RadioError::Timeout(
+                    "Timeout waiting for stream data".to_string(),
+                ));
+            }
+        };
 
         Ok((
             Self {
@@ -190,13 +197,12 @@ impl Read for IcyReader {
                 }
             }
 
-            // Blocking wait — loop on timeout while background thread
-            // is still alive (it may be reconnecting with backoff).
-            // Only give up on channel disconnect (thread exited) or stop flag.
-            match self
-                .receiver
-                .recv_timeout(Duration::from_secs(READ_TIMEOUT_SECS))
-            {
+            // Wait briefly for the background thread, which may be
+            // reconnecting with backoff. On timeout return `Interrupted`
+            // rather than blocking: the caller (the stream buffer's producer)
+            // checks its stop flag and reads again, so stopping a station that
+            // is down doesn't leave this reader, and its thread, running.
+            match self.receiver.recv_timeout(READ_POLL_INTERVAL) {
                 Ok(chunk) => {
                     self.current_chunk = chunk;
                     self.chunk_pos = 0;
@@ -208,8 +214,10 @@ impl Read for IcyReader {
                             "ICY stream stopped",
                         ));
                     }
-                    // Background thread still alive, keep waiting
-                    continue;
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "waiting for ICY stream data",
+                    ));
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
                     return Err(io::Error::new(
@@ -709,6 +717,33 @@ mod tests {
     }
 
     #[test]
+    fn read_returns_interrupted_while_waiting_for_data() {
+        // The producer relies on this to check its stop flag while the
+        // background thread reconnects, instead of blocking indefinitely.
+        let (_tx, rx) = bounded::<Vec<u8>>(8);
+        let (mut reader, _stop) = IcyReader::from_test_channel(rx, Vec::new());
+        let start = std::time::Instant::now();
+        let mut buf = [0u8; 16];
+        let err = reader.read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn read_after_interrupted_gets_the_next_chunk() {
+        let (tx, rx) = bounded::<Vec<u8>>(8);
+        let (mut reader, _stop) = IcyReader::from_test_channel(rx, Vec::new());
+        let mut buf = [0u8; 16];
+        assert_eq!(
+            reader.read(&mut buf).unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
+        tx.send(vec![4, 5, 6]).unwrap();
+        assert_eq!(reader.read(&mut buf).unwrap(), 3);
+        assert_eq!(&buf[..3], &[4, 5, 6]);
+    }
+
+    #[test]
     fn drop_sets_stop_flag() {
         let (_tx, rx) = bounded(8);
         let stop_flag;
@@ -1061,6 +1096,61 @@ mod tests {
                 next_title(&rx),
                 Some(("Track Two".to_string(), MetadataSource::Id3v2))
             );
+        }
+
+        #[test]
+        fn stopping_a_station_that_went_down_ends_its_threads() {
+            use crate::stream::buffer::{BufferStatus, StreamBuffer};
+            use std::sync::Mutex;
+
+            // The station sends a little audio, closes, and every reconnect
+            // gets a 404: the ICY thread keeps retrying with backoff.
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new(frame(600)).header("Content-Type", "audio/mpeg"),
+            );
+            let (reader, _rx) = IcyReader::new(&server.url("/live"), None).unwrap();
+            server.route("/live", Route::status(404));
+
+            let status = Arc::new(Mutex::new(BufferStatus::default()));
+            let probing = Arc::new(AtomicBool::new(false));
+            let (mut consumer, producer, stop) =
+                StreamBuffer::new(Box::new(reader), status, probing);
+
+            // The decoder's read waits for the buffer to fill, which it never
+            // will: the station is gone and the ICY thread keeps reconnecting
+            let (tx, read_done) = bounded(1);
+            thread::spawn(move || {
+                let mut buf = vec![0u8; 4096];
+                loop {
+                    match consumer.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(_) => {}
+                    }
+                }
+                let _ = tx.send(());
+            });
+            thread::sleep(Duration::from_millis(500));
+            stop.store(true, Ordering::SeqCst);
+
+            read_done
+                .recv_timeout(Duration::from_secs(3))
+                .expect("the decoder's read must end when the station is stopped");
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while !producer.is_finished() && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                producer.is_finished(),
+                "the producer must let go of a station that is down"
+            );
+
+            // Dropping the reader stopped the ICY thread: no more reconnects
+            thread::sleep(Duration::from_millis(500));
+            let hits = server.hits("/live");
+            thread::sleep(Duration::from_secs(3));
+            assert_eq!(server.hits("/live"), hits, "ICY thread still reconnecting");
         }
 
         #[test]
