@@ -141,9 +141,8 @@ export component MenuBar inherits Rectangle {
     // the release that follows)
     callback show-system-menu(length, length, bool) -> bool;
     property <length> window-menu-x;
-    // Left padding plus the logo, where the first menu starts
-    property <length> logo-width: 32px;
-    property <length> menu-start: 4px + root.logo-width;
+    // Where the first menu starts (the bar's left padding)
+    property <length> menu-start: 4px;
     property <length> window-menu-y;
     callback close-window();
 
@@ -152,32 +151,6 @@ export component MenuBar inherits Rectangle {
         padding-left: 4px;
         padding-right: root.custom-frame ? 0 : 4px;
         alignment: stretch;
-
-        // App logo: opens About (in place of an info button at the right end)
-        Rectangle {
-            width: root.logo-width;
-            height: 32px;
-
-            about-touch := TouchArea {
-                clicked => { root.open-about(); }
-                mouse-cursor: pointer;
-            }
-
-            Rectangle {
-                width: 26px;
-                height: 26px;
-                border-radius: 6px;
-                background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
-                animate background { duration: Theme.fast; }
-
-                Image {
-                    width: 18px;
-                    height: 18px;
-                    source: @image-url("../../../assets/icons/icon-64.png");
-                    opacity: about-touch.has-hover ? 1.0 : 0.9;
-                }
-            }
-        }
 
         Rectangle {
             width: open-label.preferred-width + 20px;
@@ -248,6 +221,25 @@ export component MenuBar inherits Rectangle {
 
             tools-label := Text {
                 text: "Tools";
+                color: Theme.menu-text;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Rectangle {
+            width: help-label.preferred-width + 20px;
+            height: 32px;
+            background: help-touch.has-hover ? Theme.menu-bar-hover : transparent;
+            animate background { duration: Theme.fast; }
+
+            help-touch := TouchArea {
+                clicked => { help-popup.show(); }
+            }
+
+            help-label := Text {
+                text: "Help";
                 color: Theme.menu-text;
                 font-size: 13px;
                 horizontal-alignment: center;
@@ -568,6 +560,35 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         view-popup.close();
                         VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
+                    }
+                }
+            }
+        }
+    }
+
+    help-popup := PopupWindow {
+        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px + tools-label.preferred-width + 20px;
+        y: 32px;
+        width: help-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: Theme.shadow-soft;
+            drop-shadow-offset-y: 2px;
+
+            help-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "About Radiotrope";
+                    icon: @image-url("icons/circle-info.svg");
+                    clicked => {
+                        help-popup.close();
+                        root.open-about();
                     }
                 }
             }
