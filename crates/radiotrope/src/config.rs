@@ -163,28 +163,52 @@ pub mod buffer {
     pub const EMA_ALPHA_THROUGHPUT: f64 = 0.3;
     /// EMA smoothing factor for jitter (0.0–1.0)
     pub const EMA_ALPHA_JITTER: f64 = 0.2;
-    /// High watermark for buffering hysteresis (bytes).
-    /// Once the buffer empties and enters buffering mode, the consumer blocks
-    /// until the buffer refills to this level before delivering data again.
-    /// 64KB provides ~2-4 seconds of buffer for typical radio streams (128-256 kbps).
-    pub const HIGH_WATERMARK_BYTES: usize = 64 * 1024;
-    /// Escalation step per underrun (bytes) — each buffer underrun increases the
-    /// effective watermark by this amount to prevent repeated buffering cycles.
-    pub const WATERMARK_STEP_BYTES: usize = 64 * 1024;
-    /// Maximum effective watermark (bytes) — caps escalation to prevent excessive
-    /// buffering delay. 512KB covers ~32s at 128kbps, enough for max ICY backoff.
-    pub const MAX_WATERMARK_BYTES: usize = 512 * 1024;
-    /// Target buffer duration (seconds) — throughput-based floor for the effective
-    /// watermark. Ensures at least this many seconds of audio are buffered based
-    /// on the measured throughput EMA.
-    pub const TARGET_BUFFER_SECONDS: f64 = 5.0;
+    /// Audio buffered before a station starts to play (seconds).
+    ///
+    /// The buffer's targets are times; the stream's byte rate turns them into
+    /// bytes (see `DEFAULT_BYTE_RATE`).
+    pub const START_BUFFER_SECS: f64 = 3.0;
+    /// Longest wait to start (seconds): after this, playing starts with
+    /// what is buffered. Well under `timeouts::PROBE_TIMEOUT_SECS`, so a
+    /// station slower than `DEFAULT_BYTE_RATE` that doesn't advertise its
+    /// bitrate still starts.
+    pub const START_MAX_WAIT_SECS: f64 = 6.0;
+    /// Audio buffered again after the buffer ran dry (seconds). Each further
+    /// underrun adds `REFILL_STEP_SECS`, up to `MAX_REFILL_SECS`.
+    pub const REFILL_BUFFER_SECS: f64 = 5.0;
+    /// What each further underrun adds to the refill target (seconds)
+    pub const REFILL_STEP_SECS: f64 = 5.0;
+    /// Largest refill target (seconds)
+    pub const MAX_REFILL_SECS: f64 = 20.0;
+    /// Audio played without an underrun that undoes one step (seconds), so
+    /// rare hiccups over a long session don't pile up
+    pub const ESCALATION_FORGET_SECS: f64 = 60.0;
+    /// Byte rate assumed while the stream's is unknown: 128 kbps.
+    ///
+    /// The rate is the station's advertised bitrate (`icy-br`) if it has
+    /// one, else measured from the bytes the decoder needs per second of
+    /// audio.
+    pub const DEFAULT_BYTE_RATE: f64 = 16_000.0;
+    /// Audio decoded before the byte rate measurement starts (seconds),
+    /// skipping the probe's reads
+    pub const RATE_SKIP_SECS: f64 = 2.0;
+    /// Audio a byte rate measurement spans before it is used (seconds)
+    pub const RATE_SPAN_SECS: f64 = 20.0;
+    /// Byte rates are kept within this range (8 kbps to 8 Mbps); an
+    /// advertised bitrate outside it is ignored
+    pub const MIN_BYTE_RATE: f64 = 1_000.0;
+    pub const MAX_BYTE_RATE: f64 = 1_000_000.0;
+    /// Largest watermark (bytes). Kept well below `MAX_BUFFER_SIZE` minus
+    /// what compaction leaves behind, so a refill can always be reached.
+    pub const MAX_WATERMARK_BYTES: usize = 1024 * 1024;
 
     /// Minimum interval between throughput EMA updates (milliseconds).
     /// Prevents burst reads after reconnection from spiking the EMA.
     pub const MIN_THROUGHPUT_INTERVAL_MS: f64 = 100.0;
 
-    /// Time of continuous buffering before resetting watermark escalations (seconds).
-    /// After this duration, the outage is considered a network event (not jitter),
-    /// and the watermark returns to baseline for faster recovery on reconnection.
+    /// Time of continuous buffering before the refill target drops back to
+    /// `REFILL_BUFFER_SECS` (seconds). After this long the outage is a
+    /// network event, not jitter, and a smaller target resumes playback
+    /// sooner once the station is back.
     pub const ESCALATION_DECAY_SECS: u64 = 15;
 }

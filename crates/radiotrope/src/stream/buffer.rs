@@ -11,6 +11,12 @@
 //!            SharedBuffer (`Vec<u8>` + Mutex + Condvar)
 //!                  ↓ (consumer: Read+Seek impl)
 //!            StreamBufferReader → SymphoniaSource → Sink
+//!
+//! The consumer waits until enough audio is buffered: `START_BUFFER_SECS`
+//! to start, `REFILL_BUFFER_SECS` after the buffer ran dry, and more after
+//! repeated underruns, which minutes of good play undo. The times become
+//! bytes at the stream's byte rate: measured from the audio the decoder
+//! decodes, else the station's advertised bitrate, else 128 kbps.
 
 use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -20,10 +26,11 @@ use std::time::{Duration, Instant};
 
 use crate::audio::types::ReadSeek;
 use crate::config::buffer::{
-    COMPACTION_SAFETY_MARGIN, COMPACTION_THRESHOLD, CONSUMER_WAIT_TIMEOUT_MS, EMA_ALPHA_JITTER,
-    EMA_ALPHA_THROUGHPUT, ESCALATION_DECAY_SECS, HIGH_WATERMARK_BYTES, MAX_BUFFER_SIZE,
-    MAX_WATERMARK_BYTES, MIN_THROUGHPUT_INTERVAL_MS, PRODUCER_CHUNK_SIZE, TARGET_BUFFER_SECONDS,
-    WATERMARK_STEP_BYTES,
+    COMPACTION_SAFETY_MARGIN, COMPACTION_THRESHOLD, CONSUMER_WAIT_TIMEOUT_MS, DEFAULT_BYTE_RATE,
+    EMA_ALPHA_JITTER, EMA_ALPHA_THROUGHPUT, ESCALATION_DECAY_SECS, ESCALATION_FORGET_SECS,
+    MAX_BUFFER_SIZE, MAX_BYTE_RATE, MAX_REFILL_SECS, MAX_WATERMARK_BYTES, MIN_BYTE_RATE,
+    MIN_THROUGHPUT_INTERVAL_MS, PRODUCER_CHUNK_SIZE, RATE_SKIP_SECS, RATE_SPAN_SECS,
+    REFILL_BUFFER_SECS, REFILL_STEP_SECS, START_BUFFER_SECS, START_MAX_WAIT_SECS,
 };
 use crate::stream::cancel::StreamCancel;
 
@@ -115,7 +122,59 @@ impl Default for BufferStatus {
             is_buffering: false,
             throughput_kbps: 0.0,
             underrun_count: 0,
-            effective_watermark: HIGH_WATERMARK_BYTES,
+            effective_watermark: (START_BUFFER_SECS * DEFAULT_BYTE_RATE) as usize,
+        }
+    }
+}
+
+/// The stream's bytes per second of audio, which turns the buffer's targets
+/// (in seconds) into bytes
+struct ByteRate {
+    /// From the station's advertised bitrate
+    advertised: Option<f64>,
+    /// Microseconds of audio decoded from the buffer, added by the decoder
+    decoded: Arc<AtomicU64>,
+    /// Read position and decoded time the measurement started at
+    measured_from: Option<(u64, u64)>,
+    measured: Option<f64>,
+}
+
+impl ByteRate {
+    fn new() -> Self {
+        Self {
+            advertised: None,
+            decoded: Arc::default(),
+            measured_from: None,
+            measured: None,
+        }
+    }
+
+    /// Bytes per second: measured once possible (a station's advertised
+    /// bitrate can be wrong), else advertised, else `DEFAULT_BYTE_RATE`
+    fn get(&self) -> f64 {
+        self.measured
+            .or(self.advertised)
+            .unwrap_or(DEFAULT_BYTE_RATE)
+    }
+
+    /// Measure how far the decoder has read (`read_pos`) against the audio
+    /// it decoded. The decoder reads up to 32 KiB ahead, so the measurement
+    /// spans at least `RATE_SPAN_SECS` and keeps growing to even that out.
+    fn update(&mut self, read_pos: u64) {
+        let decoded = self.decoded.load(Ordering::Relaxed);
+        match self.measured_from {
+            None => {
+                if decoded as f64 >= RATE_SKIP_SECS * 1e6 {
+                    self.measured_from = Some((read_pos, decoded));
+                }
+            }
+            Some((from_pos, from_decoded)) => {
+                let span = decoded.saturating_sub(from_decoded) as f64 / 1e6;
+                if span >= RATE_SPAN_SECS {
+                    let rate = read_pos.saturating_sub(from_pos) as f64 / span;
+                    self.measured = Some(rate.clamp(MIN_BYTE_RATE, MAX_BYTE_RATE));
+                }
+            }
         }
     }
 }
@@ -215,9 +274,13 @@ impl StreamBuffer {
             read_pos: 0,
             probing_flag,
             buffering_active: false,
+            started: false,
             underrun_escalations: 0,
+            healthy_from: 0,
             buffering_start: None,
             escalation_decay_secs: ESCALATION_DECAY_SECS,
+            start_max_wait: Duration::from_secs_f64(START_MAX_WAIT_SECS),
+            rate: ByteRate::new(),
         };
 
         (consumer, handle)
@@ -312,14 +375,24 @@ pub struct StreamBufferReader {
     read_pos: u64,
     /// When true, inhibits compaction (symphonia may seek back during probe)
     probing_flag: Arc<AtomicBool>,
-    /// Hysteresis flag: true while waiting for buffer to refill to HIGH_WATERMARK
+    /// Hysteresis flag: true while waiting for the buffer to refill to the
+    /// effective watermark
     buffering_active: bool,
-    /// Number of times the buffer has underrun — escalates the effective watermark
+    /// Audio has been handed out: waiting after this is an underrun, not
+    /// the start
+    started: bool,
+    /// Underruns that raise the refill target, each by `REFILL_STEP_SECS`
+    /// after the first. Played audio undoes them (see `escalation`).
     underrun_escalations: u32,
+    /// Read position where playing resumed after the last underrun
+    healthy_from: u64,
     /// When buffering started (for escalation decay timing)
     buffering_start: Option<Instant>,
     /// Configurable decay threshold (seconds). Default: ESCALATION_DECAY_SECS.
     escalation_decay_secs: u64,
+    /// Longest wait to start. Default: START_MAX_WAIT_SECS.
+    start_max_wait: Duration,
+    rate: ByteRate,
 }
 
 impl StreamBufferReader {
@@ -344,20 +417,60 @@ impl StreamBufferReader {
         }
     }
 
-    /// Compute the effective watermark based on escalation count and throughput.
-    ///
-    /// Each underrun escalates the watermark by `WATERMARK_STEP_BYTES`.
-    /// The throughput-based floor ensures at least `TARGET_BUFFER_SECONDS` of audio.
-    /// Result is capped at `MAX_WATERMARK_BYTES`.
-    fn effective_watermark(&self, metrics: &NetworkMetrics) -> usize {
-        let escalated =
-            HIGH_WATERMARK_BYTES + (self.underrun_escalations as usize * WATERMARK_STEP_BYTES);
-        let throughput_floor = if metrics.throughput_ema > 0.0 {
-            (metrics.throughput_ema * TARGET_BUFFER_SECONDS) as usize
-        } else {
-            0
-        };
-        escalated.max(throughput_floor).min(MAX_WATERMARK_BYTES)
+    /// The station's advertised bitrate (`icy-br`), used for the byte rate
+    /// until one is measured
+    pub fn set_advertised_bitrate(&mut self, kbps: Option<u32>) {
+        self.rate.advertised = kbps
+            .map(|kbps| kbps as f64 * 1000.0 / 8.0)
+            // Out of range is a bad header (some give bits per second)
+            .filter(|rate| (MIN_BYTE_RATE..=MAX_BYTE_RATE).contains(rate));
+    }
+
+    /// Microseconds of audio the decoder has decoded from this buffer. The
+    /// decoder adds to it (`SymphoniaSource::count_decoded_time`), and the
+    /// buffer then measures the stream's bytes per second of audio.
+    pub fn decoded_time(&self) -> Arc<AtomicU64> {
+        self.rate.decoded.clone()
+    }
+
+    /// Underrun steps still in force: each `ESCALATION_FORGET_SECS` of audio
+    /// played since the last underrun undoes one
+    fn escalation(&self) -> u32 {
+        if self.buffering_active {
+            return self.underrun_escalations;
+        }
+        let played = self.read_pos.saturating_sub(self.healthy_from) as f64 / self.rate.get();
+        let forgotten = (played / ESCALATION_FORGET_SECS) as u32;
+        self.underrun_escalations.saturating_sub(forgotten)
+    }
+
+    /// Seconds of audio to buffer before playing (again)
+    fn target_secs(&self) -> f64 {
+        if !self.started {
+            return START_BUFFER_SECS;
+        }
+        let steps = self.escalation().saturating_sub(1);
+        (REFILL_BUFFER_SECS + REFILL_STEP_SECS * steps as f64).min(MAX_REFILL_SECS)
+    }
+
+    /// Bytes to buffer before playing (again): the target time at the
+    /// stream's byte rate, capped at `MAX_WATERMARK_BYTES`
+    fn effective_watermark(&self) -> usize {
+        ((self.target_secs() * self.rate.get()) as usize).min(MAX_WATERMARK_BYTES)
+    }
+
+    /// The buffer is empty: wait for it to refill before handing out more.
+    /// Before the first audio that is the start, not an underrun.
+    fn start_buffering(&mut self, metrics: &mut NetworkMetrics) {
+        if self.started {
+            // More steps than reach MAX_REFILL_SECS would only take longer
+            // to undo
+            let max_steps =
+                1 + ((MAX_REFILL_SECS - REFILL_BUFFER_SECS) / REFILL_STEP_SECS).ceil() as u32;
+            self.underrun_escalations = (self.escalation() + 1).min(max_steps);
+            metrics.record_underrun();
+        }
+        self.buffering_active = true;
     }
 
     /// Update the shared status snapshot with current buffer state.
@@ -371,7 +484,7 @@ impl StreamBufferReader {
             s.throughput_kbps = inner.metrics.throughput_kbps();
             s.underrun_count = inner.metrics.underrun_count;
             s.is_buffering = self.buffering_active;
-            s.effective_watermark = self.effective_watermark(&inner.metrics);
+            s.effective_watermark = self.effective_watermark();
         }
     }
 }
@@ -380,8 +493,9 @@ impl Read for StreamBufferReader {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let timeout = Duration::from_millis(CONSUMER_WAIT_TIMEOUT_MS);
 
-        let mut inner = self
-            .state
+        // A handle of its own, so `self` stays free to update while locked
+        let state = self.state.clone();
+        let mut inner = state
             .inner
             .lock()
             .map_err(|e| io::Error::other(e.to_string()))?;
@@ -413,16 +527,24 @@ impl Read for StreamBufferReader {
 
                 // Hysteresis: keep blocking until buffer refills to effective watermark
                 // (escalates with each underrun) or the producer finishes (EOF/error).
-                let watermark = self.effective_watermark(&inner.metrics);
-                if available >= watermark || inner.producer_done {
+                let watermark = self.effective_watermark();
+                // A station slower than the byte rate assumed for it still
+                // starts before the probe gives up
+                let waited_to_start = !self.started
+                    && available > 0
+                    && self
+                        .buffering_start
+                        .is_some_and(|start| start.elapsed() >= self.start_max_wait);
+                if available >= watermark || inner.producer_done || waited_to_start {
                     self.buffering_active = false;
                     self.buffering_start = None;
+                    self.healthy_from = self.read_pos;
                     self.update_status(&inner);
                     // Fall through to normal read logic below
                 } else {
                     // Still buffering — update status so UI sees progress, then wait
                     self.update_status(&inner);
-                    let result = self.state.data_available.wait_timeout(inner, timeout);
+                    let result = state.data_available.wait_timeout(inner, timeout);
                     match result {
                         Ok((guard, _)) => {
                             inner = guard;
@@ -442,14 +564,14 @@ impl Read for StreamBufferReader {
                 let to_copy = available.min(buf.len());
                 buf[..to_copy].copy_from_slice(&inner.data[local_read..local_read + to_copy]);
                 self.read_pos += to_copy as u64;
+                self.started = true;
+                self.rate.update(self.read_pos);
 
                 // Check if buffer just emptied — enter buffering with hysteresis
                 let new_local_read = (self.read_pos - inner.base_offset) as usize;
                 let remaining = inner.write_pos.saturating_sub(new_local_read);
                 if remaining == 0 && !inner.producer_done {
-                    self.buffering_active = true;
-                    inner.metrics.record_underrun();
-                    self.underrun_escalations += 1;
+                    self.start_buffering(&mut inner.metrics);
                 }
 
                 self.update_status(&inner);
@@ -471,13 +593,11 @@ impl Read for StreamBufferReader {
             }
 
             // Buffer is empty and producer is still running — enter buffering
-            self.buffering_active = true;
-            inner.metrics.record_underrun();
-            self.underrun_escalations += 1;
+            self.start_buffering(&mut inner.metrics);
             self.update_status(&inner);
 
             // Wait for producer to write more data
-            let result = self.state.data_available.wait_timeout(inner, timeout);
+            let result = state.data_available.wait_timeout(inner, timeout);
             match result {
                 Ok((guard, _timeout_result)) => {
                     // Loop back to re-check via hysteresis logic at top of loop.
@@ -591,6 +711,11 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    /// The start target at the default byte rate
+    fn start_watermark() -> usize {
+        (START_BUFFER_SECS * DEFAULT_BYTE_RATE) as usize
+    }
+
     /// Helper to create a StreamBuffer from in-memory data
     fn buffer_from_data(data: Vec<u8>) -> (StreamBufferReader, JoinHandle<()>, StreamCancel) {
         let status = Arc::new(Mutex::new(BufferStatus::default()));
@@ -675,7 +800,7 @@ mod tests {
         assert!(!s.is_buffering);
         assert_eq!(s.throughput_kbps, 0.0);
         assert_eq!(s.underrun_count, 0);
-        assert_eq!(s.effective_watermark, HIGH_WATERMARK_BYTES);
+        assert_eq!(s.effective_watermark, start_watermark());
     }
 
     #[test]
@@ -686,7 +811,7 @@ mod tests {
             is_buffering: true,
             throughput_kbps: 128.0,
             underrun_count: 3,
-            effective_watermark: HIGH_WATERMARK_BYTES,
+            effective_watermark: start_watermark(),
         };
         let c = s.clone();
         assert_eq!(c.level_bytes, 1024);
@@ -1314,8 +1439,10 @@ mod tests {
 
     #[test]
     fn jittery_network_underrun_count_increases() {
-        // Heavy jitter should cause some consumer stalls (waits on condvar)
-        let data = vec![0u8; 30_000];
+        // Heavy jitter should cause some consumer stalls (waits on condvar).
+        // More data than the start target, so the consumer outruns the
+        // producer once playing: waiting to start is not an underrun.
+        let data = vec![0u8; 200_000];
         let sim = SimulatedNetworkReader::new(data)
             .with_latency(Duration::from_millis(2))
             .with_jitter(20);
@@ -1635,8 +1762,9 @@ mod tests {
 
     #[test]
     fn underrun_count_tracks_consumer_waits() {
-        // Slow producer forces consumer to wait — underrun_count should reflect this
-        let data = vec![0u8; 20_000];
+        // Slow producer forces consumer to wait — underrun_count should reflect this.
+        // More data than the start target: waiting to start is not an underrun.
+        let data = vec![0u8; 200_000];
         let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(5));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
@@ -1840,8 +1968,8 @@ mod tests {
     #[test]
     fn hysteresis_exits_on_producer_done() {
         // If producer finishes (EOF) while in buffering mode, consumer gets remaining
-        // data without waiting for HIGH_WATERMARK.
-        let data = vec![42u8; 1024]; // Small: 1KB < HIGH_WATERMARK (64KB)
+        // data without waiting for the watermark.
+        let data = vec![42u8; 1024]; // Small: 1KB, less than any watermark
         let sim = SimulatedNetworkReader::new(data.clone()).with_latency(Duration::from_millis(2));
         let (mut reader, handle, _stop, _status) = buffer_from_sim(sim);
 
@@ -1850,7 +1978,7 @@ mod tests {
         assert!(err.is_none(), "Should not error");
         assert_eq!(
             result, data,
-            "All data should be received despite being < HIGH_WATERMARK"
+            "All data should be received despite being under the watermark"
         );
 
         handle.join().unwrap();
@@ -1978,9 +2106,9 @@ mod tests {
             distinct
         );
 
-        // Final level should be approaching or past HIGH_WATERMARK
+        // Final level should be approaching or past the watermark
         assert!(
-            *distinct.last().unwrap() > HIGH_WATERMARK_BYTES / 2,
+            *distinct.last().unwrap() > start_watermark() / 2,
             "Expected level to grow significantly toward watermark, got {:?}",
             distinct
         );
@@ -2086,66 +2214,225 @@ mod tests {
     // Adaptive watermark tests
     // =========================================================================
 
-    #[test]
-    fn effective_watermark_initial() {
-        // 0 escalations, 0 throughput → returns HIGH_WATERMARK_BYTES
+    /// A reader over a few bytes, for its watermark arithmetic
+    fn idle_reader() -> (StreamBufferReader, JoinHandle<()>, StreamCancel) {
         let status = Arc::new(Mutex::new(BufferStatus::default()));
         let probing = Arc::new(AtomicBool::new(false));
-        let (reader, _handle, stop) =
-            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
-        let metrics = NetworkMetrics::new();
-        assert_eq!(reader.effective_watermark(&metrics), HIGH_WATERMARK_BYTES);
-        stop.cancel();
-        _handle.join().unwrap();
+        StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing)
+    }
+
+    /// Play `secs` of audio, then run dry
+    fn underrun_after(reader: &mut StreamBufferReader, secs: f64) {
+        reader.started = true;
+        reader.buffering_active = false;
+        reader.healthy_from = reader.read_pos;
+        reader.read_pos += (secs * reader.rate.get()) as u64;
+        reader.start_buffering(&mut NetworkMetrics::new());
     }
 
     #[test]
-    fn effective_watermark_escalates() {
-        // 3 escalations → HIGH_WATERMARK + 3 * STEP
-        let status = Arc::new(Mutex::new(BufferStatus::default()));
-        let probing = Arc::new(AtomicBool::new(false));
-        let (mut reader, _handle, stop) =
-            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
-        reader.underrun_escalations = 3;
-        let metrics = NetworkMetrics::new();
-        assert_eq!(
-            reader.effective_watermark(&metrics),
-            HIGH_WATERMARK_BYTES + 3 * WATERMARK_STEP_BYTES
+    fn the_start_buffers_seconds_of_audio_at_the_station_bitrate() {
+        let (mut reader, handle, stop) = idle_reader();
+        assert_eq!(reader.target_secs(), START_BUFFER_SECS);
+        assert_eq!(reader.effective_watermark(), start_watermark());
+
+        // A 32 kbps station starts after 3 s of audio (12 kB), where 128 kB
+        // (32 s) used to be needed and the probe gave up after 10 s
+        reader.set_advertised_bitrate(Some(32));
+        assert_eq!(reader.effective_watermark(), 12_000);
+        reader.set_advertised_bitrate(Some(320));
+        assert_eq!(reader.effective_watermark(), 120_000);
+        // Nonsense falls back to the default
+        for nonsense in [0, 128_000] {
+            reader.set_advertised_bitrate(Some(nonsense));
+            assert_eq!(reader.effective_watermark(), start_watermark());
+        }
+
+        stop.cancel();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn each_underrun_raises_the_refill_target_up_to_a_limit() {
+        let (mut reader, handle, stop) = idle_reader();
+        let mut targets = Vec::new();
+        for _ in 0..6 {
+            underrun_after(&mut reader, 1.0);
+            targets.push(reader.target_secs());
+        }
+        assert_eq!(targets, [5.0, 10.0, 15.0, 20.0, 20.0, 20.0]);
+        assert_eq!(reader.underrun_escalations, 4, "no steps past the limit");
+
+        stop.cancel();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn the_watermark_stays_within_what_the_buffer_holds() {
+        let (mut reader, handle, stop) = idle_reader();
+        // A lossless stream at 8 Mbps, after many underruns
+        reader.set_advertised_bitrate(Some(8_000));
+        for _ in 0..4 {
+            underrun_after(&mut reader, 1.0);
+        }
+        assert_eq!(reader.effective_watermark(), MAX_WATERMARK_BYTES);
+        assert!(MAX_WATERMARK_BYTES < MAX_BUFFER_SIZE - COMPACTION_THRESHOLD);
+
+        stop.cancel();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn rare_hiccups_dont_pile_up() {
+        let (mut reader, handle, stop) = idle_reader();
+        // An underrun every 90 s over an hour: the first target every time
+        for _ in 0..40 {
+            underrun_after(&mut reader, 90.0);
+            assert_eq!(reader.target_secs(), REFILL_BUFFER_SECS);
+        }
+        // Frequent ones escalate, and minutes of good play undo them
+        for _ in 0..3 {
+            underrun_after(&mut reader, 10.0);
+        }
+        assert_eq!(reader.target_secs(), 20.0);
+        underrun_after(&mut reader, 150.0); // undoes 2 of 4, then adds this one
+        assert_eq!(reader.target_secs(), 15.0);
+
+        stop.cancel();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn the_byte_rate_is_measured_from_the_decoded_audio() {
+        let (mut reader, handle, stop) = idle_reader();
+        reader.set_advertised_bitrate(Some(128));
+        let decoded = reader.decoded_time();
+        let secs = |s: f64| (s * 1e6) as u64;
+
+        // The probe's reads don't count
+        decoded.store(secs(1.0), Ordering::Relaxed);
+        reader.rate.update(50_000);
+        assert_eq!(reader.rate.measured_from, None);
+        decoded.store(secs(RATE_SKIP_SECS), Ordering::Relaxed);
+        reader.rate.update(60_000);
+
+        // Actually 48 kbps: 6 kB per second of audio
+        decoded.store(secs(RATE_SKIP_SECS + 10.0), Ordering::Relaxed);
+        reader.rate.update(60_000 + 60_000);
+        assert_eq!(reader.rate.get(), 16_000.0, "too short to trust yet");
+        decoded.store(secs(RATE_SKIP_SECS + RATE_SPAN_SECS), Ordering::Relaxed);
+        reader
+            .rate
+            .update(60_000 + (RATE_SPAN_SECS * 6_000.0) as u64);
+        assert_eq!(reader.rate.get(), 6_000.0);
+        assert_eq!(reader.effective_watermark(), 18_000, "3 s at 48 kbps");
+
+        stop.cancel();
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn the_decoder_reports_the_audio_it_decodes() {
+        use crate::audio::decoder::SymphoniaSource;
+        // 1 s of 8 kHz mono 16-bit WAV
+        let rate = 8_000u32;
+        let data_len = rate * 2;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&1u16.to_le_bytes());
+        wav.extend_from_slice(&rate.to_le_bytes());
+        wav.extend_from_slice(&(rate * 2).to_le_bytes());
+        wav.extend_from_slice(&2u16.to_le_bytes());
+        wav.extend_from_slice(&16u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data_len.to_le_bytes());
+        wav.resize(wav.len() + data_len as usize, 0);
+
+        let (reader, handle, _stop) = buffer_from_data(wav);
+        let decoded = reader.decoded_time();
+        let mut source = SymphoniaSource::new(reader).unwrap();
+        source.count_decoded_time(decoded.clone());
+        for _ in source.by_ref() {}
+        let micros = decoded.load(Ordering::Relaxed);
+        // All but the first packet, which the probe decodes
+        assert!(
+            (800_000..=1_000_000).contains(&micros),
+            "{micros} us decoded"
         );
-        stop.cancel();
-        _handle.join().unwrap();
+        handle.join().unwrap();
+    }
+
+    /// A live station sending `bytes` every `every`
+    struct Trickle {
+        bytes: usize,
+        every: Duration,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            thread::sleep(self.every);
+            let n = self.bytes.min(buf.len());
+            buf[..n].fill(1);
+            Ok(n)
+        }
+    }
+
+    impl Seek for Trickle {
+        fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+            Err(io::Error::other("live"))
+        }
     }
 
     #[test]
-    fn effective_watermark_caps_at_max() {
-        // 100 escalations → capped at MAX_WATERMARK_BYTES
-        let status = Arc::new(Mutex::new(BufferStatus::default()));
-        let probing = Arc::new(AtomicBool::new(false));
-        let (mut reader, _handle, stop) =
-            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
-        reader.underrun_escalations = 100;
-        let metrics = NetworkMetrics::new();
-        assert_eq!(reader.effective_watermark(&metrics), MAX_WATERMARK_BYTES);
+    fn a_slow_station_without_a_bitrate_still_starts() {
+        // 5 kB/s, with no advertised bitrate: 48 kB at the assumed 128 kbps
+        // would take almost 10 s, as long as the probe waits
+        let station = Trickle {
+            bytes: 100,
+            every: Duration::from_millis(20),
+        };
+        let (mut reader, handle, stop, _status) = {
+            let status = Arc::new(Mutex::new(BufferStatus::default()));
+            let probing = Arc::new(AtomicBool::new(false));
+            let (reader, handle, stop) =
+                StreamBuffer::new(Box::new(station), status.clone(), probing);
+            (reader, handle, stop, status)
+        };
+        reader.start_max_wait = Duration::from_millis(300);
+
+        let start = Instant::now();
+        let mut buf = [0u8; 1024];
+        assert!(reader.read(&mut buf).unwrap() > 0);
+        let waited = start.elapsed();
+        assert!(
+            waited >= Duration::from_millis(300) && waited < Duration::from_secs(2),
+            "started after {waited:?}"
+        );
+
         stop.cancel();
-        _handle.join().unwrap();
+        handle.join().unwrap();
     }
 
     #[test]
-    fn effective_watermark_throughput_floor() {
-        // High throughput_ema → throughput floor wins over low escalation
-        let status = Arc::new(Mutex::new(BufferStatus::default()));
-        let probing = Arc::new(AtomicBool::new(false));
-        let (reader, _handle, stop) =
-            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
-        let mut metrics = NetworkMetrics::new();
-        // 16000 bytes/sec (128kbps) × 5s = 80KB floor
-        metrics.throughput_ema = 16000.0;
-        let watermark = reader.effective_watermark(&metrics);
-        // Throughput floor = 80000, base = 64KB = 65536
-        // max(65536, 80000) = 80000
-        assert_eq!(watermark, 80000);
+    fn the_first_wait_is_not_an_underrun() {
+        let data = vec![0u8; 200_000];
+        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
+        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+
+        // The buffer is empty when the probe first reads: it waits to start
+        let mut buf = [0u8; 1024];
+        assert_eq!(reader.read(&mut buf).unwrap(), 1024);
+        let s = status.lock().unwrap().clone();
+        assert!(!s.is_buffering);
+        assert_eq!(s.underrun_count, 0);
+        assert_eq!(reader.underrun_escalations, 0);
+
         stop.cancel();
-        _handle.join().unwrap();
+        handle.join().unwrap();
     }
 
     #[test]
@@ -2193,9 +2480,9 @@ mod tests {
         let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
         let (mut reader, handle, stop, status) = buffer_from_sim(sim);
 
-        // Initial watermark should be the base
+        // Initial watermark should be the start target
         let initial_wm = status.lock().unwrap().effective_watermark;
-        assert_eq!(initial_wm, HIGH_WATERMARK_BYTES);
+        assert_eq!(initial_wm, start_watermark());
 
         // Read rapidly to trigger underruns and escalation
         let mut buf = [0u8; 8192];
@@ -2210,9 +2497,9 @@ mod tests {
 
         // After underruns, the effective watermark should have grown
         assert!(
-            final_wm > HIGH_WATERMARK_BYTES,
+            final_wm > initial_wm,
             "Expected watermark to escalate from {}, got {}",
-            HIGH_WATERMARK_BYTES,
+            initial_wm,
             final_wm
         );
     }
@@ -2311,35 +2598,23 @@ mod tests {
 
     #[test]
     fn effective_watermark_drops_after_decay() {
-        // Verify that watermark recalculation after escalation reset produces a lower value.
-        let status = Arc::new(Mutex::new(BufferStatus::default()));
-        let probing = Arc::new(AtomicBool::new(false));
-        let (mut reader, _handle, stop) =
-            StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
+        // A long outage resets the escalations: the refill target drops back
+        let (mut reader, handle, stop) = idle_reader();
+        for _ in 0..3 {
+            underrun_after(&mut reader, 1.0);
+        }
+        let watermark_before = reader.effective_watermark();
+        assert_eq!(watermark_before, (15.0 * DEFAULT_BYTE_RATE) as usize);
 
-        // Simulate escalated state
-        reader.underrun_escalations = 3;
-        let metrics = NetworkMetrics::new();
-        let watermark_before = reader.effective_watermark(&metrics);
-        assert_eq!(
-            watermark_before,
-            HIGH_WATERMARK_BYTES + 3 * WATERMARK_STEP_BYTES
-        );
-
-        // Simulate decay
         reader.underrun_escalations = 0;
-        let watermark_after = reader.effective_watermark(&metrics);
-        assert_eq!(watermark_after, HIGH_WATERMARK_BYTES);
-
-        assert!(
-            watermark_after < watermark_before,
-            "Watermark should drop after escalation decay: before={}, after={}",
-            watermark_before,
-            watermark_after
+        let watermark_after = reader.effective_watermark();
+        assert_eq!(
+            watermark_after,
+            (REFILL_BUFFER_SECS * DEFAULT_BYTE_RATE) as usize
         );
 
         stop.cancel();
-        _handle.join().unwrap();
+        handle.join().unwrap();
     }
 
     // =========================================================================
