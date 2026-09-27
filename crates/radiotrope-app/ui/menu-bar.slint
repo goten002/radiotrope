@@ -97,6 +97,24 @@ component CheckMenuItem inherits Rectangle {
     }
 }
 
+// Window button in our own title bar (minimize, maximize, close)
+component CaptionButton inherits Rectangle {
+    callback clicked();
+    out property <color> glyph: Theme.menu-text;
+
+    width: 42px;
+    height: 32px;
+    background: touch.pressed ? Theme.menu-hover
+        : touch.has-hover ? Theme.menu-bar-hover : transparent;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    @children
+}
+
 export component MenuBar inherits Rectangle {
     height: 32px;
     // Transparent: drawn on the header background shared with the playback
@@ -112,10 +130,26 @@ export component MenuBar inherits Rectangle {
     callback open-wifi-settings();
     callback open-about();
 
+    // Our own title bar: the bar moves the window and ends with the window
+    // buttons (desktop only, when the system frame is turned off)
+    in property <bool> custom-frame;
+    in-out property <bool> maximized;
+    in-out property <bool> always-on-top;
+    callback minimize();
+    callback toggle-custom-frame();
+    // (x, y, pressed) -> whether the system shows its menu (on press or on
+    // the release that follows)
+    callback show-system-menu(length, length, bool) -> bool;
+    property <length> window-menu-x;
+    // Where the first menu starts (the bar's left padding)
+    property <length> menu-start: 4px;
+    property <length> window-menu-y;
+    callback close-window();
+
 
     HorizontalLayout {
         padding-left: 4px;
-        padding-right: 4px;
+        padding-right: root.custom-frame ? 0 : 4px;
         alignment: stretch;
 
         Rectangle {
@@ -194,37 +228,118 @@ export component MenuBar inherits Rectangle {
             }
         }
 
-        Rectangle { horizontal-stretch: 1; }
-
-        // About button at the right end
         Rectangle {
-            width: 32px;
+            width: help-label.preferred-width + 20px;
             height: 32px;
+            background: help-touch.has-hover ? Theme.menu-bar-hover : transparent;
+            animate background { duration: Theme.fast; }
 
-            about-touch := TouchArea {
-                clicked => { root.open-about(); }
-                mouse-cursor: pointer;
+            help-touch := TouchArea {
+                clicked => { help-popup.show(); }
             }
 
-            Rectangle {
-                width: 26px;
-                height: 26px;
-                border-radius: 13px;
-                background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
-                animate background { duration: Theme.fast; }
+            help-label := Text {
+                text: "Help";
+                color: Theme.menu-text;
+                font-size: 13px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
 
-                Icon {
-                    width: 16px;
-                    height: 16px;
-                    source: @image-url("icons/circle-info.svg");
-                    colorize: about-touch.has-hover ? Theme.accent : Theme.menu-text;
+        // Empty part of the bar: drag to move, double-click to maximize
+        move-area := WindowMoveArea {
+            horizontal-stretch: 1;
+            enabled: root.custom-frame;
+
+            move-touch := TouchArea {
+                enabled: root.custom-frame;
+                double-clicked => { root.maximized = !root.maximized; }
+                // Right-click: the system window menu, or ours where the
+                // system has none (ours opens on press: X11 window managers
+                // can close a popup opened on release)
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.down {
+                        if !root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true) {
+                            root.window-menu-x = move-area.x + self.mouse-x + 2px;
+                            root.window-menu-y = self.mouse-y + 2px;
+                            window-popup.show();
+                        }
+                    } else if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
+                        root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false);
+                    }
+                }
+            }
+        }
+
+        if root.custom-frame: HorizontalLayout {
+            padding-left: 6px;
+
+            min := CaptionButton {
+                clicked => { root.minimize(); }
+
+                Rectangle {
+                    width: 10px;
+                    height: 1px;
+                    background: min.glyph;
+                }
+            }
+
+            max := CaptionButton {
+                clicked => { root.maximized = !root.maximized; }
+
+                if !root.maximized: Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-width: 1px;
+                    border-radius: 1px;
+                    border-color: max.glyph;
+                }
+                // Restore: two overlapping squares
+                if root.maximized: Rectangle {
+                    width: 10px;
+                    height: 10px;
+
+                    Rectangle {
+                        x: 2px;
+                        y: 0;
+                        width: 8px;
+                        height: 8px;
+                        border-width: 1px;
+                        border-radius: 1px;
+                        border-color: max.glyph;
+                    }
+                    Rectangle {
+                        x: 0;
+                        y: 2px;
+                        width: 8px;
+                        height: 8px;
+                        border-width: 1px;
+                        border-radius: 1px;
+                        border-color: max.glyph;
+                        background: Theme.panel;
+                    }
+                }
+            }
+
+            close := CaptionButton {
+                clicked => { root.close-window(); }
+
+                Path {
+                    width: 10px;
+                    height: 10px;
+                    viewbox-width: 10;
+                    viewbox-height: 10;
+                    commands: "M 0 0 L 10 10 M 10 0 L 0 10";
+                    stroke: close.glyph;
+                    stroke-width: 1.2px;
                 }
             }
         }
     }
 
     open-popup := PopupWindow {
-        x: 4px;
+        x: root.menu-start;
         y: 32px;
         width: popup-layout.preferred-width;
 
@@ -253,7 +368,7 @@ export component MenuBar inherits Rectangle {
     }
 
     stations-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px;
+        x: root.menu-start + open-label.preferred-width + 20px;
         y: 32px;
         width: stations-popup-layout.preferred-width;
 
@@ -289,8 +404,71 @@ export component MenuBar inherits Rectangle {
         }
     }
 
+    // Our window menu, for systems without one (some X11 window managers)
+    window-popup := PopupWindow {
+        x: root.window-menu-x;
+        y: root.window-menu-y;
+        width: window-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: Theme.shadow-soft;
+            drop-shadow-offset-y: 2px;
+
+            window-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "Minimize";
+                    icon: @image-url("icons/window-minimize.svg");
+                    clicked => {
+                        window-popup.close();
+                        root.minimize();
+                    }
+                }
+                MenuItem {
+                    label: root.maximized ? "Restore" : "Maximize";
+                    icon: root.maximized ? @image-url("icons/window-restore.svg") : @image-url("icons/window-maximize.svg");
+                    clicked => {
+                        window-popup.close();
+                        root.maximized = !root.maximized;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Always on Top";
+                    icon: @image-url("icons/thumbtack.svg");
+                    checked: root.always-on-top;
+                    clicked => {
+                        window-popup.close();
+                        root.always-on-top = !root.always-on-top;
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                MenuItem {
+                    label: "Close";
+                    icon: @image-url("icons/xmark.svg");
+                    clicked => {
+                        window-popup.close();
+                        root.close-window();
+                    }
+                }
+            }
+        }
+    }
+
     view-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px + stations-label.preferred-width + 20px;
+        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px;
         y: 32px;
         width: view-popup-layout.preferred-width;
 
@@ -348,6 +526,24 @@ export component MenuBar inherits Rectangle {
                         background: Theme.menu-hover;
                     }
                 }
+                if Platform.has-window-frame: CheckMenuItem {
+                    // Chrome's wording: ticked means the system frame
+                    label: "Use System Title Bar";
+                    icon: @image-url("icons/window-maximize.svg");
+                    checked: !root.custom-frame;
+                    clicked => {
+                        root.toggle-custom-frame();
+                        view-popup.close();
+                    }
+                }
+                if Platform.has-window-frame: Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
                 CheckMenuItem {
                     label: "Show Station Stats";
                     icon: @image-url("icons/clock.svg");
@@ -370,8 +566,37 @@ export component MenuBar inherits Rectangle {
         }
     }
 
+    help-popup := PopupWindow {
+        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px + tools-label.preferred-width + 20px;
+        y: 32px;
+        width: help-popup-layout.preferred-width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: Theme.shadow-soft;
+            drop-shadow-offset-y: 2px;
+
+            help-popup-layout := VerticalLayout {
+                padding: 4px;
+
+                MenuItem {
+                    label: "About Radiotrope";
+                    icon: @image-url("icons/circle-info.svg");
+                    clicked => {
+                        help-popup.close();
+                        root.open-about();
+                    }
+                }
+            }
+        }
+    }
+
     tools-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px;
+        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px;
         y: 32px;
         width: tools-popup-layout.preferred-width;
 
@@ -415,8 +640,8 @@ export component MenuBar inherits Rectangle {
                     label: "WiFi Settings...";
                     icon: @image-url("icons/wifi.svg");
                     clicked => {
-                        tools-popup.close();
                         root.open-wifi-settings();
+                        tools-popup.close();
                     }
                 }
             }
