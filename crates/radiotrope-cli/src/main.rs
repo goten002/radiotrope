@@ -215,6 +215,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AudioEvent::NoAudioTimeout => {
                         app.status = "No audio output".to_string();
                     }
+                    AudioEvent::OutputLost => {
+                        app.status = "Audio output lost, waiting for a device".to_string();
+                    }
+                    AudioEvent::OutputRestored => {
+                        app.status = "Playing".to_string();
+                    }
                     AudioEvent::Buffering(pct) => {
                         if pct < 100 {
                             app.status = format!("Buffering... {}%", pct);

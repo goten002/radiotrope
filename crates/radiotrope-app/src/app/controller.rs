@@ -472,6 +472,22 @@ impl AppController {
                 state.status_text = "Playing".into();
                 state.is_error = false;
             }
+            AudioEvent::OutputLost => {
+                // The station stays loaded, and so does a recording
+                state.status_text = "Audio output lost, waiting for a device".into();
+                state.is_error = true;
+            }
+            AudioEvent::OutputRestored => {
+                if !state.is_resolving {
+                    state.status_text = match state.playback {
+                        PlaybackState::Playing => "Playing",
+                        PlaybackState::Paused => "Paused",
+                        PlaybackState::Stopped => "Stopped",
+                    }
+                    .into();
+                    state.is_error = false;
+                }
+            }
             AudioEvent::ProbeTimeout => {
                 state.status_text = "Probe timeout".into();
                 state.is_error = true;
@@ -648,6 +664,62 @@ fn recording_kbps(chosen: Option<u32>, station: Option<u32>) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod output_device {
+        use super::*;
+
+        fn controller_and_state() -> (AppController, Arc<Mutex<AppSnapshot>>) {
+            let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+            let (analysis_tx, _) = crossbeam_channel::unbounded();
+            let (stats_tx, _) = crossbeam_channel::unbounded();
+            let state = Arc::new(Mutex::new(AppSnapshot::default()));
+            let controller =
+                AppController::new(cmd_rx, cmd_tx, state.clone(), analysis_tx, stats_tx);
+            (controller, state)
+        }
+
+        fn playing() -> AudioEvent {
+            AudioEvent::Playing(radiotrope::audio::CodecInfo {
+                codec_name: "MP3".into(),
+                channels: 2,
+                sample_rate: 44100,
+                bits_per_sample: None,
+                bitrate: Some(128),
+            })
+        }
+
+        #[test]
+        fn a_lost_output_shows_until_a_device_is_back() {
+            let (mut controller, state) = controller_and_state();
+            controller.handle_engine_event(playing());
+            controller.handle_engine_event(AudioEvent::OutputLost);
+            {
+                let state = state.lock().unwrap();
+                assert!(state.is_error);
+                assert!(state.status_text.contains("output lost"));
+                // The station is still loaded
+                assert_eq!(state.playback, PlaybackState::Playing);
+            }
+
+            controller.handle_engine_event(AudioEvent::OutputRestored);
+            let state = state.lock().unwrap();
+            assert!(!state.is_error);
+            assert_eq!(state.status_text, "Playing");
+        }
+
+        #[test]
+        fn a_device_back_while_paused_shows_paused() {
+            let (mut controller, state) = controller_and_state();
+            controller.handle_engine_event(playing());
+            controller.handle_engine_event(AudioEvent::OutputLost);
+            controller.handle_engine_event(AudioEvent::Paused);
+            controller.handle_engine_event(AudioEvent::OutputRestored);
+
+            let state = state.lock().unwrap();
+            assert!(!state.is_error);
+            assert_eq!(state.status_text, "Paused");
+        }
+    }
 
     #[test]
     fn recording_bitrate_choice() {
