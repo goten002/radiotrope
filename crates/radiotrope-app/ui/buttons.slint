@@ -36,6 +36,7 @@ export component AccentButton inherits Rectangle {
 
 export component SecondaryButton inherits Rectangle {
     in property <string> label;
+    in property <bool> enabled: true;
     callback clicked();
 
     height: 34px;
@@ -43,19 +44,22 @@ export component SecondaryButton inherits Rectangle {
     border-radius: Theme.radius-sm;
     border-width: 1px;
     border-color: Theme.hairline;
-    background: touch.pressed ? Theme.menu-hover
+    background: !root.enabled ? Theme.disabled-bg
+                : touch.pressed ? Theme.menu-hover
                 : touch.has-hover ? Theme.menu-bar-hover
                 : Theme.elevated;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
-        mouse-cursor: pointer;
+        mouse-cursor: root.enabled ? pointer : default;
     }
 
     btn-text := Text {
         text: root.label;
-        color: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        color: !root.enabled ? Theme.disabled-text
+               : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         font-size: 13px;
         font-weight: 500;
         horizontal-alignment: center;

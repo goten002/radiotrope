@@ -423,6 +423,29 @@ fn main() {
         });
     }
 
+    // reset-favorite-stats callback
+    {
+        let favs = favorites.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_reset_favorite_stats(move |id| {
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            if f.reset_stats(&id).is_err() {
+                return;
+            }
+            let _ = f.save();
+            if let Some(map) = SESSION_LISTEN
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_mut()
+            {
+                map.remove(id.as_str());
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                update_favorite_stats(&ui, &f);
+            }
+        });
+    }
+
     // edit-favorite callback
     {
         let favs = favorites.clone();
