@@ -158,6 +158,18 @@ impl OpusEncoder {
     }
 }
 
+/// A complete Ogg Opus stream of `samples`, for decoder tests
+#[cfg(test)]
+pub(crate) fn encode_ogg_opus(sample_rate: u32, channels: u16, samples: &[f32]) -> Vec<u8> {
+    let mut encoder = OpusEncoder::new(RecordingTags::default(), 96);
+    let mut out = Vec::new();
+    encoder
+        .encode(sample_rate, channels, samples, &mut out)
+        .unwrap();
+    encoder.finish(&mut out).unwrap();
+    out
+}
+
 impl AudioEncoder for OpusEncoder {
     fn encode(
         &mut self,

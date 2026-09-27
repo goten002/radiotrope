@@ -214,6 +214,17 @@ where
         s
     }
 
+    /// Start over with fresh filters for a new channel count or sample rate
+    fn set_format(&mut self, channels: u16, sample_rate: u32) {
+        self.channels = channels;
+        self.sample_rate = sample_rate;
+        let ch_count = (channels as usize).clamp(1, 8);
+        self.filters = (0..ch_count)
+            .map(|_| Self::make_default_filters())
+            .collect();
+        self.recompute_coefficients();
+    }
+
     /// Build a set of identity (0 dB peaking EQ) filters.
     fn make_default_filters() -> [DirectForm1<f32>; NUM_BANDS] {
         std::array::from_fn(|_| {
@@ -254,8 +265,10 @@ where
             if let Ok(coeffs) =
                 Coefficients::<f32>::from_params(filter_type, fs.hz(), freq.hz(), DEFAULT_Q)
             {
+                // Keep the filter state: resetting it on every slider move
+                // makes an audible click
                 for ch in 0..self.filters.len() {
-                    self.filters[ch][band] = DirectForm1::<f32>::new(coeffs);
+                    self.filters[ch][band].update_coefficients(coeffs);
                 }
             }
         }
@@ -271,6 +284,18 @@ where
 
     fn next(&mut self) -> Option<f32> {
         let sample = self.inner.next()?;
+
+        // The stream's format can change between packets (HE-AAC turning on
+        // SBR/PS, a chained Ogg song, an HLS ad break). Check at each frame
+        // start: stale values would run channels through each other's
+        // filters, or tune every band for the wrong sample rate.
+        if self.channel_index == 0 {
+            let channels = self.inner.channels().get();
+            let sample_rate = self.inner.sample_rate().get();
+            if channels != self.channels || sample_rate != self.sample_rate {
+                self.set_format(channels, sample_rate);
+            }
+        }
 
         // Check dirty flag (~25 ns uncontended lock)
         {
@@ -859,5 +884,109 @@ mod tests {
         assert!(p.gains_db.iter().all(|&g| g == 0.0));
         assert_eq!(p.preamp_db, 0.0);
         assert!(!p.enabled);
+    }
+
+    // --- Format changes and parameter changes mid-stream ---
+
+    /// Mono samples, then stereo samples: a stream whose format changes
+    /// between packets (as `SymphoniaSource` reports it)
+    struct MonoThenStereo {
+        mono: Vec<f32>,
+        stereo: Vec<f32>,
+        pos: usize,
+    }
+
+    impl Iterator for MonoThenStereo {
+        type Item = f32;
+        fn next(&mut self) -> Option<f32> {
+            let v = if self.pos < self.mono.len() {
+                self.mono[self.pos]
+            } else {
+                *self.stereo.get(self.pos - self.mono.len())?
+            };
+            self.pos += 1;
+            Some(v)
+        }
+    }
+
+    impl Source for MonoThenStereo {
+        fn current_span_len(&self) -> Option<usize> {
+            None
+        }
+        fn channels(&self) -> NonZero<u16> {
+            // The format of the sample just returned, as with
+            // `SymphoniaSource` (it decodes a packet on the first `next`)
+            nz16(if self.pos <= self.mono.len() { 1 } else { 2 })
+        }
+        fn sample_rate(&self) -> NonZero<u32> {
+            nz32(44100)
+        }
+        fn total_duration(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    fn bass_boost() -> SharedEqParams {
+        let params = EqParams::new_shared();
+        {
+            let mut p = params.lock().unwrap();
+            p.set_enabled(true);
+            p.set_band(0, 12.0);
+            p.set_band(1, 12.0);
+        }
+        params
+    }
+
+    fn tone(i: usize) -> f32 {
+        (i as f32 * 100.0 * std::f32::consts::TAU / 44100.0).sin() * 0.2
+    }
+
+    #[test]
+    fn channel_change_mid_stream_keeps_channels_apart() {
+        let mono: Vec<f32> = (0..4410).map(tone).collect();
+        // Stereo part: tone on the left, silence on the right
+        let stereo: Vec<f32> = (0..4410).flat_map(|i| [tone(i), 0.0]).collect();
+        // Mono source: `new` sees one channel
+        let src = MonoThenStereo {
+            mono,
+            stereo,
+            pos: 0,
+        };
+        let out: Vec<f32> = EqSource::new(src, bass_boost()).collect();
+        let right_peak = out[4410..]
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            right_peak < 1e-6,
+            "silent right channel picked up {right_peak} from the left"
+        );
+    }
+
+    #[test]
+    fn moving_a_slider_does_not_click() {
+        let params = bass_boost();
+        let samples: Vec<f32> = (0..44100).map(tone).collect();
+        let mut eq = EqSource::new(
+            SamplesBuffer::new(nz16(1), nz32(44100), samples),
+            params.clone(),
+        );
+        let mut out: Vec<f32> = eq.by_ref().take(22050).collect();
+        // A small change on an unrelated band, as while dragging a slider
+        params.lock().unwrap().set_band(6, 0.5);
+        out.extend(eq);
+
+        let jump = |range: std::ops::Range<usize>| {
+            range
+                .map(|i| (out[i] - out[i - 1]).abs())
+                .fold(0.0f32, f32::max)
+        };
+        let steady = jump(11025..22040);
+        let at_change = jump(22040..22100);
+        assert!(
+            at_change < steady * 1.5,
+            "jump of {at_change} at the change, {steady} in steady state"
+        );
     }
 }

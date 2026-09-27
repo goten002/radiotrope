@@ -10,7 +10,9 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use rodio::Source;
-use symphonia::core::codecs::audio::{AudioCodecId, AudioDecoder, AudioDecoderOptions};
+use symphonia::core::codecs::audio::{
+    AudioCodecId, AudioCodecParameters, AudioDecoder, AudioDecoderOptions,
+};
 use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
@@ -123,6 +125,30 @@ where
     Ok(rx)
 }
 
+/// Find the first audio track of `format` and make a decoder for it
+fn open_audio_track(
+    format: &dyn FormatReader,
+) -> Result<(u32, AudioCodecParameters, Box<dyn AudioDecoder>), RadioError> {
+    let (track_id, codec_params) = format
+        .tracks()
+        .iter()
+        .find_map(|t| match &t.codec_params {
+            Some(CodecParameters::Audio(params))
+                if params.codec != symphonia::core::codecs::audio::CODEC_ID_NULL_AUDIO =>
+            {
+                Some((t.id, params.clone()))
+            }
+            _ => None,
+        })
+        .ok_or_else(|| RadioError::Decode("No audio track found".to_string()))?;
+
+    let codec_name = codec_type_to_name(codec_params.codec);
+    let decoder = create_codec_registry()
+        .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
+        .map_err(|_| RadioError::Decode(format!("Unsupported codec: {codec_name}")))?;
+    Ok((track_id, codec_params, decoder))
+}
+
 /// A symphonia-based audio source that supports Opus and other formats
 pub struct SymphoniaSource {
     decoder: Box<dyn AudioDecoder>,
@@ -178,29 +204,17 @@ impl SymphoniaSource {
     /// Decodes the first packet, so it reads from the stream and may block
     /// until the station sends data. [`start_open`] runs it off-thread.
     pub fn from_probed(format: ProbedFormat) -> Result<Self, RadioError> {
-        let registry = create_codec_registry();
-
-        let (track_id, codec_params) = format
-            .tracks()
-            .iter()
-            .find_map(|t| match &t.codec_params {
-                Some(CodecParameters::Audio(params))
-                    if params.codec != symphonia::core::codecs::audio::CODEC_ID_NULL_AUDIO =>
-                {
-                    Some((t.id, params.clone()))
-                }
-                _ => None,
-            })
-            .ok_or_else(|| RadioError::Decode("No audio track found".to_string()))?;
+        let (track_id, codec_params, decoder) = open_audio_track(format.as_ref())?;
 
         let codec_name = codec_type_to_name(codec_params.codec);
-        let decoder = registry
-            .make_audio_decoder(&codec_params, &AudioDecoderOptions::default())
-            .map_err(|_| RadioError::Decode(format!("Unsupported codec: {codec_name}")))?;
-
         let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
         let sample_rate = codec_params.sample_rate.unwrap_or(44100);
         let bits_per_sample = codec_params.bits_per_sample;
+        if channels == 0 || sample_rate == 0 {
+            return Err(RadioError::Decode(format!(
+                "Invalid audio format: {sample_rate} Hz, {channels} channels"
+            )));
+        }
 
         let mut source = Self {
             decoder,
@@ -260,7 +274,29 @@ impl SymphoniaSource {
         }
     }
 
+    /// Record why the stream ended, for the engine to report
+    fn fail(&self, reason: String) -> bool {
+        if let Ok(mut err) = self.last_error.lock() {
+            *err = Some(reason);
+        }
+        false
+    }
+
+    /// Switch to the stream's new track after `ResetRequired`: a chained
+    /// Ogg stream (Icecast Vorbis/Opus stations often start a new one for
+    /// every song) has a new serial number and codec setup.
+    fn reset_track(&mut self) -> Result<(), RadioError> {
+        let (track_id, codec_params, decoder) = open_audio_track(self.format.as_ref())?;
+        self.track_id = track_id;
+        self.decoder = decoder;
+        self.codec_name = codec_type_to_name(codec_params.codec);
+        self.bits_per_sample = codec_params.bits_per_sample;
+        Ok(())
+    }
+
     fn decode_next_packet(&mut self) -> bool {
+        use symphonia::core::errors::Error;
+
         loop {
             match self.format.next_packet() {
                 Ok(None) => {
@@ -274,43 +310,49 @@ impl SymphoniaSource {
 
                     match self.decoder.decode(&packet) {
                         Ok(decoded) => {
-                            self.decoder_stats.record_frame();
                             let spec = decoded.spec();
+                            let rate = spec.rate();
+                            let channels = spec.channels().count() as u16;
+                            if rate == 0 || channels == 0 {
+                                return self.fail(format!(
+                                    "Invalid audio format: {rate} Hz, {channels} channels"
+                                ));
+                            }
+                            self.decoder_stats.record_frame();
 
                             // Update sample rate and channels from decoder output —
                             // FDK AAC may change these after SBR/PS processing
-                            self.sample_rate = spec.rate();
-                            self.channels = spec.channels().count() as u16;
+                            self.sample_rate = rate;
+                            self.channels = channels;
 
                             let buf = self.sample_buf.get_or_insert_with(Vec::new);
                             decoded.copy_to_vec_interleaved(buf);
                             self.sample_idx = 0;
                             return true;
                         }
-                        Err(symphonia::core::errors::Error::DecodeError(_)) => {
+                        Err(Error::DecodeError(_)) => {
                             self.decoder_stats.record_error();
                             continue;
                         }
-                        Err(e) => {
-                            if let Ok(mut err) = self.last_error.lock() {
-                                *err = Some(format!("{}", e));
-                            }
-                            return false;
+                        Err(Error::ResetRequired) => {
+                            self.decoder.reset();
+                            continue;
                         }
+                        Err(e) => return self.fail(format!("{}", e)),
                     }
                 }
-                Err(symphonia::core::errors::Error::IoError(e))
-                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-                {
+                Err(Error::ResetRequired) => {
+                    if let Err(e) = self.reset_track() {
+                        return self.fail(e.to_string());
+                    }
+                }
+                Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     // Clean EOF — stream ended naturally, no error stored
                     return false;
                 }
                 Err(e) => {
                     // IO error or other — likely network failure
-                    if let Ok(mut err) = self.last_error.lock() {
-                        *err = Some(format!("{}", e));
-                    }
-                    return false;
+                    return self.fail(format!("{}", e));
                 }
             }
         }
@@ -1255,5 +1297,50 @@ mod tests {
                 assert!(sample < 0.0, "Odd sample {} should be negative", i);
             }
         }
+    }
+
+    // --- Stream changes mid-playback ---
+
+    /// `secs` of a 440 Hz stereo tone at 48 kHz, as Ogg Opus
+    fn ogg_opus_tone(secs: f32) -> Vec<u8> {
+        let frames = (48_000.0 * secs) as usize;
+        let samples: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let v = (i as f32 * 440.0 * std::f32::consts::TAU / 48_000.0).sin() * 0.3;
+                [v, v]
+            })
+            .collect();
+        crate::audio::recording::encode_ogg_opus(48_000, 2, &samples)
+    }
+
+    #[test]
+    fn chained_ogg_plays_through_the_song_change() {
+        // Icecast Ogg stations start a new logical stream (new serial,
+        // new headers) at each song; symphonia reports ResetRequired there
+        // (each encode picks its own serial number)
+        let chained = [ogg_opus_tone(0.5), ogg_opus_tone(0.5)].concat();
+
+        let source = SymphoniaSource::new_with_hint(Cursor::new(chained), Some("ogg")).unwrap();
+        let error_slot = source.error_slot();
+        let samples = source.count();
+        let secs = samples as f32 / 2.0 / 48_000.0;
+        assert!(
+            error_slot.lock().unwrap().is_none(),
+            "stream ended with an error: {:?}",
+            error_slot.lock().unwrap()
+        );
+        assert!(
+            secs > 0.9,
+            "only {secs:.2} s decoded: stopped at the song change"
+        );
+    }
+
+    #[test]
+    fn zero_sample_rate_is_an_error_not_a_panic() {
+        // rodio needs a non-zero rate and channel count; the equalizer
+        // panics on zero when the engine builds the chain
+        let wav = make_wav(0, 1, &[0i16; 1000]);
+        let result = SymphoniaSource::new(Cursor::new(wav));
+        assert!(result.is_err());
     }
 }
