@@ -24,6 +24,7 @@ use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{
     extract_icy_title_as, MetadataSink, MetadataSource, StationText, StreamMetadata,
 };
+use crate::stream::playlist::{sniff_playlist, PlaylistCheck};
 use crate::stream::resolver::StreamResolver;
 
 use super::cancel::{StreamCancel, Waited};
@@ -39,6 +40,13 @@ pub struct IcyHeaders {
     pub station_name: Option<String>,
     pub content_type: Option<String>,
     pub bitrate: Option<u32>,
+}
+
+/// What connecting to a stream's address found
+pub(crate) enum Opened {
+    Stream(IcyReader, Receiver<StreamMetadata>),
+    /// A playlist of this kind, not audio
+    Playlist(PlaylistCheck),
 }
 
 /// ICY stream reader that extracts metadata while passing audio through.
@@ -96,12 +104,48 @@ impl IcyReader {
         )
     }
 
+    /// [`IcyReader::new_cancellable`], or the kind of playlist `url`
+    /// serves instead of audio
+    pub(crate) fn open_detecting(
+        url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+        cancel: StreamCancel,
+    ) -> Result<Opened> {
+        Self::open_or_playlist(
+            url,
+            playback_position,
+            Duration::from_secs(RECONNECT_GIVE_UP_SECS),
+            cancel,
+        )
+    }
+
     fn open(
         url: &str,
         playback_position: Option<Arc<AtomicU64>>,
         give_up: Duration,
         cancel: StreamCancel,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
+        match Self::open_or_playlist(url, playback_position, give_up, cancel)? {
+            Opened::Stream(reader, metadata) => Ok((reader, metadata)),
+            Opened::Playlist(_) => Err(RadioError::Stream(
+                "The address is a playlist, not a stream".to_string(),
+            )),
+        }
+    }
+
+    fn open_or_playlist(
+        url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+        give_up: Duration,
+        stream_cancel: StreamCancel,
+    ) -> Result<Opened> {
+        // The connection's thread gets a token of its own, which the
+        // stream's cancels: giving up on a connection that turned out to be
+        // a playlist mustn't cancel the resolve that goes on to read it
+        let cancel = StreamCancel::new();
+        let attempt = cancel.clone();
+        stream_cancel.on_cancel(move || attempt.cancel());
+
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
@@ -162,12 +206,24 @@ impl IcyReader {
             }
         };
 
-        Ok((
+        // An address without a playlist extension can still serve one
+        // (`/listen.php?id=7`, or `/radio` redirecting to `index.m3u8`): its
+        // text must not reach the decoder
+        if metaint == 0 {
+            let kind = sniff_playlist(headers.content_type.as_deref(), &initial_data);
+            if kind != PlaylistCheck::NotPlaylist {
+                cancel.cancel();
+                return Ok(Opened::Playlist(kind));
+            }
+        }
+
+        Ok(Opened::Stream(
             Self {
                 current_chunk: initial_data,
                 chunk_pos: 0,
                 receiver: audio_rx,
-                cancel,
+                // Dropping the reader stops the whole stream
+                cancel: stream_cancel,
                 end,
                 _handle: Some(handle),
                 headers,
