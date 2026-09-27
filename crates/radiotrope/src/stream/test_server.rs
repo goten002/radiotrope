@@ -12,6 +12,9 @@ pub struct Route {
     pub status: u16,
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+    /// Send a Content-Length (otherwise the body ends when the connection
+    /// closes, as a live stream's does)
+    pub with_length: bool,
 }
 
 impl Route {
@@ -20,6 +23,7 @@ impl Route {
             status: 200,
             headers: Vec::new(),
             body: body.into(),
+            with_length: true,
         }
     }
 
@@ -38,6 +42,12 @@ impl Route {
 
     pub fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_string(), value.to_string()));
+        self
+    }
+
+    /// No Content-Length: the body is everything until the connection closes
+    pub fn without_length(mut self) -> Self {
+        self.with_length = false;
         self
     }
 }
@@ -78,11 +88,11 @@ impl TestServer {
                     let route = routes.lock().unwrap().get(path).cloned();
                     let response = match route {
                         Some(route) => {
-                            let mut head = format!(
-                                "HTTP/1.1 {} X\r\nContent-Length: {}\r\nConnection: close\r\n",
-                                route.status,
-                                route.body.len()
-                            );
+                            let mut head =
+                                format!("HTTP/1.1 {} X\r\nConnection: close\r\n", route.status);
+                            if route.with_length {
+                                head.push_str(&format!("Content-Length: {}\r\n", route.body.len()));
+                            }
                             for (name, value) in &route.headers {
                                 head.push_str(&format!("{name}: {value}\r\n"));
                             }

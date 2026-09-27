@@ -11,18 +11,18 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
 
 use crate::config::network::{READ_TIMEOUT_SECS, USER_AGENT};
-use crate::config::timeouts::CONNECT_TIMEOUT_SECS;
+use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{extract_icy_title, MetadataSink, MetadataSource, StreamMetadata};
 use crate::stream::resolver::StreamResolver;
 
-use super::{backoff_sleep, READ_POLL_INTERVAL};
+use super::{backoff_sleep, gave_up, StreamEnd, READ_POLL_INTERVAL};
 
 const AUDIO_CHANNEL_BOUND: usize = 32;
 
@@ -44,6 +44,8 @@ pub struct IcyReader {
     chunk_pos: usize,
     receiver: Receiver<Vec<u8>>,
     stop_flag: Arc<AtomicBool>,
+    /// How the background thread ended, once it has
+    end: StreamEnd,
     _handle: Option<JoinHandle<()>>,
     pub headers: IcyHeaders,
     /// Total bytes received from the network (updated by background thread)
@@ -60,9 +62,25 @@ impl IcyReader {
     /// Returns the reader and a channel that receives metadata updates. With
     /// `playback_position` (bytes of this reader's output the decoder has
     /// read), updates are held until playback reaches them.
+    ///
+    /// If the connection drops, the reader reconnects until audio flows
+    /// again. After [`RECONNECT_GIVE_UP_SECS`] without audio it gives up,
+    /// and reading returns an error with the reason.
     pub fn new(
         url: &str,
         playback_position: Option<Arc<AtomicU64>>,
+    ) -> Result<(Self, Receiver<StreamMetadata>)> {
+        Self::open(
+            url,
+            playback_position,
+            Duration::from_secs(RECONNECT_GIVE_UP_SECS),
+        )
+    }
+
+    fn open(
+        url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+        give_up: Duration,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
@@ -91,30 +109,34 @@ impl IcyReader {
         let stop_clone = stop_flag.clone();
         let bytes_received = Arc::new(AtomicU64::new(0));
         let bytes_clone = bytes_received.clone();
+        let end = StreamEnd::default();
 
-        let url_owned = url.to_string();
-        let handle = thread::spawn(move || {
-            let audio_out = AudioOut::new(audio_tx, metadata_sink.clone(), scan_id3);
-            read_icy_stream(
-                &url_owned,
-                response,
-                metaint,
-                metadata_sink,
-                audio_out,
-                stop_clone,
-                bytes_clone,
-            );
-        });
+        let stream = IcyStream {
+            url: url.to_string(),
+            metadata_sink: metadata_sink.clone(),
+            audio_out: AudioOut::new(audio_tx, metadata_sink, scan_id3),
+            stop_flag: stop_clone,
+            bytes_received: bytes_clone,
+            end: end.clone(),
+            give_up,
+        };
+        let handle = thread::spawn(move || stream.run(response, metaint));
 
         // Wait for initial data. On failure stop the thread, which would
         // otherwise keep reconnecting for the life of the process.
         let initial_data = match audio_rx.recv_timeout(Duration::from_secs(READ_TIMEOUT_SECS)) {
             Ok(data) => data,
-            Err(_) => {
+            Err(e) => {
                 stop_flag.store(true, Ordering::SeqCst);
-                return Err(RadioError::Timeout(
-                    "Timeout waiting for stream data".to_string(),
-                ));
+                return Err(match (e, end.failure()) {
+                    (_, Some(reason)) => RadioError::Stream(reason),
+                    (crossbeam_channel::RecvTimeoutError::Timeout, None) => {
+                        RadioError::Timeout("Timeout waiting for stream data".to_string())
+                    }
+                    (crossbeam_channel::RecvTimeoutError::Disconnected, None) => {
+                        RadioError::Stream("The stream ended before any audio".to_string())
+                    }
+                });
             }
         };
 
@@ -124,6 +146,7 @@ impl IcyReader {
                 chunk_pos: 0,
                 receiver: audio_rx,
                 stop_flag,
+                end,
                 _handle: Some(handle),
                 headers,
                 bytes_received,
@@ -146,6 +169,7 @@ impl IcyReader {
                 chunk_pos: 0,
                 receiver,
                 stop_flag,
+                end: StreamEnd::default(),
                 _handle: None,
                 headers: IcyHeaders {
                     metaint: 0,
@@ -190,10 +214,7 @@ impl Read for IcyReader {
                 }
                 Err(crossbeam_channel::TryRecvError::Empty) => {}
                 Err(crossbeam_channel::TryRecvError::Disconnected) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "ICY stream ended",
-                    ));
+                    return self.end.read_result("ICY stream ended");
                 }
             }
 
@@ -220,10 +241,7 @@ impl Read for IcyReader {
                     ));
                 }
                 Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "ICY stream ended",
-                    ));
+                    return self.end.read_result("ICY stream ended");
                 }
             }
         }
@@ -352,76 +370,100 @@ fn parse_icy_headers(response: &reqwest::blocking::Response) -> IcyHeaders {
     }
 }
 
-/// Background thread function to read from ICY stream and extract metadata.
-/// Reconnects with exponential backoff on network errors.
-fn read_icy_stream(
-    url: &str,
-    mut response: reqwest::blocking::Response,
-    metaint: usize,
+/// The background thread that reads an ICY stream: it cuts out the ICY
+/// metadata, sends the audio to the reader, and reconnects when the
+/// connection drops.
+struct IcyStream {
+    url: String,
     metadata_sink: MetadataSink,
-    mut audio_out: AudioOut,
+    audio_out: AudioOut,
     stop_flag: Arc<AtomicBool>,
     bytes_received: Arc<AtomicU64>,
-) {
-    let mut bytes_until_meta = metaint;
-    let mut last_title = String::new();
-    let mut chunk_buffer = vec![0u8; 8192];
-    let mut consecutive_failures: u32 = 0;
+    end: StreamEnd,
+    /// How long to keep reconnecting without getting any audio
+    give_up: Duration,
+}
 
-    loop {
-        if stop_flag.load(Ordering::SeqCst) {
-            return;
-        }
+impl IcyStream {
+    /// Read until stopped, until a finite body is complete, or until no
+    /// audio has arrived for `give_up`. Records how it ended in `end`.
+    fn run(mut self, mut response: reqwest::blocking::Response, mut metaint: usize) {
+        let mut finite = is_finite_body(&response);
+        let mut bytes_until_meta = metaint;
+        let mut last_title = String::new();
+        let mut chunk_buffer = vec![0u8; 8192];
+        let mut consecutive_failures: u32 = 0;
+        // When audio stopped arriving, while it stays away
+        let mut outage_since: Option<Instant> = None;
 
-        let read_result = if metaint == 0 {
-            read_chunk_no_meta(
-                &mut response,
-                &mut chunk_buffer,
-                &mut audio_out,
-                &bytes_received,
-            )
-        } else {
-            read_chunk_with_meta(
-                &mut response,
-                &mut chunk_buffer,
-                &mut bytes_until_meta,
-                metaint,
-                &mut last_title,
-                &metadata_sink,
-                &mut audio_out,
-                &bytes_received,
-            )
-        };
-
-        match read_result {
-            ReadResult::Ok => {
-                consecutive_failures = 0;
+        loop {
+            if self.stop_flag.load(Ordering::SeqCst) {
+                return;
             }
-            ReadResult::Eof | ReadResult::Error => {
-                // Network error or server closed connection.
-                // Keep retrying with exponential backoff until reconnected or stopped.
-                loop {
-                    consecutive_failures += 1;
-                    if stop_flag.load(Ordering::SeqCst) {
-                        return;
+
+            let read_result = if metaint == 0 {
+                read_chunk_no_meta(
+                    &mut response,
+                    &mut chunk_buffer,
+                    &mut self.audio_out,
+                    &self.bytes_received,
+                )
+            } else {
+                read_chunk_with_meta(
+                    &mut response,
+                    &mut chunk_buffer,
+                    &mut bytes_until_meta,
+                    metaint,
+                    &mut last_title,
+                    &self.metadata_sink,
+                    &mut self.audio_out,
+                    &self.bytes_received,
+                )
+            };
+
+            let mut problem = match read_result {
+                ReadResult::Ok => {
+                    consecutive_failures = 0;
+                    outage_since = None;
+                    continue;
+                }
+                ReadResult::ChannelClosed => return,
+                // A whole file: replaying it from the start would loop it
+                ReadResult::Eof if finite => {
+                    self.end.finish();
+                    return;
+                }
+                ReadResult::Eof => "the server closed the connection".to_string(),
+                ReadResult::Error(e) => format!("connection lost ({e})"),
+            };
+
+            // Reconnect with backoff. The failure count and the outage only
+            // reset once audio arrives, so a server that accepts and then
+            // closes right away is not hammered, and is given up on too.
+            let since = *outage_since.get_or_insert_with(Instant::now);
+            loop {
+                if since.elapsed() >= self.give_up {
+                    self.end.fail(gave_up(self.give_up, &problem));
+                    return;
+                }
+                consecutive_failures += 1;
+                if !backoff_sleep(consecutive_failures, &self.stop_flag) {
+                    return; // Stopped during sleep
+                }
+                match reconnect(&self.url) {
+                    Ok(new_response) => {
+                        // A reconnect can land on another server or mount:
+                        // take its metadata interval, not the first one's
+                        metaint = parse_icy_headers(&new_response).metaint;
+                        bytes_until_meta = metaint;
+                        finite = is_finite_body(&new_response);
+                        response = new_response;
+                        self.audio_out.reset();
+                        break;
                     }
-                    if !backoff_sleep(consecutive_failures, &stop_flag) {
-                        return; // Stopped during sleep
-                    }
-                    if try_reconnect(
-                        url,
-                        &mut response,
-                        metaint,
-                        &mut bytes_until_meta,
-                        &mut consecutive_failures,
-                        &stop_flag,
-                    ) {
-                        audio_out.reset();
-                        break; // Reconnected — resume main read loop
-                    }
+                    Err(reason) => problem = reason,
                 }
             }
-            ReadResult::ChannelClosed => return,
         }
     }
 }
@@ -429,8 +471,19 @@ fn read_icy_stream(
 enum ReadResult {
     Ok,
     Eof,
-    Error,
+    Error(String),
     ChannelClosed,
+}
+
+/// True for a plain HTTP file: it has a length and no ICY headers. Once its
+/// body is complete the stream is over. ICY servers are live even when they
+/// send a (made-up) length.
+fn is_finite_body(response: &reqwest::blocking::Response) -> bool {
+    response.content_length().is_some()
+        && !response
+            .headers()
+            .keys()
+            .any(|name| name.as_str().starts_with("icy-"))
 }
 
 /// Read one chunk without ICY metadata
@@ -450,7 +503,7 @@ fn read_chunk_no_meta(
                 ReadResult::Ok
             }
         }
-        Err(_) => ReadResult::Error,
+        Err(e) => ReadResult::Error(e.to_string()),
     }
 }
 
@@ -482,22 +535,22 @@ fn read_chunk_with_meta(
                 }
                 *bytes_until_meta -= n;
             }
-            Err(_) => return ReadResult::Error,
+            Err(e) => return ReadResult::Error(e.to_string()),
         }
     }
 
     if *bytes_until_meta == 0 {
         // Read metadata length byte
         let mut len_byte = [0u8; 1];
-        if response.read_exact(&mut len_byte).is_err() {
-            return ReadResult::Error;
+        if let Err(e) = response.read_exact(&mut len_byte) {
+            return ReadResult::Error(e.to_string());
         }
 
         let meta_len = len_byte[0] as usize * 16;
         if meta_len > 0 {
             let mut meta_buf = vec![0u8; meta_len];
-            if response.read_exact(&mut meta_buf).is_err() {
-                return ReadResult::Error;
+            if let Err(e) = response.read_exact(&mut meta_buf) {
+                return ReadResult::Error(e.to_string());
             }
 
             match extract_icy_title(&meta_buf) {
@@ -527,43 +580,42 @@ fn read_chunk_with_meta(
     ReadResult::Ok
 }
 
-/// Attempt to reconnect to the ICY stream.
-/// Backoff sleep is handled by the caller via `backoff_sleep()`.
-/// Returns true if reconnection succeeded, false if we should retry.
-fn try_reconnect(
-    url: &str,
-    response: &mut reqwest::blocking::Response,
-    metaint: usize,
-    bytes_until_meta: &mut usize,
-    consecutive_failures: &mut u32,
-    stop_flag: &Arc<AtomicBool>,
-) -> bool {
-    if stop_flag.load(Ordering::SeqCst) {
-        return false;
-    }
-
-    let client = match reqwest::blocking::Client::builder()
+/// Connect to the ICY stream again. Backoff sleep is handled by the caller.
+/// `Err` says why this attempt failed.
+fn reconnect(url: &str) -> std::result::Result<reqwest::blocking::Response, String> {
+    let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
         .build()
-    {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
+        .map_err(|e| e.to_string())?;
 
-    match client.get(url).header("Icy-MetaData", "1").send() {
-        Ok(resp) if resp.status().is_success() => {
-            *response = resp;
-            *bytes_until_meta = metaint;
-            *consecutive_failures = 0;
-            true
-        }
-        _ => {
-            // Reconnect failed — caller will increment failures and retry
-            false
-        }
+    let response = client
+        .get(url)
+        .header("Icy-MetaData", "1")
+        .send()
+        .map_err(|e| {
+            if e.is_timeout() {
+                "the server did not answer".to_string()
+            } else if e.is_connect() {
+                "could not connect to the server".to_string()
+            } else {
+                e.without_url().to_string()
+            }
+        })?;
+    if !response.status().is_success() {
+        return Err(format!("HTTP {}", response.status()));
     }
+    // An error or parking page served with 200 OK must not reach the decoder
+    let is_web_page = response
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"));
+    if is_web_page {
+        return Err("the server sent a web page instead of audio".to_string());
+    }
+    Ok(response)
 }
 
 #[cfg(test)]
@@ -1108,7 +1160,9 @@ mod tests {
             let server = TestServer::start();
             server.route(
                 "/live",
-                Route::new(frame(600)).header("Content-Type", "audio/mpeg"),
+                Route::new(frame(600))
+                    .without_length()
+                    .header("Content-Type", "audio/mpeg"),
             );
             let (reader, _rx) = IcyReader::new(&server.url("/live"), None).unwrap();
             server.route("/live", Route::status(404));
@@ -1221,6 +1275,225 @@ mod tests {
             assert!(!scans_for_id3("http://x/live", Some("audio/ogg")));
             assert!(!scans_for_id3("http://x/live", Some("audio/flac")));
             assert!(!scans_for_id3("http://x/live.opus", None));
+        }
+    }
+
+    // --- Reconnecting, and giving up ---
+
+    mod reconnect {
+        use super::*;
+        use crate::stream::buffer::{BufferStatus, StreamBuffer};
+        use crate::stream::id3::test_util::frame;
+        use crate::stream::test_server::{Route, TestServer};
+        use std::sync::Mutex;
+
+        const GIVE_UP: Duration = Duration::from_secs(1);
+
+        /// A live station: no length, ICY headers
+        fn live(body: Vec<u8>) -> Route {
+            Route::new(body)
+                .without_length()
+                .header("Content-Type", "audio/mpeg")
+                .header("icy-name", "Test FM")
+        }
+
+        /// `audio` with an ICY metadata block every `metaint` bytes, the
+        /// first one carrying `title`
+        fn icy_body(audio: &[u8], metaint: usize, title: &str) -> Vec<u8> {
+            let mut out = Vec::new();
+            for (i, run) in audio.chunks(metaint).enumerate() {
+                out.extend_from_slice(run);
+                if run.len() < metaint {
+                    break;
+                }
+                if i == 0 {
+                    let mut block = format!("StreamTitle='{title}';").into_bytes();
+                    block.resize(block.len().div_ceil(16) * 16, 0);
+                    out.push((block.len() / 16) as u8);
+                    out.extend(block);
+                } else {
+                    out.push(0);
+                }
+            }
+            out
+        }
+
+        /// Read `reader` on a thread until the stream ends. Returns the
+        /// audio and how the stream ended; panics if it doesn't end in time.
+        fn read_until_end(
+            mut reader: impl Read + Send + 'static,
+            limit: Duration,
+        ) -> (Vec<u8>, io::Result<()>) {
+            let (tx, rx) = bounded(1);
+            thread::spawn(move || {
+                let mut audio = Vec::new();
+                let mut buf = vec![0u8; 4096];
+                let end = loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) => break Ok(()),
+                        Ok(n) => audio.extend_from_slice(&buf[..n]),
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                        Err(e) => break Err(e),
+                    }
+                };
+                let _ = tx.send((audio, end));
+            });
+            rx.recv_timeout(limit)
+                .expect("the stream should have ended, not kept reconnecting")
+        }
+
+        /// Wait out a backoff and check the station is left alone
+        fn assert_no_more_requests(server: &TestServer, path: &str) {
+            let hits = server.hits(path);
+            thread::sleep(Duration::from_millis(2500));
+            assert_eq!(server.hits(path), hits, "still reconnecting");
+        }
+
+        #[test]
+        fn a_station_that_stays_down_stops_with_the_reason() {
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route("/live", live(audio.clone()));
+            let (reader, _rx) = IcyReader::open(&server.url("/live"), None, GIVE_UP).unwrap();
+            server.route("/live", Route::status(404));
+
+            // Through the stream buffer, as the decoder reads it
+            let status = Arc::new(Mutex::new(BufferStatus::default()));
+            let probing = Arc::new(AtomicBool::new(false));
+            let (consumer, _producer, _stop) = StreamBuffer::new(Box::new(reader), status, probing);
+            let (played, end) = read_until_end(consumer, Duration::from_secs(10));
+
+            assert_eq!(played, audio);
+            let err = end.expect_err("a dead station ends with an error");
+            assert!(
+                err.to_string().contains("No audio for 1 s: HTTP 404"),
+                "{err}"
+            );
+            assert_no_more_requests(&server, "/live");
+        }
+
+        #[test]
+        fn a_server_that_answers_and_hangs_up_is_given_up_on() {
+            // Connecting works, but no audio ever comes: the old reader
+            // reset its backoff on every connect and retried forever
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route("/live", live(audio.clone()));
+            let (reader, _rx) = IcyReader::open(&server.url("/live"), None, GIVE_UP).unwrap();
+            server.route("/live", live(Vec::new()));
+
+            let (played, end) = read_until_end(reader, Duration::from_secs(10));
+            assert_eq!(played, audio);
+            let err = end.expect_err("a station that sends nothing ends with an error");
+            assert!(
+                err.to_string()
+                    .contains("No audio for 1 s: the server closed the connection"),
+                "{err}"
+            );
+            assert_no_more_requests(&server, "/live");
+        }
+
+        #[test]
+        fn a_web_page_on_reconnect_is_not_played() {
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route("/live", live(audio.clone()));
+            let (reader, _rx) = IcyReader::open(&server.url("/live"), None, GIVE_UP).unwrap();
+            server.route(
+                "/live",
+                Route::new("<html><body>Station offline</body></html>")
+                    .header("Content-Type", "text/html; charset=utf-8"),
+            );
+
+            let (played, end) = read_until_end(reader, Duration::from_secs(10));
+            assert_eq!(played, audio, "the page must not reach the decoder");
+            let err = end.expect_err("an offline page ends the stream");
+            assert!(err.to_string().contains("web page"), "{err}");
+        }
+
+        #[test]
+        fn a_reconnect_takes_the_new_servers_metadata_interval() {
+            // The reconnect lands on a server with another interval: reading
+            // it with the first one's would cut audio into metadata and back
+            let server = TestServer::start();
+            let first = frame(600);
+            let second = frame(700);
+            server.route(
+                "/live",
+                live(icy_body(&first, 256, "One")).header("icy-metaint", "256"),
+            );
+            let (mut reader, titles) =
+                IcyReader::open(&server.url("/live"), None, Duration::from_secs(30)).unwrap();
+            server.route(
+                "/live",
+                live(icy_body(&second, 100, "Two")).header("icy-metaint", "100"),
+            );
+
+            let (tx, rx) = bounded(1);
+            let total = first.len() + second.len();
+            thread::spawn(move || {
+                let mut audio = vec![0u8; total];
+                let _ = tx.send(reader.read_exact(&mut audio).map(|_| audio));
+            });
+            let audio = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the reconnected stream should play")
+                .unwrap();
+            assert!(audio == [first, second].concat(), "audio was corrupted");
+
+            let title = |rx: &Receiver<StreamMetadata>| {
+                rx.recv_timeout(Duration::from_secs(3))
+                    .ok()
+                    .and_then(|m| m.title)
+            };
+            assert_eq!(title(&titles).as_deref(), Some("One"));
+            assert_eq!(title(&titles).as_deref(), Some("Two"));
+        }
+
+        #[test]
+        fn a_whole_file_ends_instead_of_looping() {
+            // A plain HTTP file (a length, no ICY headers) is played once
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route(
+                "/clip.mp3",
+                Route::new(audio.clone()).header("Content-Type", "audio/mpeg"),
+            );
+            let (reader, _rx) = IcyReader::open(&server.url("/clip.mp3"), None, GIVE_UP).unwrap();
+
+            let (played, end) = read_until_end(reader, Duration::from_secs(10));
+            assert_eq!(played, audio);
+            assert!(end.is_ok(), "a finished file is not an error: {end:?}");
+            assert_eq!(server.hits("/clip.mp3"), 1);
+            assert_no_more_requests(&server, "/clip.mp3");
+        }
+
+        #[test]
+        fn a_live_stream_with_a_made_up_length_keeps_reconnecting() {
+            // Some ICY servers send a Content-Length on a live stream; the
+            // end of that body is a dropped connection, not the end
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route(
+                "/live",
+                Route::new(audio.clone())
+                    .header("Content-Type", "audio/mpeg")
+                    .header("icy-name", "Test FM"),
+            );
+            let (mut reader, _rx) =
+                IcyReader::open(&server.url("/live"), None, Duration::from_secs(30)).unwrap();
+
+            let (tx, rx) = bounded(1);
+            thread::spawn(move || {
+                let mut twice = vec![0u8; 1200];
+                let _ = tx.send(reader.read_exact(&mut twice).map(|_| twice));
+            });
+            let played = rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the station should have reconnected")
+                .unwrap();
+            assert_eq!(played, [audio.clone(), audio].concat());
+            assert_eq!(server.hits("/live"), 2);
         }
     }
 }
