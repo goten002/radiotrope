@@ -17,7 +17,9 @@ pub enum PlaylistCheck {
     NotPlaylist,
 }
 
-/// Check what type of playlist a URL points to based on extension
+/// Check what type of playlist a URL points to based on extension.
+/// Stations also serve playlists from URLs without one (`/listen.php?id=7`,
+/// `/radio`): [`sniff_playlist`] tells from the response.
 pub fn check_playlist_type(url: &str) -> PlaylistCheck {
     let lower = url.to_lowercase();
     if lower.ends_with(".m3u8") || lower.contains(".m3u8?") {
@@ -29,6 +31,61 @@ pub fn check_playlist_type(url: &str) -> PlaylistCheck {
     } else {
         PlaylistCheck::NotPlaylist
     }
+}
+
+/// What a response is, from its `Content-Type` and the first bytes of its
+/// body: a playlist of some kind, or (as far as can be told) audio.
+///
+/// The body decides when it starts like a playlist (`#EXTM3U`,
+/// `[playlist]`); otherwise a playlist `Content-Type` does, if the body is
+/// text. An M3U with `#EXT-X-` tags is HLS.
+pub fn sniff_playlist(content_type: Option<&str>, head: &[u8]) -> PlaylistCheck {
+    let text = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
+    let text = text.trim_ascii_start();
+    let starts_with = |prefix: &[u8]| {
+        text.len() >= prefix.len() && text[..prefix.len()].eq_ignore_ascii_case(prefix)
+    };
+    let hls_tags = text.windows(7).any(|w| w.eq_ignore_ascii_case(b"#EXT-X-"));
+    let m3u = if hls_tags {
+        PlaylistCheck::Hls
+    } else {
+        PlaylistCheck::M3u
+    };
+
+    if starts_with(b"#EXTM3U") || starts_with(b"#EXT-X-") {
+        return m3u;
+    }
+    if starts_with(b"[playlist]") {
+        return PlaylistCheck::Pls;
+    }
+    // Audio is binary; a playlist is lines of text
+    let is_text = !text.is_empty()
+        && text
+            .iter()
+            .all(|&b| b >= 0x20 || matches!(b, b'\t' | b'\n' | b'\r'));
+    if !is_text {
+        return PlaylistCheck::NotPlaylist;
+    }
+    let mime = content_type
+        .and_then(|ct| ct.split(';').next())
+        .map(|ct| ct.trim().to_ascii_lowercase());
+    match mime.as_deref() {
+        Some("application/vnd.apple.mpegurl" | "application/x-mpegurl") => PlaylistCheck::Hls,
+        Some("audio/x-mpegurl" | "audio/mpegurl") => m3u,
+        Some("audio/x-scpls" | "audio/scpls" | "application/pls+xml") => PlaylistCheck::Pls,
+        // Just a stream's address, as some station pages hand out
+        _ if starts_with(b"http://") || starts_with(b"https://") => PlaylistCheck::M3u,
+        _ => PlaylistCheck::NotPlaylist,
+    }
+}
+
+/// Where a station's playlists lead
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Target {
+    pub url: String,
+    /// An HLS playlist; otherwise a stream to connect to (or so it seems:
+    /// the stream's response can still turn out to be a playlist)
+    pub hls: bool,
 }
 
 /// Extract the base URL (directory) from a full URL
@@ -105,15 +162,31 @@ pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
 /// M3U8 (HLS) URLs pass through unchanged. PLS and M3U playlists are fetched
 /// and parsed, recursing up to `MAX_PLAYLIST_DEPTH` levels.
 pub fn resolve_playlist_url(url: &str) -> Result<String> {
-    resolve_playlist(url, &StreamCancel::new())
+    Ok(resolve_playlist(url, &StreamCancel::new())?.url)
 }
 
-/// [`resolve_playlist_url`], stopped by `cancel` between fetches
-pub(crate) fn resolve_playlist(url: &str, cancel: &StreamCancel) -> Result<String> {
-    resolve_recursive(url, MAX_PLAYLIST_DEPTH, cancel)
+/// [`resolve_playlist_url`], stopped by `cancel` between fetches, saying
+/// whether it ends at an HLS playlist
+pub(crate) fn resolve_playlist(url: &str, cancel: &StreamCancel) -> Result<Target> {
+    resolve_recursive(url, None, MAX_PLAYLIST_DEPTH, cancel)
 }
 
-fn resolve_recursive(url: &str, depth: usize, cancel: &StreamCancel) -> Result<String> {
+/// [`resolve_playlist`] for a URL known to serve a playlist of kind `kind`
+/// whatever its extension
+pub(crate) fn resolve_playlist_as(
+    url: &str,
+    kind: PlaylistCheck,
+    cancel: &StreamCancel,
+) -> Result<Target> {
+    resolve_recursive(url, Some(kind), MAX_PLAYLIST_DEPTH, cancel)
+}
+
+fn resolve_recursive(
+    url: &str,
+    kind: Option<PlaylistCheck>,
+    depth: usize,
+    cancel: &StreamCancel,
+) -> Result<Target> {
     if cancel.is_cancelled() {
         return Err(RadioError::Cancelled);
     }
@@ -121,26 +194,37 @@ fn resolve_recursive(url: &str, depth: usize, cancel: &StreamCancel) -> Result<S
         return Err(RadioError::Stream("Playlist nesting too deep".to_string()));
     }
 
-    match check_playlist_type(url) {
-        PlaylistCheck::Hls | PlaylistCheck::NotPlaylist => Ok(url.to_string()),
-        PlaylistCheck::Pls => {
-            let (_, content) = fetch_playlist(url)?;
-            let stream_url = parse_pls(&content).ok_or_else(|| {
-                RadioError::Stream("No stream URL found in PLS playlist".to_string())
-            })?;
-            resolve_recursive(&stream_url, depth - 1, cancel)
-        }
-        PlaylistCheck::M3u => {
-            // Relative entries are relative to where the playlist was served
-            // from, after any redirects
-            let (final_url, content) = fetch_playlist(url)?;
-            let base_url = directory_of(&final_url);
-            let stream_url = parse_m3u(&content, &base_url).ok_or_else(|| {
-                RadioError::Stream("No stream URL found in M3U playlist".to_string())
-            })?;
-            resolve_recursive(&stream_url, depth - 1, cancel)
-        }
+    let by_extension = kind.unwrap_or_else(|| check_playlist_type(url));
+    if matches!(
+        by_extension,
+        PlaylistCheck::Hls | PlaylistCheck::NotPlaylist
+    ) {
+        return Ok(Target {
+            url: url.to_string(),
+            hls: by_extension == PlaylistCheck::Hls,
+        });
     }
+    let playlist = fetch_playlist(url)?;
+    // What it is decides, not what it is called: an `.m3u` can be HLS
+    let kind = match sniff_playlist(playlist.content_type.as_deref(), playlist.text.as_bytes()) {
+        PlaylistCheck::NotPlaylist => by_extension,
+        sniffed => sniffed,
+    };
+    let stream_url = match kind {
+        PlaylistCheck::Hls => {
+            return Ok(Target {
+                url: url.to_string(),
+                hls: true,
+            })
+        }
+        PlaylistCheck::Pls => parse_pls(&playlist.text)
+            .ok_or_else(|| RadioError::Stream("No stream URL found in PLS playlist".to_string()))?,
+        // Relative entries are relative to where the playlist was served
+        // from, after any redirects
+        _ => parse_m3u(&playlist.text, &directory_of(&playlist.final_url))
+            .ok_or_else(|| RadioError::Stream("No stream URL found in M3U playlist".to_string()))?,
+    };
+    resolve_recursive(&stream_url, None, depth - 1, cancel)
 }
 
 /// The directory part of `url` without the trailing slash, ignoring any
@@ -152,9 +236,15 @@ fn directory_of(url: &str) -> String {
     }
 }
 
-/// Fetch a playlist: returns the URL it was served from (after redirects)
-/// and its text
-fn fetch_playlist(url: &str) -> Result<(String, String)> {
+/// A fetched playlist
+struct Playlist {
+    /// Where it was served from, after redirects
+    final_url: String,
+    content_type: Option<String>,
+    text: String,
+}
+
+fn fetch_playlist(url: &str) -> Result<Playlist> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
@@ -167,7 +257,16 @@ fn fetch_playlist(url: &str) -> Result<(String, String)> {
     }
 
     let final_url = response.url().to_string();
-    Ok((final_url, response.text()?))
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    Ok(Playlist {
+        final_url,
+        content_type,
+        text: response.text()?,
+    })
 }
 
 #[cfg(test)]
@@ -702,6 +801,59 @@ mod tests {
         assert_eq!(result, "http://example.com/live.m3u8?token=abc123");
     }
 
+    // --- sniff_playlist ---
+
+    mod sniff {
+        use super::*;
+        use PlaylistCheck::{Hls, M3u, NotPlaylist, Pls};
+
+        #[test]
+        fn a_playlist_is_told_by_its_first_line() {
+            let m3u = b"#EXTM3U\n#EXTINF:-1,Radio\nhttp://radio.example/live\n";
+            assert_eq!(sniff_playlist(None, m3u), M3u);
+            let hls = b"#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-STREAM-INF:BANDWIDTH=64000\nlow.m3u8\n";
+            assert_eq!(sniff_playlist(None, hls), Hls);
+            let media = b"#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg1.aac\n";
+            assert_eq!(sniff_playlist(None, media), Hls);
+            let pls = b"\xEF\xBB\xBF  [Playlist]\r\nFile1=http://radio.example/live\r\n";
+            assert_eq!(sniff_playlist(Some("text/plain"), pls), Pls);
+            // What it is beats what the server calls it
+            assert_eq!(sniff_playlist(Some("audio/mpeg"), m3u), M3u);
+        }
+
+        #[test]
+        fn a_playlist_type_decides_for_text() {
+            let entry = b"http://radio.example/live\n";
+            assert_eq!(sniff_playlist(Some("audio/x-mpegurl"), entry), M3u);
+            assert_eq!(sniff_playlist(Some("audio/x-scpls"), b"File1=/live\n"), Pls);
+            assert_eq!(
+                sniff_playlist(Some("application/x-mpegURL; charset=utf-8"), b"low.m3u8\n"),
+                Hls
+            );
+            // A bare stream address, as some station pages hand out
+            assert_eq!(sniff_playlist(Some("text/plain"), entry), M3u);
+            assert_eq!(sniff_playlist(None, b"https://radio.example/live"), M3u);
+        }
+
+        #[test]
+        fn audio_is_not_a_playlist() {
+            let mp3 = [0xFF, 0xFB, 0x90, 0x64, 0x00, 0x0F, 0xF0, 0x00];
+            // Not even from a server that calls it one
+            assert_eq!(sniff_playlist(Some("audio/x-mpegurl"), &mp3), NotPlaylist);
+            assert_eq!(
+                sniff_playlist(None, b"ID3\x04\x00\x00\x00\x00\x01\x00"),
+                NotPlaylist
+            );
+            assert_eq!(
+                sniff_playlist(Some("application/ogg"), b"OggS\x00\x02"),
+                NotPlaylist
+            );
+            assert_eq!(sniff_playlist(Some("audio/x-scpls"), b""), NotPlaylist);
+            let page = b"<html><body>Offline</body></html>";
+            assert_eq!(sniff_playlist(Some("text/html"), page), NotPlaylist);
+        }
+    }
+
     // --- resolve_playlist_url over HTTP ---
 
     mod network {
@@ -747,6 +899,37 @@ mod tests {
             assert_eq!(
                 resolve_playlist_url(&server.url("/go/station.m3u")).unwrap(),
                 server.url("/edge/7/stream.mp3")
+            );
+        }
+
+        #[test]
+        fn an_m3u_that_is_hls_resolves_to_hls() {
+            let server = TestServer::start();
+            server.route(
+                "/live.m3u",
+                Route::new("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg1.aac\n"),
+            );
+            let target = resolve_playlist(&server.url("/live.m3u"), &StreamCancel::new()).unwrap();
+            assert_eq!(
+                target,
+                Target {
+                    url: server.url("/live.m3u"),
+                    hls: true
+                }
+            );
+        }
+
+        #[test]
+        fn a_playlist_is_read_as_what_it_is() {
+            // A PLS saved as .m3u: its lines would read as relative URLs
+            let server = TestServer::start();
+            server.route(
+                "/station.m3u",
+                Route::new("[playlist]\nNumberOfEntries=1\nFile1=http://radio.example/live\n"),
+            );
+            assert_eq!(
+                resolve_playlist_url(&server.url("/station.m3u")).unwrap(),
+                "http://radio.example/live"
             );
         }
 

@@ -6,11 +6,12 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
+use crate::config::network::MAX_PLAYLIST_DEPTH;
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
 use crate::stream::hls::{HlsReader, HlsSegmentFormat};
-use crate::stream::icy::IcyReader;
-use crate::stream::playlist::{check_playlist_type, resolve_playlist, PlaylistCheck};
+use crate::stream::icy::{IcyReader, Opened};
+use crate::stream::playlist::{resolve_playlist, resolve_playlist_as};
 use crate::stream::types::{ResolvedStream, StreamInfo, StreamType};
 
 /// Resolves a station URL into a playable stream
@@ -20,8 +21,9 @@ impl StreamResolver {
     /// Resolve a URL to a `ResolvedStream`.
     ///
     /// 1. Follow PLS/M3U playlist chains
-    /// 2. If `.m3u8` → resolve HLS → HlsReader
-    /// 3. Otherwise → IcyReader (works for ICY and non-ICY servers)
+    /// 2. If HLS → resolve HLS → HlsReader
+    /// 3. Otherwise → IcyReader (works for ICY and non-ICY servers), unless
+    ///    the address turns out to serve a playlist: then back to 1
     pub fn resolve(url: &str) -> Result<ResolvedStream> {
         Self::resolve_cancellable(url, &StreamCancel::new())
     }
@@ -37,79 +39,93 @@ impl StreamResolver {
             false => Ok(()),
         };
         still_wanted()?;
-        let resolved_url = resolve_playlist(url, cancel)?;
-        still_wanted()?;
-        let playback_position = Arc::new(AtomicU64::new(0));
-
-        match check_playlist_type(&resolved_url) {
-            PlaylistCheck::Hls => {
-                let media_url = crate::stream::hls::resolve_hls(&resolved_url, cancel)?;
-                still_wanted()?;
-
-                let (hls_reader, metadata_rx) = HlsReader::new_cancellable(
-                    &media_url,
-                    Some(playback_position.clone()),
-                    cancel.clone(),
-                )?;
-
-                let format_hint = match hls_reader.detected_format {
-                    HlsSegmentFormat::Fmp4 => Some("mp4".to_string()),
-                    _ => Some("aac".to_string()),
-                };
-
-                let bytes_received = hls_reader.bytes_received.clone();
-                let segments_downloaded = hls_reader.segments_downloaded.clone();
-
-                Ok(ResolvedStream {
-                    reader: Box::new(hls_reader),
-                    metadata_rx: Some(metadata_rx),
-                    info: StreamInfo {
-                        original_url: url.to_string(),
-                        resolved_url: media_url,
-                        stream_type: StreamType::Hls,
-                        format_hint,
-                        content_type: None,
-                        station_name: None,
-                        bitrate: None,
-                    },
-                    bytes_received: Some(bytes_received),
-                    segments_downloaded: Some(segments_downloaded),
-                    playback_position: Some(playback_position),
-                    cancel: cancel.clone(),
-                })
+        let mut target = resolve_playlist(url, cancel)?;
+        // Each stream address that serves a playlist is one more level
+        for _ in 0..MAX_PLAYLIST_DEPTH {
+            still_wanted()?;
+            if target.hls {
+                return Self::open_hls(url, &target.url, cancel);
             }
-            _ => {
-                let (icy_reader, metadata_rx) = IcyReader::new_cancellable(
-                    &resolved_url,
-                    Some(playback_position.clone()),
-                    cancel.clone(),
-                )?;
+            let playback_position = Arc::new(AtomicU64::new(0));
+            let opened = IcyReader::open_detecting(
+                &target.url,
+                Some(playback_position.clone()),
+                cancel.clone(),
+            )?;
+            let (icy_reader, metadata_rx) = match opened {
+                Opened::Stream(reader, metadata_rx) => (reader, metadata_rx),
+                Opened::Playlist(kind) => {
+                    still_wanted()?;
+                    target = resolve_playlist_as(&target.url, kind, cancel)?;
+                    continue;
+                }
+            };
 
-                let content_type = icy_reader.headers.content_type.clone();
-                let station_name = icy_reader.headers.station_name.clone();
-                let bitrate = icy_reader.headers.bitrate;
-                let format_hint = Self::detect_format_hint(&resolved_url, content_type.as_deref());
-                let bytes_received = icy_reader.bytes_received.clone();
+            let content_type = icy_reader.headers.content_type.clone();
+            let station_name = icy_reader.headers.station_name.clone();
+            let bitrate = icy_reader.headers.bitrate;
+            let format_hint = Self::detect_format_hint(&target.url, content_type.as_deref());
+            let bytes_received = icy_reader.bytes_received.clone();
 
-                Ok(ResolvedStream {
-                    reader: Box::new(icy_reader),
-                    metadata_rx: Some(metadata_rx),
-                    info: StreamInfo {
-                        original_url: url.to_string(),
-                        resolved_url,
-                        stream_type: StreamType::Direct,
-                        format_hint,
-                        content_type,
-                        station_name,
-                        bitrate,
-                    },
-                    bytes_received: Some(bytes_received),
-                    segments_downloaded: None,
-                    playback_position: Some(playback_position),
-                    cancel: cancel.clone(),
-                })
-            }
+            return Ok(ResolvedStream {
+                reader: Box::new(icy_reader),
+                metadata_rx: Some(metadata_rx),
+                info: StreamInfo {
+                    original_url: url.to_string(),
+                    resolved_url: target.url,
+                    stream_type: StreamType::Direct,
+                    format_hint,
+                    content_type,
+                    station_name,
+                    bitrate,
+                },
+                bytes_received: Some(bytes_received),
+                segments_downloaded: None,
+                playback_position: Some(playback_position),
+                cancel: cancel.clone(),
+            });
         }
+        Err(RadioError::Stream("Playlist nesting too deep".to_string()))
+    }
+
+    /// Open the HLS stream at `playlist_url` (found from `url`)
+    fn open_hls(url: &str, playlist_url: &str, cancel: &StreamCancel) -> Result<ResolvedStream> {
+        let media_url = crate::stream::hls::resolve_hls(playlist_url, cancel)?;
+        if cancel.is_cancelled() {
+            return Err(RadioError::Cancelled);
+        }
+        let playback_position = Arc::new(AtomicU64::new(0));
+        let (hls_reader, metadata_rx) = HlsReader::new_cancellable(
+            &media_url,
+            Some(playback_position.clone()),
+            cancel.clone(),
+        )?;
+
+        let format_hint = match hls_reader.detected_format {
+            HlsSegmentFormat::Fmp4 => Some("mp4".to_string()),
+            _ => Some("aac".to_string()),
+        };
+
+        let bytes_received = hls_reader.bytes_received.clone();
+        let segments_downloaded = hls_reader.segments_downloaded.clone();
+
+        Ok(ResolvedStream {
+            reader: Box::new(hls_reader),
+            metadata_rx: Some(metadata_rx),
+            info: StreamInfo {
+                original_url: url.to_string(),
+                resolved_url: media_url,
+                stream_type: StreamType::Hls,
+                format_hint,
+                content_type: None,
+                station_name: None,
+                bitrate: None,
+            },
+            bytes_received: Some(bytes_received),
+            segments_downloaded: Some(segments_downloaded),
+            playback_position: Some(playback_position),
+            cancel: cancel.clone(),
+        })
     }
 
     /// Detect a format hint from content-type and/or URL extension
@@ -570,6 +586,76 @@ mod tests {
             // Dropping a stream nobody plays (a stale resolve) stops it
             drop(resolved);
             assert!(cancel.is_cancelled());
+        }
+    }
+
+    mod playlists_without_an_extension {
+        use super::*;
+        use crate::stream::id3::test_util::frame;
+        use crate::stream::test_server::{Route, TestServer};
+        use std::io::Read;
+
+        /// A live MP3 station
+        fn station(audio: Vec<u8>) -> Route {
+            Route::new(audio)
+                .header("Content-Type", "audio/mpeg")
+                .header("icy-name", "Test FM")
+                .without_length()
+                .stall()
+        }
+
+        #[test]
+        fn a_playlist_behind_a_script_leads_to_its_station() {
+            let server = TestServer::start();
+            server.route(
+                "/listen.php?id=7",
+                Route::new(format!("[playlist]\nFile1={}\n", server.url("/live")))
+                    .header("Content-Type", "audio/x-scpls"),
+            );
+            let audio = frame(4096);
+            server.route("/live", station(audio.clone()));
+
+            let resolved = StreamResolver::resolve(&server.url("/listen.php?id=7")).unwrap();
+            assert_eq!(resolved.info.stream_type, StreamType::Direct);
+            assert_eq!(resolved.info.resolved_url, server.url("/live"));
+            assert_eq!(resolved.info.station_name.as_deref(), Some("Test FM"));
+            // The decoder gets the station's audio, not the playlist's text
+            let mut start = vec![0u8; 64];
+            let mut reader = resolved.reader;
+            reader.read_exact(&mut start).unwrap();
+            assert_eq!(start, audio[..64]);
+        }
+
+        #[test]
+        fn a_bare_address_list_leads_to_its_station() {
+            let server = TestServer::start();
+            server.route(
+                "/radio",
+                Route::new(format!("{}\n", server.url("/live")))
+                    .header("Content-Type", "text/plain"),
+            );
+            server.route("/live", station(frame(4096)));
+            let resolved = StreamResolver::resolve(&server.url("/radio")).unwrap();
+            assert_eq!(resolved.info.resolved_url, server.url("/live"));
+        }
+
+        #[test]
+        fn an_address_that_redirects_to_hls_plays_hls() {
+            let server = TestServer::start();
+            server.route("/radio", Route::redirect(&server.url("/hls/index.m3u8")));
+            server.route(
+                "/hls/index.m3u8",
+                Route::new(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                     #EXTINF:2.0,\nseg1.aac\n",
+                )
+                .header("Content-Type", "application/vnd.apple.mpegurl"),
+            );
+            server.route("/hls/seg1.aac", Route::new(frame(2048)));
+
+            let resolved = StreamResolver::resolve(&server.url("/radio")).unwrap();
+            assert_eq!(resolved.info.stream_type, StreamType::Hls);
+            assert_eq!(resolved.info.original_url, server.url("/radio"));
         }
     }
 }
