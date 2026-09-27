@@ -153,8 +153,9 @@ pub fn extract_icy_title_as(raw_block: &[u8], text: &mut StationText) -> Option<
 /// `text` with HTML character references (`&#924;`, `&#x39C;`, `&amp;`)
 /// replaced by the characters they stand for.
 ///
-/// Some stations send titles and names this way: every Greek or Cyrillic
-/// letter as a code, or a `'` as `&#39;` so it can't end `StreamTitle='…'`.
+/// Some stations send song titles this way in their ICY metadata: every
+/// Greek or Cyrillic letter as a code, or a `'` as `&#39;` so it can't end
+/// `StreamTitle='…'`.
 /// A reference escaped once more (`&amp;#924;`) is read too. Anything that
 /// isn't a complete reference stays as it is (`Simon & Garfunkel`, `R&B`).
 pub fn decode_html_references(text: &str) -> String {
