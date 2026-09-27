@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Radiotrope
+GenericName=Internet Radio
+Comment=Internet radio player
+Exec=radiotrope
+Icon=radiotrope
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=radio;stream;internet radio;
+StartupWMClass=radiotrope

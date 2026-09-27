@@ -130,6 +130,19 @@ sudo pacman -S alsa-lib
 sudo dnf install alsa-lib-devel
 ```
 
+### Desktop integration (Linux)
+
+The window's app id (Wayland) and WM_CLASS (X11) are `radiotrope`, so the
+desktop file must be installed as `radiotrope.desktop` for the dock/taskbar
+to show the icon:
+
+```bash
+install -Dm644 packaging/linux/radiotrope.desktop /usr/share/applications/radiotrope.desktop
+for s in 16 32 48 64 128 256; do
+  install -Dm644 assets/icons/icon-$s.png /usr/share/icons/hicolor/${s}x${s}/apps/radiotrope.png
+done
+```
+
 ## Usage
 
 ### Desktop GUI
