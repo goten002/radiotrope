@@ -124,6 +124,8 @@ struct PendingProbe {
     bytes_received: Option<Arc<AtomicU64>>,
     segments_downloaded: Option<Arc<AtomicU64>>,
     bitrate: Option<u32>,
+    /// Audio decoded from the stream buffer, for its byte rate
+    decoded_time: Arc<AtomicU64>,
     started: Instant,
 }
 
@@ -486,12 +488,15 @@ impl AudioEngine {
                         let buf_status =
                             Arc::new(Mutex::new(crate::stream::buffer::BufferStatus::default()));
                         let probing_flag = Arc::new(AtomicBool::new(true));
-                        let (buf_reader, prod_handle) = StreamBuffer::with_cancel(
+                        let (mut buf_reader, prod_handle) = StreamBuffer::with_cancel(
                             reader,
                             buf_status.clone(),
                             probing_flag.clone(),
                             cancel.clone(),
                         );
+                        // The buffer sizes itself in seconds of audio
+                        buf_reader.set_advertised_bitrate(bitrate);
+                        let decoded_time = buf_reader.decoded_time();
 
                         // Report how far the decoder has read, for song info timing
                         let buf_reader = PlaybackPositionReader::new(
@@ -513,6 +518,7 @@ impl AudioEngine {
                                     bytes_received,
                                     segments_downloaded,
                                     bitrate,
+                                    decoded_time,
                                     started: Instant::now(),
                                 });
                             }
@@ -666,10 +672,11 @@ impl AudioEngine {
                     // Poll pending probe for completion
                     if let Some(ref pending) = pending_probe {
                         match pending.probe_rx.try_recv() {
-                            Ok(Ok(source)) => {
+                            Ok(Ok(mut source)) => {
                                 let p = pending_probe.take().unwrap();
                                 // Probe succeeded — allow buffer compaction
                                 p.probing_flag.store(false, Ordering::SeqCst);
+                                source.count_decoded_time(p.decoded_time.clone());
 
                                 let mut codec_info = source.codec_info();
                                 codec_info.bitrate = p.bitrate;

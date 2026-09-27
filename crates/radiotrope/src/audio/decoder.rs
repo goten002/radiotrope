@@ -5,6 +5,7 @@
 
 use std::io::{Read, Seek};
 use std::num::NonZero;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -172,6 +173,8 @@ pub struct SymphoniaSource {
     decoder_stats: Arc<DecoderStats>,
     /// Demuxer errors since the last packet that decoded
     demux_errors: u32,
+    /// Microseconds of audio decoded, for the stream buffer's byte rate
+    decoded_time: Option<Arc<AtomicU64>>,
 }
 
 impl SymphoniaSource {
@@ -237,6 +240,7 @@ impl SymphoniaSource {
             last_error: Arc::new(Mutex::new(None)),
             decoder_stats: Arc::new(DecoderStats::new()),
             demux_errors: 0,
+            decoded_time: None,
         };
 
         // Pre-decode the first frame to discover the actual output sample rate.
@@ -270,6 +274,12 @@ impl SymphoniaSource {
     /// Get a handle to the decoder stats (frames decoded / errors)
     pub fn decoder_stats(&self) -> Arc<DecoderStats> {
         self.decoder_stats.clone()
+    }
+
+    /// Add the length of each decoded packet to `micros`, from here on
+    /// (see `StreamBufferReader::decoded_time`)
+    pub fn count_decoded_time(&mut self, micros: Arc<AtomicU64>) {
+        self.decoded_time = Some(micros);
     }
 
     /// Get full codec info as a `CodecInfo` struct
@@ -329,6 +339,10 @@ impl SymphoniaSource {
                             }
                             self.decoder_stats.record_frame();
                             self.demux_errors = 0;
+                            if let Some(time) = &self.decoded_time {
+                                let micros = decoded.frames() as u64 * 1_000_000 / rate as u64;
+                                time.fetch_add(micros, Ordering::Relaxed);
+                            }
 
                             // Update sample rate and channels from decoder output —
                             // FDK AAC may change these after SBR/PS processing
