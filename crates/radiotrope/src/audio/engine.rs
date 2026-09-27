@@ -55,6 +55,23 @@ fn new_player(output: Option<&MixerDeviceSink>) -> Player {
     }
 }
 
+/// A station failed to start: say why, and that nothing is playing. Every
+/// play request ends in `Playing`, or in `Error` then `Stopped`.
+fn report_failed_start(
+    event_tx: &Sender<AudioEvent>,
+    event_bus: &EventBus,
+    shared_stats: &SharedStats,
+    msg: String,
+) {
+    if let Ok(mut stats) = shared_stats.lock() {
+        *stats = StreamStats::default();
+        stats.health_state = HealthState::Failed(FailureReason::ProbeFailed);
+    }
+    let _ = event_tx.send(AudioEvent::Error(msg.clone()));
+    event_bus.emit(StreamEvent::Error(msg));
+    let _ = event_tx.send(AudioEvent::Stopped);
+}
+
 /// What the engine loop does next
 enum Wake {
     Command(AudioCommand),
@@ -127,7 +144,9 @@ pub struct AudioEngine {
 impl AudioEngine {
     /// Create a new audio engine, spawning the engine thread.
     ///
-    /// Blocks until the audio output stream is initialized (or fails).
+    /// Blocks until the engine thread has tried the audio output. With no
+    /// output device the engine still starts: it sends
+    /// [`AudioEvent::OutputLost`] and plays once a device can be opened.
     pub fn new() -> Result<Self, RadioError> {
         let generation = Arc::new(AtomicU64::new(0));
         Self::with_output(Box::new(move |lost| open_output(lost, &generation)))
@@ -367,12 +386,13 @@ impl AudioEngine {
         output_lost: Arc<AtomicBool>,
         mut open: OpenOutput,
     ) {
-        // Create audio output on this thread (cpal streams may be !Send)
+        // Create audio output on this thread (cpal streams may be !Send).
+        // Without a device, start anyway and keep trying.
         let mut stream = match open(&output_lost) {
             Ok(s) => Some(s),
             Err(e) => {
-                let _ = init_tx.send(Err(format!("Failed to open audio output: {}", e)));
-                return;
+                eprintln!("No audio output, waiting for a device: {e}");
+                None
             }
         };
 
@@ -380,6 +400,9 @@ impl AudioEngine {
         let mut sink = new_player(stream.as_ref());
 
         let _ = init_tx.send(Ok(()));
+        if stream.is_none() {
+            let _ = event_tx.send(AudioEvent::OutputLost);
+        }
 
         let mut state = PlaybackState::Stopped;
         let mut current_volume: f32 = 1.0;
@@ -402,8 +425,9 @@ impl AudioEngine {
         let mut pending_probe: Option<PendingProbe> = None;
         // What is playing, kept here so it can move to another device
         let mut playing_source: Option<PcmFeed> = None;
-        // The output device went away and no other could be opened yet
-        let mut waiting_for_output = false;
+        // The output device went away (or there was none at start) and no
+        // other could be opened yet
+        let mut waiting_for_output = stream.is_none();
         let mut next_output_try = Instant::now();
 
         let mut next_tick = Instant::now() + TICK_INTERVAL;
@@ -434,6 +458,21 @@ impl AudioEngine {
                         }
                         sink.stop();
                         playing_source = None;
+                        // The old station has stopped: forget it, and say so
+                        health_monitor = None;
+                        stream_error_slot = None;
+                        current_decoder_stats = None;
+                        current_bytes_received = None;
+                        current_segments_downloaded = None;
+                        current_buffer_status = None;
+                        if state != PlaybackState::Stopped {
+                            state = PlaybackState::Stopped;
+                            if let Ok(mut stats) = shared_stats.lock() {
+                                *stats = StreamStats::default();
+                            }
+                            event_bus.emit(StreamEvent::PlaybackStopped);
+                            let _ = event_tx.send(AudioEvent::Stopped);
+                        }
                         // Drop old producer resources before creating new ones
                         drop(analysis_active.take());
                         drop(stream_cancel.take());
@@ -479,14 +518,12 @@ impl AudioEngine {
                             }
                             Err(e) => {
                                 cancel.cancel();
-                                state = PlaybackState::Stopped;
-                                if let Ok(mut stats) = shared_stats.lock() {
-                                    *stats = StreamStats::default();
-                                    stats.health_state =
-                                        HealthState::Failed(FailureReason::ProbeFailed);
-                                }
-                                let _ = event_tx.send(AudioEvent::Error(e.to_string()));
-                                event_bus.emit(StreamEvent::Error(e.to_string()));
+                                report_failed_start(
+                                    &event_tx,
+                                    &event_bus,
+                                    &shared_stats,
+                                    e.to_string(),
+                                );
                             }
                         }
                     }
@@ -663,10 +700,12 @@ impl AudioEngine {
                                     Ok(feed) => feed,
                                     Err(e) => {
                                         p.cancel.cancel();
-                                        state = PlaybackState::Stopped;
-                                        let msg = format!("Unable to start decoding: {e}");
-                                        let _ = event_tx.send(AudioEvent::Error(msg.clone()));
-                                        event_bus.emit(StreamEvent::Error(msg));
+                                        report_failed_start(
+                                            &event_tx,
+                                            &event_bus,
+                                            &shared_stats,
+                                            format!("Unable to start decoding: {e}"),
+                                        );
                                         continue;
                                     }
                                 };
@@ -716,48 +755,35 @@ impl AudioEngine {
                             Ok(Err(e)) => {
                                 let p = pending_probe.take().unwrap();
                                 p.cancel.cancel();
-                                state = PlaybackState::Stopped;
-                                if let Ok(mut stats) = shared_stats.lock() {
-                                    *stats = StreamStats::default();
-                                    stats.health_state =
-                                        HealthState::Failed(FailureReason::ProbeFailed);
-                                }
-                                let _ = event_tx.send(AudioEvent::Error(e.to_string()));
-                                event_bus.emit(StreamEvent::Error(e.to_string()));
+                                report_failed_start(
+                                    &event_tx,
+                                    &event_bus,
+                                    &shared_stats,
+                                    e.to_string(),
+                                );
                             }
                             Err(TryRecvError::Empty) => {
                                 // Still probing — check for timeout
                                 if pending.started.elapsed().as_secs() >= PROBE_TIMEOUT_SECS {
                                     let p = pending_probe.take().unwrap();
                                     p.cancel.cancel();
-                                    state = PlaybackState::Stopped;
-                                    if let Ok(mut stats) = shared_stats.lock() {
-                                        *stats = StreamStats::default();
-                                        stats.health_state =
-                                            HealthState::Failed(FailureReason::ProbeFailed);
-                                    }
                                     let msg = format!(
                                         "Unable to detect audio format (timed out after {}s)",
                                         PROBE_TIMEOUT_SECS
                                     );
                                     let _ = event_tx.send(AudioEvent::ProbeTimeout);
-                                    let _ = event_tx.send(AudioEvent::Error(msg.clone()));
-                                    event_bus.emit(StreamEvent::Error(msg));
+                                    report_failed_start(&event_tx, &event_bus, &shared_stats, msg);
                                 }
                             }
                             Err(TryRecvError::Disconnected) => {
                                 let p = pending_probe.take().unwrap();
                                 p.cancel.cancel();
-                                state = PlaybackState::Stopped;
-                                if let Ok(mut stats) = shared_stats.lock() {
-                                    *stats = StreamStats::default();
-                                    stats.health_state =
-                                        HealthState::Failed(FailureReason::ProbeFailed);
-                                }
-                                let _ = event_tx
-                                    .send(AudioEvent::Error("Probe thread panicked".to_string()));
-                                event_bus
-                                    .emit(StreamEvent::Error("Probe thread panicked".to_string()));
+                                report_failed_start(
+                                    &event_tx,
+                                    &event_bus,
+                                    &shared_stats,
+                                    "Probe thread panicked".to_string(),
+                                );
                             }
                         }
                     }
@@ -1064,8 +1090,16 @@ mod tests {
     }
 
     /// Helper: try to create an engine; return None if audio hardware is unavailable
+    /// An engine, if this machine has an audio output to play on (CI has
+    /// none, and an engine without one only waits for a device)
     fn try_engine() -> Option<AudioEngine> {
-        AudioEngine::new().ok()
+        has_output().then(|| AudioEngine::new().ok()).flatten()
+    }
+
+    /// Whether an output device opens (cached)
+    fn has_output() -> bool {
+        static RESULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *RESULT.get_or_init(|| open_output(&Arc::default(), &Arc::default()).is_ok())
     }
 
     /// Check if audio playback actually processes samples (cached).
@@ -1628,7 +1662,8 @@ mod tests {
         let wav2 = make_wav(48000, 2, &samples);
         engine.play(Box::new(Cursor::new(wav2)), None, None);
 
-        // Should get a new Playing event with updated info
+        // The first clip stops, then the second plays
+        expect_stopped(&engine);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(info)) => {
                 assert_eq!(info.channels, 2);
@@ -1684,6 +1719,7 @@ mod tests {
             Some(AudioEvent::Error(_)) => {}
             other => panic!("Expected Error, got {:?}", other),
         }
+        expect_stopped(&engine);
 
         // Engine should still work - play valid data
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -1707,6 +1743,7 @@ mod tests {
                 Some(AudioEvent::Error(_)) => {}
                 other => panic!("Expected Error, got {:?}", other),
             }
+            expect_stopped(&engine);
         }
 
         // Engine still works
@@ -2169,6 +2206,7 @@ mod tests {
         // Play new clip while paused
         let wav2 = make_wav(48000, 2, &vec![0i16; 48000]);
         engine.play(Box::new(Cursor::new(wav2)), None, None);
+        expect_stopped(&engine);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(info)) => {
                 assert_eq!(info.sample_rate, 48000);
@@ -2199,6 +2237,7 @@ mod tests {
         // Play second clip - volume should still be 0.0
         let wav2 = make_wav(48000, 1, &vec![0i16; 48000]);
         engine.play(Box::new(Cursor::new(wav2)), None, None);
+        expect_stopped(&engine);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
             other => panic!("Expected second Playing, got {:?}", other),
@@ -2356,6 +2395,7 @@ mod tests {
             Some(AudioEvent::Error(_)) => {}
             other => panic!("Expected Error, got {:?}", other),
         }
+        expect_stopped(&engine);
 
         // Play valid data — health monitor should be freshly created
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2799,6 +2839,7 @@ mod tests {
             Some(AudioEvent::Error(_)) => {}
             other => panic!("Expected Error, got {:?}", other),
         }
+        expect_stopped(&engine);
 
         // Play valid data - volume should still be 0.3
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -3317,6 +3358,13 @@ mod tests {
         }
     }
 
+    fn expect_stopped(engine: &AudioEngine) {
+        match wait_for_event(engine, 2000) {
+            Some(AudioEvent::Stopped) => {}
+            other => panic!("Expected Stopped, got {:?}", other),
+        }
+    }
+
     #[test]
     fn stopping_cancels_the_stream() {
         let Some(engine) = try_engine() else { return };
@@ -3340,6 +3388,7 @@ mod tests {
         let new = StreamCancel::new();
         engine.play_stream(resolved_stream(EndlessWav::new(), &new));
         assert!(gets_cancelled(&old), "the old station must be cancelled");
+        expect_stopped(&engine);
         expect_playing(&engine);
         assert!(!new.is_cancelled());
         engine.shutdown();
@@ -3356,6 +3405,131 @@ mod tests {
 
         engine.stop();
         assert!(gets_cancelled(&cancel), "stop must cancel the stream");
+        engine.shutdown();
+    }
+
+    // === Event contract, and starting without a device ===
+
+    /// An engine on a machine with no audio output (runs on CI too)
+    fn engine_without_device() -> AudioEngine {
+        AudioEngine::with_output(Box::new(|_| Err("no device".to_string())))
+            .expect("the engine starts without a device")
+    }
+
+    /// Every event within `ms`
+    fn events_for(engine: &AudioEngine, ms: u64) -> Vec<AudioEvent> {
+        let deadline = Instant::now() + Duration::from_millis(ms);
+        let mut events = Vec::new();
+        while Instant::now() < deadline {
+            while let Some(event) = engine.try_recv_event() {
+                events.push(event);
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        events
+    }
+
+    #[test]
+    fn an_engine_without_a_device_starts_and_says_so() {
+        let engine = engine_without_device();
+        assert!(matches!(
+            wait_for_event(&engine, 1000),
+            Some(AudioEvent::OutputLost)
+        ));
+
+        // A station still starts, and is told there is nowhere to play it
+        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        let events = events_for(&engine, 1000);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [AudioEvent::Playing(_), AudioEvent::OutputLost]
+            ),
+            "{events:?}"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_failed_start_ends_in_stopped() {
+        let engine = engine_without_device();
+        let _ = wait_for_event(&engine, 1000);
+        engine.play(Box::new(Cursor::new(vec![0u8; 100])), None, None);
+        let events = events_for(&engine, 1000);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [AudioEvent::Error(_), AudioEvent::Stopped]
+            ),
+            "{events:?}"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_new_station_stops_the_old_one_first() {
+        let engine = engine_without_device();
+        let _ = wait_for_event(&engine, 1000);
+        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        let events = events_for(&engine, 1000);
+        assert!(matches!(events.first(), Some(AudioEvent::Playing(_))));
+
+        // Another station that plays: the old one's Stopped comes first,
+        // and nothing about it comes after
+        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        let events = events_for(&engine, 1500);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    AudioEvent::Stopped,
+                    AudioEvent::Playing(_),
+                    AudioEvent::OutputLost
+                ]
+            ),
+            "{events:?}"
+        );
+
+        // And one that fails: stopped, then failed and stopped
+        engine.play(Box::new(Cursor::new(vec![0u8; 100])), None, None);
+        let events = events_for(&engine, 1000);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [
+                    AudioEvent::Stopped,
+                    AudioEvent::Error(_),
+                    AudioEvent::Stopped
+                ]
+            ),
+            "{events:?}"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_device_that_appears_later_plays() {
+        // No device at start; the first retry finds one
+        let Some((engine, attempts)) = engine_with_output(|attempt| attempt != 1) else {
+            return;
+        };
+        let mut events = Vec::new();
+        assert!(
+            wait_until(&engine, &mut events, Duration::from_secs(5), |e| {
+                has(e, |e| matches!(e, AudioEvent::OutputRestored))
+            }),
+            "{events:?}"
+        );
+        assert!(matches!(events.first(), Some(AudioEvent::OutputLost)));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        engine.play(EndlessWav::new(), None, None);
+        assert!(
+            wait_until(&engine, &mut events, Duration::from_secs(3), |_| {
+                sample_count(&engine) > 0
+            }),
+            "nothing played: {events:?}"
+        );
         engine.shutdown();
     }
 
