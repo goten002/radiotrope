@@ -14,6 +14,7 @@ use radiotrope::audio::{
     AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, RecordingFormat, RecordingOptions,
     RecordingStatus, RecordingTags, SharedStats, TapPoint,
 };
+use radiotrope::config::timeouts::RESOLVE_TIMEOUT_SECS;
 use radiotrope::stream::metadata::StreamMetadata;
 use radiotrope::stream::{StreamCancel, StreamResolver, StreamType};
 use radiotrope_app::data::recordings;
@@ -21,8 +22,9 @@ use radiotrope_app::data::recordings;
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
 /// Timeout for stream resolution — if the server doesn't respond within this
-/// duration the resolve attempt is abandoned.
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(15);
+/// duration the resolve attempt is abandoned. The engine ends a resolve by
+/// its own deadline with the reason; this is a little longer, as a backstop.
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(RESOLVE_TIMEOUT_SECS + 3);
 
 pub struct AppController {
     cmd_rx: Receiver<AppCommand>,

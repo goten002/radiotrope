@@ -6,9 +6,10 @@
 
 use std::io;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::config::timeouts::{MAX_BACKOFF_SECS, RETRY_BASE_DELAY_SECS};
+use crate::config::timeouts::{MAX_BACKOFF_SECS, RESOLVE_TIMEOUT_SECS, RETRY_BASE_DELAY_SECS};
+use crate::error::{RadioError, Result};
 
 pub mod buffer;
 pub mod cancel;
@@ -105,6 +106,47 @@ pub(crate) fn backoff_sleep(consecutive_failures: u32, cancel: &StreamCancel) ->
     cancel.sleep(backoff_delay(consecutive_failures))
 }
 
+/// When a resolve must be done by.
+///
+/// Each step of a resolve (a playlist fetch, the wait for the first audio)
+/// waits at most for the time left, so a station that is slow to start
+/// fails with the reason of the step it was stuck on, not the app's
+/// generic timeout.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Deadline(Option<Instant>);
+
+impl Deadline {
+    /// No deadline: each step keeps its own timeout
+    pub(crate) const NONE: Self = Self(None);
+
+    pub(crate) fn after(time: Duration) -> Self {
+        Self(Instant::now().checked_add(time))
+    }
+
+    /// The deadline of a station's resolve, [`RESOLVE_TIMEOUT_SECS`] from now
+    pub(crate) fn for_resolve() -> Self {
+        Self::after(Duration::from_secs(RESOLVE_TIMEOUT_SECS))
+    }
+
+    /// `limit`, or the time left if that is shorter
+    pub(crate) fn cap(&self, limit: Duration) -> Duration {
+        match self.0 {
+            Some(at) => limit.min(at.saturating_duration_since(Instant::now())),
+            None => limit,
+        }
+    }
+
+    /// A timeout error once the deadline has passed
+    pub(crate) fn check(&self) -> Result<()> {
+        match self.0 {
+            Some(at) if Instant::now() >= at => Err(RadioError::Timeout(format!(
+                "the station did not start within {RESOLVE_TIMEOUT_SECS} s"
+            ))),
+            _ => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +195,27 @@ mod tests {
         let err = end.read_result("ICY stream ended").unwrap_err();
         assert_eq!(err.to_string(), "HTTP 404 Not Found");
         assert_eq!(end.failure().as_deref(), Some("HTTP 404 Not Found"));
+    }
+
+    #[test]
+    fn a_deadline_caps_each_wait_to_the_time_left() {
+        let limit = Duration::from_secs(10);
+        assert_eq!(Deadline::NONE.cap(limit), limit);
+        assert!(Deadline::NONE.check().is_ok());
+
+        let deadline = Deadline::after(Duration::from_millis(200));
+        let left = deadline.cap(limit);
+        assert!(left <= Duration::from_millis(200) && left > Duration::ZERO);
+        assert_eq!(
+            deadline.cap(Duration::from_millis(50)),
+            Duration::from_millis(50)
+        );
+        assert!(deadline.check().is_ok());
+
+        std::thread::sleep(Duration::from_millis(250));
+        assert_eq!(deadline.cap(limit), Duration::ZERO);
+        let err = deadline.check().unwrap_err();
+        assert!(matches!(err, RadioError::Timeout(_)), "{err}");
     }
 
     #[test]
