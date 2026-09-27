@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 use rodio::Source;
@@ -327,6 +327,10 @@ pub struct RecordingTap<S> {
     point: TapPoint,
     generation: u64,
     until_check: u32,
+    /// Position of the next sample within its frame (0 = frame start)
+    frame_pos: u16,
+    /// Channel count `frame_pos` counts in
+    frame_channels: u16,
     batch: Vec<f32>,
     batch_rate: u32,
     batch_channels: u16,
@@ -343,6 +347,8 @@ where
             point,
             generation: 0,
             until_check: 0,
+            frame_pos: 0,
+            frame_channels: 0,
             batch: Vec::new(),
             batch_rate: 0,
             batch_channels: 0,
@@ -371,8 +377,20 @@ where
 
     fn next(&mut self) -> Option<f32> {
         let sample = self.inner.next()?;
+        // Read after next(): the format of the sample just returned.
+        let channels = self.inner.channels().get();
+        if channels != self.frame_channels {
+            // Formats change between packets, so this sample starts a frame
+            self.frame_channels = channels;
+            self.frame_pos = 0;
+        }
+        let frame_start = self.frame_pos == 0;
+        self.frame_pos = (self.frame_pos + 1) % channels;
 
-        if self.until_check == 0 {
+        self.until_check = self.until_check.saturating_sub(1);
+        // Start or stop only at a frame start: a recording that began
+        // mid-frame would take the wrong channels as left and right
+        if self.until_check == 0 && frame_start {
             self.until_check = STATE_CHECK_INTERVAL;
             let generation = self.recorder.generation_for(self.point);
             if generation != self.generation {
@@ -381,12 +399,9 @@ where
                 self.generation = generation;
             }
         }
-        self.until_check -= 1;
 
         if self.generation != 0 {
-            // Read after next(): the format of the sample just returned.
             let rate = self.inner.sample_rate().get();
-            let channels = self.inner.channels().get();
             if rate != self.batch_rate || channels != self.batch_channels {
                 self.send_batch();
                 self.batch_rate = rate;
@@ -428,6 +443,10 @@ where
 
 impl<S> Drop for RecordingTap<S> {
     fn drop(&mut self) {
+        // rodio can stop a source mid-frame: keep whole frames only
+        let channels = usize::from(self.batch_channels.max(1));
+        self.batch
+            .truncate(self.batch.len() - self.batch.len() % channels);
         if self.generation != 0 && !self.batch.is_empty() {
             let samples = mem::take(&mut self.batch);
             self.recorder.submit(
@@ -501,8 +520,19 @@ fn writer_loop(
     }
 }
 
-fn write_recording(
-    file: File,
+/// The file a recording is written to. A trait so tests can make writes fail.
+trait RecordingFile: Write + Seek {
+    fn sync_all(&self) -> std::io::Result<()>;
+}
+
+impl RecordingFile for File {
+    fn sync_all(&self) -> std::io::Result<()> {
+        File::sync_all(self)
+    }
+}
+
+fn write_recording<F: RecordingFile>(
+    file: F,
     mut encoder: Box<dyn AudioEncoder>,
     rx: &Receiver<WriterMsg>,
     stats: &WriterStats,
@@ -510,7 +540,7 @@ fn write_recording(
     let io_err = |e: std::io::Error| format!("Writing the recording failed: {e}");
     let mut out = BufWriter::with_capacity(64 * 1024, file);
     let mut bytes = Vec::new();
-    let write = |out: &mut BufWriter<File>, bytes: &mut Vec<u8>| -> Result<(), String> {
+    let write = |out: &mut BufWriter<F>, bytes: &mut Vec<u8>| -> Result<(), String> {
         out.write_all(bytes).map_err(io_err)?;
         stats
             .bytes_written
@@ -521,7 +551,14 @@ fn write_recording(
 
     // Run until stopped or an error; either way, finish the file after so
     // what was recorded stays playable.
+    let mut last_flush = Instant::now();
     let mut result = (|| loop {
+        // Flush at least every FLUSH_INTERVAL, also while audio keeps
+        // arriving, so a crash loses little
+        if last_flush.elapsed() >= FLUSH_INTERVAL {
+            out.flush().map_err(io_err)?;
+            last_flush = Instant::now();
+        }
         match rx.recv_timeout(FLUSH_INTERVAL) {
             Ok(WriterMsg::Pcm {
                 sample_rate,
@@ -531,6 +568,9 @@ fn write_recording(
                 if sample_rate == 0 || channels == 0 {
                     continue;
                 }
+                // Whole frames only: a stray sample would swap left and
+                // right for the rest of the file
+                samples.truncate(samples.len() - samples.len() % channels as usize);
                 for s in samples.iter_mut() {
                     // The EQ has no limiter; clip like the sound card would.
                     *s = if s.is_finite() {
@@ -553,7 +593,7 @@ fn write_recording(
                     .fetch_add(frames * 1_000_000 / sample_rate as u64, Ordering::Relaxed);
             }
             Ok(WriterMsg::Finish) | Err(RecvTimeoutError::Disconnected) => return Ok(()),
-            Err(RecvTimeoutError::Timeout) => out.flush().map_err(io_err)?,
+            Err(RecvTimeoutError::Timeout) => {}
         }
     })();
 
@@ -561,13 +601,26 @@ fn write_recording(
     let written = write(&mut out, &mut bytes);
     result = result.and(finished).and(written);
 
-    let mut file = out.into_inner().map_err(|e| io_err(e.into_error()))?;
-    for (offset, patch) in encoder.header_patches() {
-        file.seek(SeekFrom::Start(offset)).map_err(io_err)?;
-        file.write_all(&patch).map_err(io_err)?;
-    }
-    file.sync_all().map_err(io_err)?;
-    result
+    // Patch the header even when the last flush fails (a full disk): the
+    // sizes are a few bytes at the start of the file, and without them a
+    // WAV reads as empty
+    let mut file = match out.into_inner() {
+        Ok(file) => file,
+        Err(e) => {
+            let (error, out) = e.into_parts();
+            result = result.and(Err(io_err(error)));
+            out.into_parts().0
+        }
+    };
+    let patched = (|| {
+        for (offset, patch) in encoder.header_patches() {
+            file.seek(SeekFrom::Start(offset))?;
+            file.write_all(&patch)?;
+        }
+        file.sync_all()
+    })()
+    .map_err(io_err);
+    result.and(patched)
 }
 
 #[cfg(test)]
@@ -921,5 +974,206 @@ mod tests {
         assert_eq!(convert_channels(&[0.5, 0.25], 1, 2), [0.5, 0.5, 0.25, 0.25]);
         assert_eq!(convert_channels(&[0.5, 0.25], 2, 1), [0.375]);
         assert_eq!(convert_channels(&[1., 2., 3., 4., 5., 6.], 6, 2), [1., 2.]);
+    }
+
+    // --- Robustness ---
+
+    /// In-memory file that fails writes past `limit` bytes, like a full
+    /// disk; writes below it (header patches) still work
+    #[derive(Clone)]
+    struct FullDisk {
+        data: Arc<Mutex<Vec<u8>>>,
+        pos: u64,
+        limit: usize,
+    }
+
+    impl Write for FullDisk {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            let mut data = self.data.lock().unwrap();
+            let pos = self.pos as usize;
+            if pos + buf.len() > self.limit {
+                return Err(std::io::Error::other("No space left on device"));
+            }
+            if data.len() < pos + buf.len() {
+                data.resize(pos + buf.len(), 0);
+            }
+            data[pos..pos + buf.len()].copy_from_slice(buf);
+            self.pos += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Seek for FullDisk {
+        fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+            if let SeekFrom::Start(p) = pos {
+                self.pos = p;
+            }
+            Ok(self.pos)
+        }
+    }
+
+    impl RecordingFile for FullDisk {
+        fn sync_all(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn full_disk(limit: usize) -> FullDisk {
+        FullDisk {
+            data: Arc::default(),
+            pos: 0,
+            limit,
+        }
+    }
+
+    fn pcm(samples: Vec<f32>) -> WriterMsg {
+        WriterMsg::Pcm {
+            sample_rate: 44_100,
+            channels: 2,
+            samples,
+        }
+    }
+
+    #[test]
+    fn full_disk_still_gets_a_wav_header() {
+        let disk = full_disk(100_000);
+        let (tx, rx) = bounded(QUEUE_BATCHES);
+        // About 1 s of stereo 16-bit: more than fits
+        for chunk in sine(44_100, 2, 1.0).chunks(4096) {
+            tx.send(pcm(chunk.to_vec())).unwrap();
+        }
+        tx.send(WriterMsg::Finish).unwrap();
+        let encoder = new_encoder(RecordingFormat::Wav, RecordingTags::default(), 0);
+        let stats = WriterStats::default();
+        let result = write_recording(disk.clone(), encoder, &rx, &stats);
+        assert!(result.is_err(), "the full disk is reported");
+
+        let data = disk.data.lock().unwrap();
+        assert_eq!(&data[..4], b"RIFF");
+        let riff_size = u32::from_le_bytes(data[4..8].try_into().unwrap());
+        assert!(riff_size > 0, "header sizes never written: reads as empty");
+    }
+
+    #[test]
+    fn flushes_while_audio_keeps_arriving() {
+        let disk = full_disk(usize::MAX);
+        let (tx, rx) = bounded(QUEUE_BATCHES);
+        let writer = {
+            let disk = disk.clone();
+            thread::spawn(move || {
+                let encoder = new_encoder(RecordingFormat::Wav, RecordingTags::default(), 0);
+                write_recording(disk, encoder, &rx, &WriterStats::default())
+            })
+        };
+        // Small batches, faster than the flush interval: never a timeout,
+        // and never enough to fill the 64 KiB write buffer
+        for _ in 0..8 {
+            tx.send(pcm(vec![0.1; 1000])).unwrap();
+            thread::sleep(Duration::from_millis(200));
+        }
+        let on_disk = disk.data.lock().unwrap().len();
+        tx.send(WriterMsg::Finish).unwrap();
+        writer.join().unwrap().unwrap();
+        assert!(on_disk > 0, "nothing reached the file after 1.6 s of audio");
+    }
+
+    /// Decode a WAV recording to interleaved samples
+    fn decode_samples(path: &Path) -> (usize, Vec<f32>) {
+        let data = std::fs::read(path).unwrap();
+        let source = SymphoniaSource::new_with_hint(Cursor::new(data), Some("wav")).unwrap();
+        let channels = source.channels().get() as usize;
+        (channels, source.collect())
+    }
+
+    fn wav_options(path: &Path) -> RecordingOptions {
+        RecordingOptions {
+            path: path.with_extension("wav"),
+            format: RecordingFormat::Wav,
+            ..options(path, TapPoint::BeforeEq)
+        }
+    }
+
+    #[test]
+    fn surround_recording_started_mid_stream_keeps_the_front_pair() {
+        let path = temp_path("surround-late").with_extension("wav");
+        let recorder = Recorder::new();
+        // 5.1: front left carries the tone, every other channel is silent
+        let frames = 44_100;
+        let samples: Vec<f32> = (0..frames)
+            .flat_map(|i| {
+                let v = (i as f32 * 0.05).sin() * 0.5;
+                [v, 0.0, 0.0, 0.0, 0.0, 0.0]
+            })
+            .collect();
+        let source = SamplesBuffer::new(
+            NonZero::new(6).unwrap(),
+            NonZero::new(44_100).unwrap(),
+            samples,
+        );
+        let mut tap = RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
+        // Play a while before recording starts; the tap looks at the
+        // recorder every 1024 samples, which is not a multiple of 6
+        for _ in 0..2000 {
+            tap.next();
+        }
+        recorder.start(wav_options(&path)).unwrap();
+        for _ in tap {}
+        recorder.stop().unwrap();
+
+        let (channels, out) = decode_samples(&path);
+        assert_eq!(channels, 2);
+        let peak = |ch: usize| {
+            out.iter()
+                .skip(ch)
+                .step_by(2)
+                .fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        assert!(peak(0) > 0.4, "left lost the front-left channel");
+        assert!(peak(1) < 0.01, "right picked up another channel");
+    }
+
+    #[test]
+    fn source_stopped_mid_frame_does_not_swap_channels() {
+        let path = temp_path("mid-frame").with_extension("wav");
+        let recorder = Recorder::new();
+        recorder.start(wav_options(&path)).unwrap();
+        // Tone on the left, silence on the right
+        let stereo = |frames: usize| -> Vec<f32> {
+            (0..frames)
+                .flat_map(|i| [(i as f32 * 0.05).sin() * 0.5, 0.0])
+                .collect()
+        };
+        let source = |samples| {
+            SamplesBuffer::new(
+                NonZero::new(2).unwrap(),
+                NonZero::new(44_100).unwrap(),
+                samples,
+            )
+        };
+        // rodio stops a source after an odd number of samples
+        let mut first =
+            RecordingTap::new(source(stereo(10_000)), recorder.clone(), TapPoint::BeforeEq);
+        for _ in 0..5_001 {
+            first.next();
+        }
+        drop(first);
+        // The next source goes on in the same recording
+        play_through(source(stereo(10_000)), &recorder, TapPoint::BeforeEq);
+        recorder.stop().unwrap();
+
+        let (channels, out) = decode_samples(&path);
+        assert_eq!(channels, 2);
+        let right_peak = out
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(
+            right_peak < 0.01,
+            "left and right swapped: right peaks at {right_peak}"
+        );
     }
 }

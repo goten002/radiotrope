@@ -407,12 +407,17 @@ impl OggWriter {
     /// Add a packet whose last sample is at `granule`. Full pages are written to `out`.
     fn packet(&mut self, data: &[u8], granule: u64, out: &mut Vec<u8>) {
         let mut rest = data;
+        // Some of this packet is already on the page being built
+        let mut started = false;
         loop {
             if self.lacing.len() == 255 {
-                // Page full in the middle of this packet
+                // Page full. The next page continues a packet only if this
+                // one was cut; a page that filled up exactly as the previous
+                // packet ended starts clean (else demuxers drop a packet).
                 self.write_page(out, false);
-                self.continued = true;
+                self.continued = started;
             }
+            started = true;
             let take = rest.len().min(255);
             self.lacing.push(take as u8);
             self.body.extend_from_slice(&rest[..take]);
@@ -532,6 +537,24 @@ mod tests {
         );
         // 300 full lacing values then a 0 to end the packet: 45 + 1 on page two
         assert_eq!(out[second + 26], 46);
+    }
+
+    #[test]
+    fn page_filled_by_a_whole_packet_is_not_continued() {
+        let mut ogg = OggWriter::new(7);
+        let mut out = Vec::new();
+        // 254 lacing values of 255 plus the terminating 0: exactly 255
+        ogg.packet(&vec![1u8; 255 * 254], 10, &mut out);
+        ogg.packet(&[2u8; 10], 20, &mut out);
+        ogg.flush(&mut out, true);
+        let second = out[4..].windows(4).position(|w| w == b"OggS").unwrap() + 4;
+        assert_eq!(out[26], 255, "first page holds exactly the first packet");
+        assert_eq!(
+            i64::from_le_bytes(out[6..14].try_into().unwrap()),
+            10,
+            "first packet ends on the first page"
+        );
+        assert_eq!(out[second + 5], 0x04, "second page starts a new packet");
     }
 
     #[test]
