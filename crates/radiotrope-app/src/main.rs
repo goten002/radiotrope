@@ -89,6 +89,11 @@ fn main() {
     // Create Slint UI
     let ui = App::new().unwrap();
 
+    // Wayland app_id / X11 WM_CLASS: desktops match it against the
+    // `radiotrope.desktop` file (and its StartupWMClass) to find the icon.
+    // A no-op on Windows and macOS.
+    let _ = slint::set_xdg_app_id("radiotrope");
+
     // Initial load of favorites into UI model
     refresh_favorites(&ui, &favorites, &logo_service);
 
