@@ -35,6 +35,10 @@ pub enum HlsSegmentFormat {
     Raw,
 }
 
+/// Longest playlist reload wait we accept from `#EXT-X-TARGETDURATION`.
+/// Radio segments are 2-10 s; RFC 8216 puts no bound on the tag.
+const MAX_TARGET_DURATION_SECS: u64 = 60;
+
 /// HLS stream reader — downloads segments in background, provides Read+Seek
 pub struct HlsReader {
     buffer: Cursor<Vec<u8>>,
@@ -524,11 +528,31 @@ pub fn parse_hls_playlist(content: &[u8]) -> std::result::Result<Playlist, Strin
                 clean.push_str(duration);
                 clean.push(',');
             }
-            None => clean.push_str(line),
+            None => clean.push_str(&integer_tag_without_decimals(line)),
         }
         clean.push('\n');
     }
     m3u8_rs::parse_playlist_res(clean.as_bytes()).map_err(|_| "Invalid HLS playlist".to_string())
+}
+
+/// m3u8-rs reads these tags' values as integers and stops at a '.', leaving
+/// the rest (`.0`) to be taken as a segment URI. Some packagers write
+/// `#EXT-X-TARGETDURATION:6.0`, so drop the fraction.
+fn integer_tag_without_decimals(line: &str) -> std::borrow::Cow<'_, str> {
+    const INTEGER_TAGS: [&str; 4] = [
+        "#EXT-X-TARGETDURATION:",
+        "#EXT-X-VERSION:",
+        "#EXT-X-MEDIA-SEQUENCE:",
+        "#EXT-X-DISCONTINUITY-SEQUENCE:",
+    ];
+    for tag in INTEGER_TAGS {
+        if let Some(value) = line.strip_prefix(tag) {
+            if let Some((whole, _)) = value.split_once('.') {
+                return format!("{tag}{whole}").into();
+            }
+        }
+    }
+    line.into()
 }
 
 /// GET `url`, returning the final URL (after redirects) and the body.
@@ -651,7 +675,10 @@ impl SegmentDownloader {
 
     /// Sleep for `duration` unless stopped first. Returns false if stopped.
     fn sleep(&self, duration: Duration) -> bool {
-        let deadline = std::time::Instant::now() + duration;
+        let now = std::time::Instant::now();
+        let deadline = now
+            .checked_add(duration)
+            .unwrap_or(now + Duration::from_secs(3600));
         loop {
             if self.stopped() {
                 return false;
@@ -722,7 +749,9 @@ impl SegmentDownloader {
             let segment_titles = extinf_titles(&content);
 
             let is_live = !playlist.end_list;
-            let target_duration = playlist.target_duration;
+            // Untrusted: a bogus huge value would overflow `Instant + Duration`
+            // (a panic, which aborts the release build) in `sleep`
+            let target_duration = playlist.target_duration.min(MAX_TARGET_DURATION_SECS);
 
             // fMP4 (EXT-X-MAP): fetch the init segment before the first media
             // segment, since the decoder can't start without it
@@ -777,7 +806,12 @@ impl SegmentDownloader {
             for (url, _) in segments.iter().take(start_idx) {
                 downloaded_urls.insert(url.clone());
             }
-            first_fetch = false;
+            // An empty live playlist (encoder just started) doesn't count:
+            // the next fetch must still start near the live edge rather
+            // than at the oldest segment of a long window
+            if !segments.is_empty() {
+                first_fetch = false;
+            }
 
             let mut fetched_new = false;
             // Why the segments of this pass gave no audio
@@ -2184,6 +2218,57 @@ mod tests {
         }
 
         #[test]
+        fn huge_target_duration_does_not_kill_the_downloader() {
+            // `Instant + Duration::from_secs(u64::MAX)` panics, and the
+            // release build aborts on panic: one bad playlist crashed the app
+            let server = TestServer::start();
+            let audio = frame(400);
+            let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:18446744073709551615\n\
+                #EXTINF:5.0,\nseg1.ts\n";
+            server.route("/index.m3u8", Route::new(playlist));
+            server.route("/seg1.ts", Route::new(plain_ts(&audio)));
+            let (mut reader, _) = HlsReader::new(&server.url("/index.m3u8"), None).unwrap();
+            assert_eq!(first_chunk(&mut reader), audio);
+            // Give the downloader time to reach its reload wait
+            thread::sleep(Duration::from_millis(500));
+            let handle = reader._handle.as_ref().unwrap();
+            assert!(!handle.is_finished(), "downloader thread died");
+        }
+
+        #[test]
+        fn empty_first_playlist_still_starts_near_the_live_edge() {
+            let server = TestServer::start();
+            let audio = frame(400);
+            // The encoder just started: a live playlist with no segments yet
+            server.route(
+                "/index.m3u8",
+                Route::new("#EXTM3U\n#EXT-X-TARGETDURATION:2\n"),
+            );
+            let names: Vec<String> = (1..=10).map(|i| format!("seg{i}.ts")).collect();
+            for name in &names {
+                server.route(&format!("/{name}"), Route::new(plain_ts(&audio)));
+            }
+            let url = server.url("/index.m3u8");
+            let opening = thread::spawn(move || HlsReader::new(&url, None).map(|(r, _)| r));
+
+            // Next reload: a long window of ten segments
+            thread::sleep(Duration::from_millis(300));
+            let mut playlist = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:2\n");
+            for name in &names {
+                playlist.push_str(&format!("#EXTINF:2.0,\n{name}\n"));
+            }
+            server.route("/index.m3u8", Route::new(playlist));
+
+            let _reader = opening.join().unwrap().unwrap();
+            assert_eq!(server.hits("/seg1.ts"), 0, "started at the oldest segment");
+            assert_eq!(
+                server.hits("/seg8.ts"),
+                1,
+                "didn't start near the live edge"
+            );
+        }
+
+        #[test]
         fn failed_start_stops_the_downloader() {
             let server = TestServer::start();
             // A live playlist that never lists a segment the reader can use
@@ -2201,6 +2286,20 @@ mod tests {
         fn uris(content: &str) -> Vec<String> {
             match parse_hls_playlist(content.as_bytes()).unwrap() {
                 Playlist::MediaPlaylist(pl) => pl.segments.into_iter().map(|s| s.uri).collect(),
+                Playlist::MasterPlaylist(_) => panic!("expected a media playlist"),
+            }
+        }
+
+        #[test]
+        fn decimal_integer_tags_do_not_become_segments() {
+            let pl = "#EXTM3U\n#EXT-X-VERSION:3.0\n#EXT-X-TARGETDURATION:6.0\n\
+                #EXT-X-MEDIA-SEQUENCE:120.0\n#EXTINF:6.0,\nseg120.aac\n";
+            assert_eq!(uris(pl), vec!["seg120.aac"]);
+            match parse_hls_playlist(pl.as_bytes()).unwrap() {
+                Playlist::MediaPlaylist(pl) => {
+                    assert_eq!(pl.target_duration, 6);
+                    assert_eq!(pl.media_sequence, 120);
+                }
                 Playlist::MasterPlaylist(_) => panic!("expected a media playlist"),
             }
         }

@@ -38,23 +38,42 @@ pub fn get_base_url(url: &str) -> String {
         .to_string()
 }
 
-/// Make a URI absolute, using base_url if the URI is relative
+/// True for an absolute `http://` or `https://` URL (scheme in any case)
+fn is_http_url(s: &str) -> bool {
+    let lower = s.get(..8).unwrap_or(s).to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
+}
+
+/// Make a URI absolute, using base_url (a directory, without the trailing
+/// slash) if the URI is relative.
+///
+/// Resolves like a browser (RFC 3986): `/abs/path`, `../up` and
+/// `//host/path` work, not just names in the same directory.
 pub fn make_absolute_url(uri: &str, base_url: &str) -> String {
-    if uri.starts_with("http://") || uri.starts_with("https://") {
-        uri.to_string()
-    } else {
-        format!("{}/{}", base_url, uri)
+    if is_http_url(uri) {
+        return uri.to_string();
     }
+    match reqwest::Url::parse(&format!("{}/", base_url)).and_then(|base| base.join(uri)) {
+        Ok(url) => url.to_string(),
+        Err(_) => format!("{}/{}", base_url, uri),
+    }
+}
+
+/// Drop a UTF-8 byte order mark, which some playlist editors write
+fn strip_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
 /// Parse a PLS playlist and return the first stream URL
 pub fn parse_pls(content: &str) -> Option<String> {
-    for line in content.lines() {
+    for line in strip_bom(content).lines() {
         let line = line.trim();
-        if line.to_lowercase().starts_with("file") && line.contains('=') {
-            if let Some(stream_url) = line.split('=').nth(1) {
+        if line.to_lowercase().starts_with("file") {
+            // Split at the first '=' only: stream URLs often carry
+            // `?key=value&…` query strings (tokens, session ids)
+            if let Some((_, stream_url)) = line.split_once('=') {
                 let stream_url = stream_url.trim();
-                if stream_url.starts_with("http") {
+                if is_http_url(stream_url) {
                     return Some(stream_url.to_string());
                 }
             }
@@ -65,13 +84,13 @@ pub fn parse_pls(content: &str) -> Option<String> {
 
 /// Parse an M3U playlist and return the first stream URL
 pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
-    for line in content.lines() {
+    for line in strip_bom(content).lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
 
-        if line.starts_with("http://") || line.starts_with("https://") {
+        if is_http_url(line) {
             return Some(line.to_string());
         } else if !line.contains('=') {
             return Some(make_absolute_url(line, base_url));
@@ -96,15 +115,17 @@ fn resolve_recursive(url: &str, depth: usize) -> Result<String> {
     match check_playlist_type(url) {
         PlaylistCheck::Hls | PlaylistCheck::NotPlaylist => Ok(url.to_string()),
         PlaylistCheck::Pls => {
-            let content = fetch_playlist(url)?;
+            let (_, content) = fetch_playlist(url)?;
             let stream_url = parse_pls(&content).ok_or_else(|| {
                 RadioError::Stream("No stream URL found in PLS playlist".to_string())
             })?;
             resolve_recursive(&stream_url, depth - 1)
         }
         PlaylistCheck::M3u => {
-            let content = fetch_playlist(url)?;
-            let base_url = get_base_url(url);
+            // Relative entries are relative to where the playlist was served
+            // from, after any redirects
+            let (final_url, content) = fetch_playlist(url)?;
+            let base_url = directory_of(&final_url);
             let stream_url = parse_m3u(&content, &base_url).ok_or_else(|| {
                 RadioError::Stream("No stream URL found in M3U playlist".to_string())
             })?;
@@ -113,7 +134,18 @@ fn resolve_recursive(url: &str, depth: usize) -> Result<String> {
     }
 }
 
-fn fetch_playlist(url: &str) -> Result<String> {
+/// The directory part of `url` without the trailing slash, ignoring any
+/// query string (which may itself contain slashes)
+fn directory_of(url: &str) -> String {
+    match reqwest::Url::parse(url).and_then(|u| u.join(".")) {
+        Ok(dir) => dir.as_str().trim_end_matches('/').to_string(),
+        Err(_) => get_base_url(url),
+    }
+}
+
+/// Fetch a playlist: returns the URL it was served from (after redirects)
+/// and its text
+fn fetch_playlist(url: &str) -> Result<(String, String)> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
@@ -125,7 +157,8 @@ fn fetch_playlist(url: &str) -> Result<String> {
         return Err(RadioError::Stream(format!("HTTP {}", response.status())));
     }
 
-    response.text().map_err(|e| e.into())
+    let final_url = response.url().to_string();
+    Ok((final_url, response.text()?))
 }
 
 #[cfg(test)]
@@ -484,14 +517,68 @@ mod tests {
 
     #[test]
     fn parse_pls_url_with_equals() {
-        // URL contains '=' in query string
+        // Tokenised stream URLs carry '=' in the query string
         let content = "[playlist]\nFile1=http://stream.com/live?key=value&id=123\n";
-        // split('=').nth(1) only gets first value after first '='
-        // This is a known limitation: it gets "http://stream.com/live?key"
-        let result = parse_pls(content);
-        assert!(result.is_some());
-        // The URL is truncated at the second '=' — this tests the actual behavior
-        assert!(result.unwrap().starts_with("http"));
+        assert_eq!(
+            parse_pls(content),
+            Some("http://stream.com/live?key=value&id=123".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_pls_uppercase_scheme_and_bom() {
+        let content = "\u{feff}[playlist]\r\nFile1=HTTP://Stream.com/live\r\n";
+        assert_eq!(
+            parse_pls(content),
+            Some("HTTP://Stream.com/live".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_m3u_with_bom() {
+        let content = "\u{feff}#EXTM3U\nhttp://stream.com/live\n";
+        assert_eq!(
+            parse_m3u(content, "http://base.com/dir"),
+            Some("http://stream.com/live".to_string())
+        );
+        // A BOM on a relative first entry must not end up in the URL
+        assert_eq!(
+            parse_m3u("\u{feff}live.mp3\n", "http://base.com/dir"),
+            Some("http://base.com/dir/live.mp3".to_string())
+        );
+    }
+
+    #[test]
+    fn make_absolute_url_resolves_like_a_browser() {
+        let base = "http://example.com/radio/lists";
+        assert_eq!(
+            make_absolute_url("/stream.mp3", base),
+            "http://example.com/stream.mp3"
+        );
+        assert_eq!(
+            make_absolute_url("../live/stream.mp3", base),
+            "http://example.com/radio/live/stream.mp3"
+        );
+        assert_eq!(
+            make_absolute_url("//cdn.example.net/s.aac", base),
+            "http://cdn.example.net/s.aac"
+        );
+        assert_eq!(
+            make_absolute_url("stream.mp3", base),
+            "http://example.com/radio/lists/stream.mp3"
+        );
+    }
+
+    #[test]
+    fn directory_of_ignores_query_slashes() {
+        assert_eq!(
+            directory_of("http://example.com/a/list.m3u?next=/x/y"),
+            "http://example.com/a"
+        );
+        assert_eq!(
+            directory_of("http://example.com/list.m3u"),
+            "http://example.com"
+        );
     }
 
     #[test]
@@ -604,5 +691,71 @@ mod tests {
         let url = "http://example.com/live.m3u8?token=abc123";
         let result = resolve_playlist_url(url).unwrap();
         assert_eq!(result, "http://example.com/live.m3u8?token=abc123");
+    }
+
+    // --- resolve_playlist_url over HTTP ---
+
+    mod network {
+        use super::*;
+        use crate::stream::test_server::{Route, TestServer};
+
+        #[test]
+        fn follows_a_pls_to_an_m3u_to_the_stream() {
+            let server = TestServer::start();
+            let m3u = server.url("/lists/station.m3u");
+            server.route(
+                "/station.pls",
+                Route::new(format!("[playlist]\nFile1={m3u}\n")),
+            );
+            server.route("/lists/station.m3u", Route::new("#EXTM3U\n../live/aac\n"));
+            assert_eq!(
+                resolve_playlist_url(&server.url("/station.pls")).unwrap(),
+                server.url("/live/aac")
+            );
+        }
+
+        #[test]
+        fn keeps_the_query_string_of_a_pls_entry() {
+            let server = TestServer::start();
+            server.route(
+                "/station.pls",
+                Route::new("[playlist]\nFile1=http://radio.example/live?sid=1&token=a=b\n"),
+            );
+            assert_eq!(
+                resolve_playlist_url(&server.url("/station.pls")).unwrap(),
+                "http://radio.example/live?sid=1&token=a=b"
+            );
+        }
+
+        #[test]
+        fn resolves_m3u_entries_against_the_redirected_url() {
+            let server = TestServer::start();
+            server.route(
+                "/go/station.m3u",
+                Route::redirect(&server.url("/edge/7/station.m3u")),
+            );
+            server.route("/edge/7/station.m3u", Route::new("stream.mp3\n"));
+            assert_eq!(
+                resolve_playlist_url(&server.url("/go/station.m3u")).unwrap(),
+                server.url("/edge/7/stream.mp3")
+            );
+        }
+
+        #[test]
+        fn reports_http_errors() {
+            let server = TestServer::start();
+            let err = resolve_playlist_url(&server.url("/missing.pls")).unwrap_err();
+            assert!(err.to_string().contains("404"), "{err}");
+        }
+
+        #[test]
+        fn stops_at_the_nesting_limit() {
+            let server = TestServer::start();
+            // a.m3u -> b.m3u -> a.m3u -> ...
+            server.route("/a.m3u", Route::new(format!("{}\n", server.url("/b.m3u"))));
+            server.route("/b.m3u", Route::new(format!("{}\n", server.url("/a.m3u"))));
+            let err = resolve_playlist_url(&server.url("/a.m3u")).unwrap_err();
+            assert!(err.to_string().contains("too deep"), "{err}");
+        }
     }
 }
