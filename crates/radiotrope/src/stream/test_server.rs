@@ -18,6 +18,8 @@ pub struct Route {
     pub with_length: bool,
     /// Keep the connection open after the body, sending nothing more
     pub stall: bool,
+    /// Sent as the status line and headers instead of building them
+    pub raw_head: Option<Vec<u8>>,
 }
 
 impl Route {
@@ -28,6 +30,7 @@ impl Route {
             body: body.into(),
             with_length: true,
             stall: false,
+            raw_head: None,
         }
     }
 
@@ -52,6 +55,14 @@ impl Route {
     /// No Content-Length: the body is everything until the connection closes
     pub fn without_length(mut self) -> Self {
         self.with_length = false;
+        self
+    }
+
+    /// Send `head` (the status line and headers, up to and including the
+    /// blank line) as it is: an old SHOUTcast server's `ICY 200 OK`, or
+    /// header bytes that aren't UTF-8
+    pub fn raw_head(mut self, head: impl Into<Vec<u8>>) -> Self {
+        self.raw_head = Some(head.into());
         self
     }
 
@@ -99,6 +110,11 @@ impl TestServer {
                     let route = routes.lock().unwrap().get(path).cloned();
                     let stall = route.as_ref().is_some_and(|r| r.stall);
                     let response = match route {
+                        Some(Route {
+                            raw_head: Some(head),
+                            body,
+                            ..
+                        }) => [head, body].concat(),
                         Some(route) => {
                             let mut head =
                                 format!("HTTP/1.1 {} X\r\nConnection: close\r\n", route.status);

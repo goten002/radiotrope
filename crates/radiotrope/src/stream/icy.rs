@@ -14,15 +14,20 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, Sender};
+use reqwest::header::HeaderMap;
+use reqwest::StatusCode;
 
 use crate::config::network::{READ_TIMEOUT_SECS, USER_AGENT};
 use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::id3::Id3Scanner;
-use crate::stream::metadata::{extract_icy_title, MetadataSink, MetadataSource, StreamMetadata};
+use crate::stream::metadata::{
+    extract_icy_title_as, MetadataSink, MetadataSource, StationText, StreamMetadata,
+};
 use crate::stream::resolver::StreamResolver;
 
 use super::cancel::{StreamCancel, Waited};
+use super::shoutcast;
 use super::{backoff_sleep, gave_up, StreamEnd, READ_POLL_INTERVAL};
 
 const AUDIO_CHANNEL_BOUND: usize = 32;
@@ -102,13 +107,14 @@ impl IcyReader {
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()?;
 
-        let response = client.get(url).header("Icy-MetaData", "1").send()?;
+        let response = Connection::open(&client, url)?;
 
-        if !response.status().is_success() {
-            return Err(RadioError::Stream(format!("HTTP {}", response.status())));
+        if !response.status.is_success() {
+            return Err(RadioError::Stream(format!("HTTP {}", response.status)));
         }
 
-        let headers = parse_icy_headers(&response);
+        let mut text = StationText::for_url(url);
+        let headers = parse_icy_headers(&response.headers, &mut text);
 
         let metaint = headers.metaint;
         let scan_id3 = scans_for_id3(url, headers.content_type.as_deref());
@@ -132,6 +138,7 @@ impl IcyReader {
             bytes_received: bytes_clone,
             end: end.clone(),
             give_up,
+            text,
         };
         let handle = thread::spawn(move || stream.run(response, metaint));
 
@@ -352,30 +359,86 @@ impl AudioOut {
     }
 }
 
-fn parse_icy_headers(response: &reqwest::blocking::Response) -> IcyHeaders {
-    let headers = response.headers();
+/// A connection to the station: its reply's status and headers, and the
+/// body to read
+struct Connection {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Box<dyn Read + Send>,
+}
 
+impl Connection {
+    /// Request `url` with ICY metadata. An old SHOUTcast server's reply
+    /// (`ICY 200 OK`) fails in the HTTP client, so a failed request is
+    /// tried once more the SHOUTcast way; if that fails too, the HTTP
+    /// client's error is the one returned.
+    fn open(
+        client: &reqwest::blocking::Client,
+        url: &str,
+    ) -> std::result::Result<Self, reqwest::Error> {
+        match client.get(url).header("Icy-MetaData", "1").send() {
+            Ok(response) => Ok(Self {
+                status: response.status(),
+                headers: response.headers().clone(),
+                body: Box::new(response),
+            }),
+            // A reply that isn't HTTP. Not a timeout or a refused
+            // connection, which another try wouldn't change.
+            Err(e) if e.is_request() && !e.is_timeout() && !e.is_connect() => {
+                match shoutcast::get(url) {
+                    Ok(reply) => Ok(Self {
+                        status: reply.status,
+                        headers: reply.headers,
+                        body: Box::new(reply.body),
+                    }),
+                    Err(_) => Err(e),
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn content_length(&self) -> Option<u64> {
+        self.headers
+            .get(reqwest::header::CONTENT_LENGTH)?
+            .to_str()
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+}
+
+impl Read for Connection {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.body.read(buf)
+    }
+}
+
+/// Parse the ICY headers. `text` decodes the station name, which may be in
+/// a legacy encoding like the station's titles.
+fn parse_icy_headers(headers: &HeaderMap, text: &mut StationText) -> IcyHeaders {
     let metaint = headers
         .get("icy-metaint")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
+        .and_then(|v| v.trim().parse::<usize>().ok())
         .unwrap_or(0);
 
     let station_name = headers
         .get("icy-name")
-        .and_then(|v| v.to_str().ok())
-        .map(|s| s.to_string());
+        .map(|v| text.decode(v.as_bytes()).trim().to_string())
+        .filter(|name| !name.is_empty());
 
-    let content_type = response
-        .headers()
+    let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
 
+    // Some servers repeat it: "128,128"
     let bitrate = headers
         .get("icy-br")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u32>().ok());
+        .and_then(|v| v.split(',').next()?.trim().parse::<u32>().ok());
 
     IcyHeaders {
         metaint,
@@ -397,12 +460,14 @@ struct IcyStream {
     end: StreamEnd,
     /// How long to keep reconnecting without getting any audio
     give_up: Duration,
+    /// Decodes the station's titles
+    text: StationText,
 }
 
 impl IcyStream {
     /// Read until stopped, until a finite body is complete, or until no
     /// audio has arrived for `give_up`. Records how it ended in `end`.
-    fn run(mut self, mut response: reqwest::blocking::Response, mut metaint: usize) {
+    fn run(mut self, mut response: Connection, mut metaint: usize) {
         let mut finite = is_finite_body(&response);
         let mut bytes_until_meta = metaint;
         let mut last_title = String::new();
@@ -430,6 +495,7 @@ impl IcyStream {
                     &mut bytes_until_meta,
                     metaint,
                     &mut last_title,
+                    &mut self.text,
                     &self.metadata_sink,
                     &mut self.audio_out,
                     &self.bytes_received,
@@ -469,7 +535,7 @@ impl IcyStream {
                     Ok(new_response) => {
                         // A reconnect can land on another server or mount:
                         // take its metadata interval, not the first one's
-                        metaint = parse_icy_headers(&new_response).metaint;
+                        metaint = parse_icy_headers(&new_response.headers, &mut self.text).metaint;
                         bytes_until_meta = metaint;
                         finite = is_finite_body(&new_response);
                         response = new_response;
@@ -493,17 +559,17 @@ enum ReadResult {
 /// True for a plain HTTP file: it has a length and no ICY headers. Once its
 /// body is complete the stream is over. ICY servers are live even when they
 /// send a (made-up) length.
-fn is_finite_body(response: &reqwest::blocking::Response) -> bool {
+fn is_finite_body(response: &Connection) -> bool {
     response.content_length().is_some()
         && !response
-            .headers()
+            .headers
             .keys()
             .any(|name| name.as_str().starts_with("icy-"))
 }
 
 /// Read one chunk without ICY metadata
 fn read_chunk_no_meta(
-    response: &mut reqwest::blocking::Response,
+    response: &mut Connection,
     chunk_buffer: &mut [u8],
     audio_out: &mut AudioOut,
     bytes_received: &Arc<AtomicU64>,
@@ -525,11 +591,12 @@ fn read_chunk_no_meta(
 /// Read one chunk with ICY metadata extraction
 #[allow(clippy::too_many_arguments)]
 fn read_chunk_with_meta(
-    response: &mut reqwest::blocking::Response,
+    response: &mut Connection,
     chunk_buffer: &mut [u8],
     bytes_until_meta: &mut usize,
     metaint: usize,
     last_title: &mut String,
+    text: &mut StationText,
     metadata_sink: &MetadataSink,
     audio_out: &mut AudioOut,
     bytes_received: &Arc<AtomicU64>,
@@ -568,7 +635,7 @@ fn read_chunk_with_meta(
                 return ReadResult::Error(e.to_string());
             }
 
-            match extract_icy_title(&meta_buf) {
+            match extract_icy_title_as(&meta_buf, text) {
                 Some(title) => {
                     if *title != *last_title {
                         *last_title = title.clone();
@@ -597,7 +664,7 @@ fn read_chunk_with_meta(
 
 /// Connect to the ICY stream again. Backoff sleep is handled by the caller.
 /// `Err` says why this attempt failed.
-fn reconnect(url: &str) -> std::result::Result<reqwest::blocking::Response, String> {
+fn reconnect(url: &str) -> std::result::Result<Connection, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
@@ -605,25 +672,21 @@ fn reconnect(url: &str) -> std::result::Result<reqwest::blocking::Response, Stri
         .build()
         .map_err(|e| e.to_string())?;
 
-    let response = client
-        .get(url)
-        .header("Icy-MetaData", "1")
-        .send()
-        .map_err(|e| {
-            if e.is_timeout() {
-                "the server did not answer".to_string()
-            } else if e.is_connect() {
-                "could not connect to the server".to_string()
-            } else {
-                e.without_url().to_string()
-            }
-        })?;
-    if !response.status().is_success() {
-        return Err(format!("HTTP {}", response.status()));
+    let response = Connection::open(&client, url).map_err(|e| {
+        if e.is_timeout() {
+            "the server did not answer".to_string()
+        } else if e.is_connect() {
+            "could not connect to the server".to_string()
+        } else {
+            e.without_url().to_string()
+        }
+    })?;
+    if !response.status.is_success() {
+        return Err(format!("HTTP {}", response.status));
     }
     // An error or parking page served with 200 OK must not reach the decoder
     let is_web_page = response
-        .headers()
+        .headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"));
@@ -1338,6 +1401,11 @@ mod tests {
         /// `audio` with an ICY metadata block every `metaint` bytes, the
         /// first one carrying `title`
         fn icy_body(audio: &[u8], metaint: usize, title: &str) -> Vec<u8> {
+            icy_body_bytes(audio, metaint, title.as_bytes())
+        }
+
+        /// [`icy_body`] with the title's bytes as they are
+        fn icy_body_bytes(audio: &[u8], metaint: usize, title: &[u8]) -> Vec<u8> {
             let mut out = Vec::new();
             for (i, run) in audio.chunks(metaint).enumerate() {
                 out.extend_from_slice(run);
@@ -1345,7 +1413,7 @@ mod tests {
                     break;
                 }
                 if i == 0 {
-                    let mut block = format!("StreamTitle='{title}';").into_bytes();
+                    let mut block = [b"StreamTitle='", title, b"';"].concat();
                     block.resize(block.len().div_ceil(16) * 16, 0);
                     out.push((block.len() / 16) as u8);
                     out.extend(block);
@@ -1494,6 +1562,86 @@ mod tests {
             };
             assert_eq!(title(&titles).as_deref(), Some("One"));
             assert_eq!(title(&titles).as_deref(), Some("Two"));
+        }
+
+        /// Read `len` bytes of audio from `reader` on a thread
+        fn read_audio_from(mut reader: IcyReader, len: usize) -> Vec<u8> {
+            let (tx, rx) = bounded(1);
+            thread::spawn(move || {
+                let mut audio = vec![0u8; len];
+                let _ = tx.send(reader.read_exact(&mut audio).map(|_| audio));
+            });
+            rx.recv_timeout(Duration::from_secs(10))
+                .expect("the station should play")
+                .unwrap()
+        }
+
+        fn next_title(rx: &Receiver<StreamMetadata>) -> Option<String> {
+            rx.recv_timeout(Duration::from_secs(3))
+                .ok()
+                .and_then(|m| m.title)
+        }
+
+        #[test]
+        fn an_old_shoutcast_server_plays() {
+            // SHOUTcast v1 answers "ICY 200 OK", which the HTTP client rejects
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route(
+                "/;stream.mp3",
+                Route::new(icy_body(&audio, 256, "Old Song")).raw_head(
+                    "ICY 200 OK\r\nicy-notice1:<BR>This stream requires Winamp<BR>\r\n\
+                     icy-name:Old FM\r\nicy-br:128,128\r\nicy-metaint:256\r\n\
+                     content-type:audio/mpeg\r\n\r\n",
+                ),
+            );
+            let (reader, titles) = IcyReader::open(
+                &server.url("/;stream.mp3"),
+                None,
+                Duration::from_secs(30),
+                StreamCancel::new(),
+            )
+            .expect("an ICY reply plays");
+            assert_eq!(reader.headers.station_name.as_deref(), Some("Old FM"));
+            assert_eq!(reader.headers.bitrate, Some(128));
+            assert_eq!(reader.headers.content_type.as_deref(), Some("audio/mpeg"));
+            assert!(read_audio_from(reader, audio.len()) == audio);
+            assert_eq!(next_title(&titles).as_deref(), Some("Old Song"));
+        }
+
+        #[test]
+        fn a_greek_station_shows_its_name_and_titles() {
+            // Windows-1253, as older Greek stations send: the name used to
+            // be dropped and the titles shown as rows of U+FFFD
+            let greek = |text: &str| encoding_rs::WINDOWS_1253.encode(text).0.into_owned();
+            let server = TestServer::start();
+            let audio = frame(600);
+            let head = [
+                &b"HTTP/1.0 200 OK\r\ncontent-type: audio/mpeg\r\nicy-metaint: 256\r\nicy-name: "[..],
+                &greek("Ράδιο Αθήνα 9,84"),
+                b"\r\n\r\n",
+            ]
+            .concat();
+            let title = "Μίκης Θεοδωράκης - Άρνηση";
+            server.route(
+                "/live",
+                Route::new(icy_body_bytes(&audio, 256, &greek(title))).raw_head(head),
+            );
+            let (reader, titles) = IcyReader::open(
+                &server.url("/live"),
+                None,
+                Duration::from_secs(30),
+                StreamCancel::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                reader.headers.station_name.as_deref(),
+                Some("Ράδιο Αθήνα 9,84")
+            );
+            assert!(read_audio_from(reader, audio.len()) == audio);
+            let song = titles.recv_timeout(Duration::from_secs(3)).unwrap();
+            assert_eq!(song.artist.as_deref(), Some("Μίκης Θεοδωράκης"));
+            assert_eq!(song.title.as_deref(), Some("Άρνηση"));
         }
 
         #[test]
