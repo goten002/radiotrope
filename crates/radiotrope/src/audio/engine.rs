@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError};
+use crossbeam_channel::{bounded, Receiver, Select, Sender, TryRecvError};
 use rodio::{DeviceSinkBuilder, Player};
 
 use crate::config::timeouts::{BUFFERING_STALL_THRESHOLD_SECS, PROBE_TIMEOUT_SECS};
@@ -30,6 +30,52 @@ use super::stats::{
     new_shared_stats, DecoderStats, EventBus, SharedStats, StreamEvent, StreamStats,
 };
 use super::types::{AudioAnalysis, AudioCommand, AudioEvent, PlaybackState};
+
+/// How often the engine loop checks on playback (end of stream, stats,
+/// buffering, health, probe timeout)
+const TICK_INTERVAL: Duration = Duration::from_millis(500);
+
+/// What the engine loop does next
+enum Wake {
+    Command(AudioCommand),
+    /// Check on playback: the tick is due, or the pending probe finished
+    Tick,
+    /// Every handle to the engine is gone
+    Closed,
+}
+
+/// Wait for the engine loop's next job. Commands are handled as they
+/// arrive, but never delay the tick past `next_tick`: a dragged volume
+/// slider sends dozens a second, and the old loop only checked on playback
+/// after half a second without commands. A finished probe wakes the loop
+/// at once, so a station starts as soon as its format is known.
+fn next_wake<T>(
+    cmd_rx: &Receiver<AudioCommand>,
+    probe_rx: Option<&Receiver<T>>,
+    next_tick: Instant,
+) -> Wake {
+    loop {
+        let wait = next_tick.saturating_duration_since(Instant::now());
+        if wait.is_zero() || probe_rx.is_some_and(|rx| !rx.is_empty()) {
+            return Wake::Tick;
+        }
+        let mut select = Select::new();
+        let command = select.recv(cmd_rx);
+        if let Some(rx) = probe_rx {
+            select.recv(rx);
+        }
+        match select.ready_timeout(wait) {
+            Err(_) => return Wake::Tick,
+            Ok(index) if index == command => match cmd_rx.try_recv() {
+                Ok(cmd) => return Wake::Command(cmd),
+                Err(TryRecvError::Disconnected) => return Wake::Closed,
+                Err(TryRecvError::Empty) => {}
+            },
+            // The probe sent its result, or its thread died
+            Ok(_) => return Wake::Tick,
+        }
+    }
+}
 
 /// State held while an async probe is in progress
 struct PendingProbe {
@@ -293,9 +339,12 @@ impl AudioEngine {
         let mut last_throughput_time = Instant::now();
         let mut pending_probe: Option<PendingProbe> = None;
 
+        let mut next_tick = Instant::now() + TICK_INTERVAL;
+
         loop {
-            match cmd_rx.recv_timeout(Duration::from_millis(500)) {
-                Ok(cmd) => match cmd {
+            let probe_rx = pending_probe.as_ref().map(|p| &p.probe_rx);
+            match next_wake(&cmd_rx, probe_rx, next_tick) {
+                Wake::Command(cmd) => match cmd {
                     AudioCommand::Play {
                         reader,
                         format_hint,
@@ -453,7 +502,9 @@ impl AudioEngine {
                         break;
                     }
                 },
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                Wake::Tick => {
+                    next_tick = Instant::now() + TICK_INTERVAL;
+
                     // Poll pending probe for completion
                     if let Some(ref pending) = pending_probe {
                         match pending.probe_rx.try_recv() {
@@ -782,7 +833,7 @@ impl AudioEngine {
                         }
                     }
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                Wake::Closed => {
                     break;
                 }
             }
@@ -907,6 +958,112 @@ mod tests {
             return None;
         }
         AudioEngine::new().ok()
+    }
+
+    // --- Loop scheduling (no audio device needed) ---
+
+    #[test]
+    fn tick_runs_on_time_while_commands_keep_coming() {
+        let (cmd_tx, cmd_rx) = bounded::<AudioCommand>(16);
+        let sending = Arc::new(AtomicBool::new(true));
+        let still_sending = sending.clone();
+        // A dragged volume slider
+        let slider = thread::spawn(move || {
+            while still_sending.load(Ordering::Relaxed) {
+                let _ = cmd_tx.send(AudioCommand::SetVolume(0.5));
+                thread::sleep(Duration::from_millis(5));
+            }
+        });
+
+        let start = Instant::now();
+        let next_tick = start + Duration::from_millis(100);
+        let mut commands = 0;
+        let ticked = loop {
+            match next_wake::<()>(&cmd_rx, None, next_tick) {
+                Wake::Command(_) => commands += 1,
+                Wake::Tick => break start.elapsed(),
+                Wake::Closed => panic!("the command channel is still open"),
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "the tick never ran"
+            );
+        };
+        sending.store(false, Ordering::Relaxed);
+        slider.join().unwrap();
+
+        assert!(commands > 0, "commands are still handled");
+        assert!(ticked >= Duration::from_millis(100));
+        assert!(
+            ticked < Duration::from_millis(400),
+            "tick ran late: {ticked:?}"
+        );
+    }
+
+    #[test]
+    fn a_finished_probe_wakes_the_loop_at_once() {
+        let (_cmd_tx, cmd_rx) = bounded::<AudioCommand>(16);
+        let (probe_tx, probe_rx) = bounded::<u32>(1);
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(30));
+            let _ = probe_tx.send(1);
+        });
+
+        let start = Instant::now();
+        let far_off = start + Duration::from_secs(10);
+        assert!(matches!(
+            next_wake(&cmd_rx, Some(&probe_rx), far_off),
+            Wake::Tick
+        ));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // The result is still there for the tick to take
+        assert_eq!(probe_rx.try_recv(), Ok(1));
+    }
+
+    #[test]
+    fn commands_are_delivered_and_a_closed_channel_ends_the_loop() {
+        let (cmd_tx, cmd_rx) = bounded::<AudioCommand>(16);
+        let far_off = Instant::now() + Duration::from_secs(10);
+        cmd_tx.send(AudioCommand::Stop).unwrap();
+        assert!(matches!(
+            next_wake::<()>(&cmd_rx, None, far_off),
+            Wake::Command(AudioCommand::Stop)
+        ));
+        drop(cmd_tx);
+        assert!(matches!(
+            next_wake::<()>(&cmd_rx, None, far_off),
+            Wake::Closed
+        ));
+    }
+
+    #[test]
+    fn a_station_starts_and_ends_while_the_volume_slider_moves() {
+        let Some(engine) = try_engine_playback() else {
+            return;
+        };
+        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+
+        // Move the slider the whole time: the station must still start, and
+        // its end must still be noticed
+        let start = Instant::now();
+        let mut events = Vec::new();
+        while start.elapsed() < Duration::from_secs(5)
+            && !events.iter().any(|e| matches!(e, AudioEvent::Stopped))
+        {
+            engine.set_volume(0.5);
+            thread::sleep(Duration::from_millis(10));
+            while let Some(event) = engine.try_recv_event() {
+                events.push(event);
+            }
+        }
+        assert!(
+            events.iter().any(|e| matches!(e, AudioEvent::Playing(_))),
+            "never started: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(e, AudioEvent::Stopped)),
+            "the end of the clip was not noticed: {events:?}"
+        );
     }
 
     // --- Lifecycle ---
