@@ -74,8 +74,14 @@ pub mod hls {
     pub const SEGMENT_TIMEOUT_SECS: u64 = 15;
 
     /// How long to wait for the first segment before giving up, in seconds.
-    /// Kept under the app's 15 s resolve timeout so the real reason is shown.
+    /// Within a station's resolve the wait is also cut to the time left of
+    /// [`super::timeouts::RESOLVE_TIMEOUT_SECS`].
     pub const FIRST_SEGMENT_TIMEOUT_SECS: u64 = 12;
+
+    /// Failures in a row (of the media playlist, or of its segments) after
+    /// which the playlist is found again from the address it was found
+    /// from, in case its own address has expired or its server is gone
+    pub const FIND_AGAIN_AFTER_FAILURES: u32 = 2;
 }
 
 /// Timeout configuration for resilience
@@ -108,6 +114,13 @@ pub mod timeouts {
     /// with an HLS playlist that stops adding segments) before its reader
     /// gives up and playback stops with the reason (seconds).
     pub const RECONNECT_GIVE_UP_SECS: u64 = 120;
+
+    /// How long resolving a station may take, from its address to the first
+    /// audio: playlist fetches, the HLS playlists and the first segment, or
+    /// the first ICY data (seconds). Each step waits at most for the time
+    /// left, so a slow station fails with the step's own reason. The app
+    /// waits a little longer than this.
+    pub const RESOLVE_TIMEOUT_SECS: u64 = 12;
 }
 
 /// Equalizer configuration

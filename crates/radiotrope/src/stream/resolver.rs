@@ -13,6 +13,7 @@ use crate::stream::hls::{HlsReader, HlsSegmentFormat};
 use crate::stream::icy::{IcyReader, Opened};
 use crate::stream::playlist::{resolve_playlist, resolve_playlist_as};
 use crate::stream::types::{ResolvedStream, StreamInfo, StreamType};
+use crate::stream::Deadline;
 
 /// Resolves a station URL into a playable stream
 pub struct StreamResolver;
@@ -33,30 +34,38 @@ impl StreamResolver {
     /// while waiting for the first audio, otherwise after the request in
     /// flight), and once resolved it stops the stream
     /// ([`ResolvedStream::cancel`] is `cancel`).
+    ///
+    /// The whole resolve, up to the first audio, takes at most
+    /// [`RESOLVE_TIMEOUT_SECS`](crate::config::timeouts::RESOLVE_TIMEOUT_SECS)
+    /// (a stalled ICY server's reply to its request can take longer). A step
+    /// that runs out of time fails with its own reason, such as the HTTP
+    /// status of an HLS segment.
     pub fn resolve_cancellable(url: &str, cancel: &StreamCancel) -> Result<ResolvedStream> {
+        let deadline = Deadline::for_resolve();
         let still_wanted = || match cancel.is_cancelled() {
             true => Err(RadioError::Cancelled),
             false => Ok(()),
         };
         still_wanted()?;
-        let mut target = resolve_playlist(url, cancel)?;
+        let mut target = resolve_playlist(url, cancel, deadline)?;
         // Each stream address that serves a playlist is one more level
         for _ in 0..MAX_PLAYLIST_DEPTH {
             still_wanted()?;
             if target.hls {
-                return Self::open_hls(url, &target.url, cancel);
+                return Self::open_hls(url, &target.url, cancel, deadline);
             }
             let playback_position = Arc::new(AtomicU64::new(0));
             let opened = IcyReader::open_detecting(
                 &target.url,
                 Some(playback_position.clone()),
                 cancel.clone(),
+                deadline,
             )?;
             let (icy_reader, metadata_rx) = match opened {
                 Opened::Stream(reader, metadata_rx) => (reader, metadata_rx),
                 Opened::Playlist(kind) => {
                     still_wanted()?;
-                    target = resolve_playlist_as(&target.url, kind, cancel)?;
+                    target = resolve_playlist_as(&target.url, kind, cancel, deadline)?;
                     continue;
                 }
             };
@@ -89,16 +98,23 @@ impl StreamResolver {
     }
 
     /// Open the HLS stream at `playlist_url` (found from `url`)
-    fn open_hls(url: &str, playlist_url: &str, cancel: &StreamCancel) -> Result<ResolvedStream> {
-        let media_url = crate::stream::hls::resolve_hls(playlist_url, cancel)?;
+    fn open_hls(
+        url: &str,
+        playlist_url: &str,
+        cancel: &StreamCancel,
+        deadline: Deadline,
+    ) -> Result<ResolvedStream> {
+        let media_url = crate::stream::hls::resolve_hls(playlist_url, cancel, deadline)?;
         if cancel.is_cancelled() {
             return Err(RadioError::Cancelled);
         }
         let playback_position = Arc::new(AtomicU64::new(0));
-        let (hls_reader, metadata_rx) = HlsReader::new_cancellable(
+        let (hls_reader, metadata_rx) = HlsReader::open_resolved(
             &media_url,
+            playlist_url,
             Some(playback_position.clone()),
             cancel.clone(),
+            deadline,
         )?;
 
         let format_hint = match hls_reader.detected_format {
