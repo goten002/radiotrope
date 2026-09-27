@@ -6,10 +6,11 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
-use crate::error::Result;
+use crate::error::{RadioError, Result};
+use crate::stream::cancel::StreamCancel;
 use crate::stream::hls::{HlsReader, HlsSegmentFormat};
 use crate::stream::icy::IcyReader;
-use crate::stream::playlist::{check_playlist_type, resolve_playlist_url, PlaylistCheck};
+use crate::stream::playlist::{check_playlist_type, resolve_playlist, PlaylistCheck};
 use crate::stream::types::{ResolvedStream, StreamInfo, StreamType};
 
 /// Resolves a station URL into a playable stream
@@ -22,15 +23,34 @@ impl StreamResolver {
     /// 2. If `.m3u8` → resolve HLS → HlsReader
     /// 3. Otherwise → IcyReader (works for ICY and non-ICY servers)
     pub fn resolve(url: &str) -> Result<ResolvedStream> {
-        let resolved_url = resolve_playlist_url(url)?;
+        Self::resolve_cancellable(url, &StreamCancel::new())
+    }
+
+    /// [`StreamResolver::resolve`], stopped by `cancel`: cancelling it while
+    /// resolving ends the resolve with [`RadioError::Cancelled`] (at once
+    /// while waiting for the first audio, otherwise after the request in
+    /// flight), and once resolved it stops the stream
+    /// ([`ResolvedStream::cancel`] is `cancel`).
+    pub fn resolve_cancellable(url: &str, cancel: &StreamCancel) -> Result<ResolvedStream> {
+        let still_wanted = || match cancel.is_cancelled() {
+            true => Err(RadioError::Cancelled),
+            false => Ok(()),
+        };
+        still_wanted()?;
+        let resolved_url = resolve_playlist(url, cancel)?;
+        still_wanted()?;
         let playback_position = Arc::new(AtomicU64::new(0));
 
         match check_playlist_type(&resolved_url) {
             PlaylistCheck::Hls => {
-                let media_url = crate::stream::hls::resolve_hls_url(&resolved_url)?;
+                let media_url = crate::stream::hls::resolve_hls(&resolved_url, cancel)?;
+                still_wanted()?;
 
-                let (hls_reader, metadata_rx) =
-                    HlsReader::new(&media_url, Some(playback_position.clone()))?;
+                let (hls_reader, metadata_rx) = HlsReader::new_cancellable(
+                    &media_url,
+                    Some(playback_position.clone()),
+                    cancel.clone(),
+                )?;
 
                 let format_hint = match hls_reader.detected_format {
                     HlsSegmentFormat::Fmp4 => Some("mp4".to_string()),
@@ -55,11 +75,15 @@ impl StreamResolver {
                     bytes_received: Some(bytes_received),
                     segments_downloaded: Some(segments_downloaded),
                     playback_position: Some(playback_position),
+                    cancel: cancel.clone(),
                 })
             }
             _ => {
-                let (icy_reader, metadata_rx) =
-                    IcyReader::new(&resolved_url, Some(playback_position.clone()))?;
+                let (icy_reader, metadata_rx) = IcyReader::new_cancellable(
+                    &resolved_url,
+                    Some(playback_position.clone()),
+                    cancel.clone(),
+                )?;
 
                 let content_type = icy_reader.headers.content_type.clone();
                 let station_name = icy_reader.headers.station_name.clone();
@@ -82,6 +106,7 @@ impl StreamResolver {
                     bytes_received: Some(bytes_received),
                     segments_downloaded: None,
                     playback_position: Some(playback_position),
+                    cancel: cancel.clone(),
                 })
             }
         }
@@ -444,5 +469,107 @@ mod tests {
             ),
             Some("aac".to_string())
         );
+    }
+
+    // --- Cancelling ---
+
+    mod cancel {
+        use super::*;
+        use crate::stream::test_server::{Route, TestServer};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        /// A live stream that sends its headers and then nothing
+        fn silent_station() -> Route {
+            Route::new(Vec::new())
+                .header("Content-Type", "audio/mpeg")
+                .without_length()
+                .stall()
+        }
+
+        /// Resolve `url` on a thread and cancel it once `waiting` holds.
+        /// Returns the result and how long the resolve ran after the cancel.
+        fn resolve_then_cancel(
+            url: String,
+            waiting: impl Fn() -> bool,
+        ) -> (Result<ResolvedStream>, Duration) {
+            let cancel = StreamCancel::new();
+            let (tx, rx) = crossbeam_channel::bounded(1);
+            let resolve_cancel = cancel.clone();
+            thread::spawn(move || {
+                let result = StreamResolver::resolve_cancellable(&url, &resolve_cancel);
+                let _ = tx.send((result, Instant::now()));
+            });
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !waiting() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+            assert!(waiting(), "the resolve never got to the wait");
+            // Let the waiting request's response arrive
+            thread::sleep(Duration::from_millis(100));
+            let cancelled_at = Instant::now();
+            cancel.cancel();
+            let (result, ended_at) = rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("the resolve must end once cancelled");
+            (result, ended_at.saturating_duration_since(cancelled_at))
+        }
+
+        #[test]
+        fn a_cancelled_resolve_makes_no_request() {
+            let server = TestServer::start();
+            server.route("/live.pls", Route::new("[playlist]\nFile1=/live\n"));
+            let cancel = StreamCancel::new();
+            cancel.cancel();
+            let result = StreamResolver::resolve_cancellable(&server.url("/live.pls"), &cancel);
+            assert!(matches!(result, Err(RadioError::Cancelled)));
+            assert_eq!(server.hits("/live.pls"), 0);
+        }
+
+        #[test]
+        fn cancelling_while_a_station_is_silent_ends_the_resolve_at_once() {
+            let server = TestServer::start();
+            server.route("/live", silent_station());
+            let (result, took) =
+                resolve_then_cancel(server.url("/live"), || server.hits("/live") > 0);
+            assert!(matches!(result, Err(RadioError::Cancelled)));
+            assert!(took < Duration::from_millis(200), "took {took:?}");
+        }
+
+        #[test]
+        fn cancelling_while_waiting_for_the_first_hls_segment_ends_the_resolve_at_once() {
+            let server = TestServer::start();
+            server.route(
+                "/live.m3u8",
+                Route::new(
+                    "#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                     #EXTINF:2.0,\nseg1.aac\n",
+                ),
+            );
+            server.route("/seg1.aac", silent_station());
+            let (result, took) =
+                resolve_then_cancel(server.url("/live.m3u8"), || server.hits("/seg1.aac") > 0);
+            assert!(matches!(result, Err(RadioError::Cancelled)));
+            assert!(took < Duration::from_millis(200), "took {took:?}");
+        }
+
+        #[test]
+        fn the_resolved_stream_carries_the_cancel() {
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new(vec![0x55; 4096])
+                    .header("Content-Type", "audio/mpeg")
+                    .without_length()
+                    .stall(),
+            );
+            let cancel = StreamCancel::new();
+            let resolved =
+                StreamResolver::resolve_cancellable(&server.url("/live"), &cancel).unwrap();
+            assert!(!resolved.cancel.is_cancelled());
+            // Dropping a stream nobody plays (a stale resolve) stops it
+            drop(resolved);
+            assert!(cancel.is_cancelled());
+        }
     }
 }

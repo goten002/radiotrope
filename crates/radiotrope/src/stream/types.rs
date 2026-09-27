@@ -8,6 +8,7 @@ use std::sync::Arc;
 use crossbeam_channel::Receiver;
 
 use crate::audio::types::ReadSeek;
+use crate::stream::cancel::StreamCancel;
 use crate::stream::metadata::StreamMetadata;
 
 /// Type of resolved stream
@@ -42,6 +43,11 @@ pub struct ResolvedStream {
     /// hold song changes until this reaches them, so pass it to the engine
     /// (`AudioEngine::play_with_stats`) for song info to follow playback.
     pub playback_position: Option<Arc<AtomicU64>>,
+    /// Stops the stream: its network threads and, once playing, its buffer.
+    /// `AudioEngine::play_stream` cancels it when playback stops; cancel it
+    /// yourself to drop a stream you won't play. Dropping `reader` cancels
+    /// it too.
+    pub cancel: StreamCancel,
 }
 
 #[cfg(test)]
@@ -136,6 +142,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: "http://test.com/stream".to_string(),
                 resolved_url: "http://test.com/stream".to_string(),
@@ -160,6 +167,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: "http://test.com".to_string(),
                 resolved_url: "http://test.com".to_string(),
@@ -196,6 +204,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: String::new(),
                 resolved_url: String::new(),
@@ -221,6 +230,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: "http://example.com/live.m3u8".to_string(),
                 resolved_url: "http://example.com/media.m3u8".to_string(),
@@ -248,6 +258,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: String::new(),
                 resolved_url: String::new(),
@@ -283,6 +294,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: String::new(),
                 resolved_url: String::new(),
@@ -311,6 +323,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: String::new(),
                 resolved_url: String::new(),
@@ -339,6 +352,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: String::new(),
                 resolved_url: String::new(),
@@ -379,6 +393,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
             info: StreamInfo {
                 original_url: String::new(),
                 resolved_url: String::new(),

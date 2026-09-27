@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use crate::config::audio::SPECTRUM_BANDS;
+use crate::stream::StreamCancel;
 
 /// Current playback state
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,6 +46,9 @@ pub enum AudioCommand {
         /// Updated with how many bytes of `reader` the decoder has read, so
         /// song info can follow playback (optional)
         playback_position: Option<Arc<AtomicU64>>,
+        /// The stream's cancel (`ResolvedStream::cancel`). The engine cancels
+        /// it when the stream stops, which stops its network threads at once.
+        cancel: StreamCancel,
     },
     /// Stop playback
     Stop,
@@ -261,6 +265,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
         };
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("Play"));
@@ -276,6 +281,7 @@ mod tests {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
         };
         let debug = format!("{:?}", cmd);
         assert!(debug.contains("Play"));

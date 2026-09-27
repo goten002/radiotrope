@@ -109,20 +109,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     app.station_name = resolved.info.station_name.clone();
     app.stream_type = resolved.info.stream_type;
 
-    let format_hint = resolved.info.format_hint.clone();
-    let bitrate = resolved.info.bitrate;
-    let metadata_rx = resolved.metadata_rx;
+    let mut resolved = resolved;
+    let metadata_rx = resolved.metadata_rx.take();
     let bytes_received_counter = resolved.bytes_received.clone();
     let segments_counter = resolved.segments_downloaded.clone();
 
-    engine.play_with_stats(
-        resolved.reader,
-        format_hint,
-        bitrate,
-        resolved.bytes_received,
-        resolved.segments_downloaded,
-        resolved.playback_position,
-    );
+    engine.play_stream(resolved);
     app.status = "Buffering...".to_string();
 
     let analysis = engine.analysis();

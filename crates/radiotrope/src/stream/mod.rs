@@ -5,13 +5,13 @@
 //! extracts ICY and embedded ID3 metadata, downloads HLS segments with MPEG-TS demuxing.
 
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::config::timeouts::{MAX_BACKOFF_SECS, RETRY_BASE_DELAY_SECS};
 
 pub mod buffer;
+pub mod cancel;
 pub mod hls;
 pub mod hls_metadata;
 pub mod icy;
@@ -24,12 +24,16 @@ pub(crate) mod test_server;
 pub mod types;
 
 pub use buffer::{BufferStatus, SharedBufferStatus, StreamBuffer, StreamBufferReader};
+pub use cancel::StreamCancel;
 pub use metadata::{MetadataSink, MetadataSource, StreamMetadata};
 pub use resolver::StreamResolver;
 pub use types::{ResolvedStream, StreamInfo, StreamType};
 
 /// How long a network reader waits for data before returning
-/// `ErrorKind::Interrupted`, so its caller can check for a stop and retry.
+/// `ErrorKind::Interrupted`. Stopping the stream through its [`StreamCancel`]
+/// ends the wait at once; this bound is for a caller that stops a reader
+/// some other way (a stream buffer given a token of its own): it checks for
+/// its stop and reads again.
 pub(crate) const READ_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How a network reader's background thread ended. The thread records it
@@ -94,20 +98,10 @@ pub(crate) fn backoff_delay(consecutive_failures: u32) -> Duration {
     Duration::from_secs(delay_secs.min(MAX_BACKOFF_SECS))
 }
 
-/// Sleep with backoff, checking stop_flag every 250ms.
-/// Returns true if the full duration elapsed, false if stopped early.
-pub(crate) fn backoff_sleep(consecutive_failures: u32, stop_flag: &Arc<AtomicBool>) -> bool {
-    let total = backoff_delay(consecutive_failures);
-    let interval = Duration::from_millis(250);
-    let start = std::time::Instant::now();
-    while start.elapsed() < total {
-        if stop_flag.load(Ordering::Relaxed) {
-            return false;
-        }
-        let remaining = total.saturating_sub(start.elapsed());
-        std::thread::sleep(remaining.min(interval));
-    }
-    true
+/// Sleep with backoff unless the stream is cancelled first.
+/// Returns true if the full duration elapsed, false if cancelled.
+pub(crate) fn backoff_sleep(consecutive_failures: u32, cancel: &StreamCancel) -> bool {
+    cancel.sleep(backoff_delay(consecutive_failures))
 }
 
 #[cfg(test)]
@@ -117,7 +111,7 @@ mod tests {
 
     #[test]
     fn backoff_sleep_returns_true_on_completion() {
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = StreamCancel::new();
         let start = Instant::now();
         // failures=1 → 2s delay
         let result = backoff_sleep(1, &stop);
@@ -127,21 +121,21 @@ mod tests {
 
     #[test]
     fn backoff_sleep_returns_false_on_stop() {
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = StreamCancel::new();
         let stop_clone = stop.clone();
 
-        // Set stop flag after 100ms from another thread
+        // Cancel after 100ms from another thread
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(100));
-            stop_clone.store(true, Ordering::Relaxed);
+            stop_clone.cancel();
         });
 
         let start = Instant::now();
         // failures=3 → 8s delay, but should exit early
         let result = backoff_sleep(3, &stop);
         assert!(!result, "Should return false when stopped early");
-        // Should exit well before the full 8s (within ~350ms: 100ms wait + 250ms check interval)
-        assert!(start.elapsed() < Duration::from_secs(1));
+        // Wakes as soon as it is cancelled
+        assert!(start.elapsed() < Duration::from_millis(500));
     }
     #[test]
     fn stream_end_tells_finished_from_failed() {
