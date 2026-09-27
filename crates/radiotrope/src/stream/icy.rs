@@ -22,8 +22,7 @@ use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{
-    decode_html_references, extract_icy_title_as, MetadataSink, MetadataSource, StationText,
-    StreamMetadata,
+    extract_icy_title_as, MetadataSink, MetadataSource, StationText, StreamMetadata,
 };
 use crate::stream::resolver::StreamResolver;
 
@@ -427,11 +426,7 @@ fn parse_icy_headers(headers: &HeaderMap, text: &mut StationText) -> IcyHeaders 
 
     let station_name = headers
         .get("icy-name")
-        .map(|v| {
-            decode_html_references(&text.decode(v.as_bytes()))
-                .trim()
-                .to_string()
-        })
+        .map(|v| text.decode(v.as_bytes()).trim().to_string())
         .filter(|name| !name.is_empty());
 
     let content_type = headers
@@ -1650,11 +1645,11 @@ mod tests {
         }
 
         #[test]
-        fn a_station_that_sends_html_codes_shows_its_name_and_titles() {
+        fn a_station_that_sends_titles_as_html_codes() {
             let server = TestServer::start();
             let audio = frame(600);
             let head = "HTTP/1.0 200 OK\r\ncontent-type: audio/mpeg\r\nicy-metaint: 256\r\n\
-                        icy-name: &#929;&#940;&#948;&#953;&#959; 1933\r\n\r\n";
+                        icy-name: Old Songs FM\r\n\r\n";
             let title = "&#924;&#940;&#957;&#945; &#952;&#941;&#955;&#969; - Rock &#39;n&#39; Roll";
             server.route(
                 "/live",
@@ -1667,7 +1662,6 @@ mod tests {
                 StreamCancel::new(),
             )
             .unwrap();
-            assert_eq!(reader.headers.station_name.as_deref(), Some("Ράδιο 1933"));
             assert!(read_audio_from(reader, audio.len()) == audio);
             let song = titles.recv_timeout(Duration::from_secs(3)).unwrap();
             assert_eq!(song.artist.as_deref(), Some("Μάνα θέλω"));
