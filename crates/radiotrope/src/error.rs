@@ -24,6 +24,10 @@ pub enum RadioError {
 
     #[error("Timeout: {0}")]
     Timeout(String),
+
+    /// The stream was stopped (see `StreamCancel`) before it was ready
+    #[error("Cancelled")]
+    Cancelled,
 }
 
 /// Result type alias for Radiotrope

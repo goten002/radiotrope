@@ -8,7 +8,7 @@
 //! and their song info is used when the station has no ICY title.
 
 use std::io::{self, Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{extract_icy_title, MetadataSink, MetadataSource, StreamMetadata};
 use crate::stream::resolver::StreamResolver;
 
+use super::cancel::{StreamCancel, Waited};
 use super::{backoff_sleep, gave_up, StreamEnd, READ_POLL_INTERVAL};
 
 const AUDIO_CHANNEL_BOUND: usize = 32;
@@ -43,7 +44,8 @@ pub struct IcyReader {
     current_chunk: Vec<u8>,
     chunk_pos: usize,
     receiver: Receiver<Vec<u8>>,
-    stop_flag: Arc<AtomicBool>,
+    /// Stops the background thread and this reader's waits
+    cancel: StreamCancel,
     /// How the background thread ended, once it has
     end: StreamEnd,
     _handle: Option<JoinHandle<()>>,
@@ -70,10 +72,22 @@ impl IcyReader {
         url: &str,
         playback_position: Option<Arc<AtomicU64>>,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
+        Self::new_cancellable(url, playback_position, StreamCancel::new())
+    }
+
+    /// [`IcyReader::new`], stopped by `cancel` (or by dropping the reader):
+    /// the background thread ends, and a read waiting for data returns end
+    /// of stream at once
+    pub fn new_cancellable(
+        url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+        cancel: StreamCancel,
+    ) -> Result<(Self, Receiver<StreamMetadata>)> {
         Self::open(
             url,
             playback_position,
             Duration::from_secs(RECONNECT_GIVE_UP_SECS),
+            cancel,
         )
     }
 
@@ -81,6 +95,7 @@ impl IcyReader {
         url: &str,
         playback_position: Option<Arc<AtomicU64>>,
         give_up: Duration,
+        cancel: StreamCancel,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
@@ -105,8 +120,6 @@ impl IcyReader {
             None => MetadataSink::channel(),
         };
 
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_flag.clone();
         let bytes_received = Arc::new(AtomicU64::new(0));
         let bytes_clone = bytes_received.clone();
         let end = StreamEnd::default();
@@ -114,8 +127,8 @@ impl IcyReader {
         let stream = IcyStream {
             url: url.to_string(),
             metadata_sink: metadata_sink.clone(),
-            audio_out: AudioOut::new(audio_tx, metadata_sink, scan_id3),
-            stop_flag: stop_clone,
+            audio_out: AudioOut::new(audio_tx, metadata_sink, scan_id3, cancel.clone()),
+            cancel: cancel.clone(),
             bytes_received: bytes_clone,
             end: end.clone(),
             give_up,
@@ -124,16 +137,18 @@ impl IcyReader {
 
         // Wait for initial data. On failure stop the thread, which would
         // otherwise keep reconnecting for the life of the process.
-        let initial_data = match audio_rx.recv_timeout(Duration::from_secs(READ_TIMEOUT_SECS)) {
-            Ok(data) => data,
-            Err(e) => {
-                stop_flag.store(true, Ordering::SeqCst);
-                return Err(match (e, end.failure()) {
+        let waited = cancel.recv(&audio_rx, Some(Duration::from_secs(READ_TIMEOUT_SECS)));
+        let initial_data = match waited {
+            Waited::Got(data) => data,
+            failed => {
+                cancel.cancel();
+                return Err(match (failed, end.failure()) {
+                    (Waited::Cancelled, _) => RadioError::Cancelled,
                     (_, Some(reason)) => RadioError::Stream(reason),
-                    (crossbeam_channel::RecvTimeoutError::Timeout, None) => {
+                    (Waited::TimedOut, None) => {
                         RadioError::Timeout("Timeout waiting for stream data".to_string())
                     }
-                    (crossbeam_channel::RecvTimeoutError::Disconnected, None) => {
+                    (_, None) => {
                         RadioError::Stream("The stream ended before any audio".to_string())
                     }
                 });
@@ -145,7 +160,7 @@ impl IcyReader {
                 current_chunk: initial_data,
                 chunk_pos: 0,
                 receiver: audio_rx,
-                stop_flag,
+                cancel,
                 end,
                 _handle: Some(handle),
                 headers,
@@ -160,15 +175,14 @@ impl IcyReader {
     pub fn from_test_channel(
         receiver: Receiver<Vec<u8>>,
         initial_data: Vec<u8>,
-    ) -> (Self, Arc<AtomicBool>) {
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_flag.clone();
+    ) -> (Self, StreamCancel) {
+        let cancel = StreamCancel::new();
         (
             Self {
                 current_chunk: initial_data,
                 chunk_pos: 0,
                 receiver,
-                stop_flag,
+                cancel: cancel.clone(),
                 end: StreamEnd::default(),
                 _handle: None,
                 headers: IcyHeaders {
@@ -179,7 +193,7 @@ impl IcyReader {
                 },
                 bytes_received: Arc::new(AtomicU64::new(0)),
             },
-            stop_clone,
+            cancel,
         )
     }
 }
@@ -218,30 +232,28 @@ impl Read for IcyReader {
                 }
             }
 
-            // Wait briefly for the background thread, which may be
-            // reconnecting with backoff. On timeout return `Interrupted`
-            // rather than blocking: the caller (the stream buffer's producer)
-            // checks its stop flag and reads again, so stopping a station that
-            // is down doesn't leave this reader, and its thread, running.
-            match self.receiver.recv_timeout(READ_POLL_INTERVAL) {
-                Ok(chunk) => {
+            // Wait for the background thread, which may be reconnecting with
+            // backoff. Cancelling the stream ends the wait at once. After a
+            // while return `Interrupted` rather than blocking on: a caller
+            // that stops this reader some other way (the stream buffer's
+            // producer, with a stop of its own) checks it and reads again.
+            match self.cancel.recv(&self.receiver, Some(READ_POLL_INTERVAL)) {
+                Waited::Got(chunk) => {
                     self.current_chunk = chunk;
                     self.chunk_pos = 0;
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-                    if self.stop_flag.load(Ordering::Relaxed) {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "ICY stream stopped",
-                        ));
-                    }
+                Waited::Closed => return self.end.read_result("ICY stream ended"),
+                Waited::Cancelled => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "ICY stream stopped",
+                    ));
+                }
+                Waited::TimedOut => {
                     return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "waiting for ICY stream data",
                     ));
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
-                    return self.end.read_result("ICY stream ended");
                 }
             }
         }
@@ -276,7 +288,7 @@ impl Seek for IcyReader {
 
 impl Drop for IcyReader {
     fn drop(&mut self) {
-        self.stop_flag.store(true, Ordering::SeqCst);
+        self.cancel.cancel();
     }
 }
 
@@ -294,6 +306,7 @@ fn scans_for_id3(url: &str, content_type: Option<&str>) -> bool {
 /// out embedded ID3 tags and offers their song info to the metadata sink.
 struct AudioOut {
     tx: Sender<Vec<u8>>,
+    cancel: StreamCancel,
     sink: MetadataSink,
     id3: Option<Id3Scanner>,
     /// Audio bytes sent so far: the stream offset song info is stamped with
@@ -301,20 +314,22 @@ struct AudioOut {
 }
 
 impl AudioOut {
-    fn new(tx: Sender<Vec<u8>>, sink: MetadataSink, scan_id3: bool) -> Self {
+    fn new(tx: Sender<Vec<u8>>, sink: MetadataSink, scan_id3: bool, cancel: StreamCancel) -> Self {
         Self {
             tx,
+            cancel,
             sink,
             id3: scan_id3.then(Id3Scanner::new),
             sent: 0,
         }
     }
 
-    /// Send audio bytes. Returns false if the receiver is gone.
+    /// Send audio bytes. Returns false if the receiver is gone or the
+    /// stream was cancelled.
     fn send(&mut self, bytes: &[u8]) -> bool {
         let Some(scanner) = &mut self.id3 else {
             self.sent += bytes.len() as u64;
-            return self.tx.send(bytes.to_vec()).is_ok();
+            return self.cancel.send(&self.tx, bytes.to_vec());
         };
         let mut audio = Vec::with_capacity(bytes.len());
         let mut songs = Vec::new();
@@ -326,7 +341,7 @@ impl AudioOut {
             self.sink.offer_at(song, at_byte);
         }
         self.sent += audio.len() as u64;
-        audio.is_empty() || self.tx.send(audio).is_ok()
+        audio.is_empty() || self.cancel.send(&self.tx, audio)
     }
 
     /// The connection was replaced: drop any partial tag from the old one
@@ -377,7 +392,7 @@ struct IcyStream {
     url: String,
     metadata_sink: MetadataSink,
     audio_out: AudioOut,
-    stop_flag: Arc<AtomicBool>,
+    cancel: StreamCancel,
     bytes_received: Arc<AtomicU64>,
     end: StreamEnd,
     /// How long to keep reconnecting without getting any audio
@@ -397,7 +412,7 @@ impl IcyStream {
         let mut outage_since: Option<Instant> = None;
 
         loop {
-            if self.stop_flag.load(Ordering::SeqCst) {
+            if self.cancel.is_cancelled() {
                 return;
             }
 
@@ -447,7 +462,7 @@ impl IcyStream {
                     return;
                 }
                 consecutive_failures += 1;
-                if !backoff_sleep(consecutive_failures, &self.stop_flag) {
+                if !backoff_sleep(consecutive_failures, &self.cancel) {
                     return; // Stopped during sleep
                 }
                 match reconnect(&self.url) {
@@ -796,16 +811,41 @@ mod tests {
     }
 
     #[test]
-    fn drop_sets_stop_flag() {
+    fn drop_cancels_the_stream() {
         let (_tx, rx) = bounded(8);
-        let stop_flag;
-        {
-            let (reader, stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
-            stop_flag = stop.clone();
-            assert!(!stop_flag.load(Ordering::SeqCst));
-            drop(reader);
-        }
-        assert!(stop_flag.load(Ordering::SeqCst));
+        let (reader, cancel) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
+        assert!(!cancel.is_cancelled());
+        drop(reader);
+        assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn a_cancelled_read_ends_at_once() {
+        let (_tx, rx) = bounded::<Vec<u8>>(8);
+        let (mut reader, cancel) = IcyReader::from_test_channel(rx, Vec::new());
+        let (done_tx, done) = bounded(1);
+        let reading = thread::spawn(move || {
+            let mut buf = [0u8; 16];
+            // Keep reading through `Interrupted`, as the stream buffer does
+            let result = loop {
+                match reader.read(&mut buf) {
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    other => break other,
+                }
+            };
+            let _ = done_tx.send(());
+            result.map_err(|e| e.kind())
+        });
+        thread::sleep(Duration::from_millis(100));
+        let cancelled_at = std::time::Instant::now();
+        cancel.cancel();
+        done.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            cancelled_at.elapsed() < Duration::from_millis(100),
+            "the read waited for its poll interval: {:?}",
+            cancelled_at.elapsed()
+        );
+        assert_eq!(reading.join().unwrap(), Err(io::ErrorKind::UnexpectedEof));
     }
 
     #[test]
@@ -1038,14 +1078,10 @@ mod tests {
     #[test]
     fn drop_with_pending_channel_data() {
         let (tx, rx) = bounded(8);
-        let stop_flag;
-        {
-            let (reader, stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
-            stop_flag = stop.clone();
-            tx.send(vec![4, 5, 6]).unwrap();
-            drop(reader);
-        }
-        assert!(stop_flag.load(Ordering::SeqCst));
+        let (reader, cancel) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
+        tx.send(vec![4, 5, 6]).unwrap();
+        drop(reader);
+        assert!(cancel.is_cancelled());
     }
 
     // --- IcyHeaders edge cases ---
@@ -1078,6 +1114,7 @@ mod tests {
         use super::*;
         use crate::stream::id3::test_util::{frame, id3v1_song, id3v2_song};
         use crate::stream::test_server::{Route, TestServer};
+        use std::sync::atomic::AtomicBool;
 
         const METAINT: usize = 256;
 
@@ -1186,7 +1223,7 @@ mod tests {
                 let _ = tx.send(());
             });
             thread::sleep(Duration::from_millis(500));
-            stop.store(true, Ordering::SeqCst);
+            stop.cancel();
 
             read_done
                 .recv_timeout(Duration::from_secs(3))
@@ -1285,6 +1322,7 @@ mod tests {
         use crate::stream::buffer::{BufferStatus, StreamBuffer};
         use crate::stream::id3::test_util::frame;
         use crate::stream::test_server::{Route, TestServer};
+        use std::sync::atomic::AtomicBool;
         use std::sync::Mutex;
 
         const GIVE_UP: Duration = Duration::from_secs(1);
@@ -1354,7 +1392,8 @@ mod tests {
             let server = TestServer::start();
             let audio = frame(600);
             server.route("/live", live(audio.clone()));
-            let (reader, _rx) = IcyReader::open(&server.url("/live"), None, GIVE_UP).unwrap();
+            let (reader, _rx) =
+                IcyReader::open(&server.url("/live"), None, GIVE_UP, StreamCancel::new()).unwrap();
             server.route("/live", Route::status(404));
 
             // Through the stream buffer, as the decoder reads it
@@ -1379,7 +1418,8 @@ mod tests {
             let server = TestServer::start();
             let audio = frame(600);
             server.route("/live", live(audio.clone()));
-            let (reader, _rx) = IcyReader::open(&server.url("/live"), None, GIVE_UP).unwrap();
+            let (reader, _rx) =
+                IcyReader::open(&server.url("/live"), None, GIVE_UP, StreamCancel::new()).unwrap();
             server.route("/live", live(Vec::new()));
 
             let (played, end) = read_until_end(reader, Duration::from_secs(10));
@@ -1398,7 +1438,8 @@ mod tests {
             let server = TestServer::start();
             let audio = frame(600);
             server.route("/live", live(audio.clone()));
-            let (reader, _rx) = IcyReader::open(&server.url("/live"), None, GIVE_UP).unwrap();
+            let (reader, _rx) =
+                IcyReader::open(&server.url("/live"), None, GIVE_UP, StreamCancel::new()).unwrap();
             server.route(
                 "/live",
                 Route::new("<html><body>Station offline</body></html>")
@@ -1422,8 +1463,13 @@ mod tests {
                 "/live",
                 live(icy_body(&first, 256, "One")).header("icy-metaint", "256"),
             );
-            let (mut reader, titles) =
-                IcyReader::open(&server.url("/live"), None, Duration::from_secs(30)).unwrap();
+            let (mut reader, titles) = IcyReader::open(
+                &server.url("/live"),
+                None,
+                Duration::from_secs(30),
+                StreamCancel::new(),
+            )
+            .unwrap();
             server.route(
                 "/live",
                 live(icy_body(&second, 100, "Two")).header("icy-metaint", "100"),
@@ -1459,7 +1505,9 @@ mod tests {
                 "/clip.mp3",
                 Route::new(audio.clone()).header("Content-Type", "audio/mpeg"),
             );
-            let (reader, _rx) = IcyReader::open(&server.url("/clip.mp3"), None, GIVE_UP).unwrap();
+            let (reader, _rx) =
+                IcyReader::open(&server.url("/clip.mp3"), None, GIVE_UP, StreamCancel::new())
+                    .unwrap();
 
             let (played, end) = read_until_end(reader, Duration::from_secs(10));
             assert_eq!(played, audio);
@@ -1480,8 +1528,13 @@ mod tests {
                     .header("Content-Type", "audio/mpeg")
                     .header("icy-name", "Test FM"),
             );
-            let (mut reader, _rx) =
-                IcyReader::open(&server.url("/live"), None, Duration::from_secs(30)).unwrap();
+            let (mut reader, _rx) = IcyReader::open(
+                &server.url("/live"),
+                None,
+                Duration::from_secs(30),
+                StreamCancel::new(),
+            )
+            .unwrap();
 
             let (tx, rx) = bounded(1);
             thread::spawn(move || {

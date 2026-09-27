@@ -25,6 +25,7 @@ use crate::config::buffer::{
     MAX_WATERMARK_BYTES, MIN_THROUGHPUT_INTERVAL_MS, PRODUCER_CHUNK_SIZE, TARGET_BUFFER_SECONDS,
     WATERMARK_STEP_BYTES,
 };
+use crate::stream::cancel::StreamCancel;
 
 /// Network throughput and jitter metrics (EMA-smoothed)
 pub struct NetworkMetrics {
@@ -155,13 +156,26 @@ impl StreamBuffer {
     ///
     /// The producer reads from `reader` in chunks and fills the shared buffer.
     /// The returned `StreamBufferReader` implements Read + Seek for symphonia.
+    /// Cancelling the returned [`StreamCancel`] stops the buffer.
     pub fn new(
         reader: Box<dyn ReadSeek>,
         status: SharedBufferStatus,
         probing_flag: Arc<AtomicBool>,
-    ) -> (StreamBufferReader, JoinHandle<()>, Arc<AtomicBool>) {
-        let stop_flag = Arc::new(AtomicBool::new(false));
+    ) -> (StreamBufferReader, JoinHandle<()>, StreamCancel) {
+        let cancel = StreamCancel::new();
+        let (consumer, handle) = Self::with_cancel(reader, status, probing_flag, cancel.clone());
+        (consumer, handle, cancel)
+    }
 
+    /// [`StreamBuffer::new`] stopped by the stream's own [`StreamCancel`]
+    /// (from `ResolvedStream::cancel`). Cancelling it then stops the
+    /// buffer and the network reader together, with no waiting.
+    pub fn with_cancel(
+        reader: Box<dyn ReadSeek>,
+        status: SharedBufferStatus,
+        probing_flag: Arc<AtomicBool>,
+        cancel: StreamCancel,
+    ) -> (StreamBufferReader, JoinHandle<()>) {
         let state = Arc::new(BufferState {
             inner: Mutex::new(BufferInner {
                 data: Vec::with_capacity(PRODUCER_CHUNK_SIZE * 16),
@@ -174,19 +188,29 @@ impl StreamBuffer {
             data_available: Condvar::new(),
         });
 
+        // Wake a consumer waiting for data. Under the lock, so a consumer
+        // between its cancel check and its wait can't miss the wakeup.
+        let woken = Arc::downgrade(&state);
+        cancel.on_cancel(move || {
+            if let Some(state) = woken.upgrade() {
+                let _inner = state.inner.lock();
+                state.data_available.notify_all();
+            }
+        });
+
         let producer_state = state.clone();
-        let producer_stop = stop_flag.clone();
+        let producer_cancel = cancel.clone();
 
         let handle = thread::Builder::new()
             .name("stream-buffer-producer".to_string())
             .spawn(move || {
-                Self::producer_loop(reader, producer_state, producer_stop);
+                Self::producer_loop(reader, producer_state, producer_cancel);
             })
             .expect("Failed to spawn buffer producer thread");
 
         let consumer = StreamBufferReader {
             state: state.clone(),
-            stop_flag: stop_flag.clone(),
+            cancel,
             status,
             read_pos: 0,
             probing_flag,
@@ -196,26 +220,25 @@ impl StreamBuffer {
             escalation_decay_secs: ESCALATION_DECAY_SECS,
         };
 
-        (consumer, handle, stop_flag)
+        (consumer, handle)
     }
 
     /// Producer loop: reads chunks from inner reader, appends to shared buffer.
     ///
-    /// The inner reader may return `ErrorKind::Interrupted` while it waits for
-    /// the network (the ICY and HLS readers do, a few times a second). The
-    /// producer then checks its stop flag and reads again, so a stop reaches
-    /// it even when the station sends nothing. Every exit marks the producer
-    /// done, so a waiting consumer never blocks on a producer that is gone.
-    fn producer_loop(
-        mut reader: Box<dyn ReadSeek>,
-        state: Arc<BufferState>,
-        stop_flag: Arc<AtomicBool>,
-    ) {
+    /// A read waiting on the network returns as soon as the stream is
+    /// cancelled when the reader shares the stream's token (the ICY and HLS
+    /// readers do). Otherwise the inner reader may return
+    /// `ErrorKind::Interrupted` while it waits (the ICY and HLS readers do, a
+    /// few times a second); the producer then checks for a cancel and reads
+    /// again, so a stop reaches it even when the station sends nothing. Every
+    /// exit marks the producer done, so a waiting consumer never blocks on a
+    /// producer that is gone.
+    fn producer_loop(mut reader: Box<dyn ReadSeek>, state: Arc<BufferState>, cancel: StreamCancel) {
         let _done = ProducerDone(state.clone());
         let mut chunk = vec![0u8; PRODUCER_CHUNK_SIZE];
 
         loop {
-            if stop_flag.load(Ordering::Relaxed) {
+            if cancel.is_cancelled() {
                 break;
             }
 
@@ -227,7 +250,7 @@ impl StreamBuffer {
                     // We must NOT re-read from the inner reader before writing this chunk,
                     // or we'd lose the data we already read.
                     loop {
-                        if stop_flag.load(Ordering::Relaxed) {
+                        if cancel.is_cancelled() {
                             return;
                         }
 
@@ -239,7 +262,7 @@ impl StreamBuffer {
                         // Enforce max buffer size: wait if buffer is full
                         if inner.data.len() >= MAX_BUFFER_SIZE {
                             drop(inner);
-                            thread::sleep(Duration::from_millis(10));
+                            cancel.sleep(Duration::from_millis(10));
                             continue; // Retry writing this same chunk
                         }
 
@@ -282,8 +305,8 @@ impl Drop for ProducerDone {
 /// Consumer side: implements Read + Seek, passed to symphonia.
 pub struct StreamBufferReader {
     state: Arc<BufferState>,
-    /// Set by the engine to stop this stream: reads then return end of stream
-    stop_flag: Arc<AtomicBool>,
+    /// Cancelled to stop this stream: reads then return end of stream
+    cancel: StreamCancel,
     status: SharedBufferStatus,
     /// Absolute read position (across compactions)
     read_pos: u64,
@@ -367,7 +390,7 @@ impl Read for StreamBufferReader {
             // Stopped: end the stream now. The decoder runs on the audio
             // output thread, and rodio can't drop this source (or start the
             // next station) until this read returns.
-            if self.stop_flag.load(Ordering::Relaxed) {
+            if self.cancel.is_cancelled() {
                 return Ok(0);
             }
 
@@ -570,7 +593,7 @@ mod tests {
     use std::io::Cursor;
 
     /// Helper to create a StreamBuffer from in-memory data
-    fn buffer_from_data(data: Vec<u8>) -> (StreamBufferReader, JoinHandle<()>, Arc<AtomicBool>) {
+    fn buffer_from_data(data: Vec<u8>) -> (StreamBufferReader, JoinHandle<()>, StreamCancel) {
         let status = Arc::new(Mutex::new(BufferStatus::default()));
         let probing = Arc::new(AtomicBool::new(false));
         StreamBuffer::new(Box::new(Cursor::new(data)), status, probing)
@@ -582,7 +605,7 @@ mod tests {
     ) -> (
         StreamBufferReader,
         JoinHandle<()>,
-        Arc<AtomicBool>,
+        StreamCancel,
         SharedBufferStatus,
     ) {
         let status = Arc::new(Mutex::new(BufferStatus::default()));
@@ -802,7 +825,7 @@ mod tests {
         let result = reader.seek(SeekFrom::Current(-1));
         assert!(result.is_err());
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -822,7 +845,7 @@ mod tests {
         reader.read_exact(&mut buf).unwrap();
 
         // Signal stop
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
 
         // Producer should exit
         handle.join().unwrap();
@@ -1200,7 +1223,7 @@ mod tests {
     ) -> (
         StreamBufferReader,
         JoinHandle<()>,
-        Arc<AtomicBool>,
+        StreamCancel,
         SharedBufferStatus,
     ) {
         let status = Arc::new(Mutex::new(BufferStatus::default()));
@@ -1260,7 +1283,7 @@ mod tests {
             }
         }
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         // After the initial watermark fill, the consumer drains buffer faster
@@ -1306,7 +1329,7 @@ mod tests {
 
         let underruns = status.lock().unwrap().underrun_count;
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         // With jittery + slow producer, some underruns are expected
@@ -1357,7 +1380,7 @@ mod tests {
             }
         }
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         // Most reads should be near-instant from the pre-filled buffer
@@ -1469,7 +1492,7 @@ mod tests {
         reader.read_exact(&mut buf).unwrap();
 
         // Signal stop
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
 
         // Producer should exit promptly (within a few ms)
         let join_start = Instant::now();
@@ -1491,7 +1514,7 @@ mod tests {
         // Let it start stalling
         thread::sleep(Duration::from_millis(50));
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -1626,7 +1649,7 @@ mod tests {
 
         let underruns = status.lock().unwrap().underrun_count;
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         assert!(
@@ -1811,7 +1834,7 @@ mod tests {
             "Should exit buffering after watermark reached"
         );
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -1858,7 +1881,7 @@ mod tests {
 
         let underruns = status.lock().unwrap().underrun_count;
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         // Underrun count should be close to the number of buffering transitions,
@@ -1963,7 +1986,7 @@ mod tests {
             distinct
         );
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -2026,7 +2049,7 @@ mod tests {
             cycle_count
         );
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -2073,7 +2096,7 @@ mod tests {
             StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status, probing);
         let metrics = NetworkMetrics::new();
         assert_eq!(reader.effective_watermark(&metrics), HIGH_WATERMARK_BYTES);
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         _handle.join().unwrap();
     }
 
@@ -2090,7 +2113,7 @@ mod tests {
             reader.effective_watermark(&metrics),
             HIGH_WATERMARK_BYTES + 3 * WATERMARK_STEP_BYTES
         );
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         _handle.join().unwrap();
     }
 
@@ -2104,7 +2127,7 @@ mod tests {
         reader.underrun_escalations = 100;
         let metrics = NetworkMetrics::new();
         assert_eq!(reader.effective_watermark(&metrics), MAX_WATERMARK_BYTES);
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         _handle.join().unwrap();
     }
 
@@ -2122,7 +2145,7 @@ mod tests {
         // Throughput floor = 80000, base = 64KB = 65536
         // max(65536, 80000) = 80000
         assert_eq!(watermark, 80000);
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         _handle.join().unwrap();
     }
 
@@ -2150,7 +2173,7 @@ mod tests {
         let underruns_phase2 = status.lock().unwrap().underrun_count;
         let delta = underruns_phase2 - underruns_phase1;
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         // After escalation, the watermark is larger so fewer underruns occur
@@ -2183,7 +2206,7 @@ mod tests {
 
         let final_wm = status.lock().unwrap().effective_watermark;
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
 
         // After underruns, the effective watermark should have grown
@@ -2203,7 +2226,7 @@ mod tests {
         let (reader1, handle1, stop1) =
             StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status1, probing1);
         assert_eq!(reader1.underrun_escalations, 0);
-        stop1.store(true, Ordering::Relaxed);
+        stop1.cancel();
         drop(reader1);
         handle1.join().unwrap();
 
@@ -2212,7 +2235,7 @@ mod tests {
         let (reader2, handle2, stop2) =
             StreamBuffer::new(Box::new(Cursor::new(vec![0u8; 10])), status2, probing2);
         assert_eq!(reader2.underrun_escalations, 0);
-        stop2.store(true, Ordering::Relaxed);
+        stop2.cancel();
         drop(reader2);
         handle2.join().unwrap();
     }
@@ -2251,7 +2274,7 @@ mod tests {
             "Escalations should decay to 0 after prolonged buffering"
         );
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -2283,7 +2306,7 @@ mod tests {
             "Escalations should be preserved during short buffering"
         );
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         handle.join().unwrap();
     }
 
@@ -2316,7 +2339,7 @@ mod tests {
             watermark_after
         );
 
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         _handle.join().unwrap();
     }
 
@@ -2407,7 +2430,7 @@ mod tests {
 
     /// Inner reader that behaves like a station that went off air: it never
     /// delivers data. `interrupt` makes it return `Interrupted` every 20 ms
-    /// (how the ICY and HLS readers let the producer check its stop flag);
+    /// (how the ICY and HLS readers let the producer check for a cancel);
     /// otherwise it blocks for an hour. Records when it is dropped.
     struct DeadStationReader {
         interrupt: bool,
@@ -2443,7 +2466,7 @@ mod tests {
     ) -> (
         StreamBufferReader,
         JoinHandle<()>,
-        Arc<AtomicBool>,
+        StreamCancel,
         Arc<AtomicBool>,
     ) {
         let dropped = Arc::new(AtomicBool::new(false));
@@ -2480,7 +2503,7 @@ mod tests {
         let (consumer, _handle, stop, _dropped) = dead_station_buffer(false);
         let rx = read_with_deadline(consumer, |_| {});
         thread::sleep(Duration::from_millis(100));
-        stop.store(true, Ordering::SeqCst);
+        stop.cancel();
         let result = rx
             .recv_timeout(Duration::from_secs(3))
             .expect("read must return once the buffer is stopped");
@@ -2488,9 +2511,34 @@ mod tests {
     }
 
     #[test]
+    fn a_cancel_wakes_a_waiting_consumer_at_once() {
+        // Not at its next wait timeout. Several rounds, since a consumer
+        // that only polls could still happen to wake soon after the cancel.
+        let rounds = 5;
+        let mut total = Duration::ZERO;
+        for _ in 0..rounds {
+            let (consumer, _handle, stop, _dropped) = dead_station_buffer(false);
+            let rx = read_with_deadline(consumer, |_| {});
+            thread::sleep(Duration::from_millis(30));
+            let cancelled_at = Instant::now();
+            stop.cancel();
+            let result = rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("read must return once the buffer is stopped");
+            total += cancelled_at.elapsed();
+            assert_eq!(result, Ok(0));
+        }
+        let poll = Duration::from_millis(CONSUMER_WAIT_TIMEOUT_MS);
+        assert!(
+            total < poll * rounds / 4,
+            "{rounds} cancelled reads took {total:?} in all"
+        );
+    }
+
+    #[test]
     fn stop_while_buffering_after_an_underrun_returns_end_of_stream() {
         let (consumer, _handle, stop, _dropped) = dead_station_buffer(false);
-        stop.store(true, Ordering::SeqCst);
+        stop.cancel();
         // Put the consumer in the state it is in after an underrun
         let rx = read_with_deadline(consumer, |c| c.buffering_active = true);
         let result = rx
@@ -2507,7 +2555,7 @@ mod tests {
             !handle.is_finished(),
             "Interrupted is not an error: the producer keeps waiting for data"
         );
-        stop.store(true, Ordering::SeqCst);
+        stop.cancel();
         let deadline = Instant::now() + Duration::from_secs(2);
         while !handle.is_finished() && Instant::now() < deadline {
             thread::sleep(Duration::from_millis(10));
@@ -2524,7 +2572,7 @@ mod tests {
         // Stop lands while the producer is outside the write loop: the
         // consumer must still see the producer as finished.
         let (consumer, handle, stop, _dropped) = dead_station_buffer(true);
-        stop.store(true, Ordering::SeqCst);
+        stop.cancel();
         handle.join().unwrap();
         assert!(consumer.state.inner.lock().unwrap().producer_done);
     }

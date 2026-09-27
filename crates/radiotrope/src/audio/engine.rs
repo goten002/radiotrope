@@ -15,6 +15,7 @@ use rodio::{MixerDeviceSink, Player};
 use crate::config::timeouts::{BUFFERING_STALL_THRESHOLD_SECS, PROBE_TIMEOUT_SECS};
 use crate::error::RadioError;
 use crate::stream::buffer::{PlaybackPositionReader, SharedBufferStatus, StreamBuffer};
+use crate::stream::{ResolvedStream, StreamCancel};
 
 /// Quadratic volume curve for natural perception (human hearing is logarithmic)
 fn volume_curve(linear: f32) -> f32 {
@@ -98,7 +99,7 @@ struct PendingProbe {
     probe_rx: Receiver<Result<SymphoniaSource, RadioError>>,
     buf_status: SharedBufferStatus,
     probing_flag: Arc<AtomicBool>,
-    stop_flag: Arc<AtomicBool>,
+    cancel: StreamCancel,
     prod_handle: JoinHandle<()>,
     bytes_received: Option<Arc<AtomicU64>>,
     segments_downloaded: Option<Arc<AtomicU64>>,
@@ -214,6 +215,7 @@ impl AudioEngine {
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            cancel: StreamCancel::new(),
         });
     }
 
@@ -237,6 +239,24 @@ impl AudioEngine {
             bytes_received,
             segments_downloaded,
             playback_position,
+            cancel: StreamCancel::new(),
+        });
+    }
+
+    /// Start playing a resolved stream, with its stats and song info timing.
+    ///
+    /// Stopping it, or playing something else, cancels the stream
+    /// (`ResolvedStream::cancel`), so its network threads stop at once. Take
+    /// `metadata_rx` out first if you want the stream's song info.
+    pub fn play_stream(&self, stream: ResolvedStream) {
+        self.send(AudioCommand::Play {
+            reader: stream.reader,
+            format_hint: stream.info.format_hint,
+            bitrate: stream.info.bitrate,
+            bytes_received: stream.bytes_received,
+            segments_downloaded: stream.segments_downloaded,
+            playback_position: stream.playback_position,
+            cancel: stream.cancel,
         });
     }
 
@@ -369,7 +389,8 @@ impl AudioEngine {
         let mut was_buffering = false;
         let mut buffering_since: Option<Instant> = None;
         let mut prolonged_buffering_stall = false;
-        let mut producer_stop_flag: Option<Arc<AtomicBool>> = None;
+        // Stops the playing stream: its buffer and its network threads
+        let mut stream_cancel: Option<StreamCancel> = None;
         let mut analysis_active: Option<Arc<AtomicBool>> = None;
         let mut _producer_probing_flag: Option<Arc<AtomicBool>> = None;
         let mut _producer_handle: Option<JoinHandle<()>> = None;
@@ -395,23 +416,24 @@ impl AudioEngine {
                         bytes_received,
                         segments_downloaded,
                         playback_position,
+                        cancel,
                     } => {
                         // Cancel any pending probe
                         if let Some(probe) = pending_probe.take() {
-                            probe.stop_flag.store(true, Ordering::SeqCst);
+                            probe.cancel.cancel();
                         }
                         // Stop any current playback (including producer thread)
                         if let Some(ref flag) = analysis_active {
                             flag.store(false, Ordering::SeqCst);
                         }
-                        if let Some(ref flag) = producer_stop_flag {
-                            flag.store(true, Ordering::SeqCst);
+                        if let Some(ref cancel) = stream_cancel {
+                            cancel.cancel();
                         }
                         sink.stop();
                         playing_source = None;
                         // Drop old producer resources before creating new ones
                         drop(analysis_active.take());
-                        drop(producer_stop_flag.take());
+                        drop(stream_cancel.take());
                         drop(_producer_probing_flag.take());
                         drop(_producer_handle.take());
                         if let Ok(mut data) = analysis.lock() {
@@ -422,8 +444,12 @@ impl AudioEngine {
                         let buf_status =
                             Arc::new(Mutex::new(crate::stream::buffer::BufferStatus::default()));
                         let probing_flag = Arc::new(AtomicBool::new(true));
-                        let (buf_reader, prod_handle, stop_flag) =
-                            StreamBuffer::new(reader, buf_status.clone(), probing_flag.clone());
+                        let (buf_reader, prod_handle) = StreamBuffer::with_cancel(
+                            reader,
+                            buf_status.clone(),
+                            probing_flag.clone(),
+                            cancel.clone(),
+                        );
 
                         // Report how far the decoder has read, for song info timing
                         let buf_reader = PlaybackPositionReader::new(
@@ -440,7 +466,7 @@ impl AudioEngine {
                                     probe_rx,
                                     buf_status,
                                     probing_flag,
-                                    stop_flag,
+                                    cancel,
                                     prod_handle,
                                     bytes_received,
                                     segments_downloaded,
@@ -449,7 +475,7 @@ impl AudioEngine {
                                 });
                             }
                             Err(e) => {
-                                stop_flag.store(true, Ordering::SeqCst);
+                                cancel.cancel();
                                 state = PlaybackState::Stopped;
                                 if let Ok(mut stats) = shared_stats.lock() {
                                     *stats = StreamStats::default();
@@ -463,13 +489,13 @@ impl AudioEngine {
                     }
                     AudioCommand::Stop => {
                         if let Some(probe) = pending_probe.take() {
-                            probe.stop_flag.store(true, Ordering::SeqCst);
+                            probe.cancel.cancel();
                         }
                         if let Some(ref flag) = analysis_active {
                             flag.store(false, Ordering::SeqCst);
                         }
-                        if let Some(ref flag) = producer_stop_flag {
-                            flag.store(true, Ordering::SeqCst);
+                        if let Some(ref cancel) = stream_cancel {
+                            cancel.cancel();
                         }
                         sink.stop();
                         playing_source = None;
@@ -483,7 +509,7 @@ impl AudioEngine {
                         current_segments_downloaded = None;
                         current_buffer_status = None;
                         analysis_active = None;
-                        producer_stop_flag = None;
+                        stream_cancel = None;
                         _producer_probing_flag = None;
                         _producer_handle = None;
                         if state != PlaybackState::Stopped {
@@ -538,13 +564,13 @@ impl AudioEngine {
                     }
                     AudioCommand::Shutdown => {
                         if let Some(probe) = pending_probe.take() {
-                            probe.stop_flag.store(true, Ordering::SeqCst);
+                            probe.cancel.cancel();
                         }
                         if let Some(ref flag) = analysis_active {
                             flag.store(false, Ordering::SeqCst);
                         }
-                        if let Some(ref flag) = producer_stop_flag {
-                            flag.store(true, Ordering::SeqCst);
+                        if let Some(ref cancel) = stream_cancel {
+                            cancel.cancel();
                         }
                         sink.stop();
                         break;
@@ -644,7 +670,7 @@ impl AudioEngine {
                                 last_throughput_bytes = 0;
                                 last_throughput_time = Instant::now();
                                 analysis_active = Some(active_flag);
-                                producer_stop_flag = Some(p.stop_flag);
+                                stream_cancel = Some(p.cancel);
                                 _producer_probing_flag = Some(p.probing_flag);
                                 _producer_handle = Some(p.prod_handle);
 
@@ -668,7 +694,7 @@ impl AudioEngine {
                             }
                             Ok(Err(e)) => {
                                 let p = pending_probe.take().unwrap();
-                                p.stop_flag.store(true, Ordering::SeqCst);
+                                p.cancel.cancel();
                                 state = PlaybackState::Stopped;
                                 if let Ok(mut stats) = shared_stats.lock() {
                                     *stats = StreamStats::default();
@@ -682,7 +708,7 @@ impl AudioEngine {
                                 // Still probing — check for timeout
                                 if pending.started.elapsed().as_secs() >= PROBE_TIMEOUT_SECS {
                                     let p = pending_probe.take().unwrap();
-                                    p.stop_flag.store(true, Ordering::SeqCst);
+                                    p.cancel.cancel();
                                     state = PlaybackState::Stopped;
                                     if let Ok(mut stats) = shared_stats.lock() {
                                         *stats = StreamStats::default();
@@ -700,7 +726,7 @@ impl AudioEngine {
                             }
                             Err(TryRecvError::Disconnected) => {
                                 let p = pending_probe.take().unwrap();
-                                p.stop_flag.store(true, Ordering::SeqCst);
+                                p.cancel.cancel();
                                 state = PlaybackState::Stopped;
                                 if let Ok(mut stats) = shared_stats.lock() {
                                     *stats = StreamStats::default();
@@ -720,8 +746,8 @@ impl AudioEngine {
                         if let Some(ref flag) = analysis_active {
                             flag.store(false, Ordering::SeqCst);
                         }
-                        if let Some(ref flag) = producer_stop_flag {
-                            flag.store(true, Ordering::SeqCst);
+                        if let Some(ref cancel) = stream_cancel {
+                            cancel.cancel();
                         }
                         state = PlaybackState::Stopped;
                         health_monitor = None;
@@ -745,7 +771,7 @@ impl AudioEngine {
                         current_segments_downloaded = None;
                         current_buffer_status = None;
                         analysis_active = None;
-                        producer_stop_flag = None;
+                        stream_cancel = None;
                         _producer_probing_flag = None;
                         _producer_handle = None;
                         if let Ok(mut stats) = shared_stats.lock() {
@@ -898,8 +924,8 @@ impl AudioEngine {
                                         if let Some(ref flag) = analysis_active {
                                             flag.store(false, Ordering::SeqCst);
                                         }
-                                        if let Some(ref flag) = producer_stop_flag {
-                                            flag.store(true, Ordering::SeqCst);
+                                        if let Some(ref cancel) = stream_cancel {
+                                            cancel.cancel();
                                         }
                                         sink.stop();
                                         playing_source = None;
@@ -914,7 +940,7 @@ impl AudioEngine {
                                         current_segments_downloaded = None;
                                         current_buffer_status = None;
                                         analysis_active = None;
-                                        producer_stop_flag = None;
+                                        stream_cancel = None;
                                         _producer_probing_flag = None;
                                         _producer_handle = None;
                                         if let Ok(mut stats) = shared_stats.lock() {
@@ -3181,7 +3207,7 @@ mod tests {
             pos >= one_second && pos < one_second + 16 * 1024,
             "decoded 1 s ({one_second} bytes) but position is {pos} of {len}"
         );
-        stop.store(true, Ordering::SeqCst);
+        stop.cancel();
     }
 
     #[test]
@@ -3208,6 +3234,105 @@ mod tests {
         let pos = position.load(Ordering::Relaxed);
         assert!(pos > 0 && pos <= len, "position {pos} of {len}");
 
+        engine.shutdown();
+    }
+
+    // === Cancelling the stream ===
+
+    fn resolved_stream(
+        reader: Box<dyn crate::audio::types::ReadSeek>,
+        cancel: &StreamCancel,
+    ) -> ResolvedStream {
+        ResolvedStream {
+            reader,
+            metadata_rx: None,
+            info: crate::stream::types::StreamInfo {
+                original_url: "test".into(),
+                resolved_url: "test".into(),
+                stream_type: crate::stream::types::StreamType::Direct,
+                format_hint: Some("wav".into()),
+                content_type: None,
+                station_name: None,
+                bitrate: None,
+            },
+            bytes_received: None,
+            segments_downloaded: None,
+            playback_position: None,
+            cancel: cancel.clone(),
+        }
+    }
+
+    /// A station that is connected but sends nothing
+    struct SilentStation;
+
+    impl std::io::Read for SilentStation {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            thread::sleep(Duration::from_millis(10));
+            Err(std::io::ErrorKind::Interrupted.into())
+        }
+    }
+
+    impl std::io::Seek for SilentStation {
+        fn seek(&mut self, _pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::other("live stream"))
+        }
+    }
+
+    /// Wait up to 2 s for `cancel` to be cancelled
+    fn gets_cancelled(cancel: &StreamCancel) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while !cancel.is_cancelled() && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
+        cancel.is_cancelled()
+    }
+
+    fn expect_playing(engine: &AudioEngine) {
+        match wait_for_event(engine, 2000) {
+            Some(AudioEvent::Playing(_)) => {}
+            other => panic!("Expected Playing, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn stopping_cancels_the_stream() {
+        let Some(engine) = try_engine() else { return };
+        let cancel = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &cancel));
+        expect_playing(&engine);
+        assert!(!cancel.is_cancelled());
+
+        engine.stop();
+        assert!(gets_cancelled(&cancel), "stop must cancel the stream");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn playing_another_station_cancels_the_old_stream() {
+        let Some(engine) = try_engine() else { return };
+        let old = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &old));
+        expect_playing(&engine);
+
+        let new = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &new));
+        assert!(gets_cancelled(&old), "the old station must be cancelled");
+        expect_playing(&engine);
+        assert!(!new.is_cancelled());
+        engine.shutdown();
+    }
+
+    #[test]
+    fn stopping_while_probing_cancels_the_stream() {
+        let Some(engine) = try_engine() else { return };
+        let cancel = StreamCancel::new();
+        engine.play_stream(resolved_stream(Box::new(SilentStation), &cancel));
+        // The probe waits for audio that never comes
+        thread::sleep(Duration::from_millis(100));
+        assert!(!cancel.is_cancelled());
+
+        engine.stop();
+        assert!(gets_cancelled(&cancel), "stop must cancel the stream");
         engine.shutdown();
     }
 

@@ -15,7 +15,7 @@ use radiotrope::audio::{
     RecordingStatus, RecordingTags, SharedStats, TapPoint,
 };
 use radiotrope::stream::metadata::StreamMetadata;
-use radiotrope::stream::{StreamResolver, StreamType};
+use radiotrope::stream::{StreamCancel, StreamResolver, StreamType};
 use radiotrope_app::data::recordings;
 
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
@@ -32,6 +32,9 @@ pub struct AppController {
     metadata_rx: Option<crossbeam_channel::Receiver<StreamMetadata>>,
     /// Monotonically increasing counter to discard stale resolve results
     resolve_generation: u64,
+    /// Stops the station being resolved or played: its network threads end
+    /// at once instead of finishing their requests for nobody
+    stream_cancel: Option<StreamCancel>,
     /// One-shot channel to send the engine's analysis Arc to the UI thread
     analysis_tx: Option<Sender<Arc<Mutex<AudioAnalysis>>>>,
     /// One-shot channel to send the engine's SharedStats to the UI thread
@@ -62,6 +65,7 @@ impl AppController {
             engine: None,
             metadata_rx: None,
             resolve_generation: 0,
+            stream_cancel: None,
             analysis_tx: Some(analysis_tx),
             stats_tx: Some(stats_tx),
             volume_before_mute: 1.0,
@@ -128,12 +132,15 @@ impl AppController {
             }
             AppCommand::Stop => {
                 self.stop_recording();
+                self.cancel_stream();
                 if let Some(engine) = &self.engine {
                     engine.stop();
                 }
                 self.metadata_rx = None;
                 self.stream_failed = false;
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                // A station still resolving doesn't start after the stop
+                state.is_resolving = false;
                 state.playback = PlaybackState::Stopped;
                 state.status_text = "Stopped".into();
                 state.is_error = false;
@@ -255,7 +262,8 @@ impl AppController {
         // Switching station ends the recording of the old one
         self.stop_recording();
 
-        // Stop any current playback first
+        // Stop any current playback first, and any station still resolving
+        self.cancel_stream();
         if let Some(engine) = &self.engine {
             engine.stop();
         }
@@ -263,9 +271,9 @@ impl AppController {
 
         self.stream_failed = false;
 
-        // Bump generation so any in-flight resolve becomes stale
-        self.resolve_generation += 1;
         let generation = self.resolve_generation;
+        let cancel = StreamCancel::new();
+        self.stream_cancel = Some(cancel.clone());
 
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -293,25 +301,40 @@ impl AppController {
                 // Run the actual resolve on a nested thread so we can enforce a timeout
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let url_inner = Arc::clone(&url);
+                let cancel_inner = cancel.clone();
                 std::thread::Builder::new()
                     .name("stream-resolve-inner".into())
                     .spawn(move || {
-                        let result = StreamResolver::resolve(&url_inner).map_err(|e| e.to_string());
+                        let result = StreamResolver::resolve_cancellable(&url_inner, &cancel_inner)
+                            .map_err(|e| e.to_string());
                         let _ = tx.send(result);
                     })
                     .expect("Failed to spawn stream-resolve-inner thread");
 
                 let result = match rx.recv_timeout(RESOLVE_TIMEOUT) {
                     Ok(r) => r,
-                    Err(_) => Err(format!(
-                        "Stream resolution timed out after {}s for: {url}",
-                        RESOLVE_TIMEOUT.as_secs()
-                    )),
+                    Err(_) => {
+                        // Stop the resolve, which would otherwise carry on
+                        cancel.cancel();
+                        Err(format!(
+                            "Stream resolution timed out after {}s for: {url}",
+                            RESOLVE_TIMEOUT.as_secs()
+                        ))
+                    }
                 };
 
                 let _ = cmd_tx.send(AppCommand::InternalStreamResolved { generation, result });
             })
             .expect("Failed to spawn stream-resolve thread");
+    }
+
+    /// Stop the station being resolved or played, and make any resolve
+    /// result still on its way stale
+    fn cancel_stream(&mut self) {
+        if let Some(cancel) = self.stream_cancel.take() {
+            cancel.cancel();
+        }
+        self.resolve_generation += 1;
     }
 
     /// Handle the resolved stream — start playback (or store error).
@@ -347,18 +370,12 @@ impl AppController {
                 }
 
                 // Store metadata receiver for polling
-                self.metadata_rx = resolved.metadata_rx;
+                let mut resolved = resolved;
+                self.metadata_rx = resolved.metadata_rx.take();
 
-                // Start playback
+                // Start playback. The engine cancels the stream when it stops.
                 if let Some(engine) = &self.engine {
-                    engine.play_with_stats(
-                        resolved.reader,
-                        resolved.info.format_hint,
-                        resolved.info.bitrate,
-                        resolved.bytes_received,
-                        resolved.segments_downloaded,
-                        resolved.playback_position,
-                    );
+                    engine.play_stream(resolved);
                 }
             }
             Err(e) => {
@@ -718,6 +735,91 @@ mod tests {
             let state = state.lock().unwrap();
             assert!(!state.is_error);
             assert_eq!(state.status_text, "Paused");
+        }
+    }
+
+    mod stream_cancel {
+        use super::*;
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        /// A station that answers and then sends no audio
+        fn silent_station() -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/live", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    std::thread::spawn(move || {
+                        let mut request = BufReader::new(stream.try_clone().unwrap());
+                        let mut line = String::new();
+                        while request.read_line(&mut line).is_ok_and(|n| n > 2) {
+                            line.clear();
+                        }
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\n\r\n");
+                        std::thread::sleep(Duration::from_secs(60));
+                    });
+                }
+            });
+            url
+        }
+
+        /// The result of the resolve that was cancelled. Unless the cancel
+        /// reaches it, a silent station's resolve runs to the 15 s timeout.
+        fn cancelled_resolve(controller: &AppController) -> AppCommand {
+            let cmd = controller
+                .cmd_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("the cancelled resolve must end at once");
+            assert!(matches!(cmd, AppCommand::InternalStreamResolved { .. }));
+            cmd
+        }
+
+        #[test]
+        fn a_stop_while_resolving_ends_the_resolve_and_stays_stopped() {
+            let (mut controller, state) = controller();
+            controller.start_stream(&silent_station(), Some("Silent FM".into()));
+            let cancel = controller.stream_cancel.clone().unwrap();
+            assert!(state.lock().unwrap().is_resolving);
+
+            controller.handle_command(AppCommand::Stop);
+            assert!(cancel.is_cancelled());
+            assert!(!state.lock().unwrap().is_resolving);
+
+            // The resolve's result comes after the stop and changes nothing
+            let resolved = cancelled_resolve(&controller);
+            controller.handle_command(resolved);
+            let state = state.lock().unwrap();
+            assert_eq!(state.playback, PlaybackState::Stopped);
+            assert!(!state.is_resolving);
+            assert!(!state.is_error, "{}", state.status_text);
+            assert_eq!(state.status_text, "Stopped");
+        }
+
+        #[test]
+        fn switching_station_cancels_the_one_resolving() {
+            let (mut controller, state) = controller();
+            let station = silent_station();
+            controller.start_stream(&station, Some("First".into()));
+            let first = controller.stream_cancel.clone().unwrap();
+            controller.start_stream(&station, Some("Second".into()));
+            let second = controller.stream_cancel.clone().unwrap();
+            assert!(first.is_cancelled());
+            assert!(!second.is_cancelled());
+
+            // The first station's result is stale: the second still resolves
+            let resolved = cancelled_resolve(&controller);
+            controller.handle_command(resolved);
+            {
+                let state = state.lock().unwrap();
+                assert!(state.is_resolving);
+                assert!(!state.is_error, "{}", state.status_text);
+                assert_eq!(state.station_name.as_deref(), Some("Second"));
+            }
+
+            controller.handle_command(AppCommand::Stop);
+            assert!(second.is_cancelled());
         }
     }
 

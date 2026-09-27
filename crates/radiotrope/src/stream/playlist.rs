@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use crate::config::network::{CONNECT_TIMEOUT_SECS, MAX_PLAYLIST_DEPTH, USER_AGENT};
 use crate::error::{RadioError, Result};
+use crate::stream::cancel::StreamCancel;
 
 /// Result of checking a URL's playlist type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,10 +105,18 @@ pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
 /// M3U8 (HLS) URLs pass through unchanged. PLS and M3U playlists are fetched
 /// and parsed, recursing up to `MAX_PLAYLIST_DEPTH` levels.
 pub fn resolve_playlist_url(url: &str) -> Result<String> {
-    resolve_recursive(url, MAX_PLAYLIST_DEPTH)
+    resolve_playlist(url, &StreamCancel::new())
 }
 
-fn resolve_recursive(url: &str, depth: usize) -> Result<String> {
+/// [`resolve_playlist_url`], stopped by `cancel` between fetches
+pub(crate) fn resolve_playlist(url: &str, cancel: &StreamCancel) -> Result<String> {
+    resolve_recursive(url, MAX_PLAYLIST_DEPTH, cancel)
+}
+
+fn resolve_recursive(url: &str, depth: usize, cancel: &StreamCancel) -> Result<String> {
+    if cancel.is_cancelled() {
+        return Err(RadioError::Cancelled);
+    }
     if depth == 0 {
         return Err(RadioError::Stream("Playlist nesting too deep".to_string()));
     }
@@ -119,7 +128,7 @@ fn resolve_recursive(url: &str, depth: usize) -> Result<String> {
             let stream_url = parse_pls(&content).ok_or_else(|| {
                 RadioError::Stream("No stream URL found in PLS playlist".to_string())
             })?;
-            resolve_recursive(&stream_url, depth - 1)
+            resolve_recursive(&stream_url, depth - 1, cancel)
         }
         PlaylistCheck::M3u => {
             // Relative entries are relative to where the playlist was served
@@ -129,7 +138,7 @@ fn resolve_recursive(url: &str, depth: usize) -> Result<String> {
             let stream_url = parse_m3u(&content, &base_url).ok_or_else(|| {
                 RadioError::Stream("No stream URL found in M3U playlist".to_string())
             })?;
-            resolve_recursive(&stream_url, depth - 1)
+            resolve_recursive(&stream_url, depth - 1, cancel)
         }
     }
 }

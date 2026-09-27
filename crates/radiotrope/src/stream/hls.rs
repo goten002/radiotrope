@@ -7,12 +7,12 @@
 
 use std::collections::HashSet;
 use std::io::{self, Cursor, Read, Seek, SeekFrom};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::{bounded, Receiver, Sender};
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::Url;
 
@@ -20,6 +20,7 @@ use crate::config::hls::{FIRST_SEGMENT_TIMEOUT_SECS, SEGMENT_BUFFER_SIZE, SEGMEN
 use crate::config::network::USER_AGENT;
 use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
 use crate::error::{RadioError, Result};
+use crate::stream::cancel::{StreamCancel, Waited};
 use crate::stream::hls_metadata::{
     extinf_titles, fmp4_emsg_id3, looks_like_fmp4, parse_extinf_title,
 };
@@ -43,7 +44,8 @@ const MAX_TARGET_DURATION_SECS: u64 = 60;
 pub struct HlsReader {
     buffer: Cursor<Vec<u8>>,
     receiver: Receiver<Vec<u8>>,
-    stop_flag: Arc<AtomicBool>,
+    /// Stops the downloader and this reader's waits
+    cancel: StreamCancel,
     /// How the downloader ended, once it has
     end: StreamEnd,
     _handle: Option<JoinHandle<()>>,
@@ -72,10 +74,21 @@ impl HlsReader {
         media_url: &str,
         playback_position: Option<Arc<AtomicU64>>,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
+        Self::new_cancellable(media_url, playback_position, StreamCancel::new())
+    }
+
+    /// [`HlsReader::new`], stopped by `cancel` (or by dropping the reader):
+    /// the downloader ends, and a wait for a segment returns at once
+    pub fn new_cancellable(
+        media_url: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+        cancel: StreamCancel,
+    ) -> Result<(Self, Receiver<StreamMetadata>)> {
         Self::open(
             media_url,
             playback_position,
             Duration::from_secs(RECONNECT_GIVE_UP_SECS),
+            cancel,
         )
     }
 
@@ -83,6 +96,7 @@ impl HlsReader {
         media_url: &str,
         playback_position: Option<Arc<AtomicU64>>,
         give_up: Duration,
+        cancel: StreamCancel,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let playlist_url = Url::parse(media_url)
             .map_err(|e| RadioError::Stream(format!("Invalid HLS URL {media_url}: {e}")))?;
@@ -91,7 +105,6 @@ impl HlsReader {
             Some(position) => MetadataSink::synced(position),
             None => MetadataSink::channel(),
         };
-        let stop_flag = Arc::new(AtomicBool::new(false));
         let bytes_received = Arc::new(AtomicU64::new(0));
         let segments_downloaded = Arc::new(AtomicU64::new(0));
         let problem: Arc<Mutex<Option<String>>> = Arc::default();
@@ -101,7 +114,7 @@ impl HlsReader {
             playlist_url,
             sender,
             metadata_sink,
-            stop_flag: stop_flag.clone(),
+            cancel: cancel.clone(),
             bytes_received: bytes_received.clone(),
             segments_downloaded: segments_downloaded.clone(),
             problem: problem.clone(),
@@ -114,23 +127,24 @@ impl HlsReader {
 
         // Wait for the first segment. On failure, stop the downloader so it
         // doesn't keep polling the playlist for a reader that never existed.
-        let initial_data =
-            match receiver.recv_timeout(Duration::from_secs(FIRST_SEGMENT_TIMEOUT_SECS)) {
-                Ok(data) => data,
-                Err(e) => {
-                    stop_flag.store(true, Ordering::SeqCst);
-                    let reason = problem.lock().ok().and_then(|mut p| p.take());
-                    return Err(match (e, reason) {
-                        (_, Some(reason)) => RadioError::Stream(reason),
-                        (RecvTimeoutError::Timeout, None) => {
-                            RadioError::Timeout("Timeout waiting for first HLS segment".to_string())
-                        }
-                        (RecvTimeoutError::Disconnected, None) => {
-                            RadioError::Stream("HLS stream ended before any audio".to_string())
-                        }
-                    });
-                }
-            };
+        let first_wait = Duration::from_secs(FIRST_SEGMENT_TIMEOUT_SECS);
+        let initial_data = match cancel.recv(&receiver, Some(first_wait)) {
+            Waited::Got(data) => data,
+            failed => {
+                cancel.cancel();
+                let reason = problem.lock().ok().and_then(|mut p| p.take());
+                return Err(match (failed, reason) {
+                    (Waited::Cancelled, _) => RadioError::Cancelled,
+                    (_, Some(reason)) => RadioError::Stream(reason),
+                    (Waited::TimedOut, None) => {
+                        RadioError::Timeout("Timeout waiting for first HLS segment".to_string())
+                    }
+                    (_, None) => {
+                        RadioError::Stream("HLS stream ended before any audio".to_string())
+                    }
+                });
+            }
+        };
 
         let detected_format = detect_segment_format(&initial_data, media_url);
 
@@ -138,7 +152,7 @@ impl HlsReader {
             Self {
                 buffer: Cursor::new(initial_data),
                 receiver,
-                stop_flag,
+                cancel,
                 end,
                 _handle: Some(handle),
                 detected_format,
@@ -154,22 +168,21 @@ impl HlsReader {
     pub fn from_test_channel(
         receiver: Receiver<Vec<u8>>,
         initial_data: Vec<u8>,
-    ) -> (Self, Arc<AtomicBool>) {
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let stop_clone = stop_flag.clone();
+    ) -> (Self, StreamCancel) {
+        let cancel = StreamCancel::new();
         let format = detect_segment_format(&initial_data, "test.ts");
         (
             Self {
                 buffer: Cursor::new(initial_data),
                 receiver,
-                stop_flag,
+                cancel: cancel.clone(),
                 end: StreamEnd::default(),
                 _handle: None,
                 detected_format: format,
                 bytes_received: Arc::new(AtomicU64::new(0)),
                 segments_downloaded: Arc::new(AtomicU64::new(0)),
             },
-            stop_clone,
+            cancel,
         )
     }
 
@@ -189,38 +202,36 @@ impl HlsReader {
             self.buffer.get_mut().extend(data);
         }
 
-        // If buffer exhausted, wait briefly for the next segment. The
-        // downloader keeps retrying on network errors, so a timeout is not
-        // the end: return `Interrupted` and let the caller (the stream
-        // buffer's producer) check its stop flag and read again. Blocking
-        // here instead would keep a stopped station's threads alive for as
-        // long as it stays down.
+        // If buffer exhausted, wait for the next segment. Cancelling the
+        // stream ends the wait at once. The downloader keeps retrying on
+        // network errors, so a timeout is not the end: return `Interrupted`
+        // and let a caller that stops this reader some other way (the stream
+        // buffer's producer, with a stop of its own) check it and read again.
         let remaining = self
             .buffer
             .get_ref()
             .len()
             .saturating_sub(self.buffer.position() as usize);
         if remaining == 0 {
-            if self.stop_flag.load(Ordering::Relaxed) {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "HLS stream stopped",
-                ));
-            }
-
-            match self.receiver.recv_timeout(READ_POLL_INTERVAL) {
-                Ok(data) => {
+            match self.cancel.recv(&self.receiver, Some(READ_POLL_INTERVAL)) {
+                Waited::Got(data) => {
                     self.buffer.get_mut().clear();
                     self.buffer.set_position(0);
                     self.buffer.get_mut().extend(data);
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                Waited::Cancelled => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "HLS stream stopped",
+                    ));
+                }
+                Waited::TimedOut => {
                     return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "waiting for the next HLS segment",
                     ));
                 }
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                Waited::Closed => {
                     // Downloader exited: the playlist ended (the empty
                     // buffer then reads as end of stream), or it gave up
                     return self.end.read_result("HLS stream ended").map(|_| ());
@@ -252,7 +263,7 @@ impl Seek for HlsReader {
 
 impl Drop for HlsReader {
     fn drop(&mut self) {
-        self.stop_flag.store(true, Ordering::SeqCst);
+        self.cancel.cancel();
     }
 }
 
@@ -600,6 +611,11 @@ fn http_get(
 /// Returns the media playlist's final URL, after any HTTP redirects, since
 /// relative segment URIs are relative to where the playlist really is.
 pub fn resolve_hls_url(url: &str) -> Result<String> {
+    resolve_hls(url, &StreamCancel::new())
+}
+
+/// [`resolve_hls_url`], stopped by `cancel` between fetches
+pub(crate) fn resolve_hls(url: &str, cancel: &StreamCancel) -> Result<String> {
     let lower = url.to_lowercase();
     if !lower.ends_with(".m3u8") && !lower.contains(".m3u8?") {
         return Err(RadioError::Stream("Not an HLS URL".to_string()));
@@ -612,6 +628,9 @@ pub fn resolve_hls_url(url: &str) -> Result<String> {
 
     let mut url = url.to_string();
     for _ in 0..5 {
+        if cancel.is_cancelled() {
+            return Err(RadioError::Cancelled);
+        }
         let response = client.get(&url).send()?;
         if !response.status().is_success() {
             return Err(RadioError::Stream(format!("HTTP {}", response.status())));
@@ -670,7 +689,7 @@ struct SegmentDownloader {
     playlist_url: Url,
     sender: Sender<Vec<u8>>,
     metadata_sink: MetadataSink,
-    stop_flag: Arc<AtomicBool>,
+    cancel: StreamCancel,
     bytes_received: Arc<AtomicU64>,
     segments_downloaded: Arc<AtomicU64>,
     problem: Arc<Mutex<Option<String>>>,
@@ -696,25 +715,12 @@ impl SegmentDownloader {
     }
 
     fn stopped(&self) -> bool {
-        self.stop_flag.load(Ordering::SeqCst)
+        self.cancel.is_cancelled()
     }
 
     /// Sleep for `duration` unless stopped first. Returns false if stopped.
     fn sleep(&self, duration: Duration) -> bool {
-        let now = std::time::Instant::now();
-        let deadline = now
-            .checked_add(duration)
-            .unwrap_or(now + Duration::from_secs(3600));
-        loop {
-            if self.stopped() {
-                return false;
-            }
-            let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                return true;
-            }
-            thread::sleep(left.min(Duration::from_millis(250)));
-        }
+        self.cancel.sleep(duration)
     }
 
     /// Download until stopped or the stream ends. `Err` is a reason the
@@ -762,7 +768,7 @@ impl SegmentDownloader {
                     }
                     last_problem = Some(reason);
                     consecutive_failures += 1;
-                    if !backoff_sleep(consecutive_failures, &self.stop_flag) {
+                    if !backoff_sleep(consecutive_failures, &self.cancel) {
                         return Ok(());
                     }
                     continue;
@@ -805,7 +811,7 @@ impl SegmentDownloader {
                                 self.report(reason.clone());
                                 last_problem = Some(reason);
                                 consecutive_failures += 1;
-                                if !backoff_sleep(consecutive_failures, &self.stop_flag) {
+                                if !backoff_sleep(consecutive_failures, &self.cancel) {
                                     return Ok(());
                                 }
                                 continue;
@@ -901,7 +907,7 @@ impl SegmentDownloader {
                 // Song info applies from the start of this segment
                 let segment_start = bytes_sent;
                 bytes_sent += audio_data.len() as u64;
-                if self.sender.send(audio_data).is_err() {
+                if !self.cancel.send(&self.sender, audio_data) {
                     return Ok(());
                 }
                 self.segments_downloaded.fetch_add(1, Ordering::Relaxed);
@@ -1254,16 +1260,41 @@ mod tests {
     }
 
     #[test]
-    fn hls_reader_drop_sets_stop_flag() {
+    fn hls_reader_drop_cancels_the_stream() {
         let (_tx, rx) = bounded(4);
-        let stop_flag;
-        {
-            let (reader, stop) = HlsReader::from_test_channel(rx, vec![1, 2, 3]);
-            stop_flag = stop.clone();
-            assert!(!stop_flag.load(Ordering::SeqCst));
-            drop(reader);
-        }
-        assert!(stop_flag.load(Ordering::SeqCst));
+        let (reader, cancel) = HlsReader::from_test_channel(rx, vec![1, 2, 3]);
+        assert!(!cancel.is_cancelled());
+        drop(reader);
+        assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn a_cancelled_segment_wait_ends_at_once() {
+        let (_tx, rx) = bounded::<Vec<u8>>(4);
+        let (mut reader, cancel) = HlsReader::from_test_channel(rx, Vec::new());
+        let (done_tx, done) = bounded(1);
+        let reading = thread::spawn(move || {
+            let mut buf = [0u8; 16];
+            // Keep reading through `Interrupted`, as the stream buffer does
+            let result = loop {
+                match reader.read(&mut buf) {
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                    other => break other,
+                }
+            };
+            let _ = done_tx.send(());
+            result.map_err(|e| e.kind())
+        });
+        thread::sleep(Duration::from_millis(100));
+        let cancelled_at = Instant::now();
+        cancel.cancel();
+        done.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert!(
+            cancelled_at.elapsed() < Duration::from_millis(100),
+            "the read waited for its poll interval: {:?}",
+            cancelled_at.elapsed()
+        );
+        assert_eq!(reading.join().unwrap(), Err(io::ErrorKind::UnexpectedEof));
     }
 
     // --- detect_segment_format edge cases ---
@@ -1526,14 +1557,10 @@ mod tests {
     #[test]
     fn hls_reader_drop_with_pending_data() {
         let (tx, rx) = bounded(4);
-        let stop_flag;
-        {
-            let (reader, stop) = HlsReader::from_test_channel(rx, vec![1, 2, 3]);
-            stop_flag = stop.clone();
-            tx.send(vec![4, 5, 6]).unwrap();
-            drop(reader);
-        }
-        assert!(stop_flag.load(Ordering::SeqCst));
+        let (reader, cancel) = HlsReader::from_test_channel(rx, vec![1, 2, 3]);
+        tx.send(vec![4, 5, 6]).unwrap();
+        drop(reader);
+        assert!(cancel.is_cancelled());
     }
 
     #[test]
@@ -2359,8 +2386,13 @@ mod tests {
             let audio = frame(300);
             server.route("/index.m3u8", Route::new(LIVE));
             server.route("/seg1.ts", Route::new(plain_ts(&audio)));
-            let (mut reader, _) =
-                HlsReader::open(&server.url("/index.m3u8"), None, Duration::from_secs(1)).unwrap();
+            let (mut reader, _) = HlsReader::open(
+                &server.url("/index.m3u8"),
+                None,
+                Duration::from_secs(1),
+                StreamCancel::new(),
+            )
+            .unwrap();
 
             let (played, end) = read_until_end(&mut reader);
             assert_eq!(played, audio);
@@ -2381,8 +2413,13 @@ mod tests {
             let audio = frame(300);
             server.route("/index.m3u8", Route::new(LIVE));
             server.route("/seg1.ts", Route::new(plain_ts(&audio)));
-            let (mut reader, _) =
-                HlsReader::open(&server.url("/index.m3u8"), None, Duration::from_secs(1)).unwrap();
+            let (mut reader, _) = HlsReader::open(
+                &server.url("/index.m3u8"),
+                None,
+                Duration::from_secs(1),
+                StreamCancel::new(),
+            )
+            .unwrap();
             server.route("/index.m3u8", Route::status(404));
 
             let (played, end) = read_until_end(&mut reader);
