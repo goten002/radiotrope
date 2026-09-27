@@ -42,6 +42,9 @@ pub struct AppController {
     event_buf: Vec<AudioEvent>,
     /// Sequence number of the last recording notice
     notice_seq: u64,
+    /// The playing stream failed: the engine's Stopped that follows keeps the
+    /// error showing instead of a plain "Stopped"
+    stream_failed: bool,
 }
 
 impl AppController {
@@ -64,6 +67,7 @@ impl AppController {
             volume_before_mute: 1.0,
             event_buf: Vec::new(),
             notice_seq: 0,
+            stream_failed: false,
         }
     }
 
@@ -128,6 +132,7 @@ impl AppController {
                     engine.stop();
                 }
                 self.metadata_rx = None;
+                self.stream_failed = false;
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.playback = PlaybackState::Stopped;
                 state.status_text = "Stopped".into();
@@ -255,6 +260,8 @@ impl AppController {
             engine.stop();
         }
         self.metadata_rx = None;
+
+        self.stream_failed = false;
 
         // Bump generation so any in-flight resolve becomes stale
         self.resolve_generation += 1;
@@ -412,31 +419,38 @@ impl AppController {
                 }
                 state.status_text = "Playing".into();
                 state.is_error = false;
+                self.stream_failed = false;
             }
             AudioEvent::Stopped => {
                 // Don't overwrite "Resolving..." when stopping the old stream
                 // before a new one starts
                 if !state.is_resolving {
                     state.playback = PlaybackState::Stopped;
-                    state.status_text = "Stopped".into();
-                    state.is_error = false;
+                    // A stream that failed stops with its error still showing
+                    if !std::mem::take(&mut self.stream_failed) {
+                        state.status_text = "Stopped".into();
+                        state.is_error = false;
+                    }
                 }
             }
             AudioEvent::Paused => {
                 state.playback = PlaybackState::Paused;
                 state.status_text = "Paused".into();
                 state.is_error = false;
+                self.stream_failed = false;
             }
             AudioEvent::Resumed => {
                 state.playback = PlaybackState::Playing;
                 state.status_text = "Playing".into();
                 state.is_error = false;
+                self.stream_failed = false;
             }
             AudioEvent::Error(ref e) => {
                 eprintln!("Engine error: {e}");
                 state.last_error = Some(e.clone());
                 state.status_text = format!("Error: {e}").into();
                 state.is_error = true;
+                self.stream_failed = true;
             }
             AudioEvent::MetadataUpdate { title, artist } => {
                 state.title = title;
@@ -465,6 +479,7 @@ impl AppController {
             AudioEvent::NoAudioTimeout => {
                 state.status_text = "No audio".into();
                 state.is_error = true;
+                self.stream_failed = true;
             }
         }
     }
@@ -642,5 +657,71 @@ mod tests {
         assert_eq!(recording_kbps(None, Some(0)), 256);
         assert_eq!(recording_kbps(None, Some(16)), 32);
         assert_eq!(recording_kbps(None, Some(1411)), 320);
+    }
+
+    fn controller() -> (AppController, Arc<Mutex<AppSnapshot>>) {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (analysis_tx, _) = crossbeam_channel::unbounded();
+        let (stats_tx, _) = crossbeam_channel::unbounded();
+        let state = Arc::new(Mutex::new(AppSnapshot::default()));
+        let controller = AppController::new(cmd_rx, cmd_tx, state.clone(), analysis_tx, stats_tx);
+        (controller, state)
+    }
+
+    fn playing() -> AudioEvent {
+        AudioEvent::Playing(radiotrope::audio::CodecInfo {
+            codec_name: "MP3".into(),
+            channels: 2,
+            sample_rate: 44100,
+            bits_per_sample: None,
+            bitrate: Some(128),
+        })
+    }
+
+    #[test]
+    fn a_failed_stream_stops_with_its_error_showing() {
+        let (mut controller, state) = controller();
+        controller.handle_engine_event(playing());
+        // What the engine sends when a station goes down for good
+        controller.handle_engine_event(AudioEvent::Error(
+            "Stream error: No audio for 2 min: HTTP 404 Not Found".into(),
+        ));
+        controller.handle_engine_event(AudioEvent::Stopped);
+
+        let state = state.lock().unwrap();
+        assert_eq!(state.playback, PlaybackState::Stopped);
+        assert!(state.is_error);
+        assert!(
+            state.status_text.contains("HTTP 404"),
+            "{}",
+            state.status_text
+        );
+    }
+
+    #[test]
+    fn no_audio_stays_showing_after_the_stop() {
+        let (mut controller, state) = controller();
+        controller.handle_engine_event(playing());
+        controller.handle_engine_event(AudioEvent::NoAudioTimeout);
+        controller.handle_engine_event(AudioEvent::Stopped);
+
+        let state = state.lock().unwrap();
+        assert_eq!(state.playback, PlaybackState::Stopped);
+        assert!(state.is_error);
+        assert_eq!(state.status_text, "No audio");
+    }
+
+    #[test]
+    fn a_stop_after_playing_again_is_a_plain_stop() {
+        let (mut controller, state) = controller();
+        controller.handle_engine_event(playing());
+        controller.handle_engine_event(AudioEvent::Error("Stream error: x".into()));
+        controller.handle_engine_event(AudioEvent::Stopped);
+        controller.handle_engine_event(playing());
+        controller.handle_engine_event(AudioEvent::Stopped);
+
+        let state = state.lock().unwrap();
+        assert!(!state.is_error);
+        assert_eq!(state.status_text, "Stopped");
     }
 }

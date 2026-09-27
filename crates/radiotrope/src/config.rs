@@ -89,6 +89,11 @@ pub mod timeouts {
     /// Short enough to give timely feedback, long enough to avoid false alarms
     /// from normal buffering events (HLS gaps, brief hiccups).
     pub const BUFFERING_STALL_THRESHOLD_SECS: u64 = 10;
+
+    /// How long a playing station may send no audio (while reconnecting, or
+    /// with an HLS playlist that stops adding segments) before its reader
+    /// gives up and playback stops with the reason (seconds).
+    pub const RECONNECT_GIVE_UP_SECS: u64 = 120;
 }
 
 /// Equalizer configuration
