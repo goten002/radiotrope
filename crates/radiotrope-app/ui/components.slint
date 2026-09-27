@@ -98,6 +98,9 @@ export component InfoRow inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <length> label-width: 88px;
+    // Let the value be selected and copied; long values scroll
+    // sideways while selecting instead of eliding
+    in property <bool> selectable: false;
 
     height: 22px;
 
@@ -112,13 +115,101 @@ export component InfoRow inherits Rectangle {
             vertical-alignment: center;
         }
 
-        Text {
+        if !root.selectable: Text {
             text: root.value;
             color: Theme.text-primary;
             font-size: 11px;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
+        }
+
+        if root.selectable: Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+
+            TextInput {
+                width: 100%;
+                text: root.value;
+                color: Theme.text-primary;
+                font-size: 11px;
+                vertical-alignment: center;
+                read-only: true;
+                single-line: true;
+                selection-background-color: Theme.selection-bg;
+                selection-foreground-color: Theme.selection-fg;
+            }
+        }
+    }
+}
+
+export struct CreditLink {
+    name: string,
+    url: string,
+}
+
+// Label and a comma-separated list of links, e.g. credits
+export component LinkRow inherits Rectangle {
+    in property <string> label;
+    in property <[CreditLink]> links;
+    // Plain text after the links, e.g. a license
+    in property <string> note;
+    in property <length> label-width: 88px;
+    callback open-url(string);
+
+    height: 22px;
+
+    HorizontalLayout {
+        spacing: 12px;
+
+        Text {
+            width: root.label-width;
+            text: root.label;
+            color: Theme.text-secondary;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+
+        HorizontalLayout {
+            horizontal-stretch: 1;
+            alignment: start;
+
+            for link[i] in root.links: HorizontalLayout {
+                Rectangle {
+                    width: name.preferred-width;
+                    name := Text {
+                        text: link.name;
+                        color: touch.has-hover ? Theme.accent-hover : Theme.accent-text;
+                        font-size: 11px;
+                        vertical-alignment: center;
+                    }
+                    // Underline on hover (Text can't underline)
+                    Rectangle {
+                        y: parent.height / 2 + 7px;
+                        height: 1px;
+                        background: name.color;
+                        visible: touch.has-hover;
+                    }
+                    touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-url(link.url); }
+                    }
+                }
+                if i < root.links.length - 1: Text {
+                    text: ", ";
+                    color: Theme.text-primary;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.note != "": Text {
+                text: " " + root.note;
+                color: Theme.text-secondary;
+                font-size: 11px;
+                vertical-alignment: center;
+                overflow: elide;
+            }
         }
     }
 }
