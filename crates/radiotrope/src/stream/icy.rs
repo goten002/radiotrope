@@ -17,7 +17,9 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 
-use crate::config::network::{READ_TIMEOUT_SECS, USER_AGENT};
+use crate::config::network::{
+    CONNECT_TIMEOUT_SECS as NETWORK_CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT,
+};
 use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::id3::Id3Scanner;
@@ -29,7 +31,7 @@ use crate::stream::resolver::StreamResolver;
 
 use super::cancel::{StreamCancel, Waited};
 use super::shoutcast;
-use super::{backoff_sleep, gave_up, StreamEnd, READ_POLL_INTERVAL};
+use super::{backoff_sleep, gave_up, Deadline, StreamEnd, READ_POLL_INTERVAL};
 
 const AUDIO_CHANNEL_BOUND: usize = 32;
 
@@ -105,17 +107,20 @@ impl IcyReader {
     }
 
     /// [`IcyReader::new_cancellable`], or the kind of playlist `url`
-    /// serves instead of audio
+    /// serves instead of audio. Connecting and the wait for the first data
+    /// end by `deadline`.
     pub(crate) fn open_detecting(
         url: &str,
         playback_position: Option<Arc<AtomicU64>>,
         cancel: StreamCancel,
+        deadline: Deadline,
     ) -> Result<Opened> {
         Self::open_or_playlist(
             url,
             playback_position,
             Duration::from_secs(RECONNECT_GIVE_UP_SECS),
             cancel,
+            deadline,
         )
     }
 
@@ -125,7 +130,7 @@ impl IcyReader {
         give_up: Duration,
         cancel: StreamCancel,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
-        match Self::open_or_playlist(url, playback_position, give_up, cancel)? {
+        match Self::open_or_playlist(url, playback_position, give_up, cancel, Deadline::NONE)? {
             Opened::Stream(reader, metadata) => Ok((reader, metadata)),
             Opened::Playlist(_) => Err(RadioError::Stream(
                 "The address is a playlist, not a stream".to_string(),
@@ -138,6 +143,7 @@ impl IcyReader {
         playback_position: Option<Arc<AtomicU64>>,
         give_up: Duration,
         stream_cancel: StreamCancel,
+        deadline: Deadline,
     ) -> Result<Opened> {
         // The connection's thread gets a token of its own, which the
         // stream's cancels: giving up on a connection that turned out to be
@@ -146,8 +152,12 @@ impl IcyReader {
         let attempt = cancel.clone();
         stream_cancel.on_cancel(move || attempt.cancel());
 
+        // The client reads the stream for as long as it plays, so only
+        // connecting can be cut short by the deadline
+        deadline.check()?;
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
+            .connect_timeout(deadline.cap(Duration::from_secs(NETWORK_CONNECT_TIMEOUT_SECS)))
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()?;
 
@@ -188,7 +198,8 @@ impl IcyReader {
 
         // Wait for initial data. On failure stop the thread, which would
         // otherwise keep reconnecting for the life of the process.
-        let waited = cancel.recv(&audio_rx, Some(Duration::from_secs(READ_TIMEOUT_SECS)));
+        let first_wait = deadline.cap(Duration::from_secs(READ_TIMEOUT_SECS));
+        let waited = cancel.recv(&audio_rx, Some(first_wait));
         let initial_data = match waited {
             Waited::Got(data) => data,
             failed => {
@@ -1636,6 +1647,26 @@ mod tests {
             rx.recv_timeout(Duration::from_secs(3))
                 .ok()
                 .and_then(|m| m.title)
+        }
+
+        #[test]
+        fn a_station_that_sends_nothing_fails_by_the_deadline() {
+            let server = TestServer::start();
+            server.route("/live", live(Vec::new()).stall());
+            let start = Instant::now();
+            let opened = IcyReader::open_detecting(
+                &server.url("/live"),
+                None,
+                StreamCancel::new(),
+                Deadline::after(Duration::from_millis(500)),
+            );
+            let err = opened.err().expect("no audio arrives").to_string();
+            assert!(err.contains("Timeout waiting for stream data"), "{err}");
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                start.elapsed()
+            );
         }
 
         #[test]

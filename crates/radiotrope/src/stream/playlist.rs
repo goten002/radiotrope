@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::config::network::{CONNECT_TIMEOUT_SECS, MAX_PLAYLIST_DEPTH, USER_AGENT};
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
+use crate::stream::Deadline;
 
 /// Result of checking a URL's playlist type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,13 +163,17 @@ pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
 /// M3U8 (HLS) URLs pass through unchanged. PLS and M3U playlists are fetched
 /// and parsed, recursing up to `MAX_PLAYLIST_DEPTH` levels.
 pub fn resolve_playlist_url(url: &str) -> Result<String> {
-    Ok(resolve_playlist(url, &StreamCancel::new())?.url)
+    Ok(resolve_playlist(url, &StreamCancel::new(), Deadline::NONE)?.url)
 }
 
-/// [`resolve_playlist_url`], stopped by `cancel` between fetches, saying
-/// whether it ends at an HLS playlist
-pub(crate) fn resolve_playlist(url: &str, cancel: &StreamCancel) -> Result<Target> {
-    resolve_recursive(url, None, MAX_PLAYLIST_DEPTH, cancel)
+/// [`resolve_playlist_url`], stopped by `cancel` between fetches and done by
+/// `deadline`, saying whether it ends at an HLS playlist
+pub(crate) fn resolve_playlist(
+    url: &str,
+    cancel: &StreamCancel,
+    deadline: Deadline,
+) -> Result<Target> {
+    resolve_recursive(url, None, MAX_PLAYLIST_DEPTH, cancel, deadline)
 }
 
 /// [`resolve_playlist`] for a URL known to serve a playlist of kind `kind`
@@ -177,8 +182,9 @@ pub(crate) fn resolve_playlist_as(
     url: &str,
     kind: PlaylistCheck,
     cancel: &StreamCancel,
+    deadline: Deadline,
 ) -> Result<Target> {
-    resolve_recursive(url, Some(kind), MAX_PLAYLIST_DEPTH, cancel)
+    resolve_recursive(url, Some(kind), MAX_PLAYLIST_DEPTH, cancel, deadline)
 }
 
 fn resolve_recursive(
@@ -186,6 +192,7 @@ fn resolve_recursive(
     kind: Option<PlaylistCheck>,
     depth: usize,
     cancel: &StreamCancel,
+    deadline: Deadline,
 ) -> Result<Target> {
     if cancel.is_cancelled() {
         return Err(RadioError::Cancelled);
@@ -204,7 +211,8 @@ fn resolve_recursive(
             hls: by_extension == PlaylistCheck::Hls,
         });
     }
-    let playlist = fetch_playlist(url)?;
+    deadline.check()?;
+    let playlist = fetch_playlist(url, deadline)?;
     // What it is decides, not what it is called: an `.m3u` can be HLS
     let kind = match sniff_playlist(playlist.content_type.as_deref(), playlist.text.as_bytes()) {
         PlaylistCheck::NotPlaylist => by_extension,
@@ -224,7 +232,7 @@ fn resolve_recursive(
         _ => parse_m3u(&playlist.text, &directory_of(&playlist.final_url))
             .ok_or_else(|| RadioError::Stream("No stream URL found in M3U playlist".to_string()))?,
     };
-    resolve_recursive(&stream_url, None, depth - 1, cancel)
+    resolve_recursive(&stream_url, None, depth - 1, cancel, deadline)
 }
 
 /// The directory part of `url` without the trailing slash, ignoring any
@@ -244,10 +252,10 @@ struct Playlist {
     text: String,
 }
 
-fn fetch_playlist(url: &str) -> Result<Playlist> {
+fn fetch_playlist(url: &str, deadline: Deadline) -> Result<Playlist> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
-        .timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .timeout(deadline.cap(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
         .build()?;
 
     let response = client.get(url).send()?;
@@ -861,6 +869,24 @@ mod tests {
         use crate::stream::test_server::{Route, TestServer};
 
         #[test]
+        fn a_stalled_playlist_fetch_ends_by_the_deadline() {
+            let server = TestServer::start();
+            server.route(
+                "/station.pls",
+                Route::new("[playlist]\n").without_length().stall(),
+            );
+            let start = std::time::Instant::now();
+            let resolved = resolve_playlist(
+                &server.url("/station.pls"),
+                &StreamCancel::new(),
+                Deadline::after(Duration::from_millis(500)),
+            );
+            assert!(resolved.is_err());
+            let took = start.elapsed();
+            assert!(took < Duration::from_secs(2), "{took:?}");
+        }
+
+        #[test]
         fn follows_a_pls_to_an_m3u_to_the_stream() {
             let server = TestServer::start();
             let m3u = server.url("/lists/station.m3u");
@@ -909,7 +935,12 @@ mod tests {
                 "/live.m3u",
                 Route::new("#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6,\nseg1.aac\n"),
             );
-            let target = resolve_playlist(&server.url("/live.m3u"), &StreamCancel::new()).unwrap();
+            let target = resolve_playlist(
+                &server.url("/live.m3u"),
+                &StreamCancel::new(),
+                Deadline::NONE,
+            )
+            .unwrap();
             assert_eq!(
                 target,
                 Target {

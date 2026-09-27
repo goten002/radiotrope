@@ -16,7 +16,10 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::Url;
 
-use crate::config::hls::{FIRST_SEGMENT_TIMEOUT_SECS, SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS};
+use crate::config::hls::{
+    FIND_AGAIN_AFTER_FAILURES, FIRST_SEGMENT_TIMEOUT_SECS, SEGMENT_BUFFER_SIZE,
+    SEGMENT_TIMEOUT_SECS,
+};
 use crate::config::network::USER_AGENT;
 use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
 use crate::error::{RadioError, Result};
@@ -26,7 +29,7 @@ use crate::stream::hls_metadata::{
 };
 use crate::stream::id3::{parse_id3v2_payload, Id3Scanner};
 use crate::stream::metadata::{MetadataSink, StreamMetadata};
-use crate::stream::{gave_up, StreamEnd, READ_POLL_INTERVAL};
+use crate::stream::{gave_up, Deadline, StreamEnd, READ_POLL_INTERVAL};
 
 /// Detected segment container format
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +62,26 @@ pub struct HlsReader {
 // Safe: HlsReader is only accessed from one thread at a time (the audio engine thread).
 unsafe impl Sync for HlsReader {}
 
+/// How an [`HlsReader`] is opened
+struct Opening {
+    /// Where the media playlist was found from (see [`HlsReader::open_resolved`])
+    origin: Option<String>,
+    /// How long to wait for the first segment
+    first_wait: Duration,
+    /// How long a playing stream may go without a new segment
+    give_up: Duration,
+}
+
+impl Default for Opening {
+    fn default() -> Self {
+        Self {
+            origin: None,
+            first_wait: Duration::from_secs(FIRST_SEGMENT_TIMEOUT_SECS),
+            give_up: Duration::from_secs(RECONNECT_GIVE_UP_SECS),
+        }
+    }
+}
+
 impl HlsReader {
     /// Create a new HLS reader for a media playlist URL.
     ///
@@ -84,19 +107,34 @@ impl HlsReader {
         playback_position: Option<Arc<AtomicU64>>,
         cancel: StreamCancel,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
-        Self::open(
-            media_url,
-            playback_position,
-            Duration::from_secs(RECONNECT_GIVE_UP_SECS),
-            cancel,
-        )
+        Self::open(media_url, playback_position, cancel, Opening::default())
+    }
+
+    /// [`HlsReader::new_cancellable`] for a media playlist that
+    /// [`resolve_hls`] found from `origin`. If the playlist's address stops
+    /// working (an expired token, a dead edge server), the downloader finds
+    /// it again from `origin`. The wait for the first segment ends by
+    /// `deadline`.
+    pub(crate) fn open_resolved(
+        media_url: &str,
+        origin: &str,
+        playback_position: Option<Arc<AtomicU64>>,
+        cancel: StreamCancel,
+        deadline: Deadline,
+    ) -> Result<(Self, Receiver<StreamMetadata>)> {
+        let opening = Opening {
+            origin: Some(origin.to_string()),
+            first_wait: deadline.cap(Opening::default().first_wait),
+            ..Opening::default()
+        };
+        Self::open(media_url, playback_position, cancel, opening)
     }
 
     fn open(
         media_url: &str,
         playback_position: Option<Arc<AtomicU64>>,
-        give_up: Duration,
         cancel: StreamCancel,
+        opening: Opening,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let playlist_url = Url::parse(media_url)
             .map_err(|e| RadioError::Stream(format!("Invalid HLS URL {media_url}: {e}")))?;
@@ -112,6 +150,7 @@ impl HlsReader {
 
         let downloader = SegmentDownloader {
             playlist_url,
+            origin: opening.origin,
             sender,
             metadata_sink,
             cancel: cancel.clone(),
@@ -119,7 +158,7 @@ impl HlsReader {
             segments_downloaded: segments_downloaded.clone(),
             problem: problem.clone(),
             end: end.clone(),
-            give_up,
+            give_up: opening.give_up,
         };
         let handle = thread::Builder::new()
             .name("hls-downloader".into())
@@ -127,8 +166,7 @@ impl HlsReader {
 
         // Wait for the first segment. On failure, stop the downloader so it
         // doesn't keep polling the playlist for a reader that never existed.
-        let first_wait = Duration::from_secs(FIRST_SEGMENT_TIMEOUT_SECS);
-        let initial_data = match cancel.recv(&receiver, Some(first_wait)) {
+        let initial_data = match cancel.recv(&receiver, Some(opening.first_wait)) {
             Waited::Got(data) => data,
             failed => {
                 cancel.cancel();
@@ -611,12 +649,13 @@ fn http_get(
 /// Returns the media playlist's final URL, after any HTTP redirects, since
 /// relative segment URIs are relative to where the playlist really is.
 pub fn resolve_hls_url(url: &str) -> Result<String> {
-    resolve_hls(url, &StreamCancel::new())
+    resolve_hls(url, &StreamCancel::new(), Deadline::NONE)
 }
 
-/// [`resolve_hls_url`], stopped by `cancel` between fetches. The URL needn't
-/// end in `.m3u8`: what it serves decides (see `playlist::sniff_playlist`).
-pub(crate) fn resolve_hls(url: &str, cancel: &StreamCancel) -> Result<String> {
+/// [`resolve_hls_url`], stopped by `cancel` between fetches and done by
+/// `deadline`. The URL needn't end in `.m3u8`: what it serves decides (see
+/// `playlist::sniff_playlist`).
+pub(crate) fn resolve_hls(url: &str, cancel: &StreamCancel, deadline: Deadline) -> Result<String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS))
@@ -627,7 +666,11 @@ pub(crate) fn resolve_hls(url: &str, cancel: &StreamCancel) -> Result<String> {
         if cancel.is_cancelled() {
             return Err(RadioError::Cancelled);
         }
-        let response = client.get(&url).send()?;
+        deadline.check()?;
+        let response = client
+            .get(&url)
+            .timeout(deadline.cap(Duration::from_secs(SEGMENT_TIMEOUT_SECS)))
+            .send()?;
         if !response.status().is_success() {
             return Err(RadioError::Stream(format!("HTTP {}", response.status())));
         }
@@ -669,6 +712,33 @@ fn encryption_method(playlist: &MediaPlaylist) -> Option<String> {
     })
 }
 
+/// Where the segment at `played` (a URL of the playlist's old address) is
+/// in `segments` (with URLs of its new address). Edge servers usually name
+/// segments alike but give them their own path or token, so a segment is
+/// found by its name and query, or by its name alone when no other segment
+/// has that name (the query may be the token).
+fn find_segment(segments: &[(String, &m3u8_rs::MediaSegment)], played: &str) -> Option<usize> {
+    fn name(url: &str) -> Option<(String, Option<String>)> {
+        let url = Url::parse(url).ok()?;
+        let name = url.path_segments()?.next_back()?;
+        (!name.is_empty()).then(|| (name.to_string(), url.query().map(str::to_string)))
+    }
+    let played = name(played)?;
+    let names: Vec<_> = segments.iter().map(|(url, _)| name(url)).collect();
+    if let Some(same) = names.iter().rposition(|n| n.as_ref() == Some(&played)) {
+        return Some(same);
+    }
+    let mut same_name = names
+        .iter()
+        .enumerate()
+        .filter(|(_, n)| n.as_ref().is_some_and(|(n, _)| *n == played.0))
+        .map(|(i, _)| i);
+    match (same_name.next(), same_name.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
+}
+
 /// Background segment downloader
 ///
 /// Uses URL-based deduplication to track which segments have been downloaded.
@@ -681,8 +751,15 @@ fn encryption_method(playlist: &MediaPlaylist) -> Option<String> {
 /// `//host/seg` work. Problems are written to `problem`, which
 /// [`HlsReader::new`] reports if no audio arrives. Once playing, the
 /// downloader gives up after `give_up` without a new segment.
+///
+/// The media playlist's address is often a CDN edge server's, with a token
+/// that expires. When the playlist or its segments keep failing, the
+/// downloader finds the playlist again from `origin` and carries on after
+/// the last segment it played.
 struct SegmentDownloader {
     playlist_url: Url,
+    /// Where `playlist_url` was found from, if known
+    origin: Option<String>,
     sender: Sender<Vec<u8>>,
     metadata_sink: MetadataSink,
     cancel: StreamCancel,
@@ -719,6 +796,14 @@ impl SegmentDownloader {
         self.cancel.sleep(duration)
     }
 
+    /// Find the media playlist again from `origin`. Returns its address if
+    /// that has changed (another edge server, a new token).
+    fn find_again(&self, media_url: &Url) -> Option<Url> {
+        let origin = self.origin.as_deref()?;
+        let found = resolve_hls(origin, &self.cancel, Deadline::NONE).ok()?;
+        Url::parse(&found).ok().filter(|url| url != media_url)
+    }
+
     /// Download until stopped or the stream ends. `Err` is a reason the
     /// stream can't be played at all.
     fn download(&self) -> std::result::Result<(), String> {
@@ -729,6 +814,16 @@ impl SegmentDownloader {
             .build()
             .map_err(|e| format!("HTTP client error: {}", e))?;
 
+        // The media playlist's address, which changes if it has to be
+        // found again
+        let mut media_url = self.playlist_url.clone();
+        // Set when `media_url` has just changed: its segment URLs differ from
+        // those downloaded, so where to go on is found by name
+        let mut moved = false;
+        // The last segment sent to the reader
+        let mut last_sent: Option<String> = None;
+        // Segments that failed to download since the last one sent
+        let mut failed_segments: u32 = 0;
         // URL-based dedup: tracks already-downloaded segment URLs
         let mut downloaded_urls: HashSet<String> = HashSet::new();
         let mut first_fetch = true;
@@ -748,7 +843,7 @@ impl SegmentDownloader {
             }
 
             // Fetch the playlist
-            let fetched = http_get(&client, self.playlist_url.as_str()).and_then(|(url, body)| {
+            let fetched = http_get(&client, media_url.as_str()).and_then(|(url, body)| {
                 parse_hls_playlist(&body).map(|playlist| (url, body, playlist))
             });
             let (playlist_url, content, playlist) = match fetched {
@@ -757,13 +852,20 @@ impl SegmentDownloader {
                     return Err("Expected an HLS media playlist, got a master playlist".into())
                 }
                 Err(reason) => {
-                    let reason = format!("HLS playlist {}: {reason}", self.playlist_url);
+                    let reason = format!("HLS playlist {media_url}: {reason}");
                     self.report(reason.clone());
                     if sent_first && last_audio.elapsed() >= self.give_up {
                         return Err(gave_up(self.give_up, &reason));
                     }
                     last_problem = Some(reason);
                     consecutive_failures += 1;
+                    if consecutive_failures.is_multiple_of(FIND_AGAIN_AFTER_FAILURES) {
+                        if let Some(found) = self.find_again(&media_url) {
+                            media_url = found;
+                            moved = true;
+                            continue;
+                        }
+                    }
                     if !backoff_sleep(consecutive_failures, &self.cancel) {
                         return Ok(());
                     }
@@ -834,8 +936,22 @@ impl SegmentDownloader {
             // and new segments only arrive each playlist refresh — buffer starves.
             // Starting SEGMENT_BUFFER_SIZE back fills the bounded channel immediately.
             // For VOD: start from the beginning.
-            let start_idx = if first_fetch && is_live {
-                segments.len().saturating_sub(SEGMENT_BUFFER_SIZE)
+            let near_live_edge = || match is_live {
+                true => segments.len().saturating_sub(SEGMENT_BUFFER_SIZE),
+                false => 0,
+            };
+            let start_idx = if moved && !segments.is_empty() {
+                // Go on after the last segment played, if it can be found
+                moved = false;
+                match last_sent
+                    .as_deref()
+                    .and_then(|s| find_segment(&segments, s))
+                {
+                    Some(played) => played + 1,
+                    None => near_live_edge(),
+                }
+            } else if first_fetch {
+                near_live_edge()
             } else {
                 0
             };
@@ -873,6 +989,7 @@ impl SegmentDownloader {
                     Ok((_, data)) => data,
                     Err(reason) => {
                         last_failure = Some(format!("HLS segment {segment_url}: {reason}"));
+                        failed_segments += 1;
                         continue;
                     }
                 };
@@ -910,6 +1027,8 @@ impl SegmentDownloader {
                 sent_first = true;
                 last_audio = Instant::now();
                 last_problem = None;
+                last_sent = Some(segment_url.clone());
+                failed_segments = 0;
 
                 // Song info: playlist attributes first, since ID3
                 // from the segment itself takes priority over them
@@ -957,6 +1076,18 @@ impl SegmentDownloader {
                     .all(|(url, _)| downloaded_urls.contains(url))
             {
                 return Ok(());
+            }
+
+            // Segments that keep failing while the playlist still loads: its
+            // token may have expired. The new address is loaded after the
+            // usual wait, so a station that hands out a new address each
+            // time is not asked again and again.
+            if failed_segments >= FIND_AGAIN_AFTER_FAILURES {
+                failed_segments = 0;
+                if let Some(found) = self.find_again(&media_url) {
+                    media_url = found;
+                    moved = true;
+                }
             }
 
             // RFC 8216 Section 6.3.4 — playlist reload timing:
@@ -2355,7 +2486,7 @@ mod tests {
 
         /// Read until the stream ends, skipping the waits between segments.
         /// Returns the audio and how the stream ended.
-        fn read_until_end(reader: &mut HlsReader) -> (Vec<u8>, io::Result<()>) {
+        fn read_until_end(reader: &mut impl Read) -> (Vec<u8>, io::Result<()>) {
             let mut audio = Vec::new();
             let mut buf = vec![0u8; 64 * 1024];
             let start = Instant::now();
@@ -2385,8 +2516,11 @@ mod tests {
             let (mut reader, _) = HlsReader::open(
                 &server.url("/index.m3u8"),
                 None,
-                Duration::from_secs(1),
                 StreamCancel::new(),
+                Opening {
+                    give_up: Duration::from_secs(1),
+                    ..Opening::default()
+                },
             )
             .unwrap();
 
@@ -2412,8 +2546,11 @@ mod tests {
             let (mut reader, _) = HlsReader::open(
                 &server.url("/index.m3u8"),
                 None,
-                Duration::from_secs(1),
                 StreamCancel::new(),
+                Opening {
+                    give_up: Duration::from_secs(1),
+                    ..Opening::default()
+                },
             )
             .unwrap();
             server.route("/index.m3u8", Route::status(404));
@@ -2441,6 +2578,215 @@ mod tests {
             assert!(
                 end.is_ok(),
                 "the end of a VOD playlist is not an error: {end:?}"
+            );
+        }
+
+        /// A live playlist of `segments`, or a finished one with `end`
+        fn playlist(segments: &[&str], end: bool) -> String {
+            let mut pl = String::from("#EXTM3U\n#EXT-X-TARGETDURATION:1\n");
+            for s in segments {
+                pl.push_str(&format!("#EXTINF:1.0,\n{s}\n"));
+            }
+            if end {
+                pl.push_str("#EXT-X-ENDLIST\n");
+            }
+            pl
+        }
+
+        /// Open the HLS station at `station` as the resolver does
+        fn open_station(server: &TestServer, station: &str) -> HlsReader {
+            let cancel = StreamCancel::new();
+            let origin = server.url(station);
+            let media = resolve_hls(&origin, &cancel, Deadline::NONE).unwrap();
+            HlsReader::open_resolved(&media, &origin, None, cancel, Deadline::NONE)
+                .unwrap()
+                .0
+        }
+
+        /// Read `len` bytes, skipping the waits between segments
+        fn read_exactly(reader: &mut impl Read, len: usize) -> Vec<u8> {
+            let mut audio = vec![0u8; len];
+            let mut filled = 0;
+            while filled < len {
+                match reader.read(&mut audio[filled..]) {
+                    Ok(0) => panic!("the stream ended after {filled} bytes"),
+                    Ok(n) => filled += n,
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => panic!("{e}"),
+                }
+            }
+            audio
+        }
+
+        #[test]
+        fn an_expired_playlist_address_is_found_again() {
+            let server = TestServer::start();
+            let audio: Vec<Vec<u8>> = (1..=3).map(|i| frame(300 + i)).collect();
+            server.route("/station.m3u8", Route::redirect("/edge1/live.m3u8?token=a"));
+            server.route(
+                "/edge1/live.m3u8?token=a",
+                Route::new(playlist(&["seg1.ts?token=a", "seg2.ts?token=a"], false)),
+            );
+            for i in 1..=3 {
+                let ts = plain_ts(&audio[i - 1]);
+                server.route(&format!("/edge1/seg{i}.ts?token=a"), Route::new(ts.clone()));
+                server.route(&format!("/edge2/seg{i}.ts?token=b"), Route::new(ts));
+            }
+            let station = server.url("/station.m3u8");
+            let mut reader = crate::stream::StreamResolver::resolve(&station)
+                .unwrap()
+                .reader;
+            assert_eq!(read_exactly(&mut reader, 301 + 302), audio[..2].concat());
+
+            // The token expires; the station now sends listeners elsewhere
+            server.route("/edge1/live.m3u8?token=a", Route::status(403));
+            server.route("/station.m3u8", Route::redirect("/edge2/live.m3u8?token=b"));
+            server.route(
+                "/edge2/live.m3u8?token=b",
+                Route::new(playlist(
+                    &["seg1.ts?token=b", "seg2.ts?token=b", "seg3.ts?token=b"],
+                    true,
+                )),
+            );
+
+            let (played, end) = read_until_end(&mut reader);
+            assert_eq!(played, audio[2], "went on after the last segment played");
+            assert!(end.is_ok(), "{end:?}");
+            assert_eq!(server.hits("/edge2/seg1.ts?token=b"), 0);
+            assert_eq!(server.hits("/edge2/seg2.ts?token=b"), 0);
+        }
+
+        #[test]
+        fn segments_that_keep_failing_find_the_playlist_again() {
+            let server = TestServer::start();
+            let audio: Vec<Vec<u8>> = (1..=3).map(|i| frame(300 + i)).collect();
+            server.route("/station.m3u8", Route::redirect("/edge1/live.m3u8"));
+            server.route(
+                "/edge1/live.m3u8",
+                Route::new(playlist(&["seg1.ts"], false)),
+            );
+            server.route("/edge1/seg1.ts", Route::new(plain_ts(&audio[0])));
+            let mut reader = open_station(&server, "/station.m3u8");
+            assert_eq!(read_exactly(&mut reader, 301), audio[0]);
+
+            // The playlist still loads, but its new segments are refused
+            server.route("/station.m3u8", Route::redirect("/edge2/live.m3u8"));
+            for i in 1..=3 {
+                server.route(&format!("/edge1/seg{i}.ts"), Route::status(403));
+                server.route(
+                    &format!("/edge2/seg{i}.ts"),
+                    Route::new(plain_ts(&audio[i - 1])),
+                );
+            }
+            server.route(
+                "/edge2/live.m3u8",
+                Route::new(playlist(&["seg1.ts", "seg2.ts", "seg3.ts"], true)),
+            );
+            server.route(
+                "/edge1/live.m3u8",
+                Route::new(playlist(&["seg1.ts", "seg2.ts", "seg3.ts"], false)),
+            );
+
+            let (played, end) = read_until_end(&mut reader);
+            assert_eq!(played, audio[1..].concat());
+            assert!(end.is_ok(), "{end:?}");
+            assert_eq!(server.hits("/edge2/seg1.ts"), 0, "replayed a segment");
+        }
+
+        #[test]
+        fn a_stream_opened_by_its_address_alone_is_not_found_again() {
+            let server = TestServer::start();
+            server.route(
+                "/edge1/live.m3u8",
+                Route::new(playlist(&["seg1.ts"], false)),
+            );
+            server.route("/edge1/seg1.ts", Route::new(plain_ts(&frame(300))));
+            let (mut reader, _) = HlsReader::open(
+                &server.url("/edge1/live.m3u8"),
+                None,
+                StreamCancel::new(),
+                Opening {
+                    give_up: Duration::from_secs(3),
+                    ..Opening::default()
+                },
+            )
+            .unwrap();
+            server.route("/edge1/live.m3u8", Route::status(403));
+            let (_, end) = read_until_end(&mut reader);
+            assert!(end.unwrap_err().to_string().contains("403"));
+        }
+
+        #[test]
+        fn finds_where_to_go_on_after_a_move() {
+            let urls = |names: &[&str]| -> Vec<String> {
+                names
+                    .iter()
+                    .map(|n| format!("http://edge2/live/{n}"))
+                    .collect()
+            };
+            let segment = m3u8_rs::MediaSegment::default();
+            let find = |urls: &[String], played: &str| {
+                let segments: Vec<_> = urls.iter().map(|u| (u.clone(), &segment)).collect();
+                find_segment(&segments, played)
+            };
+
+            // Same name and query; the path differs
+            let moved = urls(&["a.ts?n=1", "a.ts?n=2", "a.ts?n=3"]);
+            assert_eq!(find(&moved, "http://edge1/x/a.ts?n=2"), Some(1));
+            // Only the token differs
+            let moved = urls(&["s1.ts?token=b", "s2.ts?token=b"]);
+            assert_eq!(find(&moved, "http://edge1/s2.ts?token=a"), Some(1));
+            // The name alone doesn't tell the segments apart
+            let moved = urls(&["a.ts?n=1&t=b", "a.ts?n=2&t=b"]);
+            assert_eq!(find(&moved, "http://edge1/a.ts?n=2&t=a"), None);
+            // Gone from the playlist
+            let moved = urls(&["s7.ts", "s8.ts"]);
+            assert_eq!(find(&moved, "http://edge1/s2.ts"), None);
+        }
+
+        // --- the resolve deadline ---
+
+        #[test]
+        fn the_first_segment_wait_ends_by_the_deadline_with_the_reason() {
+            let server = TestServer::start();
+            server.route("/station.m3u8", Route::new(playlist(&["seg1.ts"], false)));
+            // Found, then the playlist fails from its first reload on
+            let media = server.url("/edge1/live.m3u8");
+            server.route("/edge1/live.m3u8", Route::status(503));
+            let start = Instant::now();
+            let err = HlsReader::open_resolved(
+                &media,
+                &server.url("/station.m3u8"),
+                None,
+                StreamCancel::new(),
+                Deadline::after(Duration::from_secs(1)),
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "{:?}",
+                start.elapsed()
+            );
+            assert!(err.contains("HLS playlist") && err.contains("503"), "{err}");
+        }
+
+        #[test]
+        fn resolving_a_stalled_playlist_ends_by_the_deadline() {
+            let server = TestServer::start();
+            server.route(
+                "/live.m3u8",
+                Route::new("#EXTM3U\n").without_length().stall(),
+            );
+            let start = Instant::now();
+            let deadline = Deadline::after(Duration::from_millis(500));
+            let err = resolve_hls(&server.url("/live.m3u8"), &StreamCancel::new(), deadline);
+            assert!(err.is_err());
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                start.elapsed()
             );
         }
 
