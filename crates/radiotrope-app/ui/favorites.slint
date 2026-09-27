@@ -405,15 +405,17 @@ component FavoriteRow inherits Rectangle {
                         root.move-requested(false);
                     }
                 }
-                // Only while stats are shown, and asks once more first
-                RowMenuItem {
+                // Only while stats are shown, and asks once more first.
+                // Act before closing: inside an `if` the handler stops
+                // once the menu closes
+                if root.show-stats: RowMenuItem {
                     label: root.confirm-reset ? "Click Again to Reset" : "Reset Stats";
-                    enabled: root.show-stats && (root.play-count > 0
-                        || root.listen-time != "" || root.session-time != "");
+                    enabled: root.play-count > 0
+                        || root.listen-time != "" || root.session-time != "";
                     clicked => {
                         if root.confirm-reset {
-                            menu.close();
                             root.reset-stats-requested();
+                            menu.close();
                         } else {
                             root.confirm-reset = true;
                         }
