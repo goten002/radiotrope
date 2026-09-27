@@ -614,13 +614,9 @@ pub fn resolve_hls_url(url: &str) -> Result<String> {
     resolve_hls(url, &StreamCancel::new())
 }
 
-/// [`resolve_hls_url`], stopped by `cancel` between fetches
+/// [`resolve_hls_url`], stopped by `cancel` between fetches. The URL needn't
+/// end in `.m3u8`: what it serves decides (see `playlist::sniff_playlist`).
 pub(crate) fn resolve_hls(url: &str, cancel: &StreamCancel) -> Result<String> {
-    let lower = url.to_lowercase();
-    if !lower.ends_with(".m3u8") && !lower.contains(".m3u8?") {
-        return Err(RadioError::Stream("Not an HLS URL".to_string()));
-    }
-
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS))
