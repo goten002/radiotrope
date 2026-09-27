@@ -356,7 +356,7 @@ export component MenuBar inherits Rectangle {
                 padding: 4px;
 
                 MenuItem {
-                    label: "Network Stream...";
+                    label: "Network Stream";
                     icon: @image-url("icons/link.svg");
                     clicked => {
                         open-popup.close();
@@ -385,7 +385,7 @@ export component MenuBar inherits Rectangle {
                 padding: 4px;
 
                 MenuItem {
-                    label: "Search Stations...";
+                    label: "Search Stations";
                     icon: @image-url("icons/magnifying-glass.svg");
                     clicked => {
                         stations-popup.close();
@@ -393,7 +393,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 MenuItem {
-                    label: "By Country...";
+                    label: "By Country";
                     icon: @image-url("icons/earth-europe.svg");
                     clicked => {
                         stations-popup.close();
@@ -511,7 +511,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 MenuItem {
-                    label: "Accent Color...";
+                    label: "Accent Color";
                     icon: @image-url("icons/palette.svg");
                     clicked => {
                         view-popup.close();
@@ -637,7 +637,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 if Platform.has-wifi: MenuItem {
-                    label: "WiFi Settings...";
+                    label: "WiFi Settings";
                     icon: @image-url("icons/wifi.svg");
                     clicked => {
                         root.open-wifi-settings();
