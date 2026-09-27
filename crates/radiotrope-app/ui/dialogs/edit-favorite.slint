@@ -11,17 +11,9 @@ export component EditFavoriteDialog inherits Rectangle {
     in-out property <string> edit-url;
     in-out property <string> edit-logo-url;
     in-out property <string> edit-country;
-    // Stats shown in the Statistics row, cleared by a reset
-    in-out property <string> edit-listen-time;
-    in-out property <string> edit-last-played;
-    in-out property <int> edit-play-count;
-    property <bool> confirm-reset: false;
-    property <bool> has-stats: root.edit-play-count > 0 || root.edit-listen-time != "" || root.edit-last-played != "";
 
     callback accepted(FavoriteStation);
     callback deleted(FavoriteStation);
-    // Clear plays, listening time and last played of the station `id`
-    callback reset-stats(string);
 
     public function open(station: FavoriteStation) {
         self.edit-id = station.id;
@@ -29,10 +21,6 @@ export component EditFavoriteDialog inherits Rectangle {
         self.edit-url = station.url;
         self.edit-logo-url = station.logo-url;
         self.edit-country = station.country;
-        self.edit-listen-time = station.listen-time;
-        self.edit-last-played = station.last-played;
-        self.edit-play-count = station.play-count;
-        self.confirm-reset = false;
         self.show-dialog = true;
     }
 
@@ -48,10 +36,7 @@ export component EditFavoriteDialog inherits Rectangle {
 
     if show-dialog: DialogShell {
         title: "Edit Favorite";
-        subtitle: !root.has-stats ? "Not played yet"
-            : (root.edit-play-count == 1 ? "1 play" : "\{root.edit-play-count} plays")
-                + (root.edit-listen-time != "" ? " · " + root.edit-listen-time : "")
-                + (root.edit-last-played != "" ? " · Last played " + root.edit-last-played : "");
+        subtitle: root.edit-name;
         card-width: 460px;
         close-requested => { root.show-dialog = false; }
 
@@ -89,7 +74,7 @@ export component EditFavoriteDialog inherits Rectangle {
             }
         }
 
-        if !root.confirm-reset: HorizontalLayout {
+        HorizontalLayout {
             padding-top: 4px;
             spacing: 8px;
 
@@ -100,12 +85,6 @@ export component EditFavoriteDialog inherits Rectangle {
                     root.deleted(root.station());
                     root.show-dialog = false;
                 }
-            }
-
-            SecondaryButton {
-                label: "Reset Stats";
-                enabled: root.has-stats;
-                clicked => { root.confirm-reset = true; }
             }
 
             Rectangle { horizontal-stretch: 1; }
@@ -121,37 +100,6 @@ export component EditFavoriteDialog inherits Rectangle {
                 clicked => {
                     root.accepted(root.station());
                     root.show-dialog = false;
-                }
-            }
-        }
-
-        // Resetting can't be undone, so ask first in place of the buttons
-        if root.confirm-reset: HorizontalLayout {
-            padding-top: 4px;
-            spacing: 8px;
-
-            Text {
-                horizontal-stretch: 1;
-                vertical-alignment: center;
-                font-size: 13px;
-                overflow: elide;
-                color: Theme.text-primary;
-                text: "Reset plays, listening time and last played?";
-            }
-
-            SecondaryButton {
-                label: "Keep";
-                clicked => { root.confirm-reset = false; }
-            }
-
-            DangerButton {
-                label: "Reset";
-                clicked => {
-                    root.reset-stats(root.edit-id);
-                    root.edit-play-count = 0;
-                    root.edit-listen-time = "";
-                    root.edit-last-played = "";
-                    root.confirm-reset = false;
                 }
             }
         }

@@ -241,6 +241,7 @@ export component App inherits Window {
             show-stats: root.show-station-stats;
             favorite-move-requested(station, to-top) => { root.move-favorite(station, to-top); }
             favorite-remove-requested(station) => { root.delete-favorite(station); }
+            favorite-reset-stats-requested(station) => { root.reset-favorite-stats(station.id); }
             favorite-clicked(station) => { root.play-favorite(station); }
             favorite-edit-requested(station) => { edit-dialog.open(station); }
             favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
@@ -336,9 +337,6 @@ export component App inherits Window {
         }
         deleted(station) => {
             root.delete-favorite(station);
-        }
-        reset-stats(id) => {
-            root.reset-favorite-stats(id);
         }
     }
 
