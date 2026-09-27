@@ -127,6 +127,13 @@ pub enum AudioEvent {
     NoAudioTimeout,
     /// Buffer fill percentage (0–100); 100 means done buffering
     Buffering(u8),
+    /// The audio output device went away and no other could be opened.
+    /// The station stays loaded and carries on when a device is back
+    /// (see [`AudioEvent::OutputRestored`]). Sent again after `Playing` or
+    /// `Resumed` while there is still no device.
+    OutputLost,
+    /// Playback moved to a newly opened output device after `OutputLost`
+    OutputRestored,
 }
 
 /// Audio analysis data for visualization (VU meters + spectrum)

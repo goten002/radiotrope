@@ -8,6 +8,7 @@ pub mod decoder;
 pub mod dsp;
 pub mod engine;
 pub mod health;
+mod output;
 pub mod recording;
 pub mod stats;
 pub mod types;
