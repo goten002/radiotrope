@@ -83,6 +83,8 @@ pub struct AnalyzingSource<S> {
     fft_planner: FftPlanner<f32>,
     local_sample_count: u64,
     vu_scale: VuScale,
+    /// Channel of the next sample within its frame
+    channel_index: u16,
 }
 
 impl<S> AnalyzingSource<S>
@@ -108,6 +110,7 @@ where
             fft_planner: FftPlanner::new(),
             local_sample_count: 0,
             vu_scale: VuScale::new(),
+            channel_index: 0,
         }
     }
 
@@ -205,19 +208,38 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         let sample = self.inner.next()?;
 
+        // The format can change between packets (HE-AAC turning on SBR, a
+        // chained Ogg song, an HLS ad break): check at each frame start, as
+        // the EQ does. A half-filled window would mix two formats, so it
+        // starts over.
+        if self.channel_index == 0 {
+            let (channels, sample_rate) = (self.inner.channels(), self.inner.sample_rate());
+            if (channels, sample_rate) != (self.channels, self.sample_rate) {
+                self.channels = channels;
+                self.sample_rate = sample_rate;
+                self.buffer_left.clear();
+                self.buffer_right.clear();
+            }
+        }
+        let channel = self.channel_index;
+        self.channel_index = (channel + 1) % self.channels.get();
+
         // Only accumulate analysis data while active. Samples still pass through
         // so rodio can drain the source, but we skip the expensive FFT and
         // avoid writing to the shared analysis after a stop/reset.
         if self.active.load(Ordering::Relaxed) {
             self.local_sample_count += 1;
 
-            if self.channels.get() == 1 {
-                self.buffer_left.push(sample);
-                self.buffer_right.push(sample);
-            } else if self.buffer_left.len() == self.buffer_right.len() {
-                self.buffer_left.push(sample);
-            } else {
-                self.buffer_right.push(sample);
+            // The meters and spectrum show the front left and right; the
+            // other channels of a surround stream aren't mixed in
+            match (self.channels.get(), channel) {
+                (1, _) => {
+                    self.buffer_left.push(sample);
+                    self.buffer_right.push(sample);
+                }
+                (_, 0) => self.buffer_left.push(sample),
+                (_, 1) => self.buffer_right.push(sample),
+                _ => {}
             }
 
             if self.buffer_left.len() >= FFT_SIZE && self.buffer_right.len() >= FFT_SIZE {
@@ -1180,5 +1202,121 @@ mod tests {
         // Flushed count is FFT_SIZE*3 (the last 42 weren't flushed)
         assert_eq!(data.sample_count, (FFT_SIZE * 3) as u64);
         assert!(data.sample_count <= output.len() as u64);
+    }
+
+    // --- Surround and format changes ---
+
+    /// Segments of (channels, rate, interleaved samples) played in turn.
+    /// Like `SymphoniaSource`, the format reported is that of the sample
+    /// just returned.
+    struct Segments {
+        segments: Vec<(u16, u32, Vec<f32>)>,
+        segment: usize,
+        pos: usize,
+    }
+
+    impl Segments {
+        fn new(segments: Vec<(u16, u32, Vec<f32>)>) -> Self {
+            Self {
+                segments,
+                segment: 0,
+                pos: 0,
+            }
+        }
+    }
+
+    impl Iterator for Segments {
+        type Item = f32;
+        fn next(&mut self) -> Option<f32> {
+            while self.pos >= self.segments.get(self.segment)?.2.len() {
+                if self.segment + 1 >= self.segments.len() {
+                    return None;
+                }
+                self.segment += 1;
+                self.pos = 0;
+            }
+            self.pos += 1;
+            Some(self.segments[self.segment].2[self.pos - 1])
+        }
+    }
+
+    impl Source for Segments {
+        fn current_span_len(&self) -> Option<usize> {
+            None
+        }
+        fn channels(&self) -> NonZero<u16> {
+            NonZero::new(self.segments[self.segment].0).unwrap()
+        }
+        fn sample_rate(&self) -> NonZero<u32> {
+            NonZero::new(self.segments[self.segment].1).unwrap()
+        }
+        fn total_duration(&self) -> Option<Duration> {
+            None
+        }
+    }
+
+    fn analyze(source: Segments) -> AudioAnalysis {
+        let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
+        let _: Vec<f32> = AnalyzingSource::new(source, analysis.clone(), active_flag()).collect();
+        let data = analysis.lock().unwrap().clone();
+        data
+    }
+
+    /// `frames` frames of `channels` channels, each channel from `value`
+    fn frames(channels: u16, frames: usize, value: impl Fn(usize, u16) -> f32) -> Vec<f32> {
+        (0..frames)
+            .flat_map(|i| (0..channels).map(move |ch| (i, ch)))
+            .map(|(i, ch)| value(i, ch))
+            .collect()
+    }
+
+    fn loud(i: usize) -> f32 {
+        (i as f32 * 0.1).sin() * 0.9
+    }
+
+    #[test]
+    fn surround_meters_show_front_left_and_right() {
+        // 5.1 with a silent front right and everything else loud
+        let samples = frames(6, FFT_SIZE * 4, |i, ch| if ch == 1 { 0.0 } else { loud(i) });
+        let data = analyze(Segments::new(vec![(6, 48_000, samples)]));
+        assert!(data.vu_left > 0.0);
+        assert!(data.vu_right < 0.001, "right {}", data.vu_right);
+    }
+
+    #[test]
+    fn a_change_from_mono_to_stereo_is_followed() {
+        let mono = frames(1, FFT_SIZE * 2, |i, _| loud(i));
+        // Then stereo with a silent right, long enough for the meter to fall
+        let stereo = frames(
+            2,
+            FFT_SIZE * 40,
+            |i, ch| if ch == 0 { loud(i) } else { 0.0 },
+        );
+        let data = analyze(Segments::new(vec![(1, 44_100, mono), (2, 44_100, stereo)]));
+        assert!(data.vu_left > 0.0);
+        assert!(data.vu_right < 0.001, "right {}", data.vu_right);
+    }
+
+    #[test]
+    fn a_sample_rate_change_keeps_the_spectrum_in_place() {
+        let tone = |rate: f32| {
+            move |i: usize, _| (i as f32 * 1000.0 * std::f32::consts::TAU / rate).sin() * 0.5
+        };
+        let peak = |data: &AudioAnalysis| {
+            (0..SPECTRUM_BANDS)
+                .max_by(|a, b| data.spectrum[*a].total_cmp(&data.spectrum[*b]))
+                .unwrap()
+        };
+        // A 1 kHz tone at 22.05 kHz on its own, and after 44.1 kHz audio
+        let alone = analyze(Segments::new(vec![(
+            1,
+            22_050,
+            frames(1, FFT_SIZE * 40, tone(22_050.0)),
+        )]));
+        let after = analyze(Segments::new(vec![
+            (1, 44_100, frames(1, FFT_SIZE * 4, tone(44_100.0))),
+            (1, 22_050, frames(1, FFT_SIZE * 40, tone(22_050.0))),
+        ]));
+        assert_eq!(peak(&after), peak(&alone));
     }
 }

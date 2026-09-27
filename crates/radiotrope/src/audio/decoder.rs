@@ -31,6 +31,12 @@ use super::types::CodecInfo;
 /// The format reader produced by a successful probe
 pub type ProbedFormat = Box<dyn FormatReader>;
 
+/// Unreadable stretches the demuxer may report in a row before the stream
+/// counts as broken. A live stream can carry garbage: an ICY reconnect
+/// splices two streams mid-frame, and a false sync word in the join then
+/// fails to parse. The demuxer resyncs on the next call.
+const MAX_DEMUX_ERRORS: u32 = 100;
+
 /// Convert a symphonia codec ID to a human-readable name
 pub fn codec_type_to_name(codec: AudioCodecId) -> String {
     use symphonia::core::codecs::audio::well_known::*;
@@ -164,6 +170,8 @@ pub struct SymphoniaSource {
     last_error: Arc<Mutex<Option<String>>>,
     /// Atomic decode counters (frames decoded / decode errors)
     decoder_stats: Arc<DecoderStats>,
+    /// Demuxer errors since the last packet that decoded
+    demux_errors: u32,
 }
 
 impl SymphoniaSource {
@@ -228,6 +236,7 @@ impl SymphoniaSource {
             bits_per_sample,
             last_error: Arc::new(Mutex::new(None)),
             decoder_stats: Arc::new(DecoderStats::new()),
+            demux_errors: 0,
         };
 
         // Pre-decode the first frame to discover the actual output sample rate.
@@ -319,6 +328,7 @@ impl SymphoniaSource {
                                 ));
                             }
                             self.decoder_stats.record_frame();
+                            self.demux_errors = 0;
 
                             // Update sample rate and channels from decoder output —
                             // FDK AAC may change these after SBR/PS processing
@@ -349,6 +359,18 @@ impl SymphoniaSource {
                 Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
                     // Clean EOF — stream ended naturally, no error stored
                     return false;
+                }
+                Err(Error::DecodeError(msg)) => {
+                    // Garbage in the stream: skip it, unless nothing but
+                    // garbage comes
+                    self.decoder_stats.record_error();
+                    self.demux_errors += 1;
+                    if self.demux_errors >= MAX_DEMUX_ERRORS {
+                        return self.fail(format!(
+                            "{msg} ({} unreadable frames in a row)",
+                            self.demux_errors
+                        ));
+                    }
                 }
                 Err(e) => {
                     // IO error or other — likely network failure
@@ -1342,5 +1364,102 @@ mod tests {
         let wav = make_wav(0, 1, &[0i16; 1000]);
         let result = SymphoniaSource::new(Cursor::new(wav));
         assert!(result.is_err());
+    }
+
+    // --- Garbage from the demuxer ---
+
+    mod demux_errors {
+        use super::*;
+        use symphonia::core::errors::{Error, Result};
+        use symphonia::core::formats::{FormatInfo, MediaInfo, SeekMode, SeekTo, SeekedTo, Track};
+        use symphonia::core::io::MediaSourceStream;
+        use symphonia::core::meta::Metadata;
+        use symphonia::core::packet::Packet;
+
+        /// A demuxer that reports `errors` unreadable frames after its
+        /// `after`-th packet
+        struct Garbled {
+            inner: ProbedFormat,
+            after: usize,
+            errors: u32,
+            packets: usize,
+        }
+
+        impl FormatReader for Garbled {
+            fn format_info(&self) -> &FormatInfo {
+                self.inner.format_info()
+            }
+            fn media_info(&self) -> &MediaInfo {
+                self.inner.media_info()
+            }
+            fn metadata(&mut self) -> Metadata<'_> {
+                self.inner.metadata()
+            }
+            fn seek(&mut self, mode: SeekMode, to: SeekTo) -> Result<SeekedTo> {
+                self.inner.seek(mode, to)
+            }
+            fn tracks(&self) -> &[Track] {
+                self.inner.tracks()
+            }
+            fn next_packet(&mut self) -> Result<Option<Packet>> {
+                if self.packets == self.after && self.errors > 0 {
+                    self.errors -= 1;
+                    return Err(Error::DecodeError("adts: invalid sample rate"));
+                }
+                self.packets += 1;
+                self.inner.next_packet()
+            }
+            fn into_inner<'s>(self: Box<Self>) -> MediaSourceStream<'s>
+            where
+                Self: 's,
+            {
+                self.inner.into_inner()
+            }
+        }
+
+        /// One second of a 44.1 kHz mono WAV whose demuxer reports
+        /// `errors` unreadable frames after its third packet
+        fn garbled_source(errors: u32) -> SymphoniaSource {
+            let samples: Vec<i16> = (0..44100).map(|i| (i % 1000) as i16).collect();
+            let wav = make_wav(44100, 1, &samples);
+            let probed = start_probe(Cursor::new(wav), Some("wav".into()))
+                .unwrap()
+                .recv()
+                .unwrap()
+                .unwrap();
+            let garbled = Garbled {
+                inner: probed,
+                after: 3,
+                errors,
+                packets: 0,
+            };
+            SymphoniaSource::from_probed(Box::new(garbled)).unwrap()
+        }
+
+        #[test]
+        fn a_stretch_of_garbage_is_skipped() {
+            let source = garbled_source(20);
+            let slot = source.error_slot();
+            let stats = source.decoder_stats();
+            assert_eq!(source.count(), 44100, "every sample still plays");
+            assert!(slot.lock().unwrap().is_none(), "no error");
+            assert_eq!(
+                stats
+                    .decode_errors
+                    .load(std::sync::atomic::Ordering::SeqCst),
+                20
+            );
+        }
+
+        #[test]
+        fn nothing_but_garbage_ends_the_stream_with_the_reason() {
+            let source = garbled_source(u32::MAX);
+            let slot = source.error_slot();
+            let played = source.count();
+            assert!(played > 0 && played < 44100, "played {played}");
+            let err = slot.lock().unwrap().clone().expect("an error");
+            assert!(err.contains("invalid sample rate"), "{err}");
+            assert!(err.contains("100 unreadable frames in a row"), "{err}");
+        }
     }
 }
