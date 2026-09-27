@@ -21,15 +21,17 @@ export struct FavoriteStation {
 component RowMenuItem inherits Rectangle {
     in property <string> label;
     in property <bool> danger: false;
+    in property <bool> enabled: true;
     callback clicked();
 
     height: 28px;
     min-width: 170px;
     border-radius: 4px;
-    background: touch.has-hover ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
+    background: touch.has-hover && root.enabled ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 
@@ -38,7 +40,8 @@ component RowMenuItem inherits Rectangle {
         padding-right: 12px;
         Text {
             text: root.label;
-            color: root.danger ? Theme.danger
+            color: !root.enabled ? Theme.disabled-text
+                : root.danger ? Theme.danger
                 : touch.has-hover ? Theme.text-primary : Theme.menu-text;
             font-size: 13px;
             vertical-alignment: center;
@@ -71,6 +74,7 @@ component FavoriteRow inherits Rectangle {
     callback edit-clicked();
     callback move-requested(/* to-top */ bool);
     callback remove-requested();
+    callback reset-stats-requested();
     // Pointer y in window coordinates, and where in the row it grabbed
     callback grip-moved(/* pointer-y */ length, /* grab-y */ length);
     callback grip-released();
@@ -85,6 +89,7 @@ component FavoriteRow inherits Rectangle {
     property <length> menu-x;
     property <length> menu-y;
     property <bool> confirm-remove: false;
+    property <bool> confirm-reset: false;
     // The menu opened from a hold, so letting go must not also play
     property <bool> menu-held: false;
     // The pointer has rested on the stats long enough to explain them
@@ -93,6 +98,7 @@ component FavoriteRow inherits Rectangle {
 
     public function open-menu(x: length, y: length) {
         root.confirm-remove = false;
+        root.confirm-reset = false;
         root.menu-x = clamp(x, 0, root.width - root.menu-width);
         root.menu-y = y;
         menu.show();
@@ -399,6 +405,22 @@ component FavoriteRow inherits Rectangle {
                         root.move-requested(false);
                     }
                 }
+                // Only while stats are shown, and asks once more first.
+                // Act before closing: inside an `if` the handler stops
+                // once the menu closes
+                if root.show-stats: RowMenuItem {
+                    label: root.confirm-reset ? "Click Again to Reset" : "Reset Stats";
+                    enabled: root.play-count > 0
+                        || root.listen-time != "" || root.session-time != "";
+                    clicked => {
+                        if root.confirm-reset {
+                            root.reset-stats-requested();
+                            menu.close();
+                        } else {
+                            root.confirm-reset = true;
+                        }
+                    }
+                }
                 Rectangle {
                     height: 9px;
                     Rectangle {
@@ -512,6 +534,7 @@ export component Favorites inherits Rectangle {
     callback favorite-edit-requested(FavoriteStation);
     callback favorite-move-requested(FavoriteStation, /* to-top */ bool);
     callback favorite-remove-requested(FavoriteStation);
+    callback favorite-reset-stats-requested(FavoriteStation);
     callback favorites-reordered(/* from */ int, /* to */ int);
 
     // Drag state
@@ -666,6 +689,9 @@ export component Favorites inherits Rectangle {
                         }
                         remove-requested => {
                             root.favorite-remove-requested(station);
+                        }
+                        reset-stats-requested => {
+                            root.favorite-reset-stats-requested(station);
                         }
                         grip-moved(pointer-y, grab-y) => {
                             if root.drag-from-index < 0 {

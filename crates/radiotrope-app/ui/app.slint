@@ -50,6 +50,7 @@ export component App inherits Window {
     callback play-favorite(FavoriteStation);
     callback delete-favorite(FavoriteStation);
     callback edit-favorite(FavoriteStation);
+    callback reset-favorite-stats(string);
     callback reorder-favorites(/* from */ int, /* to */ int);
     callback move-favorite(FavoriteStation, /* to-top */ bool);
     // Listening stats on favorites rows (View menu)
@@ -240,6 +241,7 @@ export component App inherits Window {
             show-stats: root.show-station-stats;
             favorite-move-requested(station, to-top) => { root.move-favorite(station, to-top); }
             favorite-remove-requested(station) => { root.delete-favorite(station); }
+            favorite-reset-stats-requested(station) => { root.reset-favorite-stats(station.id); }
             favorite-clicked(station) => { root.play-favorite(station); }
             favorite-edit-requested(station) => { edit-dialog.open(station); }
             favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
