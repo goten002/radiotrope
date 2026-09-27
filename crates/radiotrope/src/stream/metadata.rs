@@ -74,7 +74,10 @@ impl StreamMetadata {
     /// Create metadata from an ICY title string.
     ///
     /// Splits on first ` - ` separator: "Artist - Title" → artist="Artist", title="Title".
-    /// If no separator found, the whole string becomes the title.
+    /// If no separator found, the whole string becomes the title. So does
+    /// text laid out in fields split by ` :: ` (`Song :: Artist A. - Artist
+    /// B. :: 1933`): which field is which isn't said, and a ` - ` inside a
+    /// field doesn't split artist from title.
     pub fn from_icy_title(raw: &str) -> Self {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -85,7 +88,8 @@ impl StreamMetadata {
             };
         }
 
-        if let Some(pos) = raw.find(" - ") {
+        let split = raw.find(" - ").filter(|_| !raw.contains(" :: "));
+        if let Some(pos) = split {
             let artist = raw[..pos].trim().to_string();
             let title = raw[pos + 3..].trim().to_string();
             Self {
@@ -143,7 +147,75 @@ pub fn extract_icy_title_as(raw_block: &[u8], text: &mut StationText) -> Option<
         return None;
     }
 
-    parse_icy_metadata(&text.decode(&raw_block[..end]))
+    parse_icy_metadata(&text.decode(&raw_block[..end])).map(|title| decode_html_references(&title))
+}
+
+/// `text` with HTML character references (`&#924;`, `&#x39C;`, `&amp;`)
+/// replaced by the characters they stand for.
+///
+/// Some stations send titles and names this way: every Greek or Cyrillic
+/// letter as a code, or a `'` as `&#39;` so it can't end `StreamTitle='…'`.
+/// A reference escaped once more (`&amp;#924;`) is read too. Anything that
+/// isn't a complete reference stays as it is (`Simon & Garfunkel`, `R&B`).
+pub fn decode_html_references(text: &str) -> String {
+    let once = decode_references_once(text);
+    if once != text && once.contains("&#") {
+        decode_references_once(&once)
+    } else {
+        once
+    }
+}
+
+fn decode_references_once(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        match html_reference(rest) {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character the reference at the start of `text` (at its `&`) stands
+/// for, and the reference's length
+fn html_reference(text: &str) -> Option<(char, usize)> {
+    // The longest is `&#x10FFFF;`, give or take leading zeros
+    let end = text.bytes().take(16).position(|b| b == b';')?;
+    let name = &text[1..end];
+    let c = match name.strip_prefix('#') {
+        Some(number) => {
+            let (digits, radix) = match number.strip_prefix(['x', 'X']) {
+                Some(hex) => (hex, 16),
+                None => (number, 10),
+            };
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return None;
+            }
+            let code = u32::from_str_radix(digits, radix).ok()?;
+            char::from_u32(code).filter(|c| !c.is_control())?
+        }
+        None => match name {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            "nbsp" => ' ',
+            _ => return None,
+        },
+    };
+    Some((c, end + 1))
 }
 
 /// Decodes text a station sends without saying how it is encoded: ICY
@@ -977,6 +1049,66 @@ mod tests {
         assert_eq!(recv(&rx, 1000), Some("later".into()));
         // Scheduler exits once nothing is pending
         assert!(rx.recv_timeout(Duration::from_millis(1000)).is_err());
+    }
+
+    mod html_references {
+        use super::*;
+
+        /// A Greek station's title, every letter sent as an HTML code
+        const CODED: &str = "&#924;&#940;&#957;&#945; &#945;&#965;&#964;&#972;&#957;&#945; \
+            &#952;&#941;&#955;&#969; :: &#924;&#960;&#945;&#961;&#959;&#973;&#963;&#951;&#962; \
+            &#913;. - &#917;&#963;&#954;&#949;&#957;&#940;&#950;&#965; &#929;. :: 1933";
+
+        #[test]
+        fn a_title_sent_as_html_codes_reads_as_text() {
+            assert_eq!(
+                decode_html_references(CODED),
+                "Μάνα αυτόνα θέλω :: Μπαρούσης Α. - Εσκενάζυ Ρ. :: 1933"
+            );
+            let block = format!("StreamTitle='{CODED}';");
+            let title = extract_icy_title(block.as_bytes()).unwrap();
+            assert!(title.starts_with("Μάνα αυτόνα θέλω ::"), "{title}");
+        }
+
+        #[test]
+        fn reads_hex_named_and_twice_escaped_references() {
+            assert_eq!(decode_html_references("&#x39C;&#X3AC;"), "Μά");
+            assert_eq!(
+                decode_html_references("Tom &amp; Jerry &quot;Live&quot; &lt;3"),
+                "Tom & Jerry \"Live\" <3"
+            );
+            assert_eq!(decode_html_references("&amp;#924;&amp;#940;"), "Μά");
+            let block = b"StreamTitle='Rock &#39;n&#39; Roll';StreamUrl='';";
+            assert_eq!(extract_icy_title(block).as_deref(), Some("Rock 'n' Roll"));
+        }
+
+        #[test]
+        fn leaves_what_is_not_a_reference() {
+            for text in [
+                "Simon & Garfunkel",
+                "R&B; Soul",
+                "&#; &#x; &#xZZ; &#+5; &#-5; &bogus;",
+                "&#0; &#xD800; &#1114112;",
+                "AT&T",
+                "ends with &",
+                "&#924",
+                "Ράδιο & Μουσική;",
+            ] {
+                assert_eq!(decode_html_references(text), text);
+            }
+        }
+
+        #[test]
+        fn a_title_in_fields_is_not_split_at_a_dash_inside_one() {
+            let m = StreamMetadata::from_icy_title(
+                "Μάνα αυτόνα θέλω :: Μπαρούσης Α. - Εσκενάζυ Ρ. :: 1933",
+            );
+            assert_eq!(m.artist, None);
+            assert_eq!(
+                m.title.as_deref(),
+                Some("Μάνα αυτόνα θέλω :: Μπαρούσης Α. - Εσκενάζυ Ρ. :: 1933")
+            );
+        }
     }
 
     mod station_text {
