@@ -141,6 +141,9 @@ export component MenuBar inherits Rectangle {
     // the release that follows)
     callback show-system-menu(length, length, bool) -> bool;
     property <length> window-menu-x;
+    // Left padding plus the logo, where the first menu starts
+    property <length> logo-width: 32px;
+    property <length> menu-start: 4px + root.logo-width;
     property <length> window-menu-y;
     callback close-window();
 
@@ -149,6 +152,32 @@ export component MenuBar inherits Rectangle {
         padding-left: 4px;
         padding-right: root.custom-frame ? 0 : 4px;
         alignment: stretch;
+
+        // App logo: opens About (in place of an info button at the right end)
+        Rectangle {
+            width: root.logo-width;
+            height: 32px;
+
+            about-touch := TouchArea {
+                clicked => { root.open-about(); }
+                mouse-cursor: pointer;
+            }
+
+            Rectangle {
+                width: 26px;
+                height: 26px;
+                border-radius: 6px;
+                background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
+                animate background { duration: Theme.fast; }
+
+                Image {
+                    width: 18px;
+                    height: 18px;
+                    source: @image-url("../../../assets/icons/icon-64.png");
+                    opacity: about-touch.has-hover ? 1.0 : 0.9;
+                }
+            }
+        }
 
         Rectangle {
             width: open-label.preferred-width + 20px;
@@ -251,32 +280,6 @@ export component MenuBar inherits Rectangle {
             }
         }
 
-        // About button at the right end
-        Rectangle {
-            width: 32px;
-            height: 32px;
-
-            about-touch := TouchArea {
-                clicked => { root.open-about(); }
-                mouse-cursor: pointer;
-            }
-
-            Rectangle {
-                width: 26px;
-                height: 26px;
-                border-radius: 13px;
-                background: about-touch.has-hover ? Theme.menu-bar-hover : transparent;
-                animate background { duration: Theme.fast; }
-
-                Icon {
-                    width: 16px;
-                    height: 16px;
-                    source: @image-url("icons/circle-info.svg");
-                    colorize: about-touch.has-hover ? Theme.accent : Theme.menu-text;
-                }
-            }
-        }
-
         if root.custom-frame: HorizontalLayout {
             padding-left: 6px;
 
@@ -344,7 +347,7 @@ export component MenuBar inherits Rectangle {
     }
 
     open-popup := PopupWindow {
-        x: 4px;
+        x: root.menu-start;
         y: 32px;
         width: popup-layout.preferred-width;
 
@@ -373,7 +376,7 @@ export component MenuBar inherits Rectangle {
     }
 
     stations-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px;
+        x: root.menu-start + open-label.preferred-width + 20px;
         y: 32px;
         width: stations-popup-layout.preferred-width;
 
@@ -473,7 +476,7 @@ export component MenuBar inherits Rectangle {
     }
 
     view-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px + stations-label.preferred-width + 20px;
+        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px;
         y: 32px;
         width: view-popup-layout.preferred-width;
 
@@ -572,7 +575,7 @@ export component MenuBar inherits Rectangle {
     }
 
     tools-popup := PopupWindow {
-        x: 4px + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px;
+        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px;
         y: 32px;
         width: tools-popup-layout.preferred-width;
 
