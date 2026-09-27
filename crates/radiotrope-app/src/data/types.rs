@@ -293,7 +293,8 @@ impl Favorite {
     /// mark the station as played now. Long sessions are credited in steps,
     /// so only their first step counts as a play.
     pub fn add_listening(&mut self, secs: u64, new_play: bool) {
-        if new_play {
+        // Listening after a stats reset counts as a play too
+        if new_play || self.play_count == 0 {
             self.play_count += 1;
         }
         self.total_listen_time_secs += secs;
@@ -303,6 +304,13 @@ impl Favorite {
                 .unwrap_or_default()
                 .as_secs(),
         );
+    }
+
+    /// Forget plays, listening time and when the station was last played
+    pub fn reset_stats(&mut self) {
+        self.play_count = 0;
+        self.total_listen_time_secs = 0;
+        self.last_played = None;
     }
 }
 

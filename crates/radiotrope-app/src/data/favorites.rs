@@ -460,6 +460,18 @@ impl FavoritesManager {
         Some(favorite)
     }
 
+    /// Clear the stats of a favorite
+    pub fn reset_stats(&mut self, id: &str) -> Result<()> {
+        let favorite = self
+            .favorites
+            .get_mut(id)
+            .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
+        favorite.reset_stats();
+        self.dirty = true;
+        self.generation += 1;
+        Ok(())
+    }
+
     /// Move a favorite to the start or the end of the manual order
     pub fn move_to_edge(&mut self, id: &str, to_top: bool) -> Result<()> {
         let mut ids: Vec<String> = self
@@ -547,6 +559,27 @@ mod tests {
 
     fn empty_manager() -> FavoritesManager {
         FavoritesManager::new()
+    }
+
+    #[test]
+    fn test_reset_stats() {
+        let mut manager = FavoritesManager::new();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        manager.add_listening("http://a.test", 90, true).unwrap();
+        let id = manager.get_by_url("http://a.test").unwrap().id();
+        let generation = manager.generation();
+
+        manager.reset_stats(&id).unwrap();
+        let fav = manager.get(&id).unwrap();
+        assert_eq!(fav.play_count, 0);
+        assert_eq!(fav.total_listen_time_secs, 0);
+        assert!(fav.last_played.is_none());
+        assert!(manager.generation() > generation);
+        assert!(manager.reset_stats("missing").is_err());
+
+        // Still listening after the reset: counts as a play again
+        manager.add_listening("http://a.test", 60, false).unwrap();
+        assert_eq!(manager.get(&id).unwrap().play_count, 1);
     }
 
     #[test]
