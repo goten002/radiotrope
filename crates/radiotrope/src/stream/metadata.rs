@@ -11,9 +11,14 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use chardetng::{EncodingDetector, Iso2022JpDetection, Utf8Detection};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::config::metadata::{MAX_SYNC_DELAY_SECS, SYNC_POLL_MS};
+
+fn is_country_code(label: &str) -> bool {
+    label.len() == 2 && label.bytes().all(|b| b.is_ascii_lowercase())
+}
 
 /// Source of stream metadata
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,7 +74,10 @@ impl StreamMetadata {
     /// Create metadata from an ICY title string.
     ///
     /// Splits on first ` - ` separator: "Artist - Title" → artist="Artist", title="Title".
-    /// If no separator found, the whole string becomes the title.
+    /// If no separator found, the whole string becomes the title. So does
+    /// text laid out in fields split by ` :: ` (`Song :: Artist A. - Artist
+    /// B. :: 1933`): which field is which isn't said, and a ` - ` inside a
+    /// field doesn't split artist from title.
     pub fn from_icy_title(raw: &str) -> Self {
         let raw = raw.trim();
         if raw.is_empty() {
@@ -80,7 +88,8 @@ impl StreamMetadata {
             };
         }
 
-        if let Some(pos) = raw.find(" - ") {
+        let split = raw.find(" - ").filter(|_| !raw.contains(" :: "));
+        if let Some(pos) = split {
             let artist = raw[..pos].trim().to_string();
             let title = raw[pos + 3..].trim().to_string();
             Self {
@@ -120,8 +129,14 @@ pub fn parse_icy_metadata(metadata: &str) -> Option<String> {
 /// Extract ICY title from a raw metadata block (with null padding).
 ///
 /// Raw ICY metadata blocks are null-padded to a multiple of 16 bytes.
-/// This strips null bytes, converts to UTF-8, then parses the StreamTitle.
+/// This strips null bytes, decodes the text (see [`StationText`]), then
+/// parses the StreamTitle.
 pub fn extract_icy_title(raw_block: &[u8]) -> Option<String> {
+    extract_icy_title_as(raw_block, &mut StationText::default())
+}
+
+/// [`extract_icy_title`] for a station whose text `text` decodes
+pub fn extract_icy_title_as(raw_block: &[u8], text: &mut StationText) -> Option<String> {
     // Strip null bytes from end
     let end = raw_block
         .iter()
@@ -132,8 +147,150 @@ pub fn extract_icy_title(raw_block: &[u8]) -> Option<String> {
         return None;
     }
 
-    let meta_str = String::from_utf8_lossy(&raw_block[..end]);
-    parse_icy_metadata(&meta_str)
+    parse_icy_metadata(&text.decode(&raw_block[..end])).map(|title| decode_html_references(&title))
+}
+
+/// `text` with HTML character references (`&#924;`, `&#x39C;`, `&amp;`)
+/// replaced by the characters they stand for.
+///
+/// Some stations send song titles this way in their ICY metadata: every
+/// Greek or Cyrillic letter as a code, or a `'` as `&#39;` so it can't end
+/// `StreamTitle='…'`.
+/// A reference escaped once more (`&amp;#924;`) is read too. Anything that
+/// isn't a complete reference stays as it is (`Simon & Garfunkel`, `R&B`).
+pub fn decode_html_references(text: &str) -> String {
+    let once = decode_references_once(text);
+    if once != text && once.contains("&#") {
+        decode_references_once(&once)
+    } else {
+        once
+    }
+}
+
+fn decode_references_once(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        match html_reference(rest) {
+            Some((c, len)) => {
+                out.push(c);
+                rest = &rest[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The character the reference at the start of `text` (at its `&`) stands
+/// for, and the reference's length
+fn html_reference(text: &str) -> Option<(char, usize)> {
+    // The longest is `&#x10FFFF;`, give or take leading zeros
+    let end = text.bytes().take(16).position(|b| b == b';')?;
+    let name = &text[1..end];
+    let c = match name.strip_prefix('#') {
+        Some(number) => {
+            let (digits, radix) = match number.strip_prefix(['x', 'X']) {
+                Some(hex) => (hex, 16),
+                None => (number, 10),
+            };
+            if digits.is_empty() || !digits.chars().all(|c| c.is_digit(radix)) {
+                return None;
+            }
+            let code = u32::from_str_radix(digits, radix).ok()?;
+            char::from_u32(code).filter(|c| !c.is_control())?
+        }
+        None => match name {
+            "amp" => '&',
+            "lt" => '<',
+            "gt" => '>',
+            "quot" => '"',
+            "apos" => '\'',
+            "nbsp" => ' ',
+            _ => return None,
+        },
+    };
+    Some((c, end + 1))
+}
+
+/// Decodes text a station sends without saying how it is encoded: ICY
+/// titles and `icy-name`.
+///
+/// Text that is valid UTF-8 is UTF-8. Anything else is in the legacy
+/// encoding the station most likely uses (Windows-1252 in Western Europe,
+/// Windows-1253 or ISO-8859-7 for Greek, Windows-1251 for Cyrillic, and so
+/// on), guessed from the text itself and a hint to the station's language:
+/// its country domain (`.gr`, `.de`), or, when its domain says nothing
+/// (`.com`, `.fm`), the listener's region, since most people listen to
+/// stations in their own language. The hint settles text that could be
+/// either: an all-capitals Greek title reads just as well as lower-case
+/// Russian. Keep one per station: the guess steadies as more of its text
+/// is seen.
+pub struct StationText {
+    detector: EncodingDetector,
+    /// Country code hinting at the station's language (`gr`, `de`)
+    country: Option<String>,
+}
+
+/// Country domains used by sites anywhere (`radio.fm`, `.tv`, `.io`),
+/// which say nothing about a station's language
+const WORLDWIDE_CCTLDS: &[&str] = &[
+    "ac", "ai", "bz", "cc", "cd", "co", "cx", "dj", "fm", "gg", "in", "io", "la", "me", "ms", "nu",
+    "st", "tk", "to", "tv", "vc", "vu", "ws",
+];
+
+impl Default for StationText {
+    fn default() -> Self {
+        Self::new("", None)
+    }
+}
+
+impl StationText {
+    /// For the station at `url`, heard by this computer's user
+    pub fn for_url(url: &str) -> Self {
+        Self::new(url, sys_locale::get_locale().as_deref())
+    }
+
+    /// For the station at `url`, heard by a user whose locale is `locale`
+    /// (`el-GR`, `el_GR.UTF-8`)
+    fn new(url: &str, locale: Option<&str>) -> Self {
+        let station_country = reqwest::Url::parse(url)
+            .ok()
+            .and_then(|url| url.host_str()?.rsplit('.').next().map(str::to_string))
+            .filter(|label| is_country_code(label) && !WORLDWIDE_CCTLDS.contains(&label.as_str()));
+        let user_country = locale
+            .and_then(|locale| locale.split(['-', '_']).nth(1))
+            .map(|region| {
+                region
+                    .split(['.', '@'])
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+            })
+            .filter(|region| is_country_code(region));
+        Self {
+            detector: EncodingDetector::new(Iso2022JpDetection::Deny),
+            country: station_country.or(user_country),
+        }
+    }
+
+    pub fn decode(&mut self, bytes: &[u8]) -> String {
+        if let Ok(text) = std::str::from_utf8(bytes) {
+            return text.to_string();
+        }
+        self.detector.feed(bytes, false);
+        // Keeps the next text from reading as a continuation of this one
+        self.detector.feed(b"\n", false);
+        let tld = self.country.as_deref().map(str::as_bytes);
+        let encoding = self.detector.guess(tld, Utf8Detection::Deny);
+        encoding.decode_without_bom_handling(bytes).0.into_owned()
+    }
 }
 
 /// Decides which source's song info is shown when a stream has several.
@@ -893,5 +1050,197 @@ mod tests {
         assert_eq!(recv(&rx, 1000), Some("later".into()));
         // Scheduler exits once nothing is pending
         assert!(rx.recv_timeout(Duration::from_millis(1000)).is_err());
+    }
+
+    mod html_references {
+        use super::*;
+
+        /// A Greek station's title, every letter sent as an HTML code
+        const CODED: &str = "&#924;&#940;&#957;&#945; &#945;&#965;&#964;&#972;&#957;&#945; \
+            &#952;&#941;&#955;&#969; :: &#924;&#960;&#945;&#961;&#959;&#973;&#963;&#951;&#962; \
+            &#913;. - &#917;&#963;&#954;&#949;&#957;&#940;&#950;&#965; &#929;. :: 1933";
+
+        #[test]
+        fn a_title_sent_as_html_codes_reads_as_text() {
+            assert_eq!(
+                decode_html_references(CODED),
+                "Μάνα αυτόνα θέλω :: Μπαρούσης Α. - Εσκενάζυ Ρ. :: 1933"
+            );
+            let block = format!("StreamTitle='{CODED}';");
+            let title = extract_icy_title(block.as_bytes()).unwrap();
+            assert!(title.starts_with("Μάνα αυτόνα θέλω ::"), "{title}");
+        }
+
+        #[test]
+        fn reads_hex_named_and_twice_escaped_references() {
+            assert_eq!(decode_html_references("&#x39C;&#X3AC;"), "Μά");
+            assert_eq!(
+                decode_html_references("Tom &amp; Jerry &quot;Live&quot; &lt;3"),
+                "Tom & Jerry \"Live\" <3"
+            );
+            assert_eq!(decode_html_references("&amp;#924;&amp;#940;"), "Μά");
+            let block = b"StreamTitle='Rock &#39;n&#39; Roll';StreamUrl='';";
+            assert_eq!(extract_icy_title(block).as_deref(), Some("Rock 'n' Roll"));
+        }
+
+        #[test]
+        fn leaves_what_is_not_a_reference() {
+            for text in [
+                "Simon & Garfunkel",
+                "R&B; Soul",
+                "&#; &#x; &#xZZ; &#+5; &#-5; &bogus;",
+                "&#0; &#xD800; &#1114112;",
+                "AT&T",
+                "ends with &",
+                "&#924",
+                "Ράδιο & Μουσική;",
+            ] {
+                assert_eq!(decode_html_references(text), text);
+            }
+        }
+
+        #[test]
+        fn a_title_in_fields_is_not_split_at_a_dash_inside_one() {
+            let m = StreamMetadata::from_icy_title(
+                "Μάνα αυτόνα θέλω :: Μπαρούσης Α. - Εσκενάζυ Ρ. :: 1933",
+            );
+            assert_eq!(m.artist, None);
+            assert_eq!(
+                m.title.as_deref(),
+                Some("Μάνα αυτόνα θέλω :: Μπαρούσης Α. - Εσκενάζυ Ρ. :: 1933")
+            );
+        }
+    }
+
+    mod station_text {
+        use super::*;
+        use encoding_rs::{Encoding, WINDOWS_1251, WINDOWS_1252, WINDOWS_1253};
+
+        /// An ICY metadata block with `title` in `encoding`
+        fn block(title: &str, encoding: &'static Encoding) -> Vec<u8> {
+            let mut block = b"StreamTitle='".to_vec();
+            block.extend_from_slice(&encoding.encode(title).0);
+            block.extend_from_slice(b"';StreamUrl='';");
+            block.resize(block.len().next_multiple_of(16), 0);
+            block
+        }
+
+        /// The title a listener in the US gets from the station at `url`
+        fn title_from(url: &str, title: &str, encoding: &'static Encoding) -> Option<String> {
+            heard_in("en-US", url, title, encoding)
+        }
+
+        /// The title a listener with `locale` gets from the station at `url`
+        fn heard_in(
+            locale: &str,
+            url: &str,
+            title: &str,
+            encoding: &'static Encoding,
+        ) -> Option<String> {
+            let mut text = StationText::new(url, Some(locale));
+            extract_icy_title_as(&block(title, encoding), &mut text)
+        }
+
+        #[test]
+        fn utf8_titles_stay_as_they_are() {
+            for title in [
+                "Motörhead - Ace of Spades",
+                "Άλκηστις Πρωτοψάλτη - Ιθάκη",
+                "Кино - Группа крови",
+            ] {
+                let block = block(title, encoding_rs::UTF_8);
+                assert_eq!(extract_icy_title(&block).as_deref(), Some(title));
+            }
+        }
+
+        #[test]
+        fn western_european_titles_are_readable() {
+            for title in [
+                "Motörhead - Ace of Spades",
+                "Édith Piaf - Non, je ne regrette rien",
+            ] {
+                assert_eq!(
+                    title_from("http://stream.example.com/live", title, WINDOWS_1252).as_deref(),
+                    Some(title)
+                );
+            }
+        }
+
+        #[test]
+        fn greek_titles_are_readable() {
+            let mixed_case = ["Άλκηστις Πρωτοψάλτη - Ιθάκη", "Μίκης Θεοδωράκης - Άρνηση"];
+            let capitals = "ΜΑΡΙΝΕΛΛΑ - ΣΕ ΘΥΜΑΜΑΙ";
+            for url in [
+                "http://radio.example.gr:8000/stream",
+                "http://stream.example.com/live",
+                "http://example.fm/radio",
+            ] {
+                for title in mixed_case {
+                    assert_eq!(
+                        title_from(url, title, WINDOWS_1253).as_deref(),
+                        Some(title),
+                        "from {url}"
+                    );
+                }
+                // All capitals reads as well as lower-case Russian: a Greek
+                // domain or a Greek listener settles it
+                for locale in ["el-GR", "el_GR.UTF-8"] {
+                    assert_eq!(
+                        heard_in(locale, url, capitals, WINDOWS_1253).as_deref(),
+                        Some(capitals),
+                        "from {url} in {locale}"
+                    );
+                }
+            }
+            assert_eq!(
+                title_from("http://radio.example.gr/", capitals, WINDOWS_1253).as_deref(),
+                Some(capitals)
+            );
+        }
+
+        #[test]
+        fn a_greek_listener_still_reads_other_stations_right() {
+            for title in ["Die Ärzte - Schrei nach Liebe", "Motörhead - Ace of Spades"] {
+                assert_eq!(
+                    heard_in("el-GR", "http://stream.example.com/", title, WINDOWS_1252).as_deref(),
+                    Some(title)
+                );
+            }
+            // A country domain beats the listener's region. (Without one,
+            // Windows-1251 Russian reads as Greek to a Greek listener: the
+            // two share byte ranges, and the region decides.)
+            let title = "Кино - Группа крови";
+            assert_eq!(
+                heard_in("el-GR", "http://radio.example.ru/", title, WINDOWS_1251).as_deref(),
+                Some(title)
+            );
+            let title = "Édith Piaf - Non, je ne regrette rien";
+            assert_eq!(
+                heard_in("el-GR", "http://radio.example.fr/", title, WINDOWS_1252).as_deref(),
+                Some(title)
+            );
+        }
+
+        #[test]
+        fn cyrillic_titles_are_readable() {
+            let title = "Кино - Группа крови";
+            assert_eq!(
+                title_from("http://stream.example.ru/live", title, WINDOWS_1251).as_deref(),
+                Some(title)
+            );
+        }
+
+        #[test]
+        fn the_station_name_counts_towards_its_titles() {
+            let mut text = StationText::for_url("http://stream.example.com/live");
+            let name = WINDOWS_1253.encode("Ράδιο Αθήνα 9,84").0;
+            assert_eq!(text.decode(&name), "Ράδιο Αθήνα 9,84");
+            // One short word could be anything; after the name it is Greek
+            let title = "Νύχτα";
+            assert_eq!(
+                extract_icy_title_as(&block(title, WINDOWS_1253), &mut text).as_deref(),
+                Some(title)
+            );
+        }
     }
 }

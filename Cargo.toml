@@ -43,6 +43,10 @@ clap = { version = "4.5", features = ["derive"] }
 
 # Utilities
 thiserror = "2.0"
+# Text that stations send in legacy encodings (ICY titles and names)
+chardetng = "1.0"
+encoding_rs = "0.8"
+sys-locale = "0.3"
 
 [profile.release]
 strip = true

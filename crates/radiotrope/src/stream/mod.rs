@@ -19,6 +19,7 @@ pub mod id3;
 pub mod metadata;
 pub mod playlist;
 pub mod resolver;
+mod shoutcast;
 #[cfg(test)]
 pub(crate) mod test_server;
 pub mod types;
