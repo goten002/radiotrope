@@ -9,6 +9,7 @@ pub mod dsp;
 pub mod engine;
 pub mod health;
 mod output;
+mod pcm;
 pub mod recording;
 pub mod stats;
 pub mod types;

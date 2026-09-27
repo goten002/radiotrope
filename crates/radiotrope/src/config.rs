@@ -34,6 +34,20 @@ pub mod audio {
     /// How much of a rise the VU and spectrum levels take at once
     /// (0.0-1.0, higher = snappier); falls use [`VU_DECAY`]
     pub const VU_ATTACK: f32 = 0.8;
+
+    /// Decoded audio is kept queued this many output buffers ahead of the
+    /// output device, since its callback takes a whole buffer at a time
+    pub const DECODE_AHEAD_BUFFERS: u32 = 3;
+    /// Least decoded audio kept ahead of the output (ms)
+    pub const DECODE_AHEAD_MIN_MS: u64 = 100;
+    /// Most decoded audio kept ahead of the output (ms)
+    pub const DECODE_AHEAD_MAX_MS: u64 = 1000;
+    /// Decoded audio kept ahead when the device's buffer size isn't known (ms)
+    pub const DECODE_AHEAD_DEFAULT_MS: u64 = 300;
+    /// Length of a chunk of decoded audio in that queue (ms)
+    pub const DECODE_CHUNK_MS: u64 = 20;
+    /// Silence the output plays at a time when the queue runs dry (ms)
+    pub const UNDERRUN_SILENCE_MS: u64 = 10;
 }
 
 /// Network-related configuration

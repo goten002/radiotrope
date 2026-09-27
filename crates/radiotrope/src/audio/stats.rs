@@ -35,6 +35,9 @@ pub struct StreamStats {
     pub throughput_kbps: f64,
     pub underrun_count: u32,
     pub effective_watermark: usize,
+    /// Times the output ran out of decoded audio and played silence (the
+    /// station stalled for longer than the audio decoded ahead)
+    pub output_underruns: u64,
 
     pub play_started_at: Option<Instant>,
 }
@@ -57,6 +60,7 @@ impl Default for StreamStats {
             throughput_kbps: 0.0,
             underrun_count: 0,
             effective_watermark: 0,
+            output_underruns: 0,
             play_started_at: None,
         }
     }
