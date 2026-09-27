@@ -20,6 +20,8 @@ export { AboutInfo, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStat
 
 export component App inherits Window {
     title: "Radiotrope";
+    // Taskbar / Alt+Tab icon on X11 and Windows (Wayland uses the app_id)
+    icon: @image-url("../../../assets/icons/icon-256.png");
     default-font-family: "Inter 18pt";
     background: Theme.surface;
     min-width: 640px;
