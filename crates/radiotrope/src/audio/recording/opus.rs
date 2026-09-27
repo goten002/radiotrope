@@ -140,7 +140,7 @@ impl OpusEncoder {
         let mut ogg = OggWriter::new(serial_number());
         ogg.packet(&opus_head(channels, pre_skip, sample_rate), 0, out);
         ogg.flush(out, false);
-        ogg.packet(&opus_tags(&self.tags, self.kbps), 0, out);
+        ogg.packet(&opus_tags(&self.tags), 0, out);
         ogg.flush(out, false);
         self.state = Some(Stream {
             encoder,
@@ -287,7 +287,7 @@ fn opus_head(channels: u16, pre_skip: u16, input_rate: u32) -> Vec<u8> {
 
 /// The comment header (RFC 7845 section 5.2), with Vorbis-style tags and
 /// the cover as a METADATA_BLOCK_PICTURE.
-fn opus_tags(tags: &RecordingTags, kbps: u32) -> Vec<u8> {
+fn opus_tags(tags: &RecordingTags) -> Vec<u8> {
     let mut comments: Vec<String> = [
         ("TITLE", &tags.title),
         ("ARTIST", &tags.artist),
@@ -298,12 +298,6 @@ fn opus_tags(tags: &RecordingTags, kbps: u32) -> Vec<u8> {
     .filter(|(_, v)| !v.is_empty())
     .map(|(k, v)| format!("{k}={v}"))
     .collect();
-    // Opus headers have no bitrate field, so players can't show it; note
-    // the target the way opusenc does.
-    comments.push(format!(
-        "ENCODER_OPTIONS=--bitrate {}",
-        kbps.clamp(MIN_KBPS, MAX_KBPS)
-    ));
     if let Some(cover) = tags.cover.as_deref().filter(|c| !c.is_empty()) {
         comments.push(format!(
             "METADATA_BLOCK_PICTURE={}",
