@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { DialogShell, InfoRow, SectionHeader } from "../components.slint";
+import { DialogShell, InfoRow, LinkRow, SectionHeader } from "../components.slint";
 
 // Build and environment details, filled in from Rust at startup
 export global AboutInfo {
@@ -71,11 +71,18 @@ export component AboutDialog inherits Rectangle {
                         border-radius: Theme.radius-md;
                         background: Theme.accent-soft;
 
-                        version-text := Text {
+                        // Selectable, so it can be copied into a bug report
+                        version-text := TextInput {
                             text: "Version \{AboutInfo.version}";
                             color: Theme.accent-text;
                             font-size: 11px;
                             font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            read-only: true;
+                            single-line: true;
+                            selection-background-color: Theme.selection-bg;
+                            selection-foreground-color: Theme.selection-fg;
                         }
                     }
                 }
@@ -111,17 +118,47 @@ export component AboutDialog inherits Rectangle {
                     value: AboutInfo.commit-date != ""
                         ? "\{AboutInfo.commit} (\{AboutInfo.commit-date})"
                         : AboutInfo.commit;
+                    selectable: true;
                 }
-                InfoRow { label: "Platform"; value: AboutInfo.platform; }
-                InfoRow { label: "Settings"; value: AboutInfo.config-dir; }
-                InfoRow { label: "Cache"; value: AboutInfo.cache-dir; }
+                InfoRow { label: "Platform"; value: AboutInfo.platform; selectable: true; }
+                InfoRow { label: "Settings"; value: AboutInfo.config-dir; selectable: true; }
+                InfoRow { label: "Cache"; value: AboutInfo.cache-dir; selectable: true; }
 
                 SectionHeader { title: "CREDITS"; }
-                InfoRow { label: "Stations"; value: "radio-browser.info community directory"; }
-                InfoRow { label: "UI toolkit"; value: "Slint"; }
-                InfoRow { label: "Audio"; value: "Symphonia, rodio, fdk-aac, libopus, LAME"; }
-                InfoRow { label: "Flags"; value: "flag-icons (MIT)"; }
-                InfoRow { label: "Font"; value: "Inter (SIL Open Font License)"; }
+                LinkRow {
+                    label: "Stations";
+                    links: [{ name: "radio-browser.info", url: "https://www.radio-browser.info" }];
+                    note: "community directory";
+                    open-url(url) => { root.open-url(url); }
+                }
+                LinkRow {
+                    label: "UI toolkit";
+                    links: [{ name: "Slint", url: "https://slint.dev" }];
+                    open-url(url) => { root.open-url(url); }
+                }
+                LinkRow {
+                    label: "Audio";
+                    links: [
+                        { name: "Symphonia", url: "https://github.com/pdeljanov/Symphonia" },
+                        { name: "rodio", url: "https://github.com/RustAudio/rodio" },
+                        { name: "fdk-aac", url: "https://github.com/mstorsjo/fdk-aac" },
+                        { name: "libopus", url: "https://opus-codec.org" },
+                        { name: "LAME", url: "https://lame.sourceforge.io" },
+                    ];
+                    open-url(url) => { root.open-url(url); }
+                }
+                LinkRow {
+                    label: "Flags";
+                    links: [{ name: "flag-icons", url: "https://github.com/lipis/flag-icons" }];
+                    note: "(MIT)";
+                    open-url(url) => { root.open-url(url); }
+                }
+                LinkRow {
+                    label: "Font";
+                    links: [{ name: "Inter", url: "https://rsms.me/inter/" }];
+                    note: "(SIL Open Font License)";
+                    open-url(url) => { root.open-url(url); }
+                }
 
                 Rectangle { height: 10px; }
 
