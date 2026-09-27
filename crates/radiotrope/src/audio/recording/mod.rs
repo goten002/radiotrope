@@ -151,8 +151,54 @@ struct ActiveRecording {
     generation: u64,
     path: PathBuf,
     tx: Sender<WriterMsg>,
-    handle: JoinHandle<()>,
+    handle: Option<JoinHandle<()>>,
     stats: Arc<WriterStats>,
+}
+
+/// How the writer thread ended
+#[derive(Debug, PartialEq)]
+enum Finished {
+    Done,
+    /// It panicked (debug builds; release builds abort)
+    Crashed,
+    /// Still writing at the deadline: left to finish on its own
+    Stuck,
+}
+
+impl Finished {
+    fn problem(&self) -> Option<String> {
+        match self {
+            Finished::Done => None,
+            Finished::Crashed => {
+                Some("the recording stopped unexpectedly, the file may be incomplete".into())
+            }
+            Finished::Stuck => {
+                Some("the drive stopped responding, the file may be incomplete".into())
+            }
+        }
+    }
+}
+
+impl ActiveRecording {
+    /// Ask the writer to finish the file, and wait for it until `deadline`
+    fn finish(&mut self, deadline: Instant) -> Finished {
+        // The writer may have exited on an error, or be stuck writing
+        let _ = self.tx.send_deadline(WriterMsg::Finish, deadline);
+        let Some(handle) = self.handle.take() else {
+            return Finished::Done;
+        };
+        while !handle.is_finished() {
+            if Instant::now() >= deadline {
+                // Dropping the handle detaches the thread
+                return Finished::Stuck;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        match handle.join() {
+            Ok(()) => Finished::Done,
+            Err(_) => Finished::Crashed,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -181,11 +227,9 @@ impl Recorder {
     /// Fails if a recording is already running or the file cannot be
     /// created (it must not exist yet).
     pub fn start(&self, options: RecordingOptions) -> Result<(), RadioError> {
-        let mut active = self.lock_active();
-        if active.is_some() {
+        if self.lock_active().is_some() {
             return Err(RadioError::Audio("Already recording".to_string()));
         }
-
         let file = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -193,6 +237,19 @@ impl Recorder {
             .map_err(|e| {
                 RadioError::Audio(format!("Cannot create {}: {e}", options.path.display()))
             })?;
+        self.start_writing(options, file)
+    }
+
+    /// Start recording into `file` (created for `options.path`)
+    fn start_writing(
+        &self,
+        options: RecordingOptions,
+        file: impl RecordingFile + Send + 'static,
+    ) -> Result<(), RadioError> {
+        let mut active = self.lock_active();
+        if active.is_some() {
+            return Err(RadioError::Audio("Already recording".to_string()));
+        }
 
         let (tx, rx) = bounded(QUEUE_BATCHES);
         let stats = Arc::new(WriterStats::default());
@@ -208,7 +265,7 @@ impl Recorder {
             generation,
             path: options.path,
             tx,
-            handle,
+            handle: Some(handle),
             stats,
         });
         self.shared.tap.store(options.tap.id(), Ordering::SeqCst);
@@ -218,20 +275,27 @@ impl Recorder {
 
     /// Stop recording, finish the file, and return its final status.
     ///
-    /// Returns `None` if nothing was being recorded.
+    /// Returns `None` if nothing was being recorded. Waits at most
+    /// [`STOP_TIMEOUT`] for the file to be finished: a drive that stopped
+    /// answering (an unplugged USB drive, a dropped network share) can't
+    /// hold up the caller. The status then says the file may be incomplete.
     pub fn stop(&self) -> Option<RecordingStatus> {
-        let active = {
+        self.stop_within(STOP_TIMEOUT)
+    }
+
+    fn stop_within(&self, timeout: Duration) -> Option<RecordingStatus> {
+        let mut active = {
             let mut guard = self.lock_active();
             self.shared.generation.store(0, Ordering::SeqCst);
             self.shared.tap.store(0, Ordering::SeqCst);
             guard.take()?
         };
-
-        // The writer may have exited on an error, so don't wait forever.
-        let _ = active.tx.send_timeout(WriterMsg::Finish, STOP_TIMEOUT);
-        drop(active.tx);
-        let _ = active.handle.join();
-        Some(status_of(&active.path, &active.stats))
+        let finished = active.finish(Instant::now() + timeout);
+        let mut status = status_of(&active.path, &active.stats);
+        if status.error.is_none() {
+            status.error = finished.problem();
+        }
+        Some(status)
     }
 
     /// Whether a recording is running
@@ -288,10 +352,8 @@ impl Drop for RecorderShared {
             .get_mut()
             .unwrap_or_else(|e| e.into_inner())
             .take();
-        if let Some(active) = active {
-            let _ = active.tx.send_timeout(WriterMsg::Finish, STOP_TIMEOUT);
-            drop(active.tx);
-            let _ = active.handle.join();
+        if let Some(mut active) = active {
+            active.finish(Instant::now() + STOP_TIMEOUT);
         }
     }
 }
@@ -508,8 +570,8 @@ fn convert_channels(samples: &[f32], from: u16, to: u16) -> Vec<f32> {
     }
 }
 
-fn writer_loop(
-    file: File,
+fn writer_loop<F: RecordingFile>(
+    file: F,
     encoder: Box<dyn AudioEncoder>,
     rx: Receiver<WriterMsg>,
     stats: Arc<WriterStats>,
@@ -1175,5 +1237,112 @@ mod tests {
             right_peak < 0.01,
             "left and right swapped: right peaks at {right_peak}"
         );
+    }
+
+    /// A file on a drive that stopped answering (an unplugged USB drive, a
+    /// dropped network share): every write blocks until `released` closes
+    struct StuckDisk {
+        released: Receiver<()>,
+    }
+
+    impl Write for StuckDisk {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            let _ = self.released.recv();
+            Err(std::io::Error::other("the drive is gone"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            let _ = self.released.recv();
+            Ok(())
+        }
+    }
+
+    impl Seek for StuckDisk {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    impl RecordingFile for StuckDisk {
+        fn sync_all(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A file whose writes panic, like a bug in an encoder
+    struct PanickingDisk;
+
+    impl Write for PanickingDisk {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            panic!("a bug while writing");
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Seek for PanickingDisk {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    impl RecordingFile for PanickingDisk {
+        fn sync_all(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn half_a_second() -> SamplesBuffer {
+        SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44_100).unwrap(),
+            sine(44_100, 2, 0.5),
+        )
+    }
+
+    #[test]
+    fn stop_gives_up_on_a_drive_that_stopped_answering() {
+        let (release, released) = bounded::<()>(0);
+        let recorder = Recorder::new();
+        recorder
+            .start_writing(wav_options(Path::new("stuck")), StuckDisk { released })
+            .unwrap();
+        play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
+
+        let start = Instant::now();
+        let status = recorder
+            .stop_within(Duration::from_millis(200))
+            .expect("a recording was running");
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "stop waited {:?} for a stuck drive",
+            start.elapsed()
+        );
+        let error = status.error.expect("the unfinished file is reported");
+        assert!(error.contains("stopped responding"), "{error}");
+        assert!(!recorder.is_recording());
+
+        // The stuck writer doesn't block the next recording
+        recorder
+            .start_writing(wav_options(Path::new("next")), full_disk(usize::MAX))
+            .unwrap();
+        play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
+        let status = recorder.stop().unwrap();
+        assert_eq!(status.error, None);
+        assert!(status.bytes_written > 0);
+        drop(release);
+    }
+
+    #[test]
+    fn a_crashed_writer_is_not_reported_as_saved() {
+        let recorder = Recorder::new();
+        recorder
+            .start_writing(wav_options(Path::new("crash")), PanickingDisk)
+            .unwrap();
+        play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
+
+        let status = recorder.stop().expect("a recording was running");
+        let error = status.error.expect("the crash is reported");
+        assert!(error.contains("stopped unexpectedly"), "{error}");
     }
 }
