@@ -101,9 +101,11 @@ pub mod timeouts {
     /// Maximum backoff delay in seconds (cap for exponential backoff)
     pub const MAX_BACKOFF_SECS: u64 = 10;
 
-    /// Connect timeout for reconnection attempts (seconds).
-    /// Shorter than the initial connect timeout to speed up recovery.
-    pub const CONNECT_TIMEOUT_SECS: u64 = 5;
+    /// Connect timeout for a playing stream's own requests: ICY reconnects,
+    /// and the HLS downloader's playlist and segment fetches (seconds).
+    /// Shorter than [`super::network::CONNECT_TIMEOUT_SECS`], so a playing
+    /// stream recovers sooner.
+    pub const STREAM_CONNECT_TIMEOUT_SECS: u64 = 5;
 
     /// Buffering duration before the engine signals a stall to the UI (seconds).
     /// Short enough to give timely feedback, long enough to avoid false alarms

@@ -657,10 +657,6 @@ impl Seek for StreamBufferReader {
     }
 }
 
-// StreamBufferReader is Send (Arc<BufferState> is Send+Sync) and
-// Sync is safe because the reader is used from a single thread.
-unsafe impl Sync for StreamBufferReader {}
-
 /// Largest read [`PlaybackPositionReader`] passes through. symphonia reads
 /// ahead in blocks of up to 32 KiB (about 2 s at 128 kbps); smaller reads
 /// keep the reported position within a fraction of a second of what is decoded.
