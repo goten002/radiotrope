@@ -11,8 +11,8 @@ use std::time::Duration;
 use crossbeam_channel::{Receiver, Sender};
 
 use radiotrope::audio::{
-    AudioAnalysis, AudioEngine, AudioEvent, PlaybackState, RecordingFormat, RecordingOptions,
-    RecordingStatus, RecordingTags, SharedStats, TapPoint,
+    AudioAnalysis, AudioEngine, AudioEvent, EngineEvent, PlaybackState, RecordingFormat,
+    RecordingOptions, RecordingStatus, RecordingTags, SharedStats, StreamId, TapPoint,
 };
 use radiotrope::config::timeouts::RESOLVE_TIMEOUT_SECS;
 use radiotrope::stream::metadata::StreamMetadata;
@@ -37,6 +37,9 @@ pub struct AppController {
     /// Stops the station being resolved or played: its network threads end
     /// at once instead of finishing their requests for nobody
     stream_cancel: Option<StreamCancel>,
+    /// The station the engine plays for us. Events about any other are an
+    /// earlier station's last words.
+    stream_id: Option<StreamId>,
     /// One-shot channel to send the engine's analysis Arc to the UI thread
     analysis_tx: Option<Sender<Arc<Mutex<AudioAnalysis>>>>,
     /// One-shot channel to send the engine's SharedStats to the UI thread
@@ -44,7 +47,7 @@ pub struct AppController {
     /// Saved volume level before mute (for restoring on unmute)
     volume_before_mute: f32,
     /// Reusable buffer for collecting engine events (avoids allocation per poll)
-    event_buf: Vec<AudioEvent>,
+    event_buf: Vec<EngineEvent>,
     /// Sequence number of the last recording notice
     notice_seq: u64,
     /// The playing stream failed: the engine's Stopped that follows keeps the
@@ -68,6 +71,7 @@ impl AppController {
             metadata_rx: None,
             resolve_generation: 0,
             stream_cancel: None,
+            stream_id: None,
             analysis_tx: Some(analysis_tx),
             stats_tx: Some(stats_tx),
             volume_before_mute: 1.0,
@@ -297,6 +301,9 @@ impl AppController {
             state.bitrate = None;
             state.status_text = "Resolving...".into();
             state.is_error = false;
+            // The old station was stopped above. Its own Stopped is ignored
+            // like the rest of its events.
+            state.playback = PlaybackState::Stopped;
         }
 
         let url: Arc<str> = Arc::from(url);
@@ -336,12 +343,13 @@ impl AppController {
     }
 
     /// Stop the station being resolved or played, and make any resolve
-    /// result still on its way stale
+    /// result still on its way stale, and any event about the station
     fn cancel_stream(&mut self) {
         if let Some(cancel) = self.stream_cancel.take() {
             cancel.cancel();
         }
         self.resolve_generation += 1;
+        self.stream_id = None;
     }
 
     /// Handle the resolved stream — start playback (or store error).
@@ -382,7 +390,7 @@ impl AppController {
 
                 // Start playback. The engine cancels the stream when it stops.
                 if let Some(engine) = &self.engine {
-                    engine.play_stream(resolved);
+                    self.stream_id = Some(engine.play_stream(resolved));
                 }
             }
             Err(e) => {
@@ -421,7 +429,15 @@ impl AppController {
         self.poll_metadata();
     }
 
-    fn handle_engine_event(&mut self, event: AudioEvent) {
+    fn handle_engine_event(&mut self, event: EngineEvent) {
+        // An earlier station's last words: it was stopped when the station
+        // changed, and nothing it says applies to the one playing now.
+        // Events about no station (a device lost while stopped) apply.
+        if event.stream.is_some() && event.stream != self.stream_id {
+            return;
+        }
+        let event = event.event;
+
         // The stream ended or failed: keep what was recorded
         if matches!(
             event,
@@ -431,13 +447,9 @@ impl AppController {
         }
 
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        // While a new station resolves the engine has nothing of it yet:
-        // whatever arrives is the old station's last word. Only its stop
-        // matters, so the old station no longer shows as playing.
+        // While a new station resolves, news of the device waits: the
+        // engine repeats a lost device once the station plays
         if state.is_resolving {
-            if matches!(event, AudioEvent::Stopped) {
-                state.playback = PlaybackState::Stopped;
-            }
             return;
         }
         match event {
@@ -480,10 +492,6 @@ impl AppController {
                 state.status_text = format!("Error: {e}").into();
                 state.is_error = true;
                 self.stream_failed = true;
-            }
-            AudioEvent::MetadataUpdate { title, artist } => {
-                state.title = title;
-                state.artist = artist;
             }
             AudioEvent::Buffering(pct) => {
                 state.status_text = if pct < 100 {
@@ -705,21 +713,12 @@ mod tests {
             (controller, state)
         }
 
-        fn playing() -> AudioEvent {
-            AudioEvent::Playing(radiotrope::audio::CodecInfo {
-                codec_name: "MP3".into(),
-                channels: 2,
-                sample_rate: 44100,
-                bits_per_sample: None,
-                bitrate: Some(128),
-            })
-        }
-
         #[test]
         fn a_lost_output_shows_until_a_device_is_back() {
             let (mut controller, state) = controller_and_state();
-            controller.handle_engine_event(playing());
-            controller.handle_engine_event(AudioEvent::OutputLost);
+            controller.stream_id = Some(StreamId(1));
+            controller.handle_engine_event(on(1, playing()));
+            controller.handle_engine_event(on(1, AudioEvent::OutputLost));
             {
                 let state = state.lock().unwrap();
                 assert!(state.is_error);
@@ -728,7 +727,7 @@ mod tests {
                 assert_eq!(state.playback, PlaybackState::Playing);
             }
 
-            controller.handle_engine_event(AudioEvent::OutputRestored);
+            controller.handle_engine_event(on(1, AudioEvent::OutputRestored));
             let state = state.lock().unwrap();
             assert!(!state.is_error);
             assert_eq!(state.status_text, "Playing");
@@ -737,10 +736,11 @@ mod tests {
         #[test]
         fn a_device_back_while_paused_shows_paused() {
             let (mut controller, state) = controller_and_state();
-            controller.handle_engine_event(playing());
-            controller.handle_engine_event(AudioEvent::OutputLost);
-            controller.handle_engine_event(AudioEvent::Paused);
-            controller.handle_engine_event(AudioEvent::OutputRestored);
+            controller.stream_id = Some(StreamId(1));
+            controller.handle_engine_event(on(1, playing()));
+            controller.handle_engine_event(on(1, AudioEvent::OutputLost));
+            controller.handle_engine_event(on(1, AudioEvent::Paused));
+            controller.handle_engine_event(on(1, AudioEvent::OutputRestored));
 
             let state = state.lock().unwrap();
             assert!(!state.is_error);
@@ -808,6 +808,21 @@ mod tests {
         }
 
         #[test]
+        fn switching_station_stops_the_old_one_at_once() {
+            let (mut controller, state) = controller();
+            controller.stream_id = Some(StreamId(1));
+            controller.handle_engine_event(on(1, playing()));
+            controller.start_stream(&silent_station(), Some("Next".into()));
+            assert_eq!(controller.stream_id, None);
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.playback, PlaybackState::Stopped);
+                assert!(state.is_resolving);
+            }
+            controller.handle_command(AppCommand::Stop);
+        }
+
+        #[test]
         fn switching_station_cancels_the_one_resolving() {
             let (mut controller, state) = controller();
             let station = silent_station();
@@ -862,15 +877,39 @@ mod tests {
         })
     }
 
+    /// An event about station `id`
+    fn on(id: u64, event: AudioEvent) -> EngineEvent {
+        EngineEvent {
+            stream: Some(StreamId(id)),
+            event,
+        }
+    }
+
+    /// An event about no station
+    fn device(event: AudioEvent) -> EngineEvent {
+        EngineEvent {
+            stream: None,
+            event,
+        }
+    }
+
+    /// A controller playing station 1
+    fn controller_playing() -> (AppController, Arc<Mutex<AppSnapshot>>) {
+        let (mut controller, state) = controller();
+        connecting(&mut controller, &state, 1);
+        controller.handle_engine_event(on(1, playing()));
+        (controller, state)
+    }
+
     #[test]
     fn a_failed_stream_stops_with_its_error_showing() {
-        let (mut controller, state) = controller();
-        controller.handle_engine_event(playing());
+        let (mut controller, state) = controller_playing();
         // What the engine sends when a station goes down for good
-        controller.handle_engine_event(AudioEvent::Error(
-            "Stream error: No audio for 2 min: HTTP 404 Not Found".into(),
+        controller.handle_engine_event(on(
+            1,
+            AudioEvent::Error("Stream error: No audio for 2 min: HTTP 404 Not Found".into()),
         ));
-        controller.handle_engine_event(AudioEvent::Stopped);
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
 
         let state = state.lock().unwrap();
         assert_eq!(state.playback, PlaybackState::Stopped);
@@ -884,10 +923,9 @@ mod tests {
 
     #[test]
     fn no_audio_stays_showing_after_the_stop() {
-        let (mut controller, state) = controller();
-        controller.handle_engine_event(playing());
-        controller.handle_engine_event(AudioEvent::NoAudioTimeout);
-        controller.handle_engine_event(AudioEvent::Stopped);
+        let (mut controller, state) = controller_playing();
+        controller.handle_engine_event(on(1, AudioEvent::NoAudioTimeout));
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
 
         let state = state.lock().unwrap();
         assert_eq!(state.playback, PlaybackState::Stopped);
@@ -895,16 +933,19 @@ mod tests {
         assert_eq!(state.status_text, "No audio");
     }
 
-    /// What `start_stream` shows while the next station resolves
-    fn resolving(state: &Arc<Mutex<AppSnapshot>>) {
+    /// What `start_stream` does while the next station resolves
+    fn resolving(controller: &mut AppController, state: &Arc<Mutex<AppSnapshot>>) {
+        controller.cancel_stream();
         let mut state = state.lock().unwrap();
         state.is_resolving = true;
         state.status_text = "Resolving...".into();
         state.is_error = false;
+        state.playback = PlaybackState::Stopped;
     }
 
-    /// What `handle_stream_resolved` shows once it hands the station over
-    fn connecting(state: &Arc<Mutex<AppSnapshot>>) {
+    /// What `handle_stream_resolved` does once it hands station `id` over
+    fn connecting(controller: &mut AppController, state: &Arc<Mutex<AppSnapshot>>, id: u64) {
+        controller.stream_id = Some(StreamId(id));
         let mut state = state.lock().unwrap();
         state.is_resolving = false;
         state.status_text = "Connecting...".into();
@@ -912,18 +953,17 @@ mod tests {
 
     #[test]
     fn a_station_that_fails_after_another_shows_stopped_with_its_error() {
-        let (mut controller, state) = controller();
-        controller.handle_engine_event(playing());
+        let (mut controller, state) = controller_playing();
         // Switch: the engine stops the old station while the new resolves
-        resolving(&state);
-        controller.handle_engine_event(AudioEvent::Stopped);
+        resolving(&mut controller, &state);
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
         assert_eq!(state.lock().unwrap().playback, PlaybackState::Stopped);
         assert_eq!(state.lock().unwrap().status_text, "Resolving...");
 
         // The new station fails to start
-        connecting(&state);
-        controller.handle_engine_event(AudioEvent::Error("Probe failed".into()));
-        controller.handle_engine_event(AudioEvent::Stopped);
+        connecting(&mut controller, &state, 2);
+        controller.handle_engine_event(on(2, AudioEvent::Error("Probe failed".into())));
+        controller.handle_engine_event(on(2, AudioEvent::Stopped));
         let state = state.lock().unwrap();
         assert_eq!(state.playback, PlaybackState::Stopped);
         assert!(state.is_error);
@@ -932,19 +972,15 @@ mod tests {
 
     #[test]
     fn the_old_station_changes_nothing_while_the_next_resolves() {
-        let (mut controller, state) = controller();
-        controller.handle_engine_event(playing());
-        resolving(&state);
+        let (mut controller, state) = controller_playing();
+        resolving(&mut controller, &state);
         for event in [
-            AudioEvent::Buffering(40),
-            AudioEvent::StreamStalled,
-            AudioEvent::MetadataUpdate {
-                title: "Old song".into(),
-                artist: "Old artist".into(),
-            },
-            AudioEvent::Error("Stream error: old".into()),
-            AudioEvent::NoAudioTimeout,
-            AudioEvent::Stopped,
+            on(1, AudioEvent::Buffering(40)),
+            on(1, AudioEvent::StreamStalled),
+            on(1, AudioEvent::Error("Stream error: old".into())),
+            on(1, AudioEvent::NoAudioTimeout),
+            on(1, AudioEvent::Stopped),
+            device(AudioEvent::OutputLost),
         ] {
             controller.handle_engine_event(event);
         }
@@ -952,29 +988,51 @@ mod tests {
             let state = state.lock().unwrap();
             assert_eq!(state.status_text, "Resolving...");
             assert!(!state.is_error);
-            assert!(state.title.is_empty());
             assert_eq!(state.playback, PlaybackState::Stopped);
         }
 
         // The old station's failure doesn't stick to the new one
-        connecting(&state);
-        controller.handle_engine_event(playing());
-        controller.handle_engine_event(AudioEvent::Stopped);
+        connecting(&mut controller, &state, 2);
+        controller.handle_engine_event(on(2, playing()));
+        controller.handle_engine_event(on(2, AudioEvent::Stopped));
         let state = state.lock().unwrap();
         assert!(!state.is_error);
         assert_eq!(state.status_text, "Stopped");
     }
 
     #[test]
+    fn the_old_station_changes_nothing_once_the_next_is_handed_over() {
+        let (mut controller, state) = controller_playing();
+        resolving(&mut controller, &state);
+        connecting(&mut controller, &state, 2);
+
+        // The old station's last words arrive after the new one's start
+        // was sent: they used to show as the new station's error
+        controller.handle_engine_event(on(1, AudioEvent::Error("Stream error: old".into())));
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.status_text, "Connecting...");
+            assert!(!state.is_error);
+        }
+
+        controller.handle_engine_event(on(2, playing()));
+        controller.handle_engine_event(on(1, AudioEvent::Paused));
+        let state = state.lock().unwrap();
+        assert_eq!(state.playback, PlaybackState::Playing);
+        assert_eq!(state.status_text, "Playing");
+    }
+
+    #[test]
     fn no_device_at_start_says_so() {
         let (mut controller, state) = controller();
-        controller.handle_engine_event(AudioEvent::OutputLost);
+        controller.handle_engine_event(device(AudioEvent::OutputLost));
         {
             let state = state.lock().unwrap();
             assert!(state.is_error);
             assert!(state.status_text.contains("waiting for a device"));
         }
-        controller.handle_engine_event(AudioEvent::OutputRestored);
+        controller.handle_engine_event(device(AudioEvent::OutputRestored));
         let state = state.lock().unwrap();
         assert!(!state.is_error);
         assert_eq!(state.status_text, "Stopped");
@@ -982,12 +1040,13 @@ mod tests {
 
     #[test]
     fn a_stop_after_playing_again_is_a_plain_stop() {
-        let (mut controller, state) = controller();
-        controller.handle_engine_event(playing());
-        controller.handle_engine_event(AudioEvent::Error("Stream error: x".into()));
-        controller.handle_engine_event(AudioEvent::Stopped);
-        controller.handle_engine_event(playing());
-        controller.handle_engine_event(AudioEvent::Stopped);
+        let (mut controller, state) = controller_playing();
+        controller.handle_engine_event(on(1, AudioEvent::Error("Stream error: x".into())));
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
+        resolving(&mut controller, &state);
+        connecting(&mut controller, &state, 2);
+        controller.handle_engine_event(on(2, playing()));
+        controller.handle_engine_event(on(2, AudioEvent::Stopped));
 
         let state = state.lock().unwrap();
         assert!(!state.is_error);

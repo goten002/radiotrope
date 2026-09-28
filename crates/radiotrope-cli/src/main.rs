@@ -186,7 +186,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Poll engine events
             while let Ok(event) = event_rx.try_recv() {
-                match event {
+                match event.event {
                     AudioEvent::Playing(info) => {
                         app.codec_info = Some(info);
                         app.status = "Playing".to_string();

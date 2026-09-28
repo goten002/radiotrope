@@ -1,14 +1,11 @@
-//! Stream statistics and event broadcasting
+//! Stream statistics
 //!
 //! `StreamStats` is a shared snapshot of all stream metrics, polled by the UI.
-//! `EventBus` broadcasts discrete `StreamEvent`s to subscribers.
 //! `DecoderStats` provides atomic counters for the hot decode path.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-
-use crossbeam_channel::{unbounded, Receiver, Sender};
 
 use crate::audio::health::HealthState;
 use crate::audio::types::CodecInfo;
@@ -18,8 +15,8 @@ use crate::stream::types::StreamType;
 #[derive(Debug, Clone)]
 pub struct StreamStats {
     pub codec_info: Option<CodecInfo>,
+    /// Direct (ICY) or HLS, for a station played with `play_stream`
     pub stream_type: Option<StreamType>,
-    pub stream_url: String,
 
     pub frames_played: u64,
     pub decode_errors: u64,
@@ -47,7 +44,6 @@ impl Default for StreamStats {
         Self {
             codec_info: None,
             stream_type: None,
-            stream_url: String::new(),
             frames_played: 0,
             decode_errors: 0,
             bytes_received: 0,
@@ -72,58 +68,6 @@ pub type SharedStats = Arc<Mutex<StreamStats>>;
 /// Create a new shared stats instance
 pub fn new_shared_stats() -> SharedStats {
     Arc::new(Mutex::new(StreamStats::default()))
-}
-
-/// Discrete events broadcast to subscribers
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    PlaybackStarted {
-        codec_info: CodecInfo,
-        stream_url: String,
-    },
-    PlaybackStopped,
-    MetadataChanged {
-        title: String,
-        artist: String,
-    },
-    HealthChanged(HealthState),
-    Error(String),
-}
-
-/// Broadcast mechanism for stream events
-pub struct EventBus {
-    subscribers: Mutex<Vec<Sender<StreamEvent>>>,
-}
-
-impl Default for EventBus {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl EventBus {
-    /// Create a new event bus with no subscribers
-    pub fn new() -> Self {
-        Self {
-            subscribers: Mutex::new(Vec::new()),
-        }
-    }
-
-    /// Subscribe to events. Returns a receiver that will get all future events.
-    pub fn subscribe(&self) -> Receiver<StreamEvent> {
-        let (tx, rx) = unbounded();
-        if let Ok(mut subs) = self.subscribers.lock() {
-            subs.push(tx);
-        }
-        rx
-    }
-
-    /// Emit an event to all subscribers. Removes disconnected subscribers.
-    pub fn emit(&self, event: StreamEvent) {
-        if let Ok(mut subs) = self.subscribers.lock() {
-            subs.retain(|tx| tx.send(event.clone()).is_ok());
-        }
-    }
 }
 
 /// Atomic counters for the hot decode path (lock-free)
@@ -177,7 +121,6 @@ mod tests {
         let stats = StreamStats::default();
         assert!(stats.codec_info.is_none());
         assert!(stats.stream_type.is_none());
-        assert!(stats.stream_url.is_empty());
         assert_eq!(stats.frames_played, 0);
         assert_eq!(stats.decode_errors, 0);
         assert_eq!(stats.bytes_received, 0);
@@ -225,115 +168,6 @@ mod tests {
         }
         let stats = s2.lock().unwrap();
         assert_eq!(stats.frames_played, 100);
-    }
-
-    // --- StreamEvent ---
-
-    #[test]
-    fn stream_event_playback_started() {
-        let evt = StreamEvent::PlaybackStarted {
-            codec_info: CodecInfo {
-                codec_name: "MP3".to_string(),
-                channels: 2,
-                sample_rate: 44100,
-                bits_per_sample: None,
-                bitrate: Some(128),
-            },
-            stream_url: "http://example.com".to_string(),
-        };
-        let debug = format!("{:?}", evt);
-        assert!(debug.contains("PlaybackStarted"));
-        assert!(debug.contains("MP3"));
-    }
-
-    #[test]
-    fn stream_event_clone() {
-        let evt = StreamEvent::Error("test".to_string());
-        let cloned = evt.clone();
-        if let StreamEvent::Error(msg) = cloned {
-            assert_eq!(msg, "test");
-        } else {
-            panic!("Expected Error variant");
-        }
-    }
-
-    #[test]
-    fn stream_event_all_variants() {
-        let _ = format!("{:?}", StreamEvent::PlaybackStopped);
-        let _ = format!(
-            "{:?}",
-            StreamEvent::MetadataChanged {
-                title: "Song".to_string(),
-                artist: "Artist".to_string(),
-            }
-        );
-        let _ = format!("{:?}", StreamEvent::HealthChanged(HealthState::Healthy));
-        let _ = format!("{:?}", StreamEvent::Error("err".to_string()));
-    }
-
-    // --- EventBus ---
-
-    #[test]
-    fn event_bus_subscribe_and_emit() {
-        let bus = EventBus::new();
-        let rx = bus.subscribe();
-
-        bus.emit(StreamEvent::PlaybackStopped);
-
-        let evt = rx.recv().unwrap();
-        assert!(matches!(evt, StreamEvent::PlaybackStopped));
-    }
-
-    #[test]
-    fn event_bus_multiple_subscribers() {
-        let bus = EventBus::new();
-        let rx1 = bus.subscribe();
-        let rx2 = bus.subscribe();
-
-        bus.emit(StreamEvent::PlaybackStopped);
-
-        assert!(matches!(rx1.recv().unwrap(), StreamEvent::PlaybackStopped));
-        assert!(matches!(rx2.recv().unwrap(), StreamEvent::PlaybackStopped));
-    }
-
-    #[test]
-    fn event_bus_disconnected_subscriber_cleanup() {
-        let bus = EventBus::new();
-        let rx1 = bus.subscribe();
-        let _rx2 = bus.subscribe();
-        drop(rx1); // disconnect first subscriber
-
-        // Should not panic, and remaining subscriber should get the event
-        bus.emit(StreamEvent::PlaybackStopped);
-
-        // Verify the dead subscriber was cleaned up
-        let subs = bus.subscribers.lock().unwrap();
-        assert_eq!(subs.len(), 1);
-    }
-
-    #[test]
-    fn event_bus_no_subscribers() {
-        let bus = EventBus::new();
-        // Should not panic when emitting with no subscribers
-        bus.emit(StreamEvent::PlaybackStopped);
-    }
-
-    #[test]
-    fn event_bus_multiple_events() {
-        let bus = EventBus::new();
-        let rx = bus.subscribe();
-
-        bus.emit(StreamEvent::PlaybackStopped);
-        bus.emit(StreamEvent::Error("err1".to_string()));
-        bus.emit(StreamEvent::Error("err2".to_string()));
-
-        assert!(matches!(rx.recv().unwrap(), StreamEvent::PlaybackStopped));
-        if let StreamEvent::Error(msg) = rx.recv().unwrap() {
-            assert_eq!(msg, "err1");
-        }
-        if let StreamEvent::Error(msg) = rx.recv().unwrap() {
-            assert_eq!(msg, "err2");
-        }
     }
 
     // --- DecoderStats ---
