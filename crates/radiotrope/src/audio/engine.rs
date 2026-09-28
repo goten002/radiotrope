@@ -2247,11 +2247,21 @@ mod tests {
             other => panic!("Expected Playing, got {:?}", other),
         }
 
-        // Wait for auto-stop (stream ends naturally, detected via recv_timeout)
-        match wait_for_event(&engine, 3000) {
-            Some(AudioEvent::Stopped) => {}
-            other => panic!("Expected auto-Stopped for short clip, got {:?}", other),
-        }
+        // The clip's end is noticed, whatever progress events come first
+        let mut events = Vec::new();
+        assert!(
+            wait_until(&engine, &mut events, Duration::from_secs(5), |e| {
+                has(e, |e| matches!(e, AudioEvent::Stopped))
+            }),
+            "Expected auto-Stopped for short clip, got {events:?}"
+        );
+        assert!(
+            !has(&events, |e| matches!(
+                e,
+                AudioEvent::Error(_) | AudioEvent::NoAudioTimeout | AudioEvent::StreamStalled
+            )),
+            "{events:?}"
+        );
 
         engine.shutdown();
     }
