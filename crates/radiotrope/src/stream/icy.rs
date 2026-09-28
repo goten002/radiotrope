@@ -17,10 +17,8 @@ use crossbeam_channel::{bounded, Receiver, Sender};
 use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 
-use crate::config::network::{
-    CONNECT_TIMEOUT_SECS as NETWORK_CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT,
-};
-use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
+use crate::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{
@@ -68,10 +66,6 @@ pub struct IcyReader {
     /// Total bytes received from the network (updated by background thread)
     pub bytes_received: Arc<AtomicU64>,
 }
-
-// Safe: IcyReader is only accessed from one thread at a time (the audio engine thread).
-// The Receiver and buffer are not shared; the background thread communicates via channel.
-unsafe impl Sync for IcyReader {}
 
 impl IcyReader {
     /// Connect to a URL with ICY metadata support and start background reading.
@@ -157,7 +151,7 @@ impl IcyReader {
         deadline.check()?;
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
-            .connect_timeout(deadline.cap(Duration::from_secs(NETWORK_CONNECT_TIMEOUT_SECS)))
+            .connect_timeout(deadline.cap(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()?;
 
@@ -334,29 +328,14 @@ impl Read for IcyReader {
     }
 }
 
+/// A live stream has nowhere to seek to: the decoder seeks in the stream
+/// buffer in front of this reader
 impl Seek for IcyReader {
-    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let len = self.current_chunk.len();
-        let new_pos = match pos {
-            SeekFrom::Start(p) => p as usize,
-            SeekFrom::Current(p) => {
-                if p >= 0 {
-                    self.chunk_pos.saturating_add(p as usize)
-                } else {
-                    self.chunk_pos.saturating_sub((-p) as usize)
-                }
-            }
-            SeekFrom::End(p) => {
-                if p >= 0 {
-                    len
-                } else {
-                    len.saturating_sub((-p) as usize)
-                }
-            }
-        };
-
-        self.chunk_pos = new_pos.min(len);
-        Ok(self.chunk_pos as u64)
+    fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "a live stream can't seek",
+        ))
     }
 }
 
@@ -734,7 +713,7 @@ fn read_chunk_with_meta(
 fn reconnect(url: &str) -> std::result::Result<Connection, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+        .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
         .build()
         .map_err(|e| e.to_string())?;
@@ -834,83 +813,13 @@ mod tests {
     }
 
     #[test]
-    fn seek_within_current_chunk() {
+    fn a_live_stream_cannot_seek() {
         let (_tx, rx) = bounded(8);
         let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3, 4, 5]);
-
-        // Read 3 bytes (partial consumption)
-        let mut buf = [0u8; 3];
-        reader.read_exact(&mut buf).unwrap();
-        assert_eq!(buf, [1, 2, 3]);
-
-        // Seek back to start of current chunk
-        let pos = reader.seek(SeekFrom::Start(0)).unwrap();
-        assert_eq!(pos, 0);
-
-        // Read again from start
-        let mut buf2 = [0u8; 5];
-        let n = reader.read(&mut buf2).unwrap();
-        assert_eq!(n, 5);
-        assert_eq!(buf2, [1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn seek_current_forward() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![10, 20, 30, 40, 50]);
-
-        // Seek forward from start within current chunk
-        let pos = reader.seek(SeekFrom::Current(3)).unwrap();
-        assert_eq!(pos, 3);
-
-        let mut buf = [0u8; 2];
-        let n = reader.read(&mut buf).unwrap();
-        assert_eq!(n, 2);
-        assert_eq!(buf, [40, 50]);
-    }
-
-    #[test]
-    fn seek_current_backward() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3, 4, 5]);
-
-        // Read 4 bytes
-        let mut buf = [0u8; 4];
-        reader.read_exact(&mut buf).unwrap();
-
-        // Seek back 2
-        let pos = reader.seek(SeekFrom::Current(-2)).unwrap();
-        assert_eq!(pos, 2);
-
-        let mut buf2 = [0u8; 3];
-        let n = reader.read(&mut buf2).unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(buf2, [3, 4, 5]);
-    }
-
-    #[test]
-    fn seek_end() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3, 4, 5]);
-
-        // Seek to 2 bytes before end of current chunk
-        let pos = reader.seek(SeekFrom::End(-2)).unwrap();
-        assert_eq!(pos, 3);
-
-        let mut buf = [0u8; 2];
-        let n = reader.read(&mut buf).unwrap();
-        assert_eq!(n, 2);
-        assert_eq!(buf, [4, 5]);
-    }
-
-    #[test]
-    fn seek_clamps_to_chunk_length() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
-
-        // Seek past end of current chunk
-        let pos = reader.seek(SeekFrom::Start(100)).unwrap();
-        assert_eq!(pos, 3);
+        for pos in [SeekFrom::Start(0), SeekFrom::Current(-2), SeekFrom::End(0)] {
+            let err = reader.seek(pos).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        }
     }
 
     #[test]
@@ -1051,70 +960,6 @@ mod tests {
 
     // --- Seek edge cases ---
 
-    #[test]
-    fn seek_start_zero_on_empty_chunk() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![]);
-        let pos = reader.seek(SeekFrom::Start(0)).unwrap();
-        assert_eq!(pos, 0);
-    }
-
-    #[test]
-    fn seek_end_positive_clamps() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
-        // SeekFrom::End(0) should be at position 3 (clamped to len)
-        let pos = reader.seek(SeekFrom::End(0)).unwrap();
-        assert_eq!(pos, 3);
-    }
-
-    #[test]
-    fn seek_end_beyond_clamps() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
-        // SeekFrom::End(10) → len + 10, clamped to len
-        let pos = reader.seek(SeekFrom::End(10)).unwrap();
-        assert_eq!(pos, 3);
-    }
-
-    #[test]
-    fn seek_current_negative_past_zero_saturates() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3]);
-        // position=0, seek -10 → saturates to 0
-        let pos = reader.seek(SeekFrom::Current(-10)).unwrap();
-        assert_eq!(pos, 0);
-    }
-
-    #[test]
-    fn seek_then_read_correct_data() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![10, 20, 30, 40, 50, 60]);
-
-        // Seek to position 2
-        reader.seek(SeekFrom::Start(2)).unwrap();
-
-        let mut buf = [0u8; 3];
-        let n = reader.read(&mut buf).unwrap();
-        assert_eq!(n, 3);
-        assert_eq!(buf, [30, 40, 50]);
-    }
-
-    #[test]
-    fn multiple_seeks_in_sequence() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3, 4, 5]);
-
-        reader.seek(SeekFrom::Start(3)).unwrap();
-        reader.seek(SeekFrom::Current(-1)).unwrap();
-        let pos = reader.stream_position().unwrap();
-        assert_eq!(pos, 2);
-
-        let mut buf = [0u8; 1];
-        reader.read_exact(&mut buf).unwrap();
-        assert_eq!(buf[0], 3);
-    }
-
     // --- Read edge cases ---
 
     #[test]
@@ -1144,24 +989,6 @@ mod tests {
         let n = reader.read(&mut buf).unwrap();
         assert_eq!(n, 2);
         assert_eq!(&buf[..2], &[1, 2]);
-    }
-
-    #[test]
-    fn seek_back_within_partially_consumed_chunk() {
-        let (_tx, rx) = bounded(8);
-        let (mut reader, _stop) = IcyReader::from_test_channel(rx, vec![1, 2, 3, 4, 5]);
-
-        // Read 3 of 5 bytes (chunk still held)
-        let mut buf = [0u8; 3];
-        reader.read_exact(&mut buf).unwrap();
-        assert_eq!(buf, [1, 2, 3]);
-
-        // Seek back to start of current chunk, re-read
-        reader.seek(SeekFrom::Start(0)).unwrap();
-        let mut buf2 = [0u8; 5];
-        let n = reader.read(&mut buf2).unwrap();
-        assert_eq!(n, 5);
-        assert_eq!(buf2, [1, 2, 3, 4, 5]);
     }
 
     // --- Channel interaction edge cases ---

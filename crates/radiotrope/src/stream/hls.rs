@@ -21,7 +21,7 @@ use crate::config::hls::{
     SEGMENT_TIMEOUT_SECS,
 };
 use crate::config::network::USER_AGENT;
-use crate::config::timeouts::{CONNECT_TIMEOUT_SECS, RECONNECT_GIVE_UP_SECS};
+use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::{StreamCancel, Waited};
 use crate::stream::hls_metadata::{
@@ -58,9 +58,6 @@ pub struct HlsReader {
     /// Total HLS segments downloaded (updated by background thread)
     pub segments_downloaded: Arc<AtomicU64>,
 }
-
-// Safe: HlsReader is only accessed from one thread at a time (the audio engine thread).
-unsafe impl Sync for HlsReader {}
 
 /// How an [`HlsReader`] is opened
 struct Opening {
@@ -809,7 +806,7 @@ impl SegmentDownloader {
     fn download(&self) -> std::result::Result<(), String> {
         let client = reqwest::blocking::Client::builder()
             .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS * 2))
             .build()
             .map_err(|e| format!("HTTP client error: {}", e))?;
