@@ -741,6 +741,7 @@ fn main() {
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
+        let favs = favorites.clone();
         ui.on_search_stations(move |query| {
             let query = query.trim();
             let query = if query.is_empty() {
@@ -748,7 +749,7 @@ fn main() {
             } else {
                 BrowseQuery::Search(query.to_string())
             };
-            start_browse(&ui_weak, &state, &gen, &logo_svc, query);
+            start_browse(&ui_weak, &state, &gen, &logo_svc, &favs, query);
         });
     }
 
@@ -758,8 +759,9 @@ fn main() {
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
+        let favs = favorites.clone();
         ui.on_load_top_stations(move || {
-            start_browse(&ui_weak, &state, &gen, &logo_svc, BrowseQuery::Top);
+            start_browse(&ui_weak, &state, &gen, &logo_svc, &favs, BrowseQuery::Top);
         });
     }
 
@@ -769,6 +771,7 @@ fn main() {
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
+        let favs = favorites.clone();
         ui.on_browse_country(move |name, code, query| {
             let category = Category::new(name.as_str(), name.as_str(), CategoryType::Country)
                 .with_code(Some(code.to_string()).filter(|c| !c.is_empty()));
@@ -776,7 +779,7 @@ fn main() {
                 category,
                 query: query.trim().to_string(),
             };
-            start_browse(&ui_weak, &state, &gen, &logo_svc, query);
+            start_browse(&ui_weak, &state, &gen, &logo_svc, &favs, query);
         });
     }
 
@@ -786,6 +789,7 @@ fn main() {
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let logo_svc = logo_service.clone();
+        let favs = favorites.clone();
         ui.on_load_more_stations(move || {
             let (query, offset) = {
                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -796,6 +800,7 @@ fn main() {
             let ui_weak = ui_weak.clone();
             let gen = gen.clone();
             let logo_svc = logo_svc.clone();
+            let favs = favs.clone();
             let state = state.clone();
             std::thread::Builder::new()
                 .name("load-more".into())
@@ -809,9 +814,9 @@ fn main() {
                             return;
                         }
                         match results {
-                            Ok(results) => {
-                                show_browse_results(&ui, results, true, logo_svc, gen, my_gen)
-                            }
+                            Ok(results) => show_browse_results(
+                                &ui, results, true, &favs, logo_svc, gen, my_gen,
+                            ),
                             Err(e) => {
                                 // Step back so the next scroll retries this page
                                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -823,6 +828,135 @@ fn main() {
                 })
                 .ok();
         });
+    }
+
+    // Star on a search result: add the station to favorites, or remove it
+    {
+        let ui_weak = ui.as_weak();
+        let favs = favorites.clone();
+        let logo_svc = logo_service.clone();
+        ui.on_toggle_browse_favorite(move |item| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let existing = f
+                .find_match(&item.url, Some(item.provider_id.as_str()))
+                .map(|fav| fav.url().to_string());
+            match existing {
+                Some(url) => {
+                    let _ = f.remove_by_url(&url);
+                }
+                None => {
+                    use radiotrope_app::data::types::Favorite;
+                    let mut fav = Favorite::new(item.name.as_str(), item.url.as_str())
+                        .with_metadata(
+                            Some(item.country.to_string()).filter(|c| !c.is_empty()),
+                            None,
+                            Default::default(),
+                        )
+                        .with_provider(
+                            "radio-browser",
+                            Some(item.provider_id.to_string()).filter(|id| !id.is_empty()),
+                        )
+                        .with_audio_info(
+                            Some(item.codec.to_string()).filter(|c| !c.is_empty()),
+                            u32::try_from(item.bitrate).ok().filter(|b| *b > 0),
+                        );
+                    if !item.logo_url.is_empty() {
+                        fav = fav.with_logo(item.logo_url.as_str());
+                    }
+                    let _ = f.add(fav);
+                }
+            }
+            let _ = f.save();
+            let current = ui.get_station_url();
+            ui.set_is_station_favorited(!current.is_empty() && f.is_favorite(&current));
+            drop(f);
+            refresh_favorites(&ui, &favs, &logo_svc);
+        });
+    }
+
+    // Keep each browser mode's list (search, and the last country) while
+    // the other is shown, so reopening either finds it as it was left
+    {
+        let stash: std::rc::Rc<std::cell::RefCell<HashMap<String, BrowseStash>>> =
+            Default::default();
+        {
+            let ui_weak = ui.as_weak();
+            let stash = stash.clone();
+            let state = browse_state.clone();
+            ui.on_stash_browse(move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                // Nothing worth keeping while it loads or after an error
+                if ui.get_search_loading() || ui.get_search_results().row_count() == 0 {
+                    return;
+                }
+                let (query, offset) = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                stash.borrow_mut().insert(
+                    ui.get_browse_mode().to_string(),
+                    BrowseStash {
+                        country: ui.get_browse_country_name().to_string(),
+                        query,
+                        offset,
+                        results: ui.get_search_results(),
+                        logos: ui.get_browse_logos(),
+                        has_more: ui.get_has_more(),
+                        typed: ui.get_browse_typed(),
+                        shown: ui.get_browse_shown(),
+                        scroll: ui.get_browse_scroll(),
+                    },
+                );
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let state = browse_state.clone();
+            let gen = browse_logo_gen.clone();
+            let favs = favorites.clone();
+            let logo_svc = logo_service.clone();
+            ui.on_restore_browse(move |mode, country| {
+                let Some(ui) = ui_weak.upgrade() else {
+                    return false;
+                };
+                let kept = stash.borrow().get(mode.as_str()).cloned();
+                let Some(kept) =
+                    kept.filter(|k| mode != "country" || k.country == country.as_str())
+                else {
+                    return false;
+                };
+                // Drop replies still on their way for the list being hidden
+                let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
+                *state.lock().unwrap_or_else(|e| e.into_inner()) = (kept.query, kept.offset);
+                ui.set_browse_mode(mode);
+                ui.set_search_results(kept.results);
+                ui.set_browse_logos(kept.logos.clone());
+                ui.set_has_more(kept.has_more);
+                ui.set_search_error(Default::default());
+                ui.set_search_loading(false);
+                ui.set_search_loading_more(false);
+                ui.set_browse_typed(kept.typed);
+                ui.set_browse_shown(kept.shown);
+                ui.set_browse_scroll(kept.scroll);
+                mark_browse_favorites(&ui, &favs.lock().unwrap_or_else(|e| e.into_inner()));
+                // Logos that were still loading when it was put aside
+                let results = ui.get_search_results();
+                let misses: Vec<(usize, String, String)> = (0..results.row_count())
+                    .filter_map(|i| {
+                        let item = results.row_data(i)?;
+                        let missing = kept.logos.row_data(i).is_none_or(|l| l.size().width == 0);
+                        (missing && !item.logo_url.is_empty())
+                            .then(|| (i, item.url.to_string(), item.logo_url.to_string()))
+                    })
+                    .collect();
+                spawn_browse_logo_fetch(
+                    ui.as_weak(),
+                    logo_svc.clone(),
+                    misses,
+                    gen.clone(),
+                    my_gen,
+                );
+                true
+            });
+        }
     }
 
     // load-countries callback
@@ -2294,6 +2428,21 @@ fn fetch_browse_page(
     }
 }
 
+/// A station browser list put aside while the other mode is shown
+#[derive(Clone)]
+struct BrowseStash {
+    // Country name (country mode)
+    country: String,
+    query: BrowseQuery,
+    offset: usize,
+    results: ModelRc<BrowseStation>,
+    logos: ModelRc<slint::Image>,
+    has_more: bool,
+    typed: slint::SharedString,
+    shown: slint::SharedString,
+    scroll: f32,
+}
+
 /// Replace the browser list with the first page of `query`, fetched in the
 /// background. Results of an older request that finish later are dropped.
 fn start_browse(
@@ -2301,6 +2450,7 @@ fn start_browse(
     state: &Arc<Mutex<(BrowseQuery, usize)>>,
     gen: &Arc<AtomicU64>,
     logo_svc: &Arc<LogoService>,
+    favs: &Arc<Mutex<FavoritesManager>>,
     query: BrowseQuery,
 ) {
     *state.lock().unwrap_or_else(|e| e.into_inner()) = (query.clone(), 0);
@@ -2316,6 +2466,7 @@ fn start_browse(
     let ui_weak = ui_weak.clone();
     let gen = gen.clone();
     let logo_svc = logo_svc.clone();
+    let favs = favs.clone();
     std::thread::Builder::new()
         .name("station-browse".into())
         .spawn(move || {
@@ -2326,7 +2477,9 @@ fn start_browse(
                     return;
                 }
                 match results {
-                    Ok(results) => show_browse_results(&ui, results, false, logo_svc, gen, my_gen),
+                    Ok(results) => {
+                        show_browse_results(&ui, results, false, &favs, logo_svc, gen, my_gen)
+                    }
                     Err(e) => ui.set_search_error(format!("{e}").into()),
                 }
                 ui.set_search_loading(false);
@@ -2341,11 +2494,19 @@ fn show_browse_results(
     ui: &App,
     results: SearchResults,
     append: bool,
+    favs: &Arc<Mutex<FavoritesManager>>,
     logo_svc: Arc<LogoService>,
     gen: Arc<AtomicU64>,
     my_gen: u64,
 ) {
-    let new_items: Vec<BrowseStation> = results.stations.iter().map(station_to_browse).collect();
+    let mut new_items: Vec<BrowseStation> =
+        results.stations.iter().map(station_to_browse).collect();
+    {
+        let f = favs.lock().unwrap_or_else(|e| e.into_inner());
+        for item in &mut new_items {
+            item.is_favorite = browse_is_favorite(&f, item);
+        }
+    }
     let (mut items, mut logos) = if append {
         let existing = ui.get_search_results();
         let existing_logos = ui.get_browse_logos();
@@ -2381,7 +2542,30 @@ fn station_to_browse(s: &Station) -> BrowseStation {
             .into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
         provider_id: s.provider_id.as_deref().unwrap_or("").into(),
+        is_favorite: false,
     }
+}
+
+/// A search result is a favorite by URL or by the provider's station ID
+fn browse_is_favorite(favs: &FavoritesManager, item: &BrowseStation) -> bool {
+    favs.find_match(&item.url, Some(item.provider_id.as_str()))
+        .is_some()
+}
+
+/// Update the stars on the search results after favorites changed
+fn mark_browse_favorites(ui: &App, favs: &FavoritesManager) {
+    let model = ui.get_search_results();
+    for i in 0..model.row_count() {
+        let Some(mut item) = model.row_data(i) else {
+            continue;
+        };
+        let fav = browse_is_favorite(favs, &item);
+        if item.is_favorite != fav {
+            item.is_favorite = fav;
+            model.set_row_data(i, item);
+        }
+    }
+    // Lists put aside for the other mode get theirs when shown again
 }
 
 /// Number of concurrent logo fetch threads
@@ -2787,6 +2971,7 @@ fn refresh_favorites(
             .collect()
     });
 
+    mark_browse_favorites(ui, &favs);
     drop(favs);
 
     ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));

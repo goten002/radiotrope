@@ -126,6 +126,22 @@ export component App inherits Window {
     in-out property <bool> search-loading-more <=> browser-dialog.search-loading-more;
     in-out property <string> search-error <=> browser-dialog.search-error;
     in-out property <bool> has-more <=> browser-dialog.has-more;
+    // What the station browser shows, so Rust can put a mode's list aside
+    // and bring it back when that mode is opened again
+    in-out property <string> browse-mode <=> browser-dialog.search-mode;
+    in-out property <string> browse-typed <=> browser-dialog.search-query;
+    in-out property <string> browse-shown <=> browser-dialog.shown-query;
+    in-out property <length> browse-scroll <=> browser-dialog.list-scroll;
+    in-out property <string> browse-country-name <=> browser-dialog.country-name;
+    in-out property <string> browse-country-code <=> browser-dialog.country-code;
+    in-out property <image> browse-country-flag <=> browser-dialog.country-flag;
+    // Put the current list aside (per mode) before showing another one
+    callback stash-browse();
+    // Bring back the list kept for a mode ("search", or "country" with its
+    // name); false when there is none and it has to be loaded
+    callback restore-browse(/* mode */ string, /* country */ string) -> bool;
+    // Star on a search result: add it to favorites or remove it
+    callback toggle-browse-favorite(BrowseStation);
 
     // Country picker proxy properties (for Rust access)
     in-out property <[CountryEntry]> countries <=> picker-dialog.countries;
@@ -212,10 +228,13 @@ export component App inherits Window {
                     // Keep the last search when reopening; load top stations on
                     // first open or when coming back from a country list
                     if browser-dialog.search-mode != "search" || browser-dialog.search-results.length == 0 {
-                        browser-dialog.search-mode = "search";
-                        browser-dialog.reset-query();
-                        browser-dialog.search-loading = true;
-                        root.load-top-stations();
+                        root.stash-browse();
+                        if !root.restore-browse("search", "") {
+                            browser-dialog.search-mode = "search";
+                            browser-dialog.reset-query();
+                            browser-dialog.search-loading = true;
+                            root.load-top-stations();
+                        }
                     }
                     browser-dialog.show-dialog = true;
                 }
@@ -333,17 +352,20 @@ export component App inherits Window {
     // listed for that country are kept, so reopening it is instant.
     function open-country(name: string, code: string, flag: image) {
         if browser-dialog.search-mode != "country" || browser-dialog.country-name != name || browser-dialog.search-results.length == 0 {
-            browser-dialog.search-mode = "country";
-            browser-dialog.reset-query();
+            root.stash-browse();
+            if !root.restore-browse("country", name) {
+                browser-dialog.search-mode = "country";
+                browser-dialog.reset-query();
+                browser-dialog.search-results = [];
+                browser-dialog.browse-logos = [];
+                browser-dialog.search-error = "";
+                browser-dialog.has-more = false;
+                browser-dialog.search-loading = true;
+                root.browse-country(name, code, "");
+            }
             browser-dialog.country-name = name;
             browser-dialog.country-code = code;
             browser-dialog.country-flag = flag;
-            browser-dialog.search-results = [];
-            browser-dialog.browse-logos = [];
-            browser-dialog.search-error = "";
-            browser-dialog.has-more = false;
-            browser-dialog.search-loading = true;
-            root.browse-country(name, code, "");
         }
         browser-dialog.show-dialog = true;
     }
@@ -369,6 +391,7 @@ export component App inherits Window {
         }
         load-more() => { root.load-more-stations(); }
         station-selected(station) => { root.play-station(station); }
+        favorite-toggled(station) => { root.toggle-browse-favorite(station); }
     }
 
     edit-dialog := EditFavoriteDialog {

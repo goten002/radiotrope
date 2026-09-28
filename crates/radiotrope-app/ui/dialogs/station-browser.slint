@@ -13,6 +13,8 @@ export struct BrowseStation {
     bitrate: int,
     // Provider's station ID, used to recognize favorites with a different URL
     provider-id: string,
+    // Already in favorites (set from Rust, kept up to date)
+    is-favorite: bool,
 }
 
 component StationRow inherits Rectangle {
@@ -26,7 +28,9 @@ component StationRow inherits Rectangle {
     in property <string> state;
     // Status line shown instead of the country while loading or failed
     in property <string> status;
+    in property <bool> is-favorite;
     callback clicked();
+    callback favorite-clicked();
 
     height: 56px;
     border-radius: Theme.radius-md;
@@ -180,6 +184,36 @@ component StationRow inherits Rectangle {
             }
         }
 
+        // Add to or remove from favorites without playing; last, like
+        // row actions elsewhere, so the details line up to its left
+        VerticalLayout {
+            alignment: center;
+            width: 30px;
+
+            Rectangle {
+                width: 30px;
+                height: 30px;
+                border-radius: 15px;
+                background: star-touch.has-hover ? Theme.menu-hover : transparent;
+                animate background { duration: Theme.fast; }
+
+                Icon {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 16px;
+                    height: 16px;
+                    source: root.is-favorite ? @image-url("../icons/star.svg")
+                        : @image-url("../icons/star-regular.svg");
+                    colorize: root.is-favorite ? Theme.accent
+                        : star-touch.has-hover ? Theme.text-primary : Theme.text-tertiary;
+                }
+
+                star-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.favorite-clicked(); }
+                }
+            }
+        }
     }
 }
 
@@ -211,9 +245,11 @@ export component StationBrowserDialog inherits Rectangle {
             root.picked = "";
         }
     }
-    property <string> search-query: "";
+    in-out property <string> search-query: "";
     // Query of the results on screen; empty means the default list
-    property <string> shown-query: "";
+    in-out property <string> shown-query: "";
+    // How far the list is scrolled (kept while the dialog is closed)
+    in-out property <length> list-scroll: 0;
 
     // Search by name; an empty query loads the top stations
     callback search-stations(string);
@@ -224,15 +260,18 @@ export component StationBrowserDialog inherits Rectangle {
     callback change-country();
     callback load-more();
     callback station-selected(BrowseStation);
+    callback favorite-toggled(BrowseStation);
 
     // Forget the typed query, for when the dialog opens in a new mode
     public function reset-query() {
         root.search-query = "";
         root.shown-query = "";
+        root.list-scroll = 0;
     }
 
     function run-search() {
         root.shown-query = root.search-query;
+        root.list-scroll = 0;
         root.search-loading = true;
         if root.search-mode == "country" {
             root.search-in-country(root.country-name, root.country-code, root.search-query);
@@ -337,6 +376,7 @@ export component StationBrowserDialog inherits Rectangle {
             if root.search-results.length > 0: Rectangle {
                 results-flick := Flickable {
                     content-height: results-layout.preferred-height;
+                    viewport-y <=> root.list-scroll;
 
                     // Infinite scroll: fetch the next page when the view
                     // comes within about five rows of the end
@@ -370,6 +410,8 @@ export component StationBrowserDialog inherits Rectangle {
                                 : root.play-loading ? "loading"
                                 : root.is-playing ? "playing" : "";
                             status: root.play-status;
+                            is-favorite: station.is-favorite;
+                            favorite-clicked => { root.favorite-toggled(station); }
                             clicked => {
                                 root.picked = station.provider-id != "" ? station.provider-id : station.url;
                                 root.station-selected(station);
