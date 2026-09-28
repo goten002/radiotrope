@@ -613,14 +613,25 @@ fn is_finite_body(response: &Connection) -> bool {
             .any(|name| name.as_str().starts_with("icy-"))
 }
 
+/// Read what the body has, trying again if a signal interrupted the read
+/// (as `read_exact` does): that is no reason to reconnect
+fn read_some(body: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    loop {
+        match body.read(buf) {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            result => return result,
+        }
+    }
+}
+
 /// Read one chunk without ICY metadata
 fn read_chunk_no_meta(
-    response: &mut Connection,
+    response: &mut impl Read,
     chunk_buffer: &mut [u8],
     audio_out: &mut AudioOut,
     bytes_received: &Arc<AtomicU64>,
 ) -> ReadResult {
-    match response.read(chunk_buffer) {
+    match read_some(response, chunk_buffer) {
         Ok(0) => ReadResult::Eof,
         Ok(n) => {
             bytes_received.fetch_add(n as u64, Ordering::Relaxed);
@@ -637,7 +648,7 @@ fn read_chunk_no_meta(
 /// Read one chunk with ICY metadata extraction
 #[allow(clippy::too_many_arguments)]
 fn read_chunk_with_meta(
-    response: &mut Connection,
+    response: &mut impl Read,
     chunk_buffer: &mut [u8],
     bytes_until_meta: &mut usize,
     metaint: usize,
@@ -654,7 +665,7 @@ fn read_chunk_with_meta(
     };
 
     if to_read > 0 {
-        match response.read(&mut chunk_buffer[..to_read]) {
+        match read_some(response, &mut chunk_buffer[..to_read]) {
             Ok(0) => return ReadResult::Eof,
             Ok(n) => {
                 bytes_received.fetch_add(n as u64, Ordering::Relaxed);
@@ -745,6 +756,160 @@ fn reconnect(url: &str) -> std::result::Result<Connection, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Reading the stream in pieces ---
+
+    /// A body that hands out its bytes a few at a time, taking the sizes
+    /// from `sizes` in turn, and fails every `interrupt_every`th read with
+    /// `Interrupted` (a signal arriving during the read)
+    struct Trickle {
+        data: Vec<u8>,
+        pos: usize,
+        sizes: Vec<usize>,
+        reads: usize,
+        interrupt_every: Option<usize>,
+    }
+
+    impl Trickle {
+        fn new(data: Vec<u8>, sizes: &[usize], interrupt_every: Option<usize>) -> Self {
+            Self {
+                data,
+                pos: 0,
+                sizes: sizes.to_vec(),
+                reads: 0,
+                interrupt_every,
+            }
+        }
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.reads += 1;
+            if self
+                .interrupt_every
+                .is_some_and(|n| self.reads.is_multiple_of(n))
+            {
+                return Err(io::ErrorKind::Interrupted.into());
+            }
+            let size = self.sizes[self.reads % self.sizes.len()];
+            let n = size.min(buf.len()).min(self.data.len() - self.pos);
+            buf[..n].copy_from_slice(&self.data[self.pos..self.pos + n]);
+            self.pos += n;
+            Ok(n)
+        }
+    }
+
+    /// Audio bytes that differ from their neighbours, so a lost or
+    /// repeated byte shows
+    fn test_audio(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 7 % 251) as u8).collect()
+    }
+
+    /// `audio` as an ICY server sends it: a metadata block after every
+    /// `metaint` bytes. Block n (from 1) names "Song n", except every third,
+    /// which is empty (the title stays). Returns the body and the titles.
+    fn icy_body(audio: &[u8], metaint: usize) -> (Vec<u8>, Vec<String>) {
+        let mut body = Vec::new();
+        let mut titles = Vec::new();
+        for (i, block) in audio.chunks(metaint).enumerate() {
+            body.extend_from_slice(block);
+            if block.len() < metaint {
+                break;
+            }
+            let n = i + 1;
+            if n.is_multiple_of(3) {
+                body.push(0);
+                continue;
+            }
+            let mut meta = format!("StreamTitle='Artist - Song {n}';").into_bytes();
+            let blocks = meta.len().div_ceil(16);
+            meta.resize(blocks * 16, 0);
+            body.push(blocks as u8);
+            body.extend_from_slice(&meta);
+            titles.push(format!("Song {n}"));
+        }
+        (body, titles)
+    }
+
+    /// Read a whole ICY body as the reader thread does. Returns the audio
+    /// sent on and the song titles offered.
+    fn read_icy(mut body: impl Read, metaint: usize) -> (Vec<u8>, Vec<String>) {
+        let (tx, audio_rx) = crossbeam_channel::unbounded();
+        let (sink, titles_rx) = MetadataSink::channel();
+        let mut audio_out = AudioOut::new(tx, sink.clone(), false, StreamCancel::new());
+        let mut chunk = vec![0u8; 8192];
+        let mut bytes_until_meta = metaint;
+        let mut last_title = String::new();
+        let mut text = StationText::default();
+        let received = Arc::new(AtomicU64::new(0));
+        loop {
+            let result = if metaint == 0 {
+                read_chunk_no_meta(&mut body, &mut chunk, &mut audio_out, &received)
+            } else {
+                read_chunk_with_meta(
+                    &mut body,
+                    &mut chunk,
+                    &mut bytes_until_meta,
+                    metaint,
+                    &mut last_title,
+                    &mut text,
+                    &sink,
+                    &mut audio_out,
+                    &received,
+                )
+            };
+            match result {
+                ReadResult::Ok => {}
+                ReadResult::Eof => break,
+                ReadResult::Error(e) => panic!("the read failed: {e}"),
+                ReadResult::ChannelClosed => panic!("the channel closed"),
+            }
+        }
+        let audio: Vec<u8> = audio_rx.try_iter().flatten().collect();
+        assert_eq!(received.load(Ordering::Relaxed), audio.len() as u64);
+        let titles = titles_rx.try_iter().filter_map(|m| m.title).collect();
+        (audio, titles)
+    }
+
+    #[test]
+    fn a_stream_read_one_byte_at_a_time_keeps_its_audio_and_titles() {
+        let audio = test_audio(2000);
+        for metaint in [1, 16, 100] {
+            let (body, titles) = icy_body(&audio, metaint);
+            let (got_audio, got_titles) = read_icy(Trickle::new(body, &[1], None), metaint);
+            assert!(got_audio == audio, "audio changed (metaint {metaint})");
+            assert_eq!(got_titles, titles, "metaint {metaint}");
+        }
+    }
+
+    #[test]
+    fn a_stream_read_in_odd_pieces_keeps_its_audio_and_titles() {
+        let audio = test_audio(20_000);
+        let sizes = [1, 7, 3, 64, 5, 2, 300, 11, 8192, 17];
+        for metaint in [45, 1000, 8192] {
+            let (body, titles) = icy_body(&audio, metaint);
+            let (got_audio, got_titles) = read_icy(Trickle::new(body, &sizes, None), metaint);
+            assert!(got_audio == audio, "audio changed (metaint {metaint})");
+            assert_eq!(got_titles, titles, "metaint {metaint}");
+        }
+    }
+
+    #[test]
+    fn an_interrupted_read_is_tried_again() {
+        let audio = test_audio(5000);
+        let sizes = [1, 7, 3, 64, 5, 2, 300];
+        for metaint in [0, 45] {
+            let (body, titles) = if metaint == 0 {
+                (audio.clone(), Vec::new())
+            } else {
+                icy_body(&audio, metaint)
+            };
+            // Every 4th read is interrupted, audio and metadata reads alike
+            let (got_audio, got_titles) = read_icy(Trickle::new(body, &sizes, Some(4)), metaint);
+            assert!(got_audio == audio, "audio changed (metaint {metaint})");
+            assert_eq!(got_titles, titles, "metaint {metaint}");
+        }
+    }
 
     // --- IcyHeaders ---
 
