@@ -6,6 +6,9 @@
 //! playing station's queue ([`super::pcm::PcmFeed::output`]), so the
 //! station carries on without restarting.
 //!
+//! On Windows the engine also moves playback when the default device
+//! changes ([`DefaultWatch`]).
+//!
 //! Without a device, a [`SilentOutput`] takes the audio at a steady pace
 //! and drops it, so the engine plays the same way (tests, headless use).
 
@@ -166,14 +169,13 @@ impl OutputErrors {
 
 /// Open the default output device, or failing that any other real one (as
 /// rodio's `open_default_sink` does), reporting its loss through `lost`.
-/// Each call starts a new device generation: errors from earlier devices no
-/// longer count.
+/// Each device opened starts a new generation: errors from earlier devices
+/// no longer count. If none opens, the current device still reports.
 pub(crate) fn open_output(
     lost: &Arc<AtomicBool>,
     generation: &Arc<AtomicU64>,
 ) -> Result<MixerDeviceSink, String> {
-    let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
-    lost.store(false, Ordering::SeqCst);
+    let mine = generation.load(Ordering::SeqCst) + 1;
     let errors = OutputErrors::new(lost.clone(), generation.clone(), mine);
     let open = |builder: DeviceSinkBuilder| {
         let mut errors = errors.clone();
@@ -198,8 +200,71 @@ pub(crate) fn open_output(
                 .ok_or(original)
         })
         .map_err(|e| e.to_string())?;
+    generation.store(mine, Ordering::SeqCst);
+    lost.store(false, Ordering::SeqCst);
     sink.log_on_drop(false);
     Ok(sink)
+}
+
+/// How often [`DefaultWatch::system`] asks which device is the default
+const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(1);
+
+/// The system's default output device, as an id that tells devices apart
+fn system_default_id() -> Option<String> {
+    let device = rodio::cpal::default_host().default_output_device()?;
+    device.id().ok().map(|id| id.to_string())
+}
+
+/// Notices when the system's default output device changes.
+///
+/// On Windows an output stays on the device it was opened on: plug in
+/// headphones and Windows makes them the default, but playback carries on
+/// through the speakers until they fail. Elsewhere this isn't needed: on
+/// Linux the engine plays through ALSA's "default", which PipeWire and
+/// PulseAudio move themselves, and cpal opens the macOS default device as
+/// one that follows the system's choice.
+pub(crate) struct DefaultWatch {
+    /// Reads which device is the default now
+    current: Box<dyn Fn() -> Option<String> + Send>,
+    /// The default when the output was last opened
+    followed: Option<String>,
+    every: Duration,
+    next_check: Instant,
+}
+
+impl DefaultWatch {
+    pub(crate) fn new(
+        current: impl Fn() -> Option<String> + Send + 'static,
+        every: Duration,
+    ) -> Self {
+        Self {
+            current: Box::new(current),
+            followed: None,
+            every,
+            next_check: Instant::now(),
+        }
+    }
+
+    /// Watch the system's default output device
+    pub(crate) fn system() -> Self {
+        Self::new(system_default_id, DEFAULT_CHECK_INTERVAL)
+    }
+
+    /// The default device is about to be opened: remember which one it is
+    pub(crate) fn follow(&mut self) {
+        self.followed = (self.current)();
+    }
+
+    /// Whether another device became the default since the output was
+    /// opened. Asks at most once every `every`. With no default at all the
+    /// output isn't moved: if its device is gone, the loss is noticed.
+    pub(crate) fn moved(&mut self, now: Instant) -> bool {
+        if now < self.next_check {
+            return false;
+        }
+        self.next_check = now + self.every;
+        (self.current)().is_some_and(|id| self.followed.as_ref() != Some(&id))
+    }
 }
 
 #[cfg(test)]
@@ -254,6 +319,56 @@ mod tests {
             errors.is_gone(&backend("glitch"), at)
         });
         assert!(!gone);
+    }
+
+    /// A watch on a default the test sets
+    fn watch() -> (DefaultWatch, Arc<std::sync::Mutex<Option<String>>>) {
+        let default = Arc::new(std::sync::Mutex::new(Some("speakers".to_string())));
+        let current = default.clone();
+        let watch = DefaultWatch::new(
+            move || current.lock().unwrap().clone(),
+            Duration::from_secs(1),
+        );
+        (watch, default)
+    }
+
+    #[test]
+    fn a_new_default_device_is_noticed_once() {
+        let (mut watch, default) = watch();
+        let start = Instant::now();
+        watch.follow();
+        assert!(!watch.moved(start));
+
+        *default.lock().unwrap() = Some("headphones".to_string());
+        assert!(watch.moved(start + Duration::from_secs(1)));
+        // Once opened, the new default is the one followed
+        watch.follow();
+        assert!(!watch.moved(start + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn the_default_is_asked_at_most_once_a_second() {
+        let (mut watch, default) = watch();
+        let start = Instant::now();
+        watch.follow();
+        assert!(!watch.moved(start));
+        *default.lock().unwrap() = Some("headphones".to_string());
+        assert!(!watch.moved(start + Duration::from_millis(500)));
+        assert!(watch.moved(start + Duration::from_millis(1000)));
+    }
+
+    #[test]
+    fn no_default_device_is_not_a_move() {
+        let (mut watch, default) = watch();
+        let start = Instant::now();
+        watch.follow();
+        *default.lock().unwrap() = None;
+        assert!(!watch.moved(start));
+
+        // A device that appears after the output was opened without one is
+        watch.follow();
+        *default.lock().unwrap() = Some("headphones".to_string());
+        assert!(watch.moved(start + Duration::from_secs(1)));
     }
 
     #[test]
