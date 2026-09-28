@@ -141,6 +141,15 @@ pub fn parse_pls(content: &str) -> Option<String> {
     None
 }
 
+/// A `key=value` line, which some M3U files carry between entries.
+///
+/// A relative entry can hold an `=` too, but only after a `/` or `?`
+/// (`live.mp3?sid=1`, `//host/path?x=1`), never in a plain name before it.
+fn is_setting(line: &str) -> bool {
+    line.split_once('=')
+        .is_some_and(|(name, _)| !name.contains(['/', '?']))
+}
+
 /// Parse an M3U playlist and return the first stream URL
 pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
     for line in strip_bom(content).lines() {
@@ -151,7 +160,7 @@ pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
 
         if is_http_url(line) {
             return Some(line.to_string());
-        } else if !line.contains('=') {
+        } else if !is_setting(line) {
             return Some(make_absolute_url(line, base_url));
         }
     }
@@ -758,6 +767,36 @@ mod tests {
         assert_eq!(
             parse_m3u(content, "http://base.com"),
             Some("http://stream.com/live?key=value".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_m3u_relative_url_with_query() {
+        let base = "http://example.com/radio";
+        assert_eq!(
+            parse_m3u("#EXTM3U\nlive.mp3?sid=1\n", base),
+            Some("http://example.com/radio/live.mp3?sid=1".to_string())
+        );
+        assert_eq!(
+            parse_m3u("/live?sid=1&t=a=b\n", base),
+            Some("http://example.com/live?sid=1&t=a=b".to_string())
+        );
+        assert_eq!(
+            parse_m3u(
+                "//cdn.example.com/live?token=x\n",
+                "https://example.com/radio"
+            ),
+            Some("https://cdn.example.com/live?token=x".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_m3u_skips_settings_before_a_relative_entry() {
+        // A '/' in the value doesn't make a setting an entry
+        let content = "#EXTM3U\nVersion=2\nTitle=AC/DC Radio\nlive.mp3?sid=1\n";
+        assert_eq!(
+            parse_m3u(content, "http://example.com/radio"),
+            Some("http://example.com/radio/live.mp3?sid=1".to_string())
         );
     }
 
