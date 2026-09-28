@@ -12,9 +12,12 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, Select, Sender, TryRecvError};
-use rodio::{MixerDeviceSink, Player};
+use rodio::Player;
 
-use crate::config::timeouts::{BUFFERING_STALL_THRESHOLD_SECS, PROBE_TIMEOUT_SECS};
+use crate::config::timeouts::{
+    BUFFERING_STALL_THRESHOLD_SECS, BUFFERING_TIMEOUT_SECS, PROBE_TIMEOUT_SECS,
+    STREAM_STALL_TIMEOUT_SECS,
+};
 use crate::error::RadioError;
 use crate::stream::buffer::{PlaybackPositionReader, SharedBufferStatus, StreamBuffer};
 use crate::stream::{ResolvedStream, StreamCancel};
@@ -28,7 +31,7 @@ use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
-use super::output::open_output;
+use super::output::{open_output, Output, SilentOutput};
 use super::pcm::{decode_ahead, PcmFeed};
 use super::recording::{Recorder, RecordingTap, TapPoint};
 use super::stats::{
@@ -36,19 +39,57 @@ use super::stats::{
 };
 use super::types::{AudioAnalysis, AudioCommand, AudioEvent, PlaybackState};
 
-/// How often the engine loop checks on playback (end of stream, stats,
-/// buffering, health, probe timeout)
-const TICK_INTERVAL: Duration = Duration::from_millis(500);
+/// How an [`AudioEngine`] plays, and how long it waits for things. The
+/// defaults are what the app uses; tests shorten the waits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineConfig {
+    /// Where the audio goes
+    pub output: EngineOutput,
+    /// How often the engine checks on playback: end of stream, stats,
+    /// buffering, health, probe timeout
+    pub tick: Duration,
+    /// How often the engine tries to open an output device while there is
+    /// none, and at most how often it replaces one that keeps failing
+    pub output_retry: Duration,
+    /// Longest wait for a station's audio format to be found
+    pub probe_timeout: Duration,
+    /// Buffering this long with nothing buffered is reported as a stall
+    pub buffering_stall: Duration,
+    /// Longest wait for the first audio once the format is found
+    pub no_audio_timeout: Duration,
+    /// Time without new audio after which a playing station has stalled
+    pub stall_timeout: Duration,
+}
 
-/// How often the engine tries to open an output device while there is
-/// none, and at most how often it replaces one that keeps failing
-const OUTPUT_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+impl Default for EngineConfig {
+    fn default() -> Self {
+        Self {
+            output: EngineOutput::Device,
+            tick: Duration::from_millis(500),
+            output_retry: Duration::from_secs(2),
+            probe_timeout: Duration::from_secs(PROBE_TIMEOUT_SECS),
+            buffering_stall: Duration::from_secs(BUFFERING_STALL_THRESHOLD_SECS),
+            no_audio_timeout: Duration::from_secs(BUFFERING_TIMEOUT_SECS),
+            stall_timeout: Duration::from_secs(STREAM_STALL_TIMEOUT_SECS),
+        }
+    }
+}
 
-/// Opens an output device that raises the flag if it goes away
-type OpenOutput = Box<dyn FnMut(&Arc<AtomicBool>) -> Result<MixerDeviceSink, String> + Send>;
+/// Where an [`AudioEngine`] plays
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum EngineOutput {
+    /// The system's default output device, or another one if that fails
+    Device,
+    /// No device: the audio is taken `speed` times as fast as it plays, and
+    /// dropped. For tests, and for machines with no sound.
+    Silent { speed: f32 },
+}
+
+/// Opens an output that raises the flag if it goes away
+type OpenOutput = Box<dyn FnMut(&Arc<AtomicBool>) -> Result<Output, String> + Send>;
 
 /// A player on the output device, or on nothing while there is none
-fn new_player(output: Option<&MixerDeviceSink>) -> Player {
+fn new_player(output: Option<&Output>) -> Player {
     match output {
         Some(output) => Player::connect_new(output.mixer()),
         None => Player::new().0,
@@ -150,13 +191,26 @@ impl AudioEngine {
     /// output device the engine still starts: it sends
     /// [`AudioEvent::OutputLost`] and plays once a device can be opened.
     pub fn new() -> Result<Self, RadioError> {
-        let generation = Arc::new(AtomicU64::new(0));
-        Self::with_output(Box::new(move |lost| open_output(lost, &generation)))
+        Self::with_config(EngineConfig::default())
+    }
+
+    /// [`AudioEngine::new`] with its own output and waits
+    pub fn with_config(config: EngineConfig) -> Result<Self, RadioError> {
+        let open: OpenOutput = match config.output {
+            EngineOutput::Device => {
+                let generation = Arc::new(AtomicU64::new(0));
+                Box::new(move |lost| open_output(lost, &generation).map(Output::Device))
+            }
+            EngineOutput::Silent { speed } => {
+                Box::new(move |_| SilentOutput::open(speed).map(Output::Silent))
+            }
+        };
+        Self::with_output(open, config)
     }
 
     /// Create an engine that plays through what `open` opens: at start, and
     /// again whenever the device goes away
-    fn with_output(open: OpenOutput) -> Result<Self, RadioError> {
+    fn with_output(open: OpenOutput, config: EngineConfig) -> Result<Self, RadioError> {
         let (cmd_tx, cmd_rx) = bounded::<AudioCommand>(16);
         let (event_tx, event_rx) = bounded::<AudioEvent>(64);
         let (init_tx, init_rx) = bounded::<Result<(), String>>(1);
@@ -189,6 +243,7 @@ impl AudioEngine {
                     recorder_thread,
                     output_lost_thread,
                     open,
+                    config,
                 );
             })
             .map_err(|e| RadioError::Audio(format!("Failed to spawn audio thread: {}", e)))?;
@@ -387,6 +442,7 @@ impl AudioEngine {
         recorder: Recorder,
         output_lost: Arc<AtomicBool>,
         mut open: OpenOutput,
+        config: EngineConfig,
     ) {
         // Create audio output on this thread (cpal streams may be !Send).
         // Without a device, start anyway and keep trying.
@@ -432,7 +488,7 @@ impl AudioEngine {
         let mut waiting_for_output = stream.is_none();
         let mut next_output_try = Instant::now();
 
-        let mut next_tick = Instant::now() + TICK_INTERVAL;
+        let mut next_tick = Instant::now() + config.tick;
 
         loop {
             let probe_rx = pending_probe.as_ref().map(|p| &p.probe_rx);
@@ -623,7 +679,7 @@ impl AudioEngine {
                     }
                 },
                 Wake::Tick => {
-                    next_tick = Instant::now() + TICK_INTERVAL;
+                    next_tick = Instant::now() + config.tick;
 
                     // The output device went away (unplugged, disabled, or
                     // the sound server restarted): carry on with whichever
@@ -631,7 +687,7 @@ impl AudioEngine {
                     if (waiting_for_output || output_lost.load(Ordering::SeqCst))
                         && Instant::now() >= next_output_try
                     {
-                        next_output_try = Instant::now() + OUTPUT_RETRY_INTERVAL;
+                        next_output_try = Instant::now() + config.output_retry;
                         match open(&output_lost) {
                             Ok(new_stream) => {
                                 let new_sink = new_player(Some(&new_stream));
@@ -725,7 +781,10 @@ impl AudioEngine {
                                 sink.set_volume(volume_curve(current_volume));
                                 sink.play();
                                 state = PlaybackState::Playing;
-                                health_monitor = Some(StreamHealthMonitor::new());
+                                health_monitor = Some(StreamHealthMonitor::with_timeouts(
+                                    config.no_audio_timeout,
+                                    config.stall_timeout,
+                                ));
                                 stream_error_slot = Some(error_slot);
                                 current_decoder_stats = Some(dec_stats);
                                 current_bytes_received = p.bytes_received;
@@ -771,12 +830,12 @@ impl AudioEngine {
                             }
                             Err(TryRecvError::Empty) => {
                                 // Still probing — check for timeout
-                                if pending.started.elapsed().as_secs() >= PROBE_TIMEOUT_SECS {
+                                if pending.started.elapsed() >= config.probe_timeout {
                                     let p = pending_probe.take().unwrap();
                                     p.cancel.cancel();
                                     let msg = format!(
                                         "Unable to detect audio format (timed out after {}s)",
-                                        PROBE_TIMEOUT_SECS
+                                        config.probe_timeout.as_secs()
                                     );
                                     let _ = event_tx.send(AudioEvent::ProbeTimeout);
                                     report_failed_start(&event_tx, &event_bus, &shared_stats, msg);
@@ -905,53 +964,51 @@ impl AudioEngine {
 
                         // Emit buffering events (progressive percentage while buffering)
                         if !sink.empty() && !waiting_for_output {
-                            if let Some(ref bs) = current_buffer_status {
-                                if let Ok(buf) = bs.lock() {
-                                    if buf.is_buffering {
-                                        if !was_buffering {
-                                            buffering_since = Some(Instant::now());
-                                        }
+                            // From the snapshot: the buffer's lock is never held
+                            // while sending, which can wait for the app
+                            if let Some((level_bytes, _, is_buffering, _, effective_watermark)) =
+                                buf_snapshot
+                            {
+                                if is_buffering {
+                                    if !was_buffering {
+                                        buffering_since = Some(Instant::now());
+                                    }
 
-                                        let stalled = buffering_since
-                                            .map(|since| {
-                                                since.elapsed().as_secs()
-                                                    >= BUFFERING_STALL_THRESHOLD_SECS
-                                            })
-                                            .unwrap_or(false);
+                                    let stalled = buffering_since
+                                        .map(|since| since.elapsed() >= config.buffering_stall)
+                                        .unwrap_or(false);
 
-                                        if stalled && buf.level_bytes == 0 {
-                                            // Prolonged buffering with no progress — genuine stall
-                                            let _ = event_tx.send(AudioEvent::StreamStalled);
-                                            prolonged_buffering_stall = true;
+                                    if stalled && level_bytes == 0 {
+                                        // Prolonged buffering with no progress — genuine stall
+                                        let _ = event_tx.send(AudioEvent::StreamStalled);
+                                        prolonged_buffering_stall = true;
+                                    } else {
+                                        // Normal buffering or recovery in progress
+                                        let pct = if effective_watermark > 0 {
+                                            ((level_bytes as f64 / effective_watermark as f64)
+                                                * 100.0)
+                                                .min(99.0)
+                                                as u8
                                         } else {
-                                            // Normal buffering or recovery in progress
-                                            let pct = if buf.effective_watermark > 0 {
-                                                ((buf.level_bytes as f64
-                                                    / buf.effective_watermark as f64)
-                                                    * 100.0)
-                                                    .min(99.0)
-                                                    as u8
-                                            } else {
-                                                0
-                                            };
-                                            let _ = event_tx.send(AudioEvent::Buffering(pct));
-                                            prolonged_buffering_stall = false;
-                                        }
-
-                                        was_buffering = true;
-                                    } else if was_buffering {
-                                        // Recovered from buffering → signal 100%
-                                        let _ = event_tx.send(AudioEvent::Buffering(100));
-                                        // Reset health monitor: the stream just refilled the buffer,
-                                        // proving it can deliver data. Clear any Stalled state that
-                                        // accumulated during the (possibly long) buffering window.
-                                        if let Some(ref mut monitor) = health_monitor {
-                                            monitor.reset_to_healthy();
-                                        }
-                                        was_buffering = false;
-                                        buffering_since = None;
+                                            0
+                                        };
+                                        let _ = event_tx.send(AudioEvent::Buffering(pct));
                                         prolonged_buffering_stall = false;
                                     }
+
+                                    was_buffering = true;
+                                } else if was_buffering {
+                                    // Recovered from buffering → signal 100%
+                                    let _ = event_tx.send(AudioEvent::Buffering(100));
+                                    // Reset health monitor: the stream just refilled the buffer,
+                                    // proving it can deliver data. Clear any Stalled state that
+                                    // accumulated during the (possibly long) buffering window.
+                                    if let Some(ref mut monitor) = health_monitor {
+                                        monitor.reset_to_healthy();
+                                    }
+                                    was_buffering = false;
+                                    buffering_since = None;
+                                    prolonged_buffering_stall = false;
                                 }
                             }
                         }
@@ -1096,65 +1153,24 @@ mod tests {
         }
     }
 
-    /// Helper: try to create an engine; return None if audio hardware is unavailable
-    /// An engine, if this machine has an audio output to play on (CI has
-    /// none, and an engine without one only waits for a device)
-    fn try_engine() -> Option<AudioEngine> {
-        has_output().then(|| AudioEngine::new().ok()).flatten()
-    }
+    /// How many times faster than real time the tests' silent output plays
+    const TEST_SPEED: f32 = 20.0;
 
-    /// Whether an output device opens (cached)
-    fn has_output() -> bool {
-        static RESULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *RESULT.get_or_init(|| open_output(&Arc::default(), &Arc::default()).is_ok())
-    }
-
-    /// Check if audio playback actually processes samples (cached).
-    /// Returns false in CI/headless environments where rodio creates a device
-    /// but the audio thread doesn't actually pull samples.
-    fn audio_playback_works() -> bool {
-        static RESULT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *RESULT.get_or_init(|| {
-            let engine = match AudioEngine::new() {
-                Ok(e) => e,
-                Err(_) => return false,
-            };
-            engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
-            match wait_for_event(&engine, 2000) {
-                Some(AudioEvent::Playing(_)) => {}
-                _ => {
-                    engine.shutdown();
-                    return false;
-                }
-            }
-            // Poll for up to 1s to see if audio samples actually flow
-            let deadline = Instant::now() + Duration::from_secs(1);
-            let works = loop {
-                thread::sleep(Duration::from_millis(50));
-                if let Ok(a) = engine.analysis().lock() {
-                    if a.sample_count > 0 {
-                        break true;
-                    }
-                }
-                if Instant::now() >= deadline {
-                    break false;
-                }
-            };
-            engine.shutdown();
-            works
-        })
-    }
-
-    /// Helper: try to create an engine AND verify audio playback works.
-    /// Returns None in CI/headless environments where samples don't actually flow.
-    fn try_engine_playback() -> Option<AudioEngine> {
-        if !audio_playback_works() {
-            return None;
+    /// Engine settings for tests: a silent output, so the tests play the
+    /// same on a machine with no sound (like CI)
+    fn test_config() -> EngineConfig {
+        EngineConfig {
+            output: EngineOutput::Silent { speed: TEST_SPEED },
+            ..EngineConfig::default()
         }
-        AudioEngine::new().ok()
     }
 
-    // --- Loop scheduling (no audio device needed) ---
+    /// An engine that plays on a silent output
+    fn test_engine() -> AudioEngine {
+        AudioEngine::with_config(test_config()).expect("the engine starts")
+    }
+
+    // --- Loop scheduling ---
 
     #[test]
     fn tick_runs_on_time_while_commands_keep_coming() {
@@ -1232,9 +1248,7 @@ mod tests {
 
     #[test]
     fn a_station_starts_and_ends_while_the_volume_slider_moves() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
 
         // Move the slider the whole time: the station must still start, and
@@ -1264,23 +1278,19 @@ mod tests {
 
     /// An engine whose output opens only on the attempts `works` allows
     /// (counting from 1), and a count of the attempts
-    fn engine_with_output(works: fn(usize) -> bool) -> Option<(AudioEngine, Arc<AtomicUsize>)> {
-        if !audio_playback_works() {
-            return None;
-        }
+    fn engine_with_output(works: fn(usize) -> bool) -> (AudioEngine, Arc<AtomicUsize>) {
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
-        let generation = Arc::new(AtomicU64::new(0));
-        let engine = AudioEngine::with_output(Box::new(move |lost| {
+        let open: OpenOutput = Box::new(move |_| {
             let attempt = counted.fetch_add(1, Ordering::SeqCst) + 1;
             if works(attempt) {
-                open_output(lost, &generation)
+                SilentOutput::open(TEST_SPEED).map(Output::Silent)
             } else {
                 Err("no device".to_string())
             }
-        }))
-        .ok()?;
-        Some((engine, attempts))
+        });
+        let engine = AudioEngine::with_output(open, test_config()).expect("the engine starts");
+        (engine, attempts)
     }
 
     /// A mono sine WAV that doesn't end in any test's lifetime: the test
@@ -1363,9 +1373,7 @@ mod tests {
 
     #[test]
     fn playback_moves_to_a_new_device_when_the_output_is_lost() {
-        let Some((engine, attempts)) = engine_with_output(|_| true) else {
-            return;
-        };
+        let (engine, attempts) = engine_with_output(|_| true);
         let mut events = Vec::new();
         engine.play(EndlessWav::new(), None, None);
         assert!(wait_until(
@@ -1406,9 +1414,7 @@ mod tests {
     #[test]
     fn playback_waits_for_a_device_and_carries_on() {
         // The first reopen finds no device, the next one does
-        let Some((engine, attempts)) = engine_with_output(|attempt| attempt != 2) else {
-            return;
-        };
+        let (engine, attempts) = engine_with_output(|attempt| attempt != 2);
         let mut events = Vec::new();
         engine.play(EndlessWav::new(), None, None);
         assert!(wait_until(
@@ -1452,9 +1458,7 @@ mod tests {
     #[test]
     fn a_new_station_without_a_device_says_so_after_it_starts() {
         // No device after the first
-        let Some((engine, _)) = engine_with_output(|attempt| attempt == 1) else {
-            return;
-        };
+        let (engine, _) = engine_with_output(|attempt| attempt == 1);
         let mut events = Vec::new();
         engine.play(EndlessWav::new(), None, None);
         assert!(wait_until(
@@ -1505,13 +1509,13 @@ mod tests {
 
     #[test]
     fn create_and_shutdown() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         engine.shutdown();
     }
 
     #[test]
     fn drop_triggers_shutdown() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         drop(engine);
         // If we get here without hanging, shutdown worked
     }
@@ -1519,7 +1523,7 @@ mod tests {
     #[test]
     fn shutdown_is_idempotent_via_drop() {
         // shutdown_inner is called once explicitly, then again in drop
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         engine.shutdown();
         // Drop happens automatically after shutdown consumed self
     }
@@ -1527,7 +1531,7 @@ mod tests {
     #[test]
     fn create_multiple_engines_sequentially() {
         for _ in 0..3 {
-            let Some(engine) = try_engine() else { return };
+            let engine = test_engine();
             engine.shutdown();
         }
     }
@@ -1536,7 +1540,7 @@ mod tests {
 
     #[test]
     fn play_and_stop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
 
@@ -1557,7 +1561,7 @@ mod tests {
 
     #[test]
     fn play_emits_codec_info() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
 
@@ -1575,7 +1579,7 @@ mod tests {
 
     #[test]
     fn play_stereo_wav() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         let samples: Vec<i16> = (0..88200)
             .map(|i| ((i as f32 * 0.05).sin() * 8000.0) as i16)
@@ -1597,7 +1601,7 @@ mod tests {
 
     #[test]
     fn stop_when_not_playing_does_not_emit_event() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.stop();
         // Give it time to process
@@ -1616,7 +1620,7 @@ mod tests {
 
     #[test]
     fn double_stop_only_emits_one_stopped_event() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
 
@@ -1653,7 +1657,7 @@ mod tests {
 
     #[test]
     fn play_replaces_current_playback() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Start playing first clip
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -1686,7 +1690,7 @@ mod tests {
 
     #[test]
     fn play_invalid_data_returns_error_event() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(vec![0u8; 100])), None, None);
 
@@ -1702,7 +1706,7 @@ mod tests {
 
     #[test]
     fn play_empty_data_returns_error_event() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(Vec::<u8>::new())), None, None);
 
@@ -1718,7 +1722,7 @@ mod tests {
 
     #[test]
     fn error_does_not_break_engine() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Send invalid data
         engine.play(Box::new(Cursor::new(vec![0u8; 100])), None, None);
@@ -1742,7 +1746,7 @@ mod tests {
 
     #[test]
     fn multiple_errors_in_sequence() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         for _ in 0..3 {
             engine.play(Box::new(Cursor::new(vec![0xDE, 0xAD])), None, None);
@@ -1767,7 +1771,7 @@ mod tests {
 
     #[test]
     fn set_volume_does_not_crash() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         engine.set_volume(0.5);
         engine.set_volume(0.0);
         engine.set_volume(2.0);
@@ -1777,7 +1781,7 @@ mod tests {
 
     #[test]
     fn set_volume_negative_clamped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         engine.set_volume(-1.0);
         engine.set_volume(-100.0);
         // No crash = success
@@ -1786,7 +1790,7 @@ mod tests {
 
     #[test]
     fn set_volume_during_playback() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -1809,7 +1813,7 @@ mod tests {
 
     #[test]
     fn set_volume_while_stopped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         // Setting volume while stopped should not panic or produce events
         engine.set_volume(0.75);
         thread::sleep(Duration::from_millis(100));
@@ -1821,7 +1825,7 @@ mod tests {
 
     #[test]
     fn analysis_starts_at_zero() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         let data = engine.analysis();
         let analysis = data.lock().unwrap();
@@ -1835,7 +1839,7 @@ mod tests {
 
     #[test]
     fn analysis_returns_same_arc() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         let a1 = engine.analysis();
         let a2 = engine.analysis();
@@ -1847,9 +1851,7 @@ mod tests {
 
     #[test]
     fn analysis_reset_after_stop() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -1883,14 +1885,14 @@ mod tests {
 
     #[test]
     fn event_receiver_can_be_obtained() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let _rx = engine.event_receiver();
         engine.shutdown();
     }
 
     #[test]
     fn event_receiver_receives_events() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         let rx = engine.event_receiver();
 
@@ -1911,7 +1913,7 @@ mod tests {
 
     #[test]
     fn send_raw_stop_command() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -1934,7 +1936,7 @@ mod tests {
 
     #[test]
     fn send_raw_shutdown_command() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.send(AudioCommand::Shutdown);
         // Engine thread should exit; drop shouldn't hang
@@ -1946,7 +1948,7 @@ mod tests {
 
     #[test]
     fn short_clip_auto_stops() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Play a very short clip (10ms) - should end quickly
         engine.play(Box::new(Cursor::new(make_short_wav())), None, None);
@@ -1969,7 +1971,7 @@ mod tests {
 
     #[test]
     fn play_with_format_hint() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(
             Box::new(Cursor::new(make_one_second_wav())),
@@ -1989,7 +1991,7 @@ mod tests {
 
     #[test]
     fn rapid_play_stop_sequence() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         for _ in 0..5 {
             engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2013,7 +2015,7 @@ mod tests {
 
     #[test]
     fn rapid_volume_changes() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2035,7 +2037,7 @@ mod tests {
 
     #[test]
     fn play_then_immediate_play_different() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Play first, immediately play second without explicit stop
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2066,7 +2068,7 @@ mod tests {
 
     #[test]
     fn pause_and_resume() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2091,7 +2093,7 @@ mod tests {
 
     #[test]
     fn pause_when_stopped_is_noop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.pause();
         thread::sleep(Duration::from_millis(200));
@@ -2106,7 +2108,7 @@ mod tests {
 
     #[test]
     fn resume_when_stopped_is_noop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.resume();
         thread::sleep(Duration::from_millis(200));
@@ -2121,7 +2123,7 @@ mod tests {
 
     #[test]
     fn resume_when_playing_is_noop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2143,7 +2145,7 @@ mod tests {
 
     #[test]
     fn double_pause_only_emits_once() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2171,7 +2173,7 @@ mod tests {
 
     #[test]
     fn stop_while_paused_emits_stopped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2196,7 +2198,7 @@ mod tests {
 
     #[test]
     fn play_while_paused_starts_new_playback() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2229,7 +2231,7 @@ mod tests {
 
     #[test]
     fn volume_persists_across_play_transitions() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Set volume to 0 (mute)
         engine.set_volume(0.0);
@@ -2257,7 +2259,7 @@ mod tests {
 
     #[test]
     fn volume_set_before_play_is_applied() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Set volume before any playback
         engine.set_volume(0.5);
@@ -2277,7 +2279,7 @@ mod tests {
 
     #[test]
     fn analysis_sample_count_starts_at_zero() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         let data = engine.analysis();
         let analysis = data.lock().unwrap();
@@ -2288,13 +2290,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires real audio hardware — flaky in CI
     fn analysis_sample_count_increases_during_playback() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
 
-        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        engine.play(EndlessWav::new(), None, None);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
             other => panic!("Expected Playing, got {:?}", other),
@@ -2317,9 +2316,7 @@ mod tests {
 
     #[test]
     fn analysis_sample_count_resets_on_stop() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2355,7 +2352,7 @@ mod tests {
 
     #[test]
     fn analysis_sample_count_resets_on_new_play() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Play first clip
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2394,7 +2391,7 @@ mod tests {
 
     #[test]
     fn engine_recovers_after_decode_error_health_monitor_cleared() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Send invalid data — should fail with error, health monitor cleared
         engine.play(Box::new(Cursor::new(vec![0u8; 100])), None, None);
@@ -2438,7 +2435,7 @@ mod tests {
 
     #[test]
     fn normal_playback_emits_no_health_events() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2474,7 +2471,7 @@ mod tests {
 
     #[test]
     fn stop_after_play_clears_health_state() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Play and stop quickly
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2512,7 +2509,7 @@ mod tests {
 
     #[test]
     fn play_after_stop_creates_fresh_health_monitor() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // First playback
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2582,9 +2579,7 @@ mod tests {
 
     #[test]
     fn switching_away_from_a_stalled_station_plays_the_next() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
 
         // Station A: 10 s of audio announced, ~3 s arrives, then nothing.
         // More than the largest buffer watermark, so A starts whether or not
@@ -2670,7 +2665,7 @@ mod tests {
 
     #[test]
     fn stream_io_error_emits_error_then_stopped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Create a 2-second WAV so there's enough data for probe + some playback
         let samples: Vec<i16> = (0..88200)
@@ -2722,7 +2717,7 @@ mod tests {
 
     #[test]
     fn clean_stream_end_emits_only_stopped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Play a short clip that ends naturally
         engine.play(Box::new(Cursor::new(make_short_wav())), None, None);
@@ -2760,7 +2755,7 @@ mod tests {
 
     #[test]
     fn engine_recovers_after_stream_io_error() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         // Play a stream that will fail mid-playback
         let samples: Vec<i16> = (0..88200)
@@ -2800,7 +2795,7 @@ mod tests {
 
     #[test]
     fn pause_does_not_trigger_health_events() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
         match wait_for_event(&engine, 2000) {
@@ -2836,7 +2831,7 @@ mod tests {
 
     #[test]
     fn volume_survives_error_and_retry() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
 
         engine.set_volume(0.3);
 
@@ -2862,7 +2857,7 @@ mod tests {
 
     #[test]
     fn shared_stats_accessor_returns_arc() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let s1 = engine.shared_stats();
         let s2 = engine.shared_stats();
         assert!(Arc::ptr_eq(&s1, &s2));
@@ -2871,7 +2866,7 @@ mod tests {
 
     #[test]
     fn shared_stats_default_before_play() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
         let s = stats.lock().unwrap();
         assert!(s.codec_info.is_none());
@@ -2886,7 +2881,7 @@ mod tests {
 
     #[test]
     fn shared_stats_populated_on_play() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2911,14 +2906,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires real audio hardware — flaky in CI
     fn shared_stats_frames_played_increases() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
-        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        engine.play(EndlessWav::new(), None, None);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
             other => panic!("Expected Playing, got {:?}", other),
@@ -2939,14 +2931,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires real audio hardware — flaky in CI
     fn shared_stats_sample_count_increases() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
-        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        engine.play(EndlessWav::new(), None, None);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
             other => panic!("Expected Playing, got {:?}", other),
@@ -2968,7 +2957,7 @@ mod tests {
     #[test]
     fn shared_stats_health_state_becomes_healthy() {
         use crate::audio::health::HealthState;
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -2996,7 +2985,7 @@ mod tests {
 
     #[test]
     fn shared_stats_reset_on_stop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
@@ -3028,7 +3017,7 @@ mod tests {
 
     #[test]
     fn shared_stats_reset_on_auto_stop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         // Short clip that ends naturally
@@ -3061,7 +3050,7 @@ mod tests {
 
     #[test]
     fn shared_stats_reset_on_decode_error() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         // Invalid data — decode error
@@ -3087,15 +3076,12 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires real audio hardware — flaky in CI
     fn shared_stats_reset_on_new_play() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         // First play
-        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        engine.play(EndlessWav::new(), None, None);
         match wait_for_event(&engine, 2000) {
             Some(AudioEvent::Playing(_)) => {}
             other => panic!("Expected Playing, got {:?}", other),
@@ -3109,7 +3095,14 @@ mod tests {
         // Second play replaces — stats should reset
         let wav2 = make_wav(48000, 2, &vec![0i16; 96000]);
         engine.play(Box::new(Cursor::new(wav2)), None, None);
-        match wait_for_event(&engine, 2000) {
+        // The first station stops, then the second plays
+        let second = loop {
+            match wait_for_event(&engine, 2000) {
+                Some(AudioEvent::Stopped) => continue,
+                other => break other,
+            }
+        };
+        match second {
             Some(AudioEvent::Playing(info)) => {
                 assert_eq!(info.sample_rate, 48000);
             }
@@ -3133,7 +3126,7 @@ mod tests {
 
     #[test]
     fn shared_stats_with_bitrate() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         engine.play(
@@ -3161,24 +3154,16 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires real audio hardware — flaky in CI
     fn play_with_stats_bytes_received_wired() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         // Create a bytes_received counter and pre-set it
         let bytes_counter = Arc::new(AtomicU64::new(42000));
 
-        // Use a 3-second WAV so playback doesn't end before our assertions
-        let samples: Vec<i16> = (0..132300)
-            .map(|i| ((i as f32 * 0.1).sin() * 10000.0) as i16)
-            .collect();
-        let wav = make_wav(44100, 1, &samples);
-
+        // Endless, so playback doesn't end before our assertions
         engine.play_with_stats(
-            Box::new(Cursor::new(wav)),
+            EndlessWav::new(),
             None,
             None,
             Some(bytes_counter.clone()),
@@ -3216,7 +3201,7 @@ mod tests {
 
     #[test]
     fn play_with_stats_no_bytes_received() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         // play_with_stats with None bytes_received
@@ -3283,7 +3268,7 @@ mod tests {
 
     #[test]
     fn play_with_stats_reports_playback_position() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let position = Arc::new(AtomicU64::new(0));
         let wav = make_one_second_wav();
         let len = wav.len() as u64;
@@ -3374,7 +3359,7 @@ mod tests {
 
     #[test]
     fn stopping_cancels_the_stream() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let cancel = StreamCancel::new();
         engine.play_stream(resolved_stream(EndlessWav::new(), &cancel));
         expect_playing(&engine);
@@ -3387,7 +3372,7 @@ mod tests {
 
     #[test]
     fn playing_another_station_cancels_the_old_stream() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let old = StreamCancel::new();
         engine.play_stream(resolved_stream(EndlessWav::new(), &old));
         expect_playing(&engine);
@@ -3403,7 +3388,7 @@ mod tests {
 
     #[test]
     fn stopping_while_probing_cancels_the_stream() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let cancel = StreamCancel::new();
         engine.play_stream(resolved_stream(Box::new(SilentStation), &cancel));
         // The probe waits for audio that never comes
@@ -3419,7 +3404,7 @@ mod tests {
 
     /// An engine on a machine with no audio output (runs on CI too)
     fn engine_without_device() -> AudioEngine {
-        AudioEngine::with_output(Box::new(|_| Err("no device".to_string())))
+        AudioEngine::with_output(Box::new(|_| Err("no device".to_string())), test_config())
             .expect("the engine starts without a device")
     }
 
@@ -3517,9 +3502,7 @@ mod tests {
     #[test]
     fn a_device_that_appears_later_plays() {
         // No device at start; the first retry finds one
-        let Some((engine, attempts)) = engine_with_output(|attempt| attempt != 1) else {
-            return;
-        };
+        let (engine, attempts) = engine_with_output(|attempt| attempt != 1);
         let mut events = Vec::new();
         assert!(
             wait_until(&engine, &mut events, Duration::from_secs(5), |e| {
@@ -3577,9 +3560,63 @@ mod tests {
         engine.shared_stats().lock().unwrap().output_underruns
     }
 
+    /// `inner` at `bytes_per_sec`, like a station sending in real time
+    struct Paced<R> {
+        inner: R,
+        bytes_per_sec: usize,
+    }
+
+    impl<R: std::io::Read> std::io::Read for Paced<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            thread::sleep(Duration::from_millis(10));
+            let n = buf.len().min(self.bytes_per_sec / 100);
+            self.inner.read(&mut buf[..n])
+        }
+    }
+
+    impl<R: std::io::Seek> std::io::Seek for Paced<R> {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn a_full_event_queue_doesnt_stop_the_audio() {
+        // Checks often, so Buffering events fill the queue soon
+        let engine = AudioEngine::with_config(EngineConfig {
+            tick: Duration::from_millis(10),
+            ..test_config()
+        })
+        .unwrap();
+        // Real time, while the output plays faster: it keeps buffering
+        engine.play(
+            Box::new(Paced {
+                inner: EndlessWav::new(),
+                bytes_per_sec: 88_200,
+            }),
+            None,
+            None,
+        );
+        // Nobody reads the events: the engine waits to send them. The
+        // buffer's status lock must not be held meanwhile, or the decoder
+        // waits for it and the audio stops.
+        let samples = || engine.analysis().lock().unwrap().sample_count;
+        thread::sleep(Duration::from_secs(2));
+        let before = samples();
+        thread::sleep(Duration::from_secs(2));
+        let after = samples();
+
+        // Let the engine finish sending, so it can shut down
+        let events = engine.event_receiver().clone();
+        let drain = thread::spawn(move || while events.recv().is_ok() {});
+        engine.shutdown();
+        drain.join().unwrap();
+        assert!(after > before, "audio stopped at {before} samples");
+    }
+
     #[test]
     fn a_stalled_station_plays_silence_and_carries_on() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let resume = Arc::new(AtomicBool::new(false));
         let reader = StallingWav {
             wav: EndlessWav::new(),
@@ -3628,7 +3665,7 @@ mod tests {
 
     #[test]
     fn event_bus_accessor_returns_arc() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let b1 = engine.event_bus();
         let b2 = engine.event_bus();
         assert!(Arc::ptr_eq(&b1, &b2));
@@ -3637,7 +3674,7 @@ mod tests {
 
     #[test]
     fn event_bus_emits_playback_started_on_play() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3662,7 +3699,7 @@ mod tests {
 
     #[test]
     fn event_bus_emits_playback_stopped_on_stop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3690,7 +3727,7 @@ mod tests {
 
     #[test]
     fn event_bus_emits_playback_stopped_on_auto_stop() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3731,7 +3768,7 @@ mod tests {
 
     #[test]
     fn event_bus_emits_error_on_decode_failure() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3758,7 +3795,7 @@ mod tests {
 
     #[test]
     fn event_bus_emits_error_on_stream_io_failure() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3820,7 +3857,7 @@ mod tests {
 
     #[test]
     fn event_bus_multiple_subscribers_all_receive() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx1 = bus.subscribe();
         let rx2 = bus.subscribe();
@@ -3850,7 +3887,7 @@ mod tests {
 
     #[test]
     fn event_bus_play_stop_play_sequence() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3904,7 +3941,7 @@ mod tests {
 
     #[test]
     fn shared_stats_not_updated_when_stopped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         // Don't play anything, just wait
@@ -3922,7 +3959,7 @@ mod tests {
 
     #[test]
     fn event_bus_no_events_when_stopped() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3940,7 +3977,7 @@ mod tests {
 
     #[test]
     fn event_bus_stop_when_already_stopped_no_event() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 
@@ -3959,7 +3996,7 @@ mod tests {
 
     #[test]
     fn shared_stats_play_started_at_is_recent() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         let before = Instant::now();
@@ -3983,16 +4020,13 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // requires real audio hardware — flaky in CI
     fn shared_stats_bytes_received_reset_on_stop() {
-        let Some(engine) = try_engine_playback() else {
-            return;
-        };
+        let engine = test_engine();
         let stats = engine.shared_stats();
 
         let bytes_counter = Arc::new(AtomicU64::new(5000));
         engine.play_with_stats(
-            Box::new(Cursor::new(make_one_second_wav())),
+            EndlessWav::new(),
             None,
             None,
             Some(bytes_counter),
@@ -4028,7 +4062,7 @@ mod tests {
 
     #[test]
     fn event_bus_codec_info_matches_playing_event() {
-        let Some(engine) = try_engine() else { return };
+        let engine = test_engine();
         let bus = engine.event_bus();
         let rx = bus.subscribe();
 

@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
 use rodio::cpal::BufferSize;
-use rodio::{MixerDeviceSink, Source};
+use rodio::Source;
+
+use super::output::Output;
 
 use crate::config::audio::{
     DECODE_AHEAD_BUFFERS, DECODE_AHEAD_DEFAULT_MS, DECODE_AHEAD_MAX_MS, DECODE_AHEAD_MIN_MS,
@@ -37,8 +39,8 @@ const ROOM_POLL: Duration = Duration::from_millis(5);
 
 /// How far ahead to decode for `output`: a few of its buffers, since the
 /// audio callback takes one buffer's worth at a time
-pub(crate) fn decode_ahead(output: Option<&MixerDeviceSink>) -> Duration {
-    ahead_of_buffer(output.map(|o| (*o.config().buffer_size(), o.config().sample_rate())))
+pub(crate) fn decode_ahead(output: Option<&Output>) -> Duration {
+    ahead_of_buffer(output.map(Output::buffer))
 }
 
 /// [`decode_ahead`] for a device buffer of this size at this rate
