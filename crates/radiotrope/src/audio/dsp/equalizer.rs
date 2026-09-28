@@ -172,6 +172,62 @@ pub fn find_preset(name: &str) -> Option<&'static EqPreset> {
 // EqSource — rodio Source wrapper
 // ---------------------------------------------------------------------------
 
+/// Filter coefficients for `band` at `gain_db`, or None when the band is
+/// past what the sample rate can carry
+fn band_coefficients(band: usize, gain_db: f32, sample_rate: f32) -> Option<Coefficients<f32>> {
+    let freq = CENTER_FREQUENCIES[band];
+    let (filter_type, freq, q) = if band == 0 {
+        (Type::LowShelf(gain_db), freq, SHELF_Q)
+    } else if band == NUM_BANDS - 1 {
+        // The top of what the stream carries, at low sample rates
+        let freq = freq.min(sample_rate * TOP_SHELF_MAX_FRACTION);
+        (Type::HighShelf(gain_db), freq, SHELF_Q)
+    } else {
+        (Type::PeakingEQ(gain_db), freq, DEFAULT_Q)
+    };
+    if freq >= sample_rate / 2.0 {
+        return None;
+    }
+    Coefficients::<f32>::from_params(filter_type, sample_rate.hz(), freq.hz(), q).ok()
+}
+
+/// Turns down peaks that would clip. One gain for all channels, so the
+/// stereo image stays put: it drops at once on a peak and comes back over
+/// `LIMITER_RELEASE_MS`.
+struct Limiter {
+    gain: f32,
+    /// Share of the way back to full gain made each frame
+    release: f32,
+}
+
+impl Limiter {
+    fn new(sample_rate: u32) -> Self {
+        let release_frames = LIMITER_RELEASE_MS / 1000.0 * sample_rate as f32;
+        Self {
+            gain: 1.0,
+            release: 1.0 - (-1.0 / release_frames).exp(),
+        }
+    }
+
+    /// Once per frame: let go a little
+    fn release(&mut self) {
+        self.gain += (1.0 - self.gain) * self.release;
+        // Close enough: what doesn't clip passes untouched
+        if self.gain > 0.9999 {
+            self.gain = 1.0;
+        }
+    }
+
+    fn apply(&mut self, sample: f32) -> f32 {
+        let peak = sample.abs();
+        if peak * self.gain > LIMITER_CEILING {
+            self.gain = LIMITER_CEILING / peak;
+        }
+        // Rounding can land a hair past the ceiling
+        (sample * self.gain).clamp(-LIMITER_CEILING, LIMITER_CEILING)
+    }
+}
+
 /// A `Source` adapter that applies a 10-band parametric EQ to every sample.
 pub struct EqSource<S> {
     inner: S,
@@ -183,6 +239,7 @@ pub struct EqSource<S> {
     channels: u16,
     sample_rate: u32,
     channel_index: usize,
+    limiter: Limiter,
 }
 
 impl<S> EqSource<S>
@@ -209,6 +266,7 @@ where
             channels,
             sample_rate,
             channel_index: 0,
+            limiter: Limiter::new(sample_rate),
         };
         s.recompute_coefficients();
         s
@@ -222,6 +280,7 @@ where
         self.filters = (0..ch_count)
             .map(|_| Self::make_default_filters())
             .collect();
+        self.limiter = Limiter::new(sample_rate);
         self.recompute_coefficients();
     }
 
@@ -246,25 +305,9 @@ where
         self.preamp_linear = 10.0_f32.powf(params.preamp_db / 20.0);
 
         let fs = self.sample_rate as f32;
-        let nyquist = fs / 2.0;
 
-        for (band, &freq) in CENTER_FREQUENCIES.iter().enumerate() {
-            if freq >= nyquist {
-                continue;
-            }
-
-            let gain = params.gains_db[band];
-            let filter_type = if band == 0 {
-                Type::LowShelf(gain)
-            } else if band == NUM_BANDS - 1 {
-                Type::HighShelf(gain)
-            } else {
-                Type::PeakingEQ(gain)
-            };
-
-            if let Ok(coeffs) =
-                Coefficients::<f32>::from_params(filter_type, fs.hz(), freq.hz(), DEFAULT_Q)
-            {
+        for band in 0..NUM_BANDS {
+            if let Some(coeffs) = band_coefficients(band, params.gains_db[band], fs) {
                 // Keep the filter state: resetting it on every slider move
                 // makes an audible click
                 for ch in 0..self.filters.len() {
@@ -317,11 +360,24 @@ where
 
         // Cascade through biquad filters for the current channel
         let ch = self.channel_index;
-        if ch < self.filters.len() {
-            for band in 0..NUM_BANDS {
-                sample = self.filters[ch][band].run(sample);
+        if let Some(filters) = self.filters.get_mut(ch) {
+            for filter in filters.iter_mut() {
+                sample = filter.run(sample);
+            }
+            // A NaN or infinite sample would stay in the filters' memory
+            // and silence the channel for the rest of the stream
+            if !sample.is_finite() {
+                filters.iter_mut().for_each(Biquad::reset_state);
             }
         }
+        if !sample.is_finite() {
+            sample = 0.0;
+        }
+
+        if ch == 0 {
+            self.limiter.release();
+        }
+        let sample = self.limiter.apply(sample);
 
         self.channel_index = (self.channel_index + 1) % self.channels as usize;
         Some(sample)
@@ -988,5 +1044,149 @@ mod tests {
             at_change < steady * 1.5,
             "jump of {at_change} at the change, {steady} in steady state"
         );
+    }
+
+    // --- Clipping, shelves and bad samples ---
+
+    /// A 1 kHz sine at `amplitude`, `secs` long, on every channel
+    fn sine(channels: u16, amplitude: f32, secs: f32) -> Vec<f32> {
+        let frames = (44100.0 * secs) as usize;
+        (0..frames)
+            .flat_map(|i| {
+                let v = (i as f32 * 1000.0 * std::f32::consts::TAU / 44100.0).sin() * amplitude;
+                std::iter::repeat_n(v, channels as usize)
+            })
+            .collect()
+    }
+
+    fn peak(samples: &[f32]) -> f32 {
+        samples.iter().fold(0.0f32, |m, v| m.max(v.abs()))
+    }
+
+    /// Gain in dB of `coeffs` at `freq` Hz
+    fn response_db(coeffs: &Coefficients<f32>, freq: f32, sample_rate: f32) -> f32 {
+        let w = std::f64::consts::TAU * freq as f64 / sample_rate as f64;
+        let c = |k: f64| (k * w).cos();
+        let s = |k: f64| (k * w).sin();
+        let (b0, b1, b2) = (coeffs.b0 as f64, coeffs.b1 as f64, coeffs.b2 as f64);
+        let (a1, a2) = (coeffs.a1 as f64, coeffs.a2 as f64);
+        let num = (b0 + b1 * c(1.0) + b2 * c(2.0)).hypot(b1 * s(1.0) + b2 * s(2.0));
+        let den = (1.0 + a1 * c(1.0) + a2 * c(2.0)).hypot(a1 * s(1.0) + a2 * s(2.0));
+        (20.0 * (num / den).log10()) as f32
+    }
+
+    #[test]
+    fn boosts_are_limited_instead_of_clipping() {
+        let params = EqParams::new_shared();
+        {
+            let mut p = params.lock().unwrap();
+            p.set_gains([MAX_GAIN_DB; NUM_BANDS], None);
+            p.set_preamp(MAX_GAIN_DB);
+            p.set_enabled(true);
+        }
+        let input = sine(2, 0.9, 0.5);
+        let out: Vec<f32> =
+            EqSource::new(SamplesBuffer::new(nz16(2), nz32(44100), input), params).collect();
+        let loudest = peak(&out);
+        assert!(
+            loudest <= LIMITER_CEILING,
+            "peak {loudest} past the ceiling"
+        );
+        // Turned down to the ceiling, not below it
+        assert!(peak(&out[22050..]) > LIMITER_CEILING * 0.95);
+    }
+
+    #[test]
+    fn the_limiter_leaves_what_doesnt_clip_alone() {
+        let params = EqParams::new_shared();
+        params.lock().unwrap().set_enabled(true);
+        // Close to full scale, as many stations are
+        let input = sine(2, 0.99, 0.2);
+        let out: Vec<f32> = EqSource::new(
+            SamplesBuffer::new(nz16(2), nz32(44100), input.clone()),
+            params,
+        )
+        .collect();
+        for (i, (a, b)) in input.iter().zip(&out).enumerate() {
+            // The filters themselves round a little
+            assert!((a - b).abs() < 1e-3, "sample {i}: {a} became {b}");
+        }
+    }
+
+    #[test]
+    fn the_limiter_lets_go_after_a_peak_and_keeps_the_balance() {
+        let params = EqParams::new_shared();
+        params.lock().unwrap().set_enabled(true);
+        // Loud for half a second, then quiet: the left channel is always
+        // four times the right
+        let loud = sine(1, 2.0, 0.5);
+        let quiet = sine(1, 0.5, 1.0);
+        let input: Vec<f32> = loud
+            .iter()
+            .chain(&quiet)
+            .flat_map(|&v| [v, v / 4.0])
+            .collect();
+        let out: Vec<f32> =
+            EqSource::new(SamplesBuffer::new(nz16(2), nz32(44100), input), params).collect();
+
+        for frame in out.chunks(2).filter(|f| f[0].abs() > 0.1) {
+            let ratio = frame[1] / frame[0];
+            assert!((ratio - 0.25).abs() < 1e-3, "balance moved: {frame:?}");
+        }
+        // The last quarter second plays at full level again
+        let tail = &out[out.len() - 22050..];
+        let left_peak = peak(&tail.iter().step_by(2).copied().collect::<Vec<_>>());
+        assert!(
+            (left_peak - 0.5).abs() < 0.01,
+            "still turned down: {left_peak}"
+        );
+    }
+
+    #[test]
+    fn shelves_dont_overshoot() {
+        for band in [0, NUM_BANDS - 1] {
+            for gain in [MAX_GAIN_DB, MIN_GAIN_DB] {
+                let coeffs = band_coefficients(band, gain, 44100.0).unwrap();
+                let (lo, hi) = (gain.min(0.0) - 0.05, gain.max(0.0) + 0.05);
+                let mut freq = 10.0;
+                while freq < 22_000.0 {
+                    let db = response_db(&coeffs, freq, 44100.0);
+                    assert!(
+                        (lo..=hi).contains(&db),
+                        "band {band} at {gain} dB: {db:.2} dB at {freq:.0} Hz"
+                    );
+                    freq *= 1.05;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_top_band_works_at_low_sample_rates() {
+        for rate in [22050.0, 32000.0] {
+            let coeffs = band_coefficients(NUM_BANDS - 1, 6.0, rate)
+                .unwrap_or_else(|| panic!("no top band at {rate} Hz"));
+            let top = response_db(&coeffs, rate * 0.49, rate);
+            let mid = response_db(&coeffs, 1000.0, rate);
+            assert!(top > 5.0, "top of a {rate} Hz stream raised by {top:.2} dB");
+            assert!(mid.abs() < 0.1, "1 kHz moved by {mid:.2} dB at {rate} Hz");
+        }
+        // Where 16 kHz fits, the band stays at 16 kHz
+        let at_44 = band_coefficients(NUM_BANDS - 1, 6.0, 44100.0).unwrap();
+        assert!((response_db(&at_44, 16_000.0, 44100.0) - 3.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn a_bad_sample_doesnt_silence_the_rest() {
+        let params = bass_boost();
+        let mut input: Vec<f32> = (0..4410).map(tone).collect();
+        input.push(f32::NAN);
+        input.push(f32::INFINITY);
+        input.extend((0..4410).map(tone));
+        let out: Vec<f32> =
+            EqSource::new(SamplesBuffer::new(nz16(1), nz32(44100), input), params).collect();
+        assert!(out.iter().all(|s| s.is_finite()), "non-finite output");
+        let tail_peak = peak(&out[out.len() - 2205..]);
+        assert!(tail_peak > 0.1, "silent after the bad sample: {tail_peak}");
     }
 }

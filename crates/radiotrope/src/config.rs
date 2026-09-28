@@ -156,6 +156,22 @@ pub mod eq {
 
     /// Default Q factor for peaking EQ filters
     pub const DEFAULT_Q: f32 = 1.414;
+
+    /// Q of the shelves (the lowest and highest band): the steepest shelf
+    /// without a bump or dip at its corner
+    pub const SHELF_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
+
+    /// The highest band's shelf moves down to this fraction of the sample
+    /// rate when 16 kHz is past it, so it still works on 22.05 and 32 kHz
+    /// streams
+    pub const TOP_SHELF_MAX_FRACTION: f32 = 0.4;
+
+    /// Loudest sample the EQ passes on (full scale): its limiter turns
+    /// louder peaks down instead of letting them clip
+    pub const LIMITER_CEILING: f32 = 1.0;
+
+    /// How long the limiter takes to let go after a peak (milliseconds)
+    pub const LIMITER_RELEASE_MS: f32 = 150.0;
 }
 
 /// Stream buffer configuration (producer-consumer architecture)
