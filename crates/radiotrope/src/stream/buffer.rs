@@ -273,7 +273,9 @@ impl StreamBuffer {
             status,
             read_pos: 0,
             probing_flag,
-            buffering_active: false,
+            // Wait for the start target, even when the station's first bytes
+            // are already in
+            buffering_active: true,
             started: false,
             underrun_escalations: 0,
             healthy_from: 0,
@@ -2412,6 +2414,65 @@ mod tests {
             waited >= Duration::from_millis(300) && waited < Duration::from_secs(2),
             "started after {waited:?}"
         );
+
+        stop.cancel();
+        handle.join().unwrap();
+    }
+
+    /// A live station that sends `burst` bytes on connect, then trickles
+    struct Bursting {
+        burst: usize,
+        then: Trickle,
+    }
+
+    impl Read for Bursting {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if self.burst == 0 {
+                return self.then.read(buf);
+            }
+            let n = self.burst.min(buf.len());
+            self.burst -= n;
+            buf[..n].fill(1);
+            Ok(n)
+        }
+    }
+
+    impl Seek for Bursting {
+        fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+            Err(io::Error::other("live"))
+        }
+    }
+
+    #[test]
+    fn a_short_burst_on_connect_still_waits_to_start() {
+        // Half a second of audio on connect, then real time. Played at once
+        // it ran out before more came: a blip, then seconds of buffering.
+        let station = Bursting {
+            burst: 8_000,
+            then: Trickle {
+                bytes: 800,
+                every: Duration::from_millis(10),
+            },
+        };
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (mut reader, handle, stop) =
+            StreamBuffer::new(Box::new(station), status.clone(), probing);
+        reader.set_advertised_bitrate(Some(128));
+        // The burst is in before the decoder first reads
+        while reader.state.inner.lock().unwrap().write_pos < 8_000 {
+            thread::sleep(Duration::from_millis(1));
+        }
+
+        let mut buf = [0u8; 1024];
+        let n = reader.read(&mut buf).unwrap();
+        let s = status.lock().unwrap().clone();
+        let buffered = n + s.level_bytes;
+        assert!(
+            buffered >= 48_000,
+            "started with {buffered} bytes, not 3 s of audio"
+        );
+        assert_eq!(s.underrun_count, 0);
 
         stop.cancel();
         handle.join().unwrap();
