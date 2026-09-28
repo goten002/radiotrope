@@ -1007,9 +1007,11 @@ fn main() {
             Duration::from_millis(200),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
-                // Skip polling when not playing — stats are stale anyway
-                if !ui.get_is_playing() {
-                    ui.set_stat_playtime("--".into());
+                // Stopped: clear what the last station left behind, so the
+                // dialog doesn't keep showing it as live. Connecting still
+                // polls (the buffer fills, the status reads Connecting)
+                if !ui.get_is_playing() && !ui.get_is_loading() {
+                    clear_stats_ui(&ui);
                     return;
                 }
                 // try_lock: skip this tick if engine holds shared_stats
@@ -2180,10 +2182,33 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
     ui.set_stat_underruns(format_number(s.underrun_count as u64).into());
 }
 
+/// Statistics dialog with nothing playing
+fn clear_stats_ui(ui: &App) {
+    ui.set_stat_health("Stopped".into());
+    for set in [
+        App::set_stat_playtime,
+        App::set_stat_codec,
+        App::set_stat_bitrate,
+        App::set_stat_sample_rate,
+        App::set_stat_channels,
+        App::set_stat_received,
+        App::set_stat_segments,
+        App::set_stat_throughput,
+        App::set_stat_buffer_level,
+        App::set_stat_buffer_capacity,
+        App::set_stat_frames_played,
+        App::set_stat_decode_errors,
+        App::set_stat_underruns,
+    ] {
+        set(ui, "--".into());
+    }
+}
+
+/// Stream status shown on the Statistics dialog's first tile
 fn format_health(state: &HealthState) -> String {
     match state {
-        HealthState::WaitingForAudio => "Waiting".into(),
-        HealthState::Healthy => "Healthy".into(),
+        HealthState::WaitingForAudio => "Connecting".into(),
+        HealthState::Healthy => "Stable".into(),
         HealthState::Stalled => "Stalled".into(),
         HealthState::Failed(reason) => format!("Failed ({reason:?})"),
     }

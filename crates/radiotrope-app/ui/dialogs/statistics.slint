@@ -93,10 +93,11 @@ export component StatisticsDialog inherits Rectangle {
             spacing: 10px;
 
             StatTile {
-                label: "HEALTH";
+                label: "STREAM";
                 value: root.stat-health;
-                tone: root.stat-health == "Healthy" ? Theme.success
-                    : root.stat-health == "--" ? Theme.text-primary : Theme.accent-text;
+                tone: root.stat-health == "Stable" ? Theme.success
+                    : root.stat-health == "--" || root.stat-health == "Stopped"
+                        ? Theme.text-primary : Theme.accent-text;
             }
             StatTile { label: "PLAYTIME"; value: root.stat-playtime; }
             StatTile { label: "THROUGHPUT"; value: root.stat-throughput; }
