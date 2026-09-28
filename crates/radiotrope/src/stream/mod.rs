@@ -24,6 +24,8 @@ mod shoutcast;
 #[cfg(test)]
 pub(crate) mod test_server;
 pub mod types;
+#[cfg(test)]
+mod untrusted_input_tests;
 
 pub use buffer::{BufferStatus, SharedBufferStatus, StreamBuffer, StreamBufferReader};
 pub use cancel::StreamCancel;

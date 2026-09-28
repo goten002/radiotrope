@@ -48,6 +48,9 @@ chardetng = "1.0"
 encoding_rs = "0.8"
 sys-locale = "0.3"
 
+# Testing
+proptest = { version = "1.11", default-features = false, features = ["std"] }
+
 [profile.release]
 strip = true
 lto = true
