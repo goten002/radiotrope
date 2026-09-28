@@ -165,7 +165,7 @@ mod tests {
     fn image(pixels: &[([u8; 3], usize)]) -> Vec<u8> {
         pixels
             .iter()
-            .flat_map(|&(rgb, n)| std::iter::repeat([rgb[0], rgb[1], rgb[2], 255]).take(n))
+            .flat_map(|&(rgb, n)| std::iter::repeat_n([rgb[0], rgb[1], rgb[2], 255], n))
             .flatten()
             .collect()
     }
