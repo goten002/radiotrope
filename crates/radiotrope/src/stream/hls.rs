@@ -2634,14 +2634,46 @@ mod tests {
         }
 
         #[test]
-        fn failed_start_stops_the_downloader() {
+        fn a_start_that_fails_at_once_stops_the_downloader() {
             let server = TestServer::start();
-            // A live playlist that never lists a segment the reader can use
+            // A live playlist whose only segment is gone: the downloader
+            // gives up by itself
             let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nseg1.ts\n";
             server.route("/index.m3u8", Route::new(playlist));
             server.route("/seg1.ts", Route::status(404));
             assert!(HlsReader::new(&server.url("/index.m3u8"), None).is_err());
             let hits = server.hits("/index.m3u8");
+            thread::sleep(Duration::from_millis(2500));
+            assert_eq!(server.hits("/index.m3u8"), hits);
+        }
+
+        #[test]
+        fn a_start_that_times_out_stops_the_downloader() {
+            let server = TestServer::start();
+            // A live playlist whose segment is busy: the downloader keeps
+            // polling for the next one, so the start ends when the reader's
+            // wait for the first segment runs out
+            let playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:1\n#EXTINF:1.0,\nseg1.ts\n";
+            server.route("/index.m3u8", Route::new(playlist));
+            server.route("/seg1.ts", Route::status(503));
+            // Long enough for the playlist's first reload (2 s at the least)
+            let wait = Duration::from_millis(2500);
+            let opening = Opening {
+                first_wait: wait,
+                ..Opening::default()
+            };
+            let started = Instant::now();
+            let url = server.url("/index.m3u8");
+            let Err(err) = HlsReader::open(&url, None, StreamCancel::new(), opening) else {
+                panic!("the start must fail");
+            };
+            assert!(started.elapsed() >= wait, "failed before the wait ran out");
+            assert!(err.to_string().contains("503"), "{err}");
+
+            // It was still polling when the wait ran out, and stops now
+            thread::sleep(Duration::from_millis(300));
+            let hits = server.hits("/index.m3u8");
+            assert!(hits >= 2, "the playlist was fetched {hits} times");
             thread::sleep(Duration::from_millis(2500));
             assert_eq!(server.hits("/index.m3u8"), hits);
         }

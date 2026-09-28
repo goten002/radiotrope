@@ -71,7 +71,11 @@ impl StreamHealthMonitor {
 
     /// Update with the current sample count. Returns Some(reason) on failure.
     pub fn update(&mut self, sample_count: u64) -> Option<FailureReason> {
-        let now = Instant::now();
+        self.update_at(sample_count, Instant::now())
+    }
+
+    /// [`update`](Self::update) as if it were `now`
+    fn update_at(&mut self, sample_count: u64, now: Instant) -> Option<FailureReason> {
         let elapsed = now.duration_since(self.state_entered);
         let samples_changed = sample_count > self.last_sample_count;
 
@@ -590,19 +594,23 @@ mod tests {
 
     #[test]
     fn healthy_resets_stall_timer_on_sample_increase() {
+        // Stall timeout 100 ms
         let mut monitor = short_monitor();
-        monitor.update(100); // → Healthy
+        let start = Instant::now();
+        let at = |ms| start + Duration::from_millis(ms);
+        monitor.update_at(100, at(0)); // → Healthy
 
-        // Wait 80ms (below 100ms stall timeout)
-        thread::sleep(Duration::from_millis(80));
-        monitor.update(200); // reset timer
+        // New samples at 80 ms restart the stall timer
+        monitor.update_at(200, at(80));
 
-        // Wait another 80ms (160ms total, but timer was reset)
-        thread::sleep(Duration::from_millis(80));
-        monitor.update(300); // reset timer again
-
-        // Should still be Healthy because timer keeps resetting
+        // No new samples since: at 160 ms that is 80 ms without audio, not
+        // 160, so no stall yet
+        monitor.update_at(200, at(160));
         assert_eq!(*monitor.state(), HealthState::Healthy);
+
+        // A full timeout without new samples is a stall
+        monitor.update_at(200, at(180));
+        assert_eq!(*monitor.state(), HealthState::Stalled);
     }
 
     // --- Failed returns None on many repeated calls ---
