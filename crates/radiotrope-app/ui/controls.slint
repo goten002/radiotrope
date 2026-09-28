@@ -295,7 +295,9 @@ export component Controls inherits Rectangle {
                             : root.volume < 0.33 ? @image-url("icons/volume-low.svg")
                             : root.volume < 0.66 ? @image-url("icons/volume-medium.svg")
                             : @image-url("icons/volume-high.svg");
-                        icon-size: 18px;
+                        // The volume SVGs carry a margin, so the loudest
+                        // wave isn't clipped by Icon's 1px edge trim
+                        icon-size: 20px;
                         icon-color: root.is-muted ? Theme.danger : Theme.text-secondary;
                         hover-color: root.is-muted ? Theme.danger : Theme.text-primary;
                         clicked => { root.mute-clicked(); }

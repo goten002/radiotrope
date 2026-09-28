@@ -20,6 +20,7 @@ export struct FavoriteStation {
 // Item of a row's menu
 component RowMenuItem inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> danger: false;
     in property <bool> enabled: true;
     callback clicked();
@@ -35,9 +36,25 @@ component RowMenuItem inherits Rectangle {
         clicked => { root.clicked(); }
     }
 
+    // Laid out like the menu bar's items: icon, then label
     HorizontalLayout {
-        padding-left: 12px;
+        padding-left: 10px;
         padding-right: 12px;
+        spacing: 10px;
+        alignment: start;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 15px;
+                height: 15px;
+                source: root.icon;
+                colorize: !root.enabled ? Theme.disabled-text
+                    : root.danger ? Theme.danger
+                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+
         Text {
             text: root.label;
             color: !root.enabled ? Theme.disabled-text
@@ -386,6 +403,7 @@ component FavoriteRow inherits Rectangle {
 
                 RowMenuItem {
                     label: "Edit";
+                    icon: @image-url("icons/pencil.svg");
                     clicked => {
                         menu.close();
                         root.edit-clicked();
@@ -393,6 +411,7 @@ component FavoriteRow inherits Rectangle {
                 }
                 RowMenuItem {
                     label: "Move to Top";
+                    icon: @image-url("icons/angles-up.svg");
                     clicked => {
                         menu.close();
                         root.move-requested(true);
@@ -400,6 +419,7 @@ component FavoriteRow inherits Rectangle {
                 }
                 RowMenuItem {
                     label: "Move to Bottom";
+                    icon: @image-url("icons/angles-down.svg");
                     clicked => {
                         menu.close();
                         root.move-requested(false);
@@ -410,6 +430,7 @@ component FavoriteRow inherits Rectangle {
                 // once the menu closes
                 if root.show-stats: RowMenuItem {
                     label: root.confirm-reset ? "Click Again to Reset" : "Reset Stats";
+                    icon: @image-url("icons/rotate-left.svg");
                     enabled: root.play-count > 0
                         || root.listen-time != "" || root.session-time != "";
                     clicked => {
@@ -432,6 +453,7 @@ component FavoriteRow inherits Rectangle {
                 // Asks once more before removing
                 RowMenuItem {
                     label: root.confirm-remove ? "Click Again to Remove" : "Remove from Favorites";
+                    icon: @image-url("icons/trash-can.svg");
                     danger: true;
                     clicked => {
                         if root.confirm-remove {
