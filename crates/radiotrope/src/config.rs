@@ -82,6 +82,14 @@ pub mod hls {
     /// which the playlist is found again from the address it was found
     /// from, in case its own address has expired or its server is gone
     pub const FIND_AGAIN_AFTER_FAILURES: u32 = 2;
+
+    /// Largest playlist read, in bytes (a radio playlist is a few KB). A
+    /// larger one is a failed download, and isn't read to the end.
+    pub const MAX_PLAYLIST_BYTES: usize = 4 * 1024 * 1024;
+
+    /// Largest segment read, media or init segment, in bytes (audio
+    /// segments are well under 1 MB). A larger one is a failed download.
+    pub const MAX_SEGMENT_BYTES: usize = 32 * 1024 * 1024;
 }
 
 /// Timeout configuration for resilience

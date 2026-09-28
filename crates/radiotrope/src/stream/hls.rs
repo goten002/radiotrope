@@ -17,8 +17,8 @@ use m3u8_rs::{MediaPlaylist, Playlist};
 use reqwest::Url;
 
 use crate::config::hls::{
-    FIND_AGAIN_AFTER_FAILURES, FIRST_SEGMENT_TIMEOUT_SECS, SEGMENT_BUFFER_SIZE,
-    SEGMENT_TIMEOUT_SECS,
+    FIND_AGAIN_AFTER_FAILURES, FIRST_SEGMENT_TIMEOUT_SECS, MAX_PLAYLIST_BYTES, MAX_SEGMENT_BYTES,
+    SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS,
 };
 use crate::config::network::USER_AGENT;
 use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
@@ -312,8 +312,8 @@ pub fn detect_segment_format(data: &[u8], url: &str) -> HlsSegmentFormat {
         }
     }
 
-    // Check for MPEG-TS sync byte
-    if !data.is_empty() && data[0] == 0x47 {
+    // Check for MPEG-TS sync bytes
+    if ts_start(data).is_some() {
         return HlsSegmentFormat::MpegTs;
     }
 
@@ -343,6 +343,39 @@ pub fn is_valid_segment_uri(uri: &str) -> bool {
 
 /// Size of an MPEG-TS packet
 const TS_PACKET_LEN: usize = 188;
+
+/// Sync bytes a packet apart, in a row, taken as the start of TS packets.
+/// A lone 0x47 may just be data.
+const TS_SYNC_RUN: usize = 3;
+
+/// How far into a segment its first TS packet is looked for, past junk
+const TS_SYNC_SEARCH: usize = 5 * TS_PACKET_LEN;
+
+/// Sync bytes in a row needed when junk comes before the first packet:
+/// enough that packed audio is not taken for TS by chance
+const TS_JUNK_SYNC_RUN: usize = 5;
+
+/// True if TS packets start at `pos`: its sync byte repeats a packet
+/// apart, `run` times in a row or up to the end of `data`
+fn ts_synced(data: &[u8], pos: usize, run: usize) -> bool {
+    pos < data.len()
+        && (0..run)
+            .map(|i| pos + i * TS_PACKET_LEN)
+            .take_while(|&at| at < data.len())
+            .all(|at| data[at] == 0x47)
+}
+
+/// Where the MPEG-TS packets in `data` start, if it is MPEG-TS. Junk
+/// before the first packet is skipped, if more packets follow it in step.
+fn ts_start(data: &[u8]) -> Option<usize> {
+    if ts_synced(data, 0, TS_SYNC_RUN) {
+        return Some(0);
+    }
+    // The whole run must be in `data`
+    let run_len = (TS_JUNK_SYNC_RUN - 1) * TS_PACKET_LEN;
+    (1..TS_SYNC_SEARCH.min(data.len().saturating_sub(run_len)))
+        .find(|&pos| ts_synced(data, pos, TS_JUNK_SYNC_RUN))
+}
 
 /// PMT stream types of audio we can decode, most preferred first: AAC ADTS,
 /// AAC LATM, MPEG-4 audio, MPEG-1/2 audio.
@@ -435,16 +468,26 @@ pub fn demux_ts_segment_with_metadata(ts_data: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>)
 }
 
 /// The TS packets in `ts_data` as (PID, payload unit start, payload).
-/// Resyncs on lost sync; skips corrupt packets and ones without a payload.
+/// Resyncs on lost sync, where sync bytes repeat a packet apart; skips
+/// corrupt packets and ones without a payload.
 fn ts_packets(ts_data: &[u8]) -> impl Iterator<Item = (u16, bool, &[u8])> {
     let mut pos = 0;
+    // Whether the packet at `pos` follows on from the last one read
+    let mut synced = false;
     std::iter::from_fn(move || {
         while pos + TS_PACKET_LEN <= ts_data.len() {
-            if ts_data[pos] != 0x47 {
-                // Lost sync: find the next sync byte
+            let in_step = if synced {
+                ts_data[pos] == 0x47
+            } else {
+                ts_synced(ts_data, pos, TS_SYNC_RUN)
+            };
+            if !in_step {
+                // Lost sync: find where it repeats again
+                synced = false;
                 pos += 1;
                 continue;
             }
+            synced = true;
             let packet = &ts_data[pos..pos + TS_PACKET_LEN];
             pos += TS_PACKET_LEN;
 
@@ -546,9 +589,9 @@ fn pes_payload(payload: &[u8]) -> Option<&[u8]> {
 /// (`EXT-X-MAP`); fMP4 audio is passed through untouched (the caller
 /// prepends the init segment).
 pub fn split_segment(data: &[u8], is_fmp4: bool) -> (Vec<u8>, Vec<StreamMetadata>) {
-    if !data.is_empty() && data[0] == 0x47 {
+    if let Some(start) = ts_start(data) {
         // MPEG-TS: demux audio and the ID3 metadata stream
-        let (audio, payloads) = demux_ts_segment_with_metadata(data);
+        let (audio, payloads) = demux_ts_segment_with_metadata(&data[start..]);
         let meta = payloads
             .iter()
             .flat_map(|p| parse_id3v2_payload(p))
@@ -620,25 +663,69 @@ fn integer_tag_without_decimals(line: &str) -> std::borrow::Cow<'_, str> {
     line.into()
 }
 
-/// GET `url`, returning the final URL (after redirects) and the body.
-/// Errors are short, user-facing reasons.
+/// Why a GET failed
+struct HttpFailure {
+    /// A short, user-facing reason
+    reason: String,
+    /// Whether trying again later may work: the network failed, or the
+    /// server was busy or failing (5xx, 408, 429)
+    temporary: bool,
+}
+
+/// GET `url`, returning the final URL (after redirects) and the body,
+/// which may be at most `max_bytes` long
 fn http_get(
     client: &reqwest::blocking::Client,
     url: &str,
-) -> std::result::Result<(Url, Vec<u8>), String> {
-    let response = client
-        .get(url)
-        .send()
-        .map_err(|e| RadioError::from(e).to_string())?;
+    max_bytes: usize,
+) -> std::result::Result<(Url, Vec<u8>), HttpFailure> {
+    let network = |e: RadioError| HttpFailure {
+        reason: e.to_string(),
+        temporary: true,
+    };
+    let response = client.get(url).send().map_err(|e| network(e.into()))?;
     let status = response.status();
     if !status.is_success() {
-        return Err(format!("HTTP {status}"));
+        return Err(HttpFailure {
+            reason: format!("HTTP {status}"),
+            temporary: status.is_server_error()
+                || status == reqwest::StatusCode::REQUEST_TIMEOUT
+                || status == reqwest::StatusCode::TOO_MANY_REQUESTS,
+        });
     }
     let final_url = response.url().clone();
-    let body = response
-        .bytes()
-        .map_err(|e| RadioError::from(e).to_string())?;
-    Ok((final_url, body.to_vec()))
+    match read_body(response, max_bytes) {
+        Ok(Some(body)) => Ok((final_url, body)),
+        Ok(None) => Err(HttpFailure {
+            reason: too_large(max_bytes),
+            temporary: false,
+        }),
+        Err(e) => Err(network(e)),
+    }
+}
+
+/// A response's body, or `None` if it is longer than `max_bytes`
+fn read_body(response: reqwest::blocking::Response, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+    if response
+        .content_length()
+        .is_some_and(|len| len > max_bytes as u64)
+    {
+        return Ok(None);
+    }
+    let mut body = Vec::new();
+    response
+        .take(max_bytes as u64 + 1)
+        .read_to_end(&mut body)
+        .map_err(|e| match e.downcast::<reqwest::Error>() {
+            Ok(e) => RadioError::from(e),
+            Err(e) => RadioError::from(e),
+        })?;
+    Ok((body.len() <= max_bytes).then_some(body))
+}
+
+/// Why a body longer than `max_bytes` wasn't read
+fn too_large(max_bytes: usize) -> String {
+    format!("larger than {} MB", max_bytes >> 20)
 }
 
 /// Resolve an HLS URL — follows master playlists to find the media playlist.
@@ -672,7 +759,9 @@ pub(crate) fn resolve_hls(url: &str, cancel: &StreamCancel, deadline: Deadline) 
             return Err(RadioError::Stream(format!("HTTP {}", response.status())));
         }
         let playlist_url = response.url().clone();
-        let content = response.bytes()?;
+        let content = read_body(response, MAX_PLAYLIST_BYTES)?.ok_or_else(|| {
+            RadioError::Stream(format!("HLS playlist {}", too_large(MAX_PLAYLIST_BYTES)))
+        })?;
 
         match parse_hls_playlist(&content).map_err(RadioError::Stream)? {
             Playlist::MasterPlaylist(master) => {
@@ -840,9 +929,11 @@ impl SegmentDownloader {
             }
 
             // Fetch the playlist
-            let fetched = http_get(&client, media_url.as_str()).and_then(|(url, body)| {
-                parse_hls_playlist(&body).map(|playlist| (url, body, playlist))
-            });
+            let fetched = http_get(&client, media_url.as_str(), MAX_PLAYLIST_BYTES)
+                .map_err(|failure| failure.reason)
+                .and_then(|(url, body)| {
+                    parse_hls_playlist(&body).map(|playlist| (url, body, playlist))
+                });
             let (playlist_url, content, playlist) = match fetched {
                 Ok((url, body, Playlist::MediaPlaylist(pl))) => (url, body, pl),
                 Ok((_, _, Playlist::MasterPlaylist(_))) => {
@@ -899,10 +990,11 @@ impl SegmentDownloader {
             if !sent_first {
                 if let Some(map_url) = &map_url {
                     if init_segment.as_ref().map(|(url, _)| url) != Some(map_url) {
-                        match http_get(&client, map_url) {
+                        match http_get(&client, map_url, MAX_SEGMENT_BYTES) {
                             Ok((_, data)) => init_segment = Some((map_url.clone(), data)),
-                            Err(reason) => {
-                                let reason = format!("HLS init segment {map_url}: {reason}");
+                            Err(failure) => {
+                                let reason =
+                                    format!("HLS init segment {map_url}: {}", failure.reason);
                                 self.report(reason.clone());
                                 last_problem = Some(reason);
                                 consecutive_failures += 1;
@@ -965,8 +1057,10 @@ impl SegmentDownloader {
             }
 
             let mut fetched_new = false;
-            // Why the segments of this pass gave no audio
+            // Why the segments of this pass gave no audio, and whether any
+            // of them may download if tried again
             let mut last_failure: Option<String> = None;
+            let mut temporary_failure = false;
 
             // Process segments, skipping already-downloaded URLs
             for (segment_url, segment) in segments.iter().skip(start_idx) {
@@ -982,10 +1076,12 @@ impl SegmentDownloader {
                 }
                 fetched_new = true;
 
-                let data = match http_get(&client, segment_url) {
+                let data = match http_get(&client, segment_url, MAX_SEGMENT_BYTES) {
                     Ok((_, data)) => data,
-                    Err(reason) => {
-                        last_failure = Some(format!("HLS segment {segment_url}: {reason}"));
+                    Err(failure) => {
+                        last_failure =
+                            Some(format!("HLS segment {segment_url}: {}", failure.reason));
+                        temporary_failure |= failure.temporary;
                         failed_segments += 1;
                         continue;
                     }
@@ -1041,8 +1137,12 @@ impl SegmentDownloader {
             }
 
             if let Some(reason) = last_failure {
-                if !sent_first {
-                    // Every segment tried so far failed: this won't play
+                // Every segment tried so far failed: this won't play, unless
+                // the stream is live and the server was busy or the network
+                // failed, when the next segments may work (`HlsReader::new`
+                // waits for them)
+                let may_recover = is_live && temporary_failure;
+                if !sent_first && !may_recover {
                     return Err(reason);
                 }
                 self.report(reason.clone());
@@ -2245,6 +2345,71 @@ mod tests {
             assert_eq!(demux_ts_segment(&seg), audio);
         }
 
+        #[test]
+        fn demux_does_not_resync_on_a_lone_sync_byte() {
+            // Junk with a 0x47 before the second audio packet: taking it
+            // for the start of a packet swallowed the real one
+            let audio = frame(500);
+            let packets = [
+                pat(0x1000),
+                pmt(0x1000, &[(0x0F, 0x100)]),
+                pes(0x100, 0xC0, &audio),
+            ]
+            .concat();
+            let second_audio = 3 * TS_PACKET_LEN;
+            let seg = [
+                &packets[..second_audio],
+                &[0x00, 0x47, 0x01, 0x00],
+                &packets[second_audio..],
+            ]
+            .concat();
+            assert_eq!(demux_ts_segment(&seg), audio);
+        }
+
+        #[test]
+        fn ts_segments_with_junk_before_the_packets_are_demuxed() {
+            let audio = frame(700);
+            for junk in [
+                vec![0x00, 0x12, 0x34],
+                b"\r\n".to_vec(),
+                vec![0x47, 0x00, 0x00, 0x47],
+                id3v2_song("Artist", "Song"),
+            ] {
+                let seg = [junk.clone(), plain_ts(&audio)].concat();
+                assert_eq!(split_segment(&seg, false).0, audio, "{junk:?}");
+                assert_eq!(
+                    detect_segment_format(&seg, "http://example.com/audio"),
+                    HlsSegmentFormat::MpegTs,
+                    "{junk:?}"
+                );
+            }
+        }
+
+        #[test]
+        fn packed_audio_with_chance_sync_bytes_stays_packed() {
+            // 0x47 a packet apart a few times in a row, as audio data may have
+            let mut audio = frame(3000);
+            for i in 0..TS_JUNK_SYNC_RUN - 1 {
+                audio[100 + i * TS_PACKET_LEN] = 0x47;
+            }
+            assert_eq!(split_segment(&audio, false).0, audio);
+            assert_eq!(
+                detect_segment_format(&audio, "http://example.com/audio"),
+                HlsSegmentFormat::Raw
+            );
+        }
+
+        #[test]
+        fn plays_ts_segments_with_junk_before_the_packets() {
+            let server = TestServer::start();
+            let audio = frame(1000);
+            server.route("/index.m3u8", Route::new(vod(&["seg1"])));
+            let seg = [&b"\r\n"[..], &plain_ts(&audio)].concat();
+            server.route("/seg1", Route::new(seg));
+            let (mut reader, _) = HlsReader::new(&server.url("/index.m3u8"), None).unwrap();
+            assert_eq!(first_chunk(&mut reader), audio);
+        }
+
         /// A TS segment laid out like RTL's (Quortex): the ID3 song info
         /// packet comes first, before the PAT and PMT. The old demuxer
         /// failed on that first packet ("Unknown PID") and returned no audio
@@ -2479,6 +2644,143 @@ mod tests {
             let hits = server.hits("/index.m3u8");
             thread::sleep(Duration::from_millis(2500));
             assert_eq!(server.hits("/index.m3u8"), hits);
+        }
+
+        // --- size limits ---
+
+        #[test]
+        fn bodies_over_the_limit_are_not_read() {
+            const LIMIT: usize = 1024 * 1024;
+            let server = TestServer::start();
+            server.route("/fits", Route::new(vec![0u8; LIMIT]));
+            server.route("/over", Route::new(vec![0u8; LIMIT + 1]));
+            server.route(
+                "/over-no-length",
+                Route::new(vec![0u8; LIMIT + 1]).without_length(),
+            );
+            let client = reqwest::blocking::Client::new();
+            let get = |path| http_get(&client, &server.url(path), LIMIT);
+
+            assert_eq!(get("/fits").ok().unwrap().1.len(), LIMIT);
+            for path in ["/over", "/over-no-length"] {
+                let failure = get(path).err().unwrap();
+                assert_eq!(failure.reason, "larger than 1 MB", "{path}");
+                assert!(!failure.temporary, "{path}");
+            }
+        }
+
+        #[test]
+        fn an_oversized_playlist_is_an_error() {
+            let server = TestServer::start();
+            let padding = "# padding\n".repeat(MAX_PLAYLIST_BYTES / 10 + 1);
+            let playlist = format!("{}{padding}", vod(&["seg1.ts"]));
+            server.route("/index.m3u8", Route::new(playlist));
+            server.route("/seg1.ts", Route::new(plain_ts(&frame(300))));
+
+            let err = resolve_hls_url(&server.url("/index.m3u8"))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("HLS playlist larger than 4 MB"), "{err}");
+
+            let err = HlsReader::open(
+                &server.url("/index.m3u8"),
+                None,
+                StreamCancel::new(),
+                Opening {
+                    first_wait: Duration::from_secs(1),
+                    ..Opening::default()
+                },
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(
+                err.contains("HLS playlist") && err.contains("larger than 4 MB"),
+                "{err}"
+            );
+            assert_eq!(server.hits("/seg1.ts"), 0);
+        }
+
+        #[test]
+        fn an_oversized_segment_is_skipped_like_a_failed_one() {
+            let server = TestServer::start();
+            let audio = frame(300);
+            server.route("/index.m3u8", Route::new(vod(&["seg1.ts", "seg2.ts"])));
+            server.route("/seg1.ts", Route::new(vec![0u8; MAX_SEGMENT_BYTES + 1]));
+            server.route("/seg2.ts", Route::new(plain_ts(&audio)));
+            let (mut reader, _) = HlsReader::new(&server.url("/index.m3u8"), None).unwrap();
+            assert_eq!(first_chunk(&mut reader), audio);
+        }
+
+        // --- segments failing before the first one plays ---
+
+        #[test]
+        fn a_live_stream_whose_first_segments_are_unavailable_retries() {
+            let server = TestServer::start();
+            let audio = frame(300);
+            server.route("/index.m3u8", Route::new(playlist(&["seg1.ts"], false)));
+            server.route("/seg1.ts", Route::status(503));
+            server.route("/seg2.ts", Route::new(plain_ts(&audio)));
+            let url = server.url("/index.m3u8");
+            let opening = thread::spawn(move || HlsReader::new(&url, None).map(|(r, _)| r));
+
+            // The server is busy for the first segment, then recovers
+            let start = Instant::now();
+            while server.hits("/seg1.ts") == 0 && start.elapsed() < Duration::from_secs(5) {
+                thread::sleep(Duration::from_millis(20));
+            }
+            server.route(
+                "/index.m3u8",
+                Route::new(playlist(&["seg1.ts", "seg2.ts"], false)),
+            );
+
+            let mut reader = opening.join().unwrap().unwrap();
+            assert_eq!(first_chunk(&mut reader), audio);
+            assert_eq!(server.hits("/seg1.ts"), 1);
+        }
+
+        #[test]
+        fn a_live_stream_whose_segments_are_refused_fails_at_once() {
+            for status in [403, 404] {
+                let server = TestServer::start();
+                server.route("/index.m3u8", Route::new(playlist(&["seg1.ts"], false)));
+                server.route("/seg1.ts", Route::status(status));
+                let start = Instant::now();
+                let err = HlsReader::new(&server.url("/index.m3u8"), None)
+                    .err()
+                    .unwrap()
+                    .to_string();
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "{status}: took {:?}",
+                    start.elapsed()
+                );
+                assert!(err.contains(&format!("HTTP {status}")), "{err}");
+            }
+        }
+
+        #[test]
+        fn unavailable_segments_end_by_the_deadline_with_the_reason() {
+            let server = TestServer::start();
+            server.route("/index.m3u8", Route::new(playlist(&["seg1.ts"], false)));
+            server.route("/seg1.ts", Route::status(503));
+            let start = Instant::now();
+            let err = HlsReader::open_resolved(
+                &server.url("/index.m3u8"),
+                &server.url("/index.m3u8"),
+                None,
+                StreamCancel::new(),
+                Deadline::after(Duration::from_secs(1)),
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "{:?}",
+                start.elapsed()
+            );
+            assert!(err.contains("HLS segment") && err.contains("503"), "{err}");
         }
 
         /// Read until the stream ends, skipping the waits between segments.
