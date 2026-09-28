@@ -441,6 +441,8 @@ export component DialogShell inherits Rectangle {
 export component Toggle inherits Rectangle {
     in-out property <bool> checked;
     in property <string> label;
+    // Greyed out and not clickable; keeps showing its state
+    in property <bool> enabled: true;
     callback toggled(bool);
     // Dark knob in the dark theme (like the volume knob), white in the light
     // one. Off in the dark theme: an outlined track with a smaller grey knob,
@@ -449,9 +451,12 @@ export component Toggle inherits Rectangle {
 
     width: row.preferred-width;
     height: 28px;
+    opacity: root.enabled ? 1 : 0.45;
+    animate opacity { duration: Theme.fast; }
 
     touch := TouchArea {
-        mouse-cursor: pointer;
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => {
             root.checked = !root.checked;
             root.toggled(root.checked);

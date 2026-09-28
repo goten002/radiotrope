@@ -1797,7 +1797,8 @@ fn setup_recording(
                 folder: recordings::folder(settings.recording_dir.as_deref()),
                 format: settings.recording_format.into(),
                 bitrate: settings.recording_bitrate,
-                with_eq: settings.record_with_eq,
+                // The switch keeps its state but only counts with the EQ on
+                with_eq: settings.record_with_eq && ui.get_eq_enabled(),
                 cover: station_cover_png(&logo_service, &station),
             });
         }

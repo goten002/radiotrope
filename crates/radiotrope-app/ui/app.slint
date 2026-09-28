@@ -397,6 +397,7 @@ export component App inherits Window {
         apply-folder(path) => { root.apply-recording-folder(path); }
         restore-default() => { root.restore-recording-folder(); }
         open-folder() => { root.open-recordings-folder(); }
+        eq-on: root.eq-enabled;
         with-eq-toggled(on) => { root.record-with-eq-toggled(on); }
         format-changed(id) => { root.recording-format-changed(id); }
         bitrate-changed(kbps) => { root.recording-bitrate-changed(kbps); }

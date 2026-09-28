@@ -98,12 +98,6 @@ export component AboutDialog inherits Rectangle {
                     label: "Report an issue";
                     clicked => { root.open-url(AboutInfo.repository + "/issues"); }
                 }
-
-                SecondaryButton {
-                    width: 200px;
-                    label: "Close";
-                    clicked => { root.show-dialog = false; }
-                }
             }
 
             // Details

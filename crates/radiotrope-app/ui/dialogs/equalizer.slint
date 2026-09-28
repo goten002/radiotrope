@@ -9,6 +9,23 @@ component EqFader inherits Rectangle {
     horizontal-stretch: 1;
     height: 220px;
 
+    // Like the volume slider: the knob grows under the pointer and a
+    // bubble shows the value while hovering, dragging or scrolling
+    property <bool> active: track-touch.has-hover || track-touch.pressed;
+    property <length> knob: root.active ? 18px : 14px;
+    animate knob { duration: Theme.fast; }
+    // Keeps the bubble up briefly after a scroll
+    property <bool> nudged;
+
+    nudge-timer := Timer {
+        interval: 900ms;
+        running: false;
+        triggered => {
+            root.nudged = false;
+            self.running = false;
+        }
+    }
+
     VerticalLayout {
         alignment: center;
         spacing: 4px;
@@ -62,29 +79,30 @@ component EqFader inherits Rectangle {
             }
 
             // Thumb — solid filled circle
-            Rectangle {
+            thumb := Rectangle {
                 property <float> norm-value: (root.value + 12.0) / 24.0;
 
                 x: (parent.width - self.width) / 2;
                 y: parent.height * (1.0 - norm-value) - self.height / 2;
-                width: 14px;
-                height: 14px;
-                border-radius: 7px;
+                width: root.knob;
+                height: root.knob;
+                border-radius: root.knob / 2;
                 background: Theme.accent;
 
                 // Inner highlight dot
                 Rectangle {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
-                    width: 6px;
-                    height: 6px;
-                    border-radius: 3px;
+                    width: root.knob * 3 / 7;
+                    height: self.width;
+                    border-radius: self.width / 2;
                     background: Theme.surface;
                 }
             }
 
             // Drag area
             track-touch := TouchArea {
+                mouse-cursor: pointer;
                 moved => {
                     if self.pressed {
                         root.value = clamp(12.0 - (self.mouse-y / 1px) / (parent.height / 1px) * 24.0, -12.0, 12.0);
@@ -102,7 +120,39 @@ component EqFader inherits Rectangle {
                 scroll-event(evt) => {
                     root.value = clamp(root.value + (evt.delta-y / 1px) / 60.0, -12.0, 12.0);
                     root.value-changed(root.value);
+                    root.nudged = true;
+                    nudge-timer.running = false;
+                    nudge-timer.running = true;
                     accept
+                }
+            }
+
+            // Value bubble above the knob (below it near the top)
+            bubble := Rectangle {
+                property <bool> visible-now: root.active || root.nudged;
+                property <float> tenths: Math.round(root.value * 10);
+                opacity: visible-now ? 1 : 0;
+                animate opacity { duration: Theme.fast; }
+                width: 50px;
+                height: 20px;
+                x: (parent.width - self.width) / 2;
+                y: thumb.y > self.height + 6px
+                    ? thumb.y - self.height - 4px
+                    : thumb.y + thumb.height + 4px;
+                border-radius: 5px;
+                background: Theme.card;
+                border-width: 1px;
+                border-color: Theme.hairline;
+                drop-shadow-blur: 6px;
+                drop-shadow-color: Theme.shadow-soft;
+
+                Text {
+                    text: (bubble.tenths > 0 ? "+" : "") + (bubble.tenths / 10) + " dB";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
         }

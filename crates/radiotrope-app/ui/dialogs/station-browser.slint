@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { DialogShell, NowPlayingBars, Icon } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { AccentButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
 export struct BrowseStation {
@@ -71,7 +71,7 @@ component StationRow inherits Rectangle {
                     source: @image-url("../icons/music-note.svg");
                     width: 16px;
                     height: 16px;
-                    colorize: Theme.text-secondary;
+                    colorize: Theme.accent;
                 }
             }
         }
@@ -412,11 +412,6 @@ export component StationBrowserDialog inherits Rectangle {
                 font-size: 11px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
-            }
-
-            SecondaryButton {
-                label: "Close";
-                clicked => { root.show-dialog = false; }
             }
         }
     }

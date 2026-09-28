@@ -218,7 +218,8 @@ export component Controls inherits Rectangle {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                     source: root.is-playing ? @image-url("icons/stop.svg") : @image-url("icons/play.svg");
-                    colorize: can-interact ? Theme.button-text : Theme.disabled-text;
+                    colorize: !can-interact ? Theme.disabled-text
+                        : Theme.dark-mode ? Theme.button-text : #ffffff;
                 }
 
                 play-touch := TouchArea {

@@ -91,6 +91,8 @@ export component RecordingSettingsDialog inherits Rectangle {
     // Problem with the last folder tried, shown under the field
     in property <string> error;
     in-out property <bool> with-eq;
+    // The equalizer is on; recording with it only applies then
+    in property <bool> eq-on;
     // "mp3", "opus" or "wav"
     in-out property <string> format: "mp3";
     // MP3/Opus bitrate in kbps; 0 is Auto (the station's bitrate)
@@ -220,6 +222,7 @@ export component RecordingSettingsDialog inherits Rectangle {
 
             Toggle {
                 label: "Apply equalizer to recording";
+                enabled: root.eq-on;
                 checked <=> root.with-eq;
                 toggled(on) => { root.with-eq-toggled(on); }
             }
@@ -228,7 +231,9 @@ export component RecordingSettingsDialog inherits Rectangle {
                 padding-left: 44px;
 
                 Text {
-                    text: "Record audio with your current equalizer settings.";
+                    text: root.eq-on
+                        ? "Record audio with your current equalizer settings."
+                        : "Turn on the equalizer to use this.";
                     color: Theme.text-secondary;
                     font-size: 12px;
                     wrap: word-wrap;
@@ -244,15 +249,11 @@ export component RecordingSettingsDialog inherits Rectangle {
                 label: "Cancel";
                 clicked => { root.close(); }
             }
+            // Closing is the X in the header; Save waits for a change
             AccentButton {
-                label: root.edited ? "Save" : "Close";
-                clicked => {
-                    if root.edited {
-                        root.apply-folder(root.edit-path);
-                    } else {
-                        root.close();
-                    }
-                }
+                label: "Save";
+                enabled: root.edited;
+                clicked => { root.apply-folder(root.edit-path); }
             }
         }
     }
