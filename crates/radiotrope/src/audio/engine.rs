@@ -32,7 +32,7 @@ use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
-use super::output::{open_output, Output, SilentOutput};
+use super::output::{open_output, DefaultWatch, Output, SilentOutput};
 use super::pcm::{decode_ahead, PcmFeed};
 use super::recording::{Recorder, RecordingTap, TapPoint};
 use super::stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
@@ -87,12 +87,59 @@ pub enum EngineOutput {
 /// Opens an output that raises the flag if it goes away
 type OpenOutput = Box<dyn FnMut(&Arc<AtomicBool>) -> Result<Output, String> + Send>;
 
+/// Opens the engine's outputs, and says when the open one is no longer on
+/// the default device
+struct Outputs {
+    open: OpenOutput,
+    /// Only on Windows (see [`DefaultWatch`])
+    default: Option<DefaultWatch>,
+}
+
+impl Outputs {
+    fn open(&mut self, lost: &Arc<AtomicBool>) -> Result<Output, String> {
+        if let Some(watch) = self.default.as_mut() {
+            watch.follow();
+        }
+        (self.open)(lost)
+    }
+
+    fn default_moved(&mut self) -> bool {
+        self.default
+            .as_mut()
+            .is_some_and(|watch| watch.moved(Instant::now()))
+    }
+}
+
 /// A player on the output device, or on nothing while there is none
 fn new_player(output: Option<&Output>) -> Player {
     match output {
         Some(output) => Player::connect_new(output.mixer()),
         None => Player::new().0,
     }
+}
+
+/// Play on `output` from now on: a new player, at the same volume and
+/// paused or not, carries on with the station where it was
+fn play_on(
+    output: Output,
+    stream: &mut Option<Output>,
+    sink: &mut Player,
+    playing: Option<&PcmFeed>,
+    volume: f32,
+    paused: bool,
+) {
+    let new_sink = new_player(Some(&output));
+    new_sink.set_volume(volume_curve(volume));
+    if paused {
+        new_sink.pause();
+    }
+    if let Some(feed) = playing {
+        feed.set_ahead(decode_ahead(Some(&output)));
+        new_sink.append(feed.output());
+    }
+    // The old player goes before its device
+    *sink = new_sink;
+    *stream = Some(output);
 }
 
 /// Sends the engine's events, each marked with the station it is about
@@ -214,21 +261,27 @@ impl AudioEngine {
 
     /// [`AudioEngine::new`] with its own output and waits
     pub fn with_config(config: EngineConfig) -> Result<Self, RadioError> {
-        let open: OpenOutput = match config.output {
+        let outputs = match config.output {
             EngineOutput::Device => {
                 let generation = Arc::new(AtomicU64::new(0));
-                Box::new(move |lost| open_output(lost, &generation).map(Output::Device))
+                Outputs {
+                    open: Box::new(move |lost| open_output(lost, &generation).map(Output::Device)),
+                    // Only Windows keeps playing on a device that is no
+                    // longer the default
+                    default: cfg!(windows).then(DefaultWatch::system),
+                }
             }
-            EngineOutput::Silent { speed } => {
-                Box::new(move |_| SilentOutput::open(speed).map(Output::Silent))
-            }
+            EngineOutput::Silent { speed } => Outputs {
+                open: Box::new(move |_| SilentOutput::open(speed).map(Output::Silent)),
+                default: None,
+            },
         };
-        Self::with_output(open, config)
+        Self::with_output(outputs, config)
     }
 
-    /// Create an engine that plays through what `open` opens: at start, and
-    /// again whenever the device goes away
-    fn with_output(open: OpenOutput, config: EngineConfig) -> Result<Self, RadioError> {
+    /// Create an engine that plays through what `outputs` opens: at start,
+    /// again whenever the device goes away, and when the default changes
+    fn with_output(outputs: Outputs, config: EngineConfig) -> Result<Self, RadioError> {
         let (cmd_tx, cmd_rx) = bounded::<AudioCommand>(16);
         let (event_tx, event_rx) = bounded::<EngineEvent>(64);
         let (init_tx, init_rx) = bounded::<Result<(), String>>(1);
@@ -257,7 +310,7 @@ impl AudioEngine {
                     eq_params_thread,
                     recorder_thread,
                     output_lost_thread,
-                    open,
+                    outputs,
                     config,
                 );
             })
@@ -470,12 +523,12 @@ impl AudioEngine {
         eq_params: SharedEqParams,
         recorder: Recorder,
         output_lost: Arc<AtomicBool>,
-        mut open: OpenOutput,
+        mut outputs: Outputs,
         config: EngineConfig,
     ) {
         // Create audio output on this thread (cpal streams may be !Send).
         // Without a device, start anyway and keep trying.
-        let mut stream = match open(&output_lost) {
+        let mut stream = match outputs.open(&output_lost) {
             Ok(s) => Some(s),
             Err(e) => {
                 eprintln!("No audio output, waiting for a device: {e}");
@@ -720,20 +773,16 @@ impl AudioEngine {
                         && Instant::now() >= next_output_try
                     {
                         next_output_try = Instant::now() + config.output_retry;
-                        match open(&output_lost) {
+                        match outputs.open(&output_lost) {
                             Ok(new_stream) => {
-                                let new_sink = new_player(Some(&new_stream));
-                                new_sink.set_volume(volume_curve(current_volume));
-                                if state == PlaybackState::Paused {
-                                    new_sink.pause();
-                                }
-                                if let Some(ref feed) = playing_source {
-                                    feed.set_ahead(decode_ahead(Some(&new_stream)));
-                                    new_sink.append(feed.output());
-                                }
-                                // The old player goes before its device
-                                sink = new_sink;
-                                stream = Some(new_stream);
+                                play_on(
+                                    new_stream,
+                                    &mut stream,
+                                    &mut sink,
+                                    playing_source.as_ref(),
+                                    current_volume,
+                                    state == PlaybackState::Paused,
+                                );
                                 eprintln!("Audio output reopened");
                                 if waiting_for_output {
                                     waiting_for_output = false;
@@ -754,6 +803,30 @@ impl AudioEngine {
                                     events.send(AudioEvent::OutputLost);
                                 }
                             }
+                        }
+                    }
+
+                    // Windows keeps playing on the device an output was
+                    // opened on: when another becomes the default
+                    // (headphones plugged in), move there too
+                    if !waiting_for_output
+                        && !output_lost.load(Ordering::SeqCst)
+                        && outputs.default_moved()
+                    {
+                        match outputs.open(&output_lost) {
+                            Ok(new_stream) => {
+                                play_on(
+                                    new_stream,
+                                    &mut stream,
+                                    &mut sink,
+                                    playing_source.as_ref(),
+                                    current_volume,
+                                    state == PlaybackState::Paused,
+                                );
+                                eprintln!("Audio output reopened: the default device changed");
+                            }
+                            // Stay where we are until the default changes again
+                            Err(e) => eprintln!("The new default output device didn't open: {e}"),
                         }
                     }
 
@@ -1300,9 +1373,9 @@ mod tests {
 
     // --- Output device loss ---
 
-    /// An engine whose output opens only on the attempts `works` allows
-    /// (counting from 1), and a count of the attempts
-    fn engine_with_output(works: fn(usize) -> bool) -> (AudioEngine, Arc<AtomicUsize>) {
+    /// Outputs that open only on the attempts `works` allows (counting
+    /// from 1), and a count of the attempts
+    fn counted_outputs(works: fn(usize) -> bool) -> (Outputs, Arc<AtomicUsize>) {
         let attempts = Arc::new(AtomicUsize::new(0));
         let counted = attempts.clone();
         let open: OpenOutput = Box::new(move |_| {
@@ -1313,7 +1386,18 @@ mod tests {
                 Err("no device".to_string())
             }
         });
-        let engine = AudioEngine::with_output(open, test_config()).expect("the engine starts");
+        let outputs = Outputs {
+            open,
+            default: None,
+        };
+        (outputs, attempts)
+    }
+
+    /// An engine whose output opens only on the attempts `works` allows
+    /// (counting from 1), and a count of the attempts
+    fn engine_with_output(works: fn(usize) -> bool) -> (AudioEngine, Arc<AtomicUsize>) {
+        let (outputs, attempts) = counted_outputs(works);
+        let engine = AudioEngine::with_output(outputs, test_config()).expect("the engine starts");
         (engine, attempts)
     }
 
@@ -1477,6 +1561,185 @@ mod tests {
             }),
             "nothing played on the new device"
         );
+    }
+
+    // --- Default output device changes (Windows) ---
+
+    /// Which device the test says is the default
+    type SharedDefault = Arc<Mutex<Option<String>>>;
+
+    /// Like [`engine_with_output`], on a system whose default device the
+    /// test sets (at first "speakers")
+    fn engine_following_default(
+        works: fn(usize) -> bool,
+    ) -> (AudioEngine, Arc<AtomicUsize>, SharedDefault) {
+        let (mut outputs, attempts) = counted_outputs(works);
+        let default: SharedDefault = Arc::new(Mutex::new(Some("speakers".to_string())));
+        let current = default.clone();
+        outputs.default = Some(DefaultWatch::new(
+            move || current.lock().unwrap().clone(),
+            Duration::from_millis(10),
+        ));
+        let engine = AudioEngine::with_output(outputs, test_config()).expect("the engine starts");
+        (engine, attempts, default)
+    }
+
+    fn set_default(default: &SharedDefault, device: &str) {
+        *default.lock().unwrap() = Some(device.to_string());
+    }
+
+    /// Whether the station plays on: the samples counted keep rising
+    fn keeps_playing(engine: &AudioEngine, events: &mut Vec<AudioEvent>) -> bool {
+        // Let the last samples of an old output be counted first
+        thread::sleep(Duration::from_millis(200));
+        let before = sample_count(engine);
+        wait_until(engine, events, Duration::from_secs(3), |_| {
+            sample_count(engine) > before
+        })
+    }
+
+    #[test]
+    fn playback_follows_a_new_default_device() {
+        let (engine, attempts, default) = engine_following_default(|_| true);
+        let mut events = Vec::new();
+        engine.play(EndlessWav::new(), None, None);
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { sample_count(&engine) > 0 }
+        ));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+        // Headphones plugged in: Windows makes them the default
+        set_default(&default, "headphones");
+        assert!(
+            wait_until(&engine, &mut events, Duration::from_secs(3), |_| {
+                attempts.load(Ordering::SeqCst) == 2
+            }),
+            "playback didn't move to the new default"
+        );
+        assert!(
+            keeps_playing(&engine, &mut events),
+            "nothing played after the move"
+        );
+
+        // Moved once: the new default is now the one played on
+        thread::sleep(Duration::from_secs(1));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        // Nothing for the listener to see
+        assert!(
+            !has(&events, |e| matches!(
+                e,
+                AudioEvent::Error(_)
+                    | AudioEvent::OutputLost
+                    | AudioEvent::NoAudioTimeout
+                    | AudioEvent::Stopped
+            )),
+            "{events:?}"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_new_default_that_does_not_open_leaves_playback_where_it_is() {
+        // The new default fails to open, the one after it opens
+        let (engine, attempts, default) = engine_following_default(|attempt| attempt != 2);
+        let mut events = Vec::new();
+        engine.play(EndlessWav::new(), None, None);
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { sample_count(&engine) > 0 }
+        ));
+
+        set_default(&default, "headphones");
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { attempts.load(Ordering::SeqCst) == 2 }
+        ));
+        assert!(
+            keeps_playing(&engine, &mut events),
+            "the old device must keep playing"
+        );
+        assert!(
+            !has(&events, |e| matches!(
+                e,
+                AudioEvent::Error(_) | AudioEvent::OutputLost
+            )),
+            "{events:?}"
+        );
+        // Not tried again and again: only when the default changes again
+        thread::sleep(Duration::from_secs(1));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+
+        set_default(&default, "usb headset");
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { attempts.load(Ordering::SeqCst) == 3 }
+        ));
+        assert!(keeps_playing(&engine, &mut events));
+        engine.shutdown();
+    }
+
+    #[test]
+    fn the_output_follows_the_default_while_nothing_plays() {
+        let (engine, attempts, default) = engine_following_default(|_| true);
+        let mut events = Vec::new();
+        set_default(&default, "headphones");
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { attempts.load(Ordering::SeqCst) == 2 }
+        ));
+
+        // The next station plays there
+        engine.play(EndlessWav::new(), None, None);
+        assert!(keeps_playing(&engine, &mut events), "{events:?}");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_paused_station_stays_paused_on_the_new_default() {
+        let (engine, attempts, default) = engine_following_default(|_| true);
+        let mut events = Vec::new();
+        engine.play(EndlessWav::new(), None, None);
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { sample_count(&engine) > 0 }
+        ));
+        engine.pause();
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |e| { has(e, |e| matches!(e, AudioEvent::Paused)) }
+        ));
+
+        set_default(&default, "headphones");
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(3),
+            |_| { attempts.load(Ordering::SeqCst) == 2 }
+        ));
+        thread::sleep(Duration::from_millis(300));
+        let paused_at = sample_count(&engine);
+        thread::sleep(Duration::from_millis(500));
+        assert_eq!(sample_count(&engine), paused_at, "the move must not resume");
+
+        engine.resume();
+        assert!(keeps_playing(&engine, &mut events), "{events:?}");
+        engine.shutdown();
     }
 
     #[test]
@@ -3443,7 +3706,11 @@ mod tests {
 
     /// An engine on a machine with no audio output (runs on CI too)
     fn engine_without_device() -> AudioEngine {
-        AudioEngine::with_output(Box::new(|_| Err("no device".to_string())), test_config())
+        let outputs = Outputs {
+            open: Box::new(|_| Err("no device".to_string())),
+            default: None,
+        };
+        AudioEngine::with_output(outputs, test_config())
             .expect("the engine starts without a device")
     }
 
