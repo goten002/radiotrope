@@ -400,12 +400,13 @@ proptest! {
 
 // --- PLS and M3U playlists ---
 
-const PLAYLIST_SEEDS: [&str; 4] = [
+const PLAYLIST_SEEDS: [&str; 5] = [
     "[playlist]\nNumberOfEntries=2\nFile1=http://s1.example.com:8000/live?sid=1&t=a=b\n\
      Title1=Station\nLength1=-1\nFile2=https://s2.example.com/\nVersion=2\n",
     "\u{feff}#EXTM3U\n#EXTINF:-1,Station\nhttp://example.com/stream\n",
     "#EXTM3U\n# comment\n\n../up/stream.mp3\n",
-    "//host.example.com/path/stream.mp3\n",
+    "//host.example.com/path?x=1\n",
+    "#EXTM3U\nVersion=2\nlive.mp3?sid=1&t=a=b\n",
 ];
 
 proptest! {
