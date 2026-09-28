@@ -23,6 +23,8 @@ component RowMenuItem inherits Rectangle {
     in property <image> icon;
     in property <bool> danger: false;
     in property <bool> enabled: true;
+    // Waiting for a second click to confirm: bold, so it stands out
+    in property <bool> confirming: false;
     callback clicked();
 
     height: 28px;
@@ -61,6 +63,7 @@ component RowMenuItem inherits Rectangle {
                 : root.danger ? Theme.danger
                 : touch.has-hover ? Theme.text-primary : Theme.menu-text;
             font-size: 13px;
+            font-weight: root.confirming ? 700 : 400;
             vertical-alignment: center;
         }
     }
@@ -430,6 +433,7 @@ component FavoriteRow inherits Rectangle {
                 // once the menu closes
                 if root.show-stats: RowMenuItem {
                     label: root.confirm-reset ? "Click Again to Reset" : "Reset Stats";
+                    confirming: root.confirm-reset;
                     icon: @image-url("icons/rotate-left.svg");
                     enabled: root.play-count > 0
                         || root.listen-time != "" || root.session-time != "";
@@ -453,6 +457,7 @@ component FavoriteRow inherits Rectangle {
                 // Asks once more before removing
                 RowMenuItem {
                     label: root.confirm-remove ? "Click Again to Remove" : "Remove from Favorites";
+                    confirming: root.confirm-remove;
                     icon: @image-url("icons/trash-can.svg");
                     danger: true;
                     clicked => {
