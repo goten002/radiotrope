@@ -5,14 +5,101 @@
 //! device). The engine then opens another and gives it a new output of the
 //! playing station's queue ([`super::pcm::PcmFeed::output`]), so the
 //! station carries on without restarting.
+//!
+//! Without a device, a [`SilentOutput`] takes the audio at a steady pace
+//! and drops it, so the engine plays the same way (tests, headless use).
 
+use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rodio::cpal::traits::HostTrait;
-use rodio::cpal::StreamError;
+use rodio::cpal::{BufferSize, StreamError};
+use rodio::mixer::{self, Mixer};
 use rodio::{DeviceSinkBuilder, DeviceTrait, MixerDeviceSink};
+
+/// How often a [`SilentOutput`] takes its next buffer of audio
+const SILENT_PULL_INTERVAL: Duration = Duration::from_millis(10);
+
+/// What the engine plays on
+pub(crate) enum Output {
+    Device(MixerDeviceSink),
+    Silent(SilentOutput),
+}
+
+impl Output {
+    /// Where players go to be heard
+    pub(crate) fn mixer(&self) -> &Mixer {
+        match self {
+            Output::Device(sink) => sink.mixer(),
+            Output::Silent(silent) => &silent.mixer,
+        }
+    }
+
+    /// How much the output takes at a time, and its sample rate
+    pub(crate) fn buffer(&self) -> (BufferSize, NonZero<u32>) {
+        match self {
+            Output::Device(sink) => (*sink.config().buffer_size(), sink.config().sample_rate()),
+            Output::Silent(silent) => (BufferSize::Fixed(silent.frames), silent.sample_rate),
+        }
+    }
+}
+
+/// An output with no device: a thread takes the mixed audio every
+/// `SILENT_PULL_INTERVAL`, `speed` times as fast as it would play, and
+/// drops it
+pub(crate) struct SilentOutput {
+    mixer: Mixer,
+    sample_rate: NonZero<u32>,
+    /// Frames taken each time
+    frames: u32,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl SilentOutput {
+    pub(crate) fn open(speed: f32) -> Result<Self, String> {
+        let channels = NonZero::new(2).expect("non-zero");
+        let sample_rate = NonZero::new(44_100).expect("non-zero");
+        let (mixer, mut source) = mixer::mixer(channels, sample_rate);
+        let frames = (sample_rate.get() as f32 * SILENT_PULL_INTERVAL.as_secs_f32() * speed)
+            .round()
+            .max(1.0) as u32;
+        let samples = frames as usize * usize::from(channels.get());
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let thread = thread::Builder::new()
+            .name("silent-output".to_string())
+            .spawn(move || {
+                while !stopped.load(Ordering::Relaxed) {
+                    // An empty mixer returns None until a player joins it
+                    for _ in 0..samples {
+                        source.next();
+                    }
+                    thread::sleep(SILENT_PULL_INTERVAL);
+                }
+            })
+            .map_err(|e| format!("Failed to start the silent output: {e}"))?;
+        Ok(Self {
+            mixer,
+            sample_rate,
+            frames,
+            stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for SilentOutput {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
 
 /// Errors that aren't a loss on their own, within one second, that mean the
 /// device is gone: ALSA reports an unplugged device as a stream of
