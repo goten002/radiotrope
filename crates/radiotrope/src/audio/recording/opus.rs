@@ -194,17 +194,14 @@ impl AudioEncoder for OpusEncoder {
             &converted[..]
         };
 
+        // A new rate: first take what the old resampler still holds.
+        if let Some((_, mut old)) = s.resampler.take_if(|(rate, _)| *rate != sample_rate) {
+            old.finish(&mut s.pending)?;
+        }
         if sample_rate == OPUS_RATE {
-            s.resampler = None;
             s.pending.extend_from_slice(samples);
         } else {
-            if s.resampler
-                .as_ref()
-                .is_none_or(|(rate, _)| *rate != sample_rate)
-            {
-                if let Some((_, mut old)) = s.resampler.take() {
-                    old.finish(&mut s.pending)?;
-                }
+            if s.resampler.is_none() {
                 s.resampler = Some((
                     sample_rate,
                     Resampler::new(sample_rate, OPUS_RATE, s.channels)?,
@@ -555,6 +552,20 @@ mod tests {
             "first packet ends on the first page"
         );
         assert_eq!(out[second + 5], 0x04, "second page starts a new packet");
+    }
+
+    #[test]
+    fn rate_returning_to_48k_keeps_the_resampled_end() {
+        let mut encoder = OpusEncoder::new(RecordingTags::default(), 96);
+        let mut out = Vec::new();
+        for rate in [48_000, 44_100, 48_000] {
+            let second = vec![0.1; rate as usize * 2];
+            encoder.encode(rate, 2, &second, &mut out).unwrap();
+        }
+        encoder.finish(&mut out).unwrap();
+        // The frames the last granule counts: all three seconds
+        let frames = encoder.state.as_ref().map(|s| s.frames);
+        assert_eq!(frames, Some(3 * 48_000));
     }
 
     #[test]

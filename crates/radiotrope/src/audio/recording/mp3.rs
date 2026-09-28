@@ -1,7 +1,14 @@
 //! MP3 recordings: LAME at a constant bitrate, with an ID3v2.4 tag
+//!
+//! The file keeps the rate and channel count of the first audio; later
+//! changes are resampled and remixed to match, as a file with more than
+//! one MPEG version confuses players. When the file can seek, LAME's tag
+//! frame (length, encoder delay and padding, for gapless playback) is
+//! filled in when the recording ends.
 
-use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushNoGap, InterleavedPcm, Mode, MonoPcm};
+use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushGap, InterleavedPcm, Mode, MonoPcm};
 
+use super::resample::Resampler;
 use super::{AudioEncoder, RecordingTags};
 
 /// Bitrates LAME can write, in kbps.
@@ -36,21 +43,37 @@ fn nearest_bitrate(kbps: u32) -> Bitrate {
 pub(super) struct Mp3Encoder {
     tags: Option<RecordingTags>,
     bitrate: Bitrate,
+    /// The file can seek, so the LAME tag can be filled in at the end
+    seekable: bool,
     lame: Option<Lame>,
+    /// Resampler for the current input rate, if it isn't the file's
+    resampler: Option<(u32, Resampler)>,
+    resampled: Vec<f32>,
+    /// Where the MP3 frames start, after the ID3 tag
+    audio_start: u64,
+    /// The finished LAME tag frame, to write over the first frame
+    lame_tag: Vec<u8>,
 }
 
 impl Mp3Encoder {
-    pub(super) fn new(tags: RecordingTags, kbps: u32) -> Self {
+    pub(super) fn new(tags: RecordingTags, kbps: u32, seekable: bool) -> Self {
         Self {
             tags: Some(tags),
             bitrate: nearest_bitrate(kbps),
+            seekable,
             lame: None,
+            resampler: None,
+            resampled: Vec::new(),
+            audio_start: 0,
+            lame_tag: Vec::new(),
         }
     }
 
     fn write_tag(&mut self, out: &mut Vec<u8>) {
         if let Some(tags) = self.tags.take() {
-            out.extend_from_slice(&id3v2_tag(&tags));
+            let tag = id3v2_tag(&tags);
+            self.audio_start = tag.len() as u64;
+            out.extend_from_slice(&tag);
         }
     }
 }
@@ -64,33 +87,65 @@ impl AudioEncoder for Mp3Encoder {
         out: &mut Vec<u8>,
     ) -> Result<(), String> {
         self.write_tag(out);
-        let format_changed = self
-            .lame
-            .as_ref()
-            .is_some_and(|l| l.sample_rate != sample_rate || l.channels != channels);
-        if format_changed {
-            // E.g. HE-AAC switching rate: finish these frames, go on in the
-            // new format in the same file. MP3 frames stand alone, so
-            // players follow the change.
-            if let Some(mut old) = self.lame.take() {
-                old.finish(out);
-            }
-        }
         if self.lame.is_none() {
-            self.lame = Some(Lame::new(sample_rate, channels, self.bitrate)?);
+            let lame = Lame::new(sample_rate, channels, self.bitrate, self.seekable)?;
+            self.lame = Some(lame);
         }
-        match self.lame.as_mut() {
-            Some(lame) => lame.encode(samples, out),
-            None => Ok(()),
+        let Some(lame) = self.lame.as_mut() else {
+            return Ok(());
+        };
+
+        let converted;
+        let samples = if channels == lame.channels {
+            samples
+        } else {
+            converted = super::convert_channels(samples, channels, lame.channels);
+            &converted[..]
+        };
+
+        // A new rate: first encode what the old resampler still holds.
+        if let Some((_, mut old)) = self.resampler.take_if(|(rate, _)| *rate != sample_rate) {
+            self.resampled.clear();
+            old.finish(&mut self.resampled)?;
+            lame.encode(&self.resampled, out)?;
         }
+        if sample_rate == lame.sample_rate {
+            return lame.encode(samples, out);
+        }
+        if self.resampler.is_none() {
+            self.resampler = Some((
+                sample_rate,
+                Resampler::new(sample_rate, lame.sample_rate, lame.channels)?,
+            ));
+        }
+        if let Some((_, r)) = self.resampler.as_mut() {
+            self.resampled.clear();
+            r.process(samples, &mut self.resampled)?;
+            lame.encode(&self.resampled, out)?;
+        }
+        Ok(())
     }
 
     fn finish(&mut self, out: &mut Vec<u8>) -> Result<(), String> {
         self.write_tag(out);
-        if let Some(mut lame) = self.lame.take() {
-            lame.finish(out);
+        let Some(mut lame) = self.lame.take() else {
+            return Ok(());
+        };
+        if let Some((_, mut r)) = self.resampler.take() {
+            self.resampled.clear();
+            r.finish(&mut self.resampled)?;
+            lame.encode(&self.resampled, out)?;
         }
+        lame.finish(out);
+        self.lame_tag = lame.lame_tag();
         Ok(())
+    }
+
+    fn header_patches(&self) -> Vec<(u64, Vec<u8>)> {
+        if self.lame_tag.is_empty() {
+            return Vec::new();
+        }
+        vec![(self.audio_start, self.lame_tag.clone())]
     }
 }
 
@@ -102,7 +157,14 @@ struct Lame {
 }
 
 impl Lame {
-    fn new(sample_rate: u32, channels: u16, bitrate: Bitrate) -> Result<Self, String> {
+    /// With `lame_tag`, LAME starts with a placeholder frame that
+    /// [`Lame::lame_tag`] fills in at the end.
+    fn new(
+        sample_rate: u32,
+        channels: u16,
+        bitrate: Bitrate,
+        lame_tag: bool,
+    ) -> Result<Self, String> {
         let mono = channels == 1;
         let mut builder = Builder::new().ok_or("Could not create the MP3 encoder")?;
         builder
@@ -119,6 +181,9 @@ impl Lame {
             .map_err(|e| format!("MP3 encoder: {e}"))?;
         builder
             .set_quality(mp3lame_encoder::Quality::NearBest)
+            .map_err(|e| format!("MP3 encoder: {e}"))?;
+        builder
+            .set_to_write_vbr_tag(lame_tag)
             .map_err(|e| format!("MP3 encoder: {e}"))?;
         let encoder = builder.build().map_err(|e| format!("MP3 encoder: {e}"))?;
         Ok(Self {
@@ -143,10 +208,19 @@ impl Lame {
             .map_err(|e| format!("MP3 encoding failed: {e}"))
     }
 
-    /// Flush the encoder's last frames into `out`.
+    /// Encode the audio LAME still holds, padded to whole frames, into `out`.
     fn finish(&mut self, out: &mut Vec<u8>) {
         out.reserve(7200);
-        let _ = self.encoder.flush_to_vec::<FlushNoGap>(out);
+        // Not the "no gap" flush: that one leaves the last samples unencoded.
+        let _ = self.encoder.flush_to_vec::<FlushGap>(out);
+    }
+
+    /// The finished LAME tag frame, after [`Lame::finish`]; empty when the
+    /// tag is off.
+    fn lame_tag(&self) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(self.encoder.lame_tag_size());
+        self.encoder.lame_tag_encode_to_vec(&mut frame);
+        frame
     }
 }
 
@@ -253,6 +327,46 @@ mod tests {
         assert!(tag.windows(4).any(|w| w == b"COMM"));
         assert!(tag.windows(9).any(|w| w == b"image/png"));
         assert!(!tag.windows(4).any(|w| w == b"TALB"));
+    }
+
+    #[test]
+    fn lame_tag_is_filled_in_only_when_the_file_can_seek() {
+        let tags = RecordingTags {
+            title: "Test FM".to_string(),
+            ..Default::default()
+        };
+        let sine: Vec<f32> = (0..44_100)
+            .flat_map(|i| {
+                let v = (i as f32 * 0.06).sin() * 0.5;
+                [v, v]
+            })
+            .collect();
+        let record = |seekable| {
+            let mut enc = Mp3Encoder::new(tags.clone(), 128, seekable);
+            let mut out = Vec::new();
+            enc.encode(44_100, 2, &sine, &mut out).unwrap();
+            enc.finish(&mut out).unwrap();
+            (out, enc.header_patches())
+        };
+
+        let (with_tag, patches) = record(true);
+        let [(at, frame)] = &patches[..] else {
+            panic!("{} patches", patches.len());
+        };
+        // Written over LAME's placeholder, the first frame after the ID3 tag
+        let at = *at as usize;
+        assert_eq!(at, id3v2_tag(&tags).len());
+        // Same version, bitrate, rate and padding, so the same size
+        assert_eq!(&frame[..3], &with_tag[at..at + 3]);
+        assert!(with_tag[at + 4..at + frame.len()].iter().all(|&b| b == 0));
+        assert_eq!(with_tag[at + frame.len()], 0xff, "the audio frames follow");
+        assert!(frame.windows(4).any(|w| w == b"Info"));
+        assert!(frame.windows(4).any(|w| w == b"LAME"));
+
+        // Without seeking there is no placeholder to fill in
+        let (without, patches) = record(false);
+        assert!(patches.is_empty());
+        assert_eq!(without.len(), with_tag.len() - frame.len());
     }
 
     #[test]

@@ -105,20 +105,16 @@ impl AudioEncoder for WavEncoder {
             &converted[..]
         };
 
+        // A new rate: first write what the old resampler still holds.
+        if let Some((_, mut old)) = self.resampler.take_if(|(rate, _)| *rate != sample_rate) {
+            let mut tail = Vec::new();
+            old.finish(&mut tail)?;
+            self.push_pcm(&tail, out)?;
+        }
         if sample_rate == format.sample_rate {
-            self.resampler = None;
             return self.push_pcm(samples, out);
         }
-        if self
-            .resampler
-            .as_ref()
-            .is_none_or(|(rate, _)| *rate != sample_rate)
-        {
-            let mut tail = Vec::new();
-            if let Some((_, mut old)) = self.resampler.take() {
-                old.finish(&mut tail)?;
-            }
-            self.push_pcm(&tail, out)?;
+        if self.resampler.is_none() {
             self.resampler = Some((
                 sample_rate,
                 Resampler::new(sample_rate, format.sample_rate, format.channels)?,

@@ -244,7 +244,7 @@ impl Recorder {
     fn start_writing(
         &self,
         options: RecordingOptions,
-        file: impl RecordingFile + Send + 'static,
+        mut file: impl RecordingFile + Send + 'static,
     ) -> Result<(), RadioError> {
         let mut active = self.lock_active();
         if active.is_some() {
@@ -254,10 +254,15 @@ impl Recorder {
         let (tx, rx) = bounded(QUEUE_BATCHES);
         let stats = Arc::new(WriterStats::default());
         let (format, tags, kbps) = (options.format, options.tags, options.bitrate_kbps);
+        // Header patches at the end need a file that can seek (a pipe can't)
+        let seekable = file.stream_position().is_ok();
         let writer_stats = stats.clone();
         let handle = thread::Builder::new()
             .name("recording-writer".to_string())
-            .spawn(move || writer_loop(file, new_encoder(format, tags, kbps), rx, writer_stats))
+            .spawn(move || {
+                let encoder = new_encoder(format, tags, kbps, seekable);
+                writer_loop(file, encoder, rx, writer_stats)
+            })
             .map_err(|e| RadioError::Audio(format!("Failed to spawn recording thread: {e}")))?;
 
         let generation = self.shared.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -550,13 +555,24 @@ trait AudioEncoder {
     }
 }
 
-fn new_encoder(format: RecordingFormat, tags: RecordingTags, kbps: u32) -> Box<dyn AudioEncoder> {
+/// Make the encoder for `format`. `seekable` says whether the file can be
+/// patched at the end (see [`AudioEncoder::header_patches`]).
+fn new_encoder(
+    format: RecordingFormat,
+    tags: RecordingTags,
+    kbps: u32,
+    seekable: bool,
+) -> Box<dyn AudioEncoder> {
     match format {
-        RecordingFormat::Mp3 => Box::new(mp3::Mp3Encoder::new(tags, kbps)),
+        RecordingFormat::Mp3 => Box::new(mp3::Mp3Encoder::new(tags, kbps, seekable)),
         RecordingFormat::Opus => Box::new(opus::OpusEncoder::new(tags, kbps)),
         RecordingFormat::Wav => Box::new(wav::WavEncoder::new(tags)),
     }
 }
+
+/// Gain of the centre and surround channels when 5.1 is mixed to stereo
+/// (ITU-R BS.775: -3 dB).
+const SURROUND_GAIN: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
 /// Mix interleaved audio from `from` channels to `to` (1 or 2).
 fn convert_channels(samples: &[f32], from: u16, to: u16) -> Vec<f32> {
@@ -565,7 +581,21 @@ fn convert_channels(samples: &[f32], from: u16, to: u16) -> Vec<f32> {
     match (from, to) {
         (1, _) => frames.flat_map(|f| [f[0], f[0]]).collect(),
         (_, 1) => frames.map(|f| (f[0] + f[1]) * 0.5).collect(),
-        // Keep front left/right of surround streams
+        // 5.1 (L, R, C, LFE, Ls, Rs): centre and surrounds at -3 dB, no
+        // LFE, scaled so full scale on every channel still fits
+        (6, _) => {
+            let scale = 1.0 / (1.0 + 2.0 * SURROUND_GAIN);
+            frames
+                .flat_map(|f| {
+                    let centre = f[2] * SURROUND_GAIN;
+                    [
+                        (f[0] + centre + f[4] * SURROUND_GAIN) * scale,
+                        (f[1] + centre + f[5] * SURROUND_GAIN) * scale,
+                    ]
+                })
+                .collect()
+        }
+        // Keep front left/right of other surround layouts
         _ => frames.flat_map(|f| [f[0], f[1]]).collect(),
     }
 }
@@ -811,7 +841,7 @@ mod tests {
     }
 
     #[test]
-    fn surround_keeps_front_pair() {
+    fn surround_is_mixed_to_stereo() {
         let path = temp_path("surround");
         let recorder = Recorder::new();
         recorder.start(options(&path, TapPoint::BeforeEq)).unwrap();
@@ -990,6 +1020,79 @@ mod tests {
     }
 
     #[test]
+    fn wav_keeps_the_resampled_end_when_the_rate_returns() {
+        let (path, _) = record(
+            "wav-change-back",
+            RecordingFormat::Wav,
+            &[(44_100, 2, 0.5), (48_000, 2, 0.5), (44_100, 2, 0.5)],
+        );
+        let (rate, channels, frames) = decode(&path, "wav");
+        assert_eq!((rate, channels), (44_100, 2));
+        assert_eq!(frames, 66_150);
+    }
+
+    /// First and last frame where the left channel is loud
+    fn loud_span(channels: usize, samples: &[f32]) -> (usize, usize) {
+        let loud: Vec<usize> = samples
+            .chunks(channels)
+            .enumerate()
+            .filter(|(_, f)| f[0].abs() > 0.1)
+            .map(|(i, _)| i)
+            .collect();
+        (loud[0], loud[loud.len() - 1])
+    }
+
+    #[test]
+    fn mp3_keeps_the_end_of_the_recording() {
+        let (path, _) = record("mp3-end", RecordingFormat::Mp3, &[(44_100, 2, 1.0)]);
+        let (channels, out) = decode_samples(&path);
+        // The tone's length, whatever delay the decoder trims
+        let (first, last) = loud_span(channels, &out);
+        let length = last - first + 1;
+        assert!(length > 44_100 - 100, "{length} of 44100 frames");
+    }
+
+    #[test]
+    fn mp3_starts_with_a_filled_lame_tag() {
+        let (path, _) = record("mp3-lame-tag", RecordingFormat::Mp3, &[(44_100, 2, 1.0)]);
+        let data = std::fs::read(&path).unwrap();
+        // The first MP3 frame, right after the ID3 tag
+        let id3_len = 10
+            + data[6..10]
+                .iter()
+                .fold(0usize, |acc, b| (acc << 7) | *b as usize);
+        let frame = &data[id3_len..id3_len + 200];
+        assert!(frame.windows(4).any(|w| w == b"Info"), "no Info tag");
+        assert!(frame.windows(4).any(|w| w == b"LAME"), "no LAME tag");
+        // Players skip it instead of playing a frame of silence
+        let (channels, out) = decode_samples(&path);
+        let (first, _) = loud_span(channels, &out);
+        assert!(first < 1152, "the tone starts {first} frames late");
+    }
+
+    #[test]
+    fn mp3_resamples_a_rate_change_into_the_first_rate() {
+        let (path, _) = record(
+            "mp3-change",
+            RecordingFormat::Mp3,
+            &[(44_100, 2, 1.0), (22_050, 1, 1.0)],
+        );
+        let data = std::fs::read(&path).unwrap();
+        let mut source = SymphoniaSource::new_with_hint(Cursor::new(data), Some("mp3")).unwrap();
+        let mut samples = 0;
+        while source.next().is_some() {
+            // One MPEG version and channel mode for the whole file
+            assert_eq!(
+                (source.sample_rate().get(), source.channels().get()),
+                (44_100, 2)
+            );
+            samples += 1;
+        }
+        let frames = samples / 2;
+        assert!((88_200..88_200 + 4 * 1152).contains(&frames), "{frames}");
+    }
+
+    #[test]
     fn empty_recordings_are_still_valid_files() {
         for format in [
             RecordingFormat::Mp3,
@@ -1035,7 +1138,22 @@ mod tests {
     fn channel_conversion() {
         assert_eq!(convert_channels(&[0.5, 0.25], 1, 2), [0.5, 0.5, 0.25, 0.25]);
         assert_eq!(convert_channels(&[0.5, 0.25], 2, 1), [0.375]);
-        assert_eq!(convert_channels(&[1., 2., 3., 4., 5., 6.], 6, 2), [1., 2.]);
+        assert_eq!(convert_channels(&[1., 2., 3., 4.], 4, 2), [1., 2.]);
+
+        let close =
+            |a: &[f32], b: [f32; 2]| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6;
+        // 5.1: L + 0.707 C + 0.707 Ls (and the same on the right), no LFE
+        let k = SURROUND_GAIN;
+        let scale = 1.0 / (1.0 + 2.0 * k);
+        let mixed = convert_channels(&[0.1, 0.2, 0.3, 0.4, 0.5, 0.6], 6, 2);
+        let expected = [
+            (0.1 + 0.3 * k + 0.5 * k) * scale,
+            (0.2 + 0.3 * k + 0.6 * k) * scale,
+        ];
+        assert!(close(&mixed, expected), "{mixed:?}");
+        // Full scale everywhere stays within full scale
+        assert!(close(&convert_channels(&[1.0; 6], 6, 2), [1.0, 1.0]));
+        assert!(close(&convert_channels(&[-1.0; 6], 6, 2), [-1.0, -1.0]));
     }
 
     // --- Robustness ---
@@ -1108,7 +1226,7 @@ mod tests {
             tx.send(pcm(chunk.to_vec())).unwrap();
         }
         tx.send(WriterMsg::Finish).unwrap();
-        let encoder = new_encoder(RecordingFormat::Wav, RecordingTags::default(), 0);
+        let encoder = new_encoder(RecordingFormat::Wav, RecordingTags::default(), 0, true);
         let stats = WriterStats::default();
         let result = write_recording(disk.clone(), encoder, &rx, &stats);
         assert!(result.is_err(), "the full disk is reported");
@@ -1126,7 +1244,7 @@ mod tests {
         let writer = {
             let disk = disk.clone();
             thread::spawn(move || {
-                let encoder = new_encoder(RecordingFormat::Wav, RecordingTags::default(), 0);
+                let encoder = new_encoder(RecordingFormat::Wav, RecordingTags::default(), 0, true);
                 write_recording(disk, encoder, &rx, &WriterStats::default())
             })
         };
@@ -1142,10 +1260,11 @@ mod tests {
         assert!(on_disk > 0, "nothing reached the file after 1.6 s of audio");
     }
 
-    /// Decode a WAV recording to interleaved samples
+    /// Decode a recording to interleaved samples
     fn decode_samples(path: &Path) -> (usize, Vec<f32>) {
         let data = std::fs::read(path).unwrap();
-        let source = SymphoniaSource::new_with_hint(Cursor::new(data), Some("wav")).unwrap();
+        let hint = path.extension().and_then(|e| e.to_str());
+        let source = SymphoniaSource::new_with_hint(Cursor::new(data), hint).unwrap();
         let channels = source.channels().get() as usize;
         (channels, source.collect())
     }
@@ -1193,8 +1312,49 @@ mod tests {
                 .step_by(2)
                 .fold(0.0f32, |m, v| m.max(v.abs()))
         };
-        assert!(peak(0) > 0.4, "left lost the front-left channel");
+        // Front left at the downmix's scale, as no other channel would be
+        let front = 0.5 / (1.0 + 2.0 * SURROUND_GAIN);
+        assert!(
+            (peak(0) - front).abs() < 0.01,
+            "left lost the front-left channel"
+        );
         assert!(peak(1) < 0.01, "right picked up another channel");
+    }
+
+    #[test]
+    fn surround_mixes_the_centre_into_both_sides() {
+        let path = temp_path("surround-centre").with_extension("wav");
+        let recorder = Recorder::new();
+        recorder.start(wav_options(&path)).unwrap();
+        // 5.1 with the tone (the vocals) only in the centre
+        let samples: Vec<f32> = sine(44_100, 1, 0.5)
+            .into_iter()
+            .flat_map(|v| [0.0, 0.0, v, 0.0, 0.0, 0.0])
+            .collect();
+        let source = SamplesBuffer::new(
+            NonZero::new(6).unwrap(),
+            NonZero::new(44_100).unwrap(),
+            samples,
+        );
+        play_through(source, &recorder, TapPoint::BeforeEq);
+        recorder.stop().unwrap();
+
+        let (channels, out) = decode_samples(&path);
+        assert_eq!(channels, 2);
+        let peak = |ch: usize| {
+            out.iter()
+                .skip(ch)
+                .step_by(2)
+                .fold(0.0f32, |m, v| m.max(v.abs()))
+        };
+        let centre = 0.5 * SURROUND_GAIN / (1.0 + 2.0 * SURROUND_GAIN);
+        for ch in 0..2 {
+            assert!(
+                (peak(ch) - centre).abs() < 0.01,
+                "channel {ch} peaks at {}, not {centre}",
+                peak(ch)
+            );
+        }
     }
 
     #[test]
@@ -1344,5 +1504,49 @@ mod tests {
         let status = recorder.stop().expect("a recording was running");
         let error = status.error.expect("the crash is reported");
         assert!(error.contains("stopped unexpectedly"), "{error}");
+    }
+
+    /// An in-memory file that can't seek, like a pipe
+    struct Unseekable(FullDisk);
+
+    impl Write for Unseekable {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.write(buf)
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Seek for Unseekable {
+        fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+            Err(std::io::Error::other("illegal seek"))
+        }
+    }
+
+    impl RecordingFile for Unseekable {
+        fn sync_all(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn mp3_that_cannot_seek_has_no_lame_tag_to_fill() {
+        let disk = full_disk(usize::MAX);
+        let recorder = Recorder::new();
+        let opts = options(Path::new("pipe"), TapPoint::BeforeEq);
+        recorder
+            .start_writing(opts, Unseekable(disk.clone()))
+            .unwrap();
+        play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
+        let status = recorder.stop().unwrap();
+        assert_eq!(status.error, None);
+
+        let data = disk.data.lock().unwrap();
+        assert!(data.starts_with(b"ID3\x04"));
+        assert!(
+            !data.windows(4).any(|w| w == b"Info"),
+            "a LAME tag frame that can't be filled in"
+        );
     }
 }
