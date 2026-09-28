@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use crate::config::audio::SPECTRUM_BANDS;
+use crate::stream::types::StreamType;
 use crate::stream::StreamCancel;
 
 /// Current playback state
@@ -32,10 +33,18 @@ pub struct CodecInfo {
 pub trait ReadSeek: std::io::Read + std::io::Seek + Send + Sync {}
 impl<T: std::io::Read + std::io::Seek + Send + Sync> ReadSeek for T {}
 
+/// Names one play request. Every event the engine sends about that station
+/// carries it, so a caller can tell the station it asked for from one it
+/// has since moved away from. The engine's `play` methods number them from 1.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct StreamId(pub u64);
+
 /// Commands sent to the audio engine
 pub enum AudioCommand {
     /// Start playing from the given reader
     Play {
+        /// The id this station's events carry
+        id: StreamId,
         reader: Box<dyn ReadSeek>,
         format_hint: Option<String>,
         bitrate: Option<u32>,
@@ -46,6 +55,8 @@ pub enum AudioCommand {
         /// Updated with how many bytes of `reader` the decoder has read, so
         /// song info can follow playback (optional)
         playback_position: Option<Arc<AtomicU64>>,
+        /// Direct (ICY) or HLS, for the stats (optional)
+        stream_type: Option<StreamType>,
         /// The stream's cancel (`ResolvedStream::cancel`). The engine cancels
         /// it when the stream stops, which stops its network threads at once.
         cancel: StreamCancel,
@@ -77,6 +88,7 @@ impl fmt::Debug for AudioCommand {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AudioCommand::Play {
+                id,
                 format_hint,
                 bitrate,
                 bytes_received,
@@ -84,6 +96,7 @@ impl fmt::Debug for AudioCommand {
                 ..
             } => f
                 .debug_struct("Play")
+                .field("id", &id.0)
                 .field("format_hint", format_hint)
                 .field("bitrate", bitrate)
                 .field("has_bytes_received", &bytes_received.is_some())
@@ -119,8 +132,6 @@ pub enum AudioEvent {
     Resumed,
     /// An error occurred
     Error(String),
-    /// Metadata update from stream (ICY, etc.)
-    MetadataUpdate { title: String, artist: String },
     /// Stream stalled — no audio data received for too long
     StreamStalled,
     /// Stream recovered from a stall — audio samples flowing again
@@ -138,6 +149,15 @@ pub enum AudioEvent {
     OutputLost,
     /// Playback moved to a newly opened output device after `OutputLost`
     OutputRestored,
+}
+
+/// An engine event, and the station it is about
+#[derive(Debug, Clone)]
+pub struct EngineEvent {
+    /// The station the engine had when this happened: the id its play call
+    /// returned, or `None` when it had none (a device lost while stopped)
+    pub stream: Option<StreamId>,
+    pub event: AudioEvent,
 }
 
 /// Audio analysis data for visualization (VU meters + spectrum)
@@ -259,12 +279,14 @@ mod tests {
     #[test]
     fn audio_command_play_debug_with_hint() {
         let cmd = AudioCommand::Play {
+            id: StreamId(1),
             reader: Box::new(Cursor::new(vec![0u8; 10])),
             format_hint: Some("aac".to_string()),
             bitrate: None,
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            stream_type: None,
             cancel: StreamCancel::new(),
         };
         let debug = format!("{:?}", cmd);
@@ -275,12 +297,14 @@ mod tests {
     #[test]
     fn audio_command_play_debug_without_hint() {
         let cmd = AudioCommand::Play {
+            id: StreamId(1),
             reader: Box::new(Cursor::new(vec![0u8; 10])),
             format_hint: None,
             bitrate: None,
             bytes_received: None,
             segments_downloaded: None,
             playback_position: None,
+            stream_type: None,
             cancel: StreamCancel::new(),
         };
         let debug = format!("{:?}", cmd);
@@ -333,17 +357,6 @@ mod tests {
     }
 
     #[test]
-    fn audio_event_metadata_update() {
-        let evt = AudioEvent::MetadataUpdate {
-            title: "Song Title".to_string(),
-            artist: "Artist Name".to_string(),
-        };
-        let debug = format!("{:?}", evt);
-        assert!(debug.contains("Song Title"));
-        assert!(debug.contains("Artist Name"));
-    }
-
-    #[test]
     fn audio_event_clone() {
         let evt = AudioEvent::Error("cloned error".to_string());
         let cloned = evt.clone();
@@ -366,16 +379,6 @@ mod tests {
         let evt = AudioEvent::Resumed;
         let cloned = evt.clone();
         assert!(matches!(cloned, AudioEvent::Resumed));
-    }
-
-    #[test]
-    fn audio_event_metadata_empty_strings() {
-        let evt = AudioEvent::MetadataUpdate {
-            title: String::new(),
-            artist: String::new(),
-        };
-        // Should not panic
-        let _ = format!("{:?}", evt);
     }
 
     // --- AudioAnalysis ---

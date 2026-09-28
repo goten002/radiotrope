@@ -22,5 +22,7 @@ pub use recording::{
     Recorder, RecordingFormat, RecordingOptions, RecordingStatus, RecordingTags, RecordingTap,
     TapPoint,
 };
-pub use stats::{new_shared_stats, DecoderStats, EventBus, SharedStats, StreamEvent, StreamStats};
-pub use types::{AudioAnalysis, AudioCommand, AudioEvent, CodecInfo, PlaybackState};
+pub use stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
+pub use types::{
+    AudioAnalysis, AudioCommand, AudioEvent, CodecInfo, EngineEvent, PlaybackState, StreamId,
+};
