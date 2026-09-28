@@ -162,7 +162,8 @@ fn main() {
 
     ui.set_touch_scroll(cfg!(feature = "embedded"));
 
-    // Re-sample the visualizer colours whenever the station logo changes
+    // Re-sample the visualizer colours whenever the station logo or the
+    // theme changes (near-white suits the dark theme, near-black the light)
     {
         let ui_weak = ui.as_weak();
         ui.on_logo_changed(move || {
@@ -1466,10 +1467,11 @@ fn show_viz_frame(viz: &VizData, vu: &[f32], spectrum: &[f32], spectrum_model: &
 
 /// Colour the visualizer with the main colours of the station logo
 fn apply_logo_palette(ui: &App) {
+    let dark = ui.get_dark_mode();
     let colors: Vec<slint::Color> = ui
         .get_current_logo()
         .to_rgba8()
-        .map(|buf| logo_palette(buf.as_bytes()))
+        .map(|buf| logo_palette(buf.as_bytes(), dark))
         .unwrap_or_default()
         .into_iter()
         .map(|[r, g, b]| slint::Color::from_rgb_u8(r, g, b))

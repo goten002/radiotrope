@@ -159,6 +159,7 @@ export component App inherits Window {
 
     // Theme proxy — two-way bind to Theme global
     in-out property <bool> dark-mode <=> Theme.dark-mode;
+    changed dark-mode => { root.logo-changed(); }
 
     // Accent color proxy — two-way bind to Theme global
     in-out property <color> accent-color <=> Theme.accent-base;

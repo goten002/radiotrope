@@ -65,10 +65,14 @@ impl LevelSmoother {
 
 /// Hue buckets used to group logo colours (30 degrees each)
 const HUE_BINS: usize = 12;
-/// Pixels darker than this (HSV value) are ignored
+/// Pixels darker than this (HSV value) are ignored; they count as
+/// near-black, the light theme's fallback colour
 const MIN_VALUE: f32 = 0.25;
 /// Pixels greyer than this (HSV saturation) are ignored, which also drops white
 const MIN_SATURATION: f32 = 0.3;
+/// Grey pixels at least this bright (HSV value) count as near-white,
+/// the dark theme's fallback colour
+const MIN_LIGHT_VALUE: f32 = 0.8;
 /// A colour needs this share of the colourful pixels to make the palette
 const MIN_SHARE: f32 = 0.08;
 /// Logos with fewer colourful pixels than this share have no palette.
@@ -83,11 +87,17 @@ const PALETTE_MIN_VALUE: f32 = 0.7;
 ///
 /// `rgba` is the image's pixels in RGBA order. Transparent, very dark and
 /// grey or white pixels are skipped, the rest are grouped by hue and each
-/// group is averaged. Returns an empty list for black-and-white logos.
-pub fn logo_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
+/// group is averaged. A logo with no colours falls back to its near-white
+/// on the dark theme or its near-black on the light one (`dark` picks),
+/// so black-and-white logos still get their own look. Returns an empty
+/// list when there is nothing to use (the accent is used then).
+pub fn logo_palette(rgba: &[u8], dark: bool) -> Vec<[u8; 3]> {
     let mut sums = [[0f64; 3]; HUE_BINS];
     let mut counts = [0usize; HUE_BINS];
     let mut total = 0usize;
+    // Near-white (dark theme) or near-black (light theme) pixels
+    let mut neutral_sum = [0f64; 3];
+    let mut neutral_count = 0usize;
 
     for px in rgba.chunks_exact(4) {
         if px[3] < 128 {
@@ -95,6 +105,17 @@ pub fn logo_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
         }
         total += 1;
         let (h, s, v) = rgb_to_hsv(px[0], px[1], px[2]);
+        let is_neutral = if dark {
+            s < MIN_SATURATION && v >= MIN_LIGHT_VALUE
+        } else {
+            v < MIN_VALUE
+        };
+        if is_neutral {
+            for c in 0..3 {
+                neutral_sum[c] += px[c] as f64;
+            }
+            neutral_count += 1;
+        }
         if v < MIN_VALUE || s < MIN_SATURATION {
             continue;
         }
@@ -105,9 +126,14 @@ pub fn logo_palette(rgba: &[u8]) -> Vec<[u8; 3]> {
         counts[bin] += 1;
     }
 
+    let enough = |n: usize| total > 0 && n as f32 >= total as f32 * MIN_COLOURFUL;
     let colourful: usize = counts.iter().sum();
-    if total == 0 || (colourful as f32) < total as f32 * MIN_COLOURFUL {
-        return Vec::new();
+    if !enough(colourful) {
+        if !enough(neutral_count) {
+            return Vec::new();
+        }
+        let n = neutral_count as f64;
+        return vec![neutral_sum.map(|c| (c / n) as u8)];
     }
 
     let mut bins: Vec<usize> = (0..HUE_BINS)
@@ -216,7 +242,7 @@ mod tests {
     #[test]
     fn green_logo_gives_green() {
         let img = image(&[([255, 255, 255], 500), ([90, 190, 90], 300)]);
-        let p = logo_palette(&img);
+        let p = logo_palette(&img, true);
         assert_eq!(p.len(), 1);
         let [r, g, b] = p[0];
         assert!(g > r && g > b);
@@ -225,20 +251,54 @@ mod tests {
     #[test]
     fn colours_ordered_by_share() {
         let img = image(&[([220, 30, 30], 100), ([30, 60, 220], 300), ([0, 0, 0], 400)]);
-        let p = logo_palette(&img);
+        let p = logo_palette(&img, true);
         assert_eq!(p.len(), 2);
         assert!(p[0][2] > p[0][0], "blue first");
         assert!(p[1][0] > p[1][2], "red second");
     }
 
     #[test]
-    fn black_and_white_logo_has_no_palette() {
+    fn grey_logo_has_no_palette() {
+        let img = image(&[([128, 128, 128], 300), ([150, 150, 150], 300)]);
+        assert!(logo_palette(&img, true).is_empty());
+        assert!(logo_palette(&img, false).is_empty());
+    }
+
+    #[test]
+    fn black_and_white_logo_falls_back_to_the_theme_neutral() {
         let img = image(&[
-            ([0, 0, 0], 300),
-            ([255, 255, 255], 300),
+            ([5, 5, 5], 300),
+            ([245, 245, 245], 200),
             ([128, 128, 128], 50),
         ]);
-        assert!(logo_palette(&img).is_empty());
+        assert_eq!(
+            logo_palette(&img, true),
+            vec![[245, 245, 245]],
+            "white on dark"
+        );
+        assert_eq!(logo_palette(&img, false), vec![[5, 5, 5]], "black on light");
+    }
+
+    #[test]
+    fn neutrals_only_when_there_are_no_colours() {
+        // Mostly white with a small red mark: the red wins on both themes
+        let img = image(&[
+            ([250, 250, 250], 900),
+            ([10, 10, 10], 50),
+            ([220, 30, 30], 50),
+        ]);
+        for dark in [true, false] {
+            let p = logo_palette(&img, dark);
+            assert_eq!(p.len(), 1);
+            assert!(p[0][0] > p[0][1] && p[0][0] > p[0][2]);
+        }
+    }
+
+    #[test]
+    fn white_only_logo_has_no_palette_on_the_light_theme() {
+        let img = image(&[([250, 250, 250], 400), ([120, 120, 120], 100)]);
+        assert_eq!(logo_palette(&img, true), vec![[250, 250, 250]]);
+        assert!(logo_palette(&img, false).is_empty());
     }
 
     #[test]
@@ -249,7 +309,7 @@ mod tests {
             ([200, 200, 200], 100),
             ([220, 20, 30], 27),
         ]);
-        let p = logo_palette(&img);
+        let p = logo_palette(&img, true);
         assert_eq!(p.len(), 1);
         assert!(p[0][0] > p[0][1] && p[0][0] > p[0][2]);
     }
@@ -262,14 +322,14 @@ mod tests {
             ([30, 30, 230], 100),
             ([230, 230, 30], 100),
         ]);
-        assert_eq!(logo_palette(&img).len(), 3);
+        assert_eq!(logo_palette(&img, true).len(), 3);
     }
 
     #[test]
     fn transparent_pixels_ignored() {
         let mut img = image(&[([200, 40, 40], 50)]);
         img.extend([30, 200, 30, 0].repeat(1000));
-        let p = logo_palette(&img);
+        let p = logo_palette(&img, true);
         assert_eq!(p.len(), 1);
         assert!(p[0][0] > p[0][1]);
     }
@@ -277,13 +337,13 @@ mod tests {
     #[test]
     fn dark_colours_brightened() {
         let img = image(&[([20, 20, 120], 100)]);
-        let p = logo_palette(&img);
+        let p = logo_palette(&img, true);
         assert_eq!(p.len(), 1);
         assert!(p[0][2] as f32 / 255.0 >= PALETTE_MIN_VALUE - 0.01);
     }
 
     #[test]
     fn empty_image() {
-        assert!(logo_palette(&[]).is_empty());
+        assert!(logo_palette(&[], true).is_empty());
     }
 }
