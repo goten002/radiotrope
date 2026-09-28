@@ -142,6 +142,9 @@ export component App inherits Window {
     callback restore-browse(/* mode */ string, /* country */ string) -> bool;
     // Star on a search result: add it to favorites or remove it
     callback toggle-browse-favorite(BrowseStation);
+    // Open Network Stream: save a stream as a favorite (url, name, logo url)
+    callback save-stream-favorite(string, string, string);
+    pure callback is-favorite-url(string) -> bool;
 
     // Country picker proxy properties (for Rust access)
     in-out property <[CountryEntry]> countries <=> picker-dialog.countries;
@@ -321,6 +324,12 @@ export component App inherits Window {
     stream-dialog := NetworkStreamDialog {
         accepted(url) => {
             root.play-url(url);
+        }
+        save-requested(url, name, logo) => {
+            root.save-stream-favorite(url, name, logo);
+        }
+        is-favorite(url) => {
+            return root.is-favorite-url(url);
         }
     }
 

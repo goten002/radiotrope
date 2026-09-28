@@ -387,6 +387,62 @@ fn main() {
         });
     }
 
+    // Open Network Stream: the stream's favorite state, and saving it as one
+    {
+        let favs = favorites.clone();
+        ui.on_is_favorite_url(move |url| {
+            favs.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_favorite(url.trim())
+        });
+    }
+    {
+        let favs = favorites.clone();
+        let logo_svc = logo_service.clone();
+        let ui_weak = ui.as_weak();
+        ui.on_save_stream_favorite(move |url, name, logo_url| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let (url, name, logo_url) = (url.trim(), name.trim(), logo_url.trim());
+            if url.is_empty() || name.is_empty() {
+                return;
+            }
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            if f.is_favorite(url) {
+                return;
+            }
+            let mut fav = radiotrope_app::data::types::Favorite::new(name, url);
+            if !logo_url.is_empty() {
+                fav = fav.with_logo(logo_url);
+            }
+            let _ = f.add(fav);
+            let _ = f.save();
+            let current = ui.get_station_url();
+            ui.set_is_station_favorited(!current.is_empty() && f.is_favorite(&current));
+            drop(f);
+            refresh_favorites(&ui, &favs, &logo_svc);
+
+            // Fetch the logo in the background, then show it in the list
+            if !logo_url.is_empty() {
+                let logo_svc = logo_svc.clone();
+                let favs = favs.clone();
+                let ui_weak = ui_weak.clone();
+                let station = Station::new(name, url).with_logo(logo_url);
+                std::thread::Builder::new()
+                    .name("stream-logo-fetch".into())
+                    .spawn(move || {
+                        if logo_svc.get_rgba(&station).is_some() {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = ui_weak.upgrade() {
+                                    refresh_favorites(&ui, &favs, &logo_svc);
+                                }
+                            });
+                        }
+                    })
+                    .ok();
+            }
+        });
+    }
+
     // play-favorite callback
     {
         let play_tx = cmd_tx.clone();

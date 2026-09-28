@@ -1,26 +1,54 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { DialogShell, Field } from "../components.slint";
+import { DialogShell, Field, Toggle } from "../components.slint";
 
 export component NetworkStreamDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <string> url: "";
+    // Save the stream as a favorite station with a name and logo
+    in-out property <bool> save-station: false;
+    in-out property <string> name: "";
+    in-out property <string> logo-url: "";
     callback accepted(string);
+    // url, name, logo url
+    callback save-requested(string, string, string);
     callback cancelled();
+    pure callback is-favorite(string) -> bool;
+
+    property <bool> known: root.url != "" && root.is-favorite(root.url);
+    property <bool> saving: root.save-station && !root.known;
+    property <bool> can-save: root.url != "" && root.name != "" && !root.known;
+
+    function reset() {
+        root.url = "";
+        root.name = "";
+        root.logo-url = "";
+        root.save-station = false;
+    }
 
     function cancel() {
-        root.url = "";
+        root.reset();
         root.show-dialog = false;
         root.cancelled();
     }
 
-    function play() {
-        if root.url != "" {
-            root.show-dialog = false;
-            root.accepted(root.url);
-            root.url = "";
+    function save() {
+        if root.can-save {
+            root.save-requested(root.url, root.name, root.logo-url);
         }
+    }
+
+    function play() {
+        if root.url == "" || (root.saving && root.name == "") {
+            return;
+        }
+        if root.saving {
+            root.save();
+        }
+        root.show-dialog = false;
+        root.accepted(root.url);
+        root.reset();
     }
 
     if show-dialog: DialogShell {
@@ -41,6 +69,42 @@ export component NetworkStreamDialog inherits Rectangle {
             }
         }
 
+        VerticalLayout {
+            spacing: 2px;
+
+            Toggle {
+                label: "Add to Favorites";
+                checked <=> root.save-station;
+                enabled: !root.known;
+            }
+
+            if root.known: Text {
+                text: "This stream is already in your favorites.";
+                font-size: 12px;
+                color: Theme.accent;
+            }
+        }
+
+        if root.saving: Field {
+            label: "Name";
+            StyledLineEdit {
+                placeholder-text: "Station name";
+                text <=> root.name;
+                accepted(text) => { root.play(); }
+                init => { self.focus-input(); }
+            }
+        }
+
+        if root.saving: Field {
+            label: "Logo URL (optional)";
+            StyledLineEdit {
+                placeholder-text: "https://example.com/logo.png";
+                text <=> root.logo-url;
+                clearable: true;
+                accepted(text) => { root.play(); }
+            }
+        }
+
         HorizontalLayout {
             alignment: end;
             spacing: 8px;
@@ -50,9 +114,19 @@ export component NetworkStreamDialog inherits Rectangle {
                 clicked => { root.cancel(); }
             }
 
+            if root.saving: SecondaryButton {
+                label: "Save";
+                enabled: root.can-save;
+                clicked => {
+                    root.save();
+                    root.show-dialog = false;
+                    root.reset();
+                }
+            }
+
             AccentButton {
-                label: "Play";
-                enabled: root.url != "";
+                label: root.saving ? "Save & Play" : "Play";
+                enabled: root.url != "" && (!root.saving || root.name != "");
                 clicked => { root.play(); }
             }
         }
