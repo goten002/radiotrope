@@ -42,6 +42,7 @@ export component EditFavoriteDialog inherits Rectangle {
 
         Field {
             label: "Name";
+            required: true;
             StyledLineEdit {
                 placeholder-text: "Station name";
                 text <=> root.edit-name;
@@ -50,6 +51,7 @@ export component EditFavoriteDialog inherits Rectangle {
 
         Field {
             label: "Stream URL";
+            required: true;
             StyledLineEdit {
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.edit-url;

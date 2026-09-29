@@ -350,14 +350,16 @@ export component Chip inherits Rectangle {
 // Form field: a small label above its input
 export component Field inherits VerticalLayout {
     in property <string> label;
+    // A field that must be filled in: its label is bold
+    in property <bool> required: false;
 
     spacing: 6px;
 
     Text {
         text: root.label;
-        color: Theme.text-secondary;
+        color: root.required ? Theme.text-primary : Theme.text-secondary;
         font-size: 12px;
-        font-weight: 500;
+        font-weight: root.required ? 700 : 500;
     }
 
     @children

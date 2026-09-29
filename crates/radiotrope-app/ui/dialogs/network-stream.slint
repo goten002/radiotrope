@@ -48,6 +48,7 @@ export component NetworkStreamDialog inherits Rectangle {
         // Same fields, in the same order, as Edit Favorite
         Field {
             label: "Name";
+            required: true;
             StyledLineEdit {
                 placeholder-text: "Station name";
                 text <=> root.name;
@@ -58,6 +59,7 @@ export component NetworkStreamDialog inherits Rectangle {
 
         Field {
             label: "Stream URL";
+            required: true;
             StyledLineEdit {
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.url;
