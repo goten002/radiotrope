@@ -1,5 +1,6 @@
 mod app;
 mod mcp;
+mod row_logos;
 #[cfg(feature = "desktop")]
 mod window_frame;
 
@@ -21,7 +22,8 @@ use radiotrope::stream::StreamType;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
-use radiotrope_app::data::types::{url_to_id, FavoriteSort, Station};
+use radiotrope_app::data::types::{FavoriteSort, Station};
+use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
 use radiotrope_app::providers::ProviderRegistry;
@@ -767,12 +769,47 @@ fn main() {
     // What the station browser shows, and how far "Load More" has paged
     let browse_state = Arc::new(Mutex::new((BrowseQuery::Top, 0usize)));
 
+    // Logos of the browser rows on screen, kept small on disk
+    let browse_logos = Arc::new(BrowseLogos::open().expect("Failed to create the logo cache"));
+    {
+        let browse_logos = browse_logos.clone();
+        std::thread::Builder::new()
+            .name("browse-logo-trim".into())
+            .spawn(move || browse_logos.trim())
+            .ok();
+    }
+    let row_logos = row_logos::RowLogos::start(
+        ui.as_weak(),
+        browse_logos,
+        logo_service.clone(),
+        browse_logo_gen.clone(),
+    );
+    {
+        let ui_weak = ui.as_weak();
+        let row_logos = row_logos.clone();
+        ui.on_browse_rows_changed(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                row_logos.refresh(&ui);
+            }
+        });
+    }
+    {
+        let ui_weak = ui.as_weak();
+        let row_logos = row_logos.clone();
+        ui.on_browse_closed(move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                row_logos.release(&ui);
+                row_logos::return_freed_memory();
+            }
+        });
+    }
+
     // search-stations callback (an empty query shows the top stations)
     {
         let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
-        let logo_svc = logo_service.clone();
+        let row_logos = row_logos.clone();
         let favs = favorites.clone();
         ui.on_search_stations(move |query| {
             let query = query.trim();
@@ -781,7 +818,7 @@ fn main() {
             } else {
                 BrowseQuery::Search(query.to_string())
             };
-            start_browse(&ui_weak, &state, &gen, &logo_svc, &favs, query);
+            start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
         });
     }
 
@@ -790,10 +827,10 @@ fn main() {
         let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
-        let logo_svc = logo_service.clone();
+        let row_logos = row_logos.clone();
         let favs = favorites.clone();
         ui.on_load_top_stations(move || {
-            start_browse(&ui_weak, &state, &gen, &logo_svc, &favs, BrowseQuery::Top);
+            start_browse(&ui_weak, &state, &gen, &row_logos, &favs, BrowseQuery::Top);
         });
     }
 
@@ -802,7 +839,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
-        let logo_svc = logo_service.clone();
+        let row_logos = row_logos.clone();
         let favs = favorites.clone();
         ui.on_browse_country(move |name, code, query| {
             let category = Category::new(name.as_str(), name.as_str(), CategoryType::Country)
@@ -811,7 +848,7 @@ fn main() {
                 category,
                 query: query.trim().to_string(),
             };
-            start_browse(&ui_weak, &state, &gen, &logo_svc, &favs, query);
+            start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
         });
     }
 
@@ -820,7 +857,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
-        let logo_svc = logo_service.clone();
+        let row_logos = row_logos.clone();
         let favs = favorites.clone();
         ui.on_load_more_stations(move || {
             let (query, offset) = {
@@ -831,7 +868,7 @@ fn main() {
             let my_gen = gen.load(Ordering::Relaxed);
             let ui_weak = ui_weak.clone();
             let gen = gen.clone();
-            let logo_svc = logo_svc.clone();
+            let row_logos = row_logos.clone();
             let favs = favs.clone();
             let state = state.clone();
             std::thread::Builder::new()
@@ -846,9 +883,9 @@ fn main() {
                             return;
                         }
                         match results {
-                            Ok(results) => show_browse_results(
-                                &ui, results, true, &favs, logo_svc, gen, my_gen,
-                            ),
+                            Ok(results) => {
+                                show_browse_results(&ui, results, true, &favs, &row_logos)
+                            }
                             Err(e) => {
                                 // Step back so the next scroll retries this page
                                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
@@ -867,6 +904,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         let favs = favorites.clone();
         let logo_svc = logo_service.clone();
+        let row_logos = row_logos.clone();
         ui.on_toggle_browse_favorite(move |item| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
@@ -895,6 +933,10 @@ fn main() {
                         );
                     if !item.logo_url.is_empty() {
                         fav = fav.with_logo(item.logo_url.as_str());
+                        // The browser already has the logo: no new download
+                        if let Some(png) = row_logos.logos().cached_png(&item.logo_url) {
+                            let _ = logo_svc.cache().put_logo(&fav, &png);
+                        }
                     }
                     let _ = f.add(fav);
                 }
@@ -916,6 +958,7 @@ fn main() {
             let ui_weak = ui.as_weak();
             let stash = stash.clone();
             let state = browse_state.clone();
+            let row_logos = row_logos.clone();
             ui.on_stash_browse(move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
                 // Nothing worth keeping while it loads or after an error
@@ -923,6 +966,8 @@ fn main() {
                     return;
                 }
                 let (query, offset) = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+                // The list is kept without logos; they load again when shown
+                row_logos.release(&ui);
                 stash.borrow_mut().insert(
                     ui.get_browse_mode().to_string(),
                     BrowseStash {
@@ -944,7 +989,7 @@ fn main() {
             let state = browse_state.clone();
             let gen = browse_logo_gen.clone();
             let favs = favorites.clone();
-            let logo_svc = logo_service.clone();
+            let row_logos = row_logos.clone();
             ui.on_restore_browse(move |mode, country| {
                 let Some(ui) = ui_weak.upgrade() else {
                     return false;
@@ -956,7 +1001,7 @@ fn main() {
                     return false;
                 };
                 // Drop replies still on their way for the list being hidden
-                let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
+                gen.fetch_add(1, Ordering::Relaxed);
                 *state.lock().unwrap_or_else(|e| e.into_inner()) = (kept.query, kept.offset);
                 ui.set_browse_mode(mode);
                 ui.set_search_results(kept.results);
@@ -969,23 +1014,7 @@ fn main() {
                 ui.set_browse_shown(kept.shown);
                 ui.set_browse_scroll(kept.scroll);
                 mark_browse_favorites(&ui, &favs.lock().unwrap_or_else(|e| e.into_inner()));
-                // Logos that were still loading when it was put aside
-                let results = ui.get_search_results();
-                let misses: Vec<(usize, String, String)> = (0..results.row_count())
-                    .filter_map(|i| {
-                        let item = results.row_data(i)?;
-                        let missing = kept.logos.row_data(i).is_none_or(|l| l.size().width == 0);
-                        (missing && !item.logo_url.is_empty())
-                            .then(|| (i, item.url.to_string(), item.logo_url.to_string()))
-                    })
-                    .collect();
-                spawn_browse_logo_fetch(
-                    ui.as_weak(),
-                    logo_svc.clone(),
-                    misses,
-                    gen.clone(),
-                    my_gen,
-                );
+                row_logos.refresh(&ui);
                 true
             });
         }
@@ -2586,7 +2615,7 @@ fn start_browse(
     ui_weak: &slint::Weak<App>,
     state: &Arc<Mutex<(BrowseQuery, usize)>>,
     gen: &Arc<AtomicU64>,
-    logo_svc: &Arc<LogoService>,
+    row_logos: &row_logos::RowLogos,
     favs: &Arc<Mutex<FavoritesManager>>,
     query: BrowseQuery,
 ) {
@@ -2602,7 +2631,7 @@ fn start_browse(
     }
     let ui_weak = ui_weak.clone();
     let gen = gen.clone();
-    let logo_svc = logo_svc.clone();
+    let row_logos = row_logos.clone();
     let favs = favs.clone();
     std::thread::Builder::new()
         .name("station-browse".into())
@@ -2614,9 +2643,7 @@ fn start_browse(
                     return;
                 }
                 match results {
-                    Ok(results) => {
-                        show_browse_results(&ui, results, false, &favs, logo_svc, gen, my_gen)
-                    }
+                    Ok(results) => show_browse_results(&ui, results, false, &favs, &row_logos),
                     Err(e) => ui.set_search_error(format!("{e}").into()),
                 }
                 ui.set_search_loading(false);
@@ -2626,15 +2653,13 @@ fn start_browse(
 }
 
 /// Show a page of browser results, appending to the list or replacing it,
-/// then fetch the logos that aren't cached
+/// then load the logos of the rows on screen
 fn show_browse_results(
     ui: &App,
     results: SearchResults,
     append: bool,
     favs: &Arc<Mutex<FavoritesManager>>,
-    logo_svc: Arc<LogoService>,
-    gen: Arc<AtomicU64>,
-    my_gen: u64,
+    row_logos: &row_logos::RowLogos,
 ) {
     let mut new_items: Vec<BrowseStation> =
         results.stations.iter().map(station_to_browse).collect();
@@ -2654,14 +2679,14 @@ fn show_browse_results(
     } else {
         (Vec::new(), Vec::new())
     };
-    let (new_logos, misses) = build_browse_logos_from_cache(&new_items, items.len());
+    // No logos yet: rows get theirs as they come on screen
+    logos.resize(items.len() + new_items.len(), slint::Image::default());
     items.extend(new_items);
-    logos.extend(new_logos);
     ui.set_search_results(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
     ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
     ui.set_has_more(results.has_more);
     ui.set_search_error(Default::default());
-    spawn_browse_logo_fetch(ui.as_weak(), logo_svc, misses, gen, my_gen);
+    row_logos.refresh(ui);
 }
 
 fn station_to_browse(s: &Station) -> BrowseStation {
@@ -2703,92 +2728,6 @@ fn mark_browse_favorites(ui: &App, favs: &FavoritesManager) {
         }
     }
     // Lists put aside for the other mode get theirs when shown again
-}
-
-/// Number of concurrent logo fetch threads
-const BROWSE_LOGO_WORKERS: usize = 6;
-
-/// Max logo thumbnail size (2x display size for HiDPI)
-const BROWSE_LOGO_SIZE: u32 = 64;
-
-/// Spawn background threads to fetch browse logos and progressively update the UI.
-///
-/// `work` contains only cache misses: `(model_idx, station_url, logo_url)`.
-fn spawn_browse_logo_fetch(
-    ui_weak: slint::Weak<App>,
-    logo_svc: Arc<LogoService>,
-    work: Vec<(usize, String, String)>,
-    gen: Arc<AtomicU64>,
-    my_gen: u64,
-) {
-    if work.is_empty() {
-        return;
-    }
-    // Shared work queue: each worker grabs the next item atomically
-    let next_idx = Arc::new(AtomicU64::new(0));
-    let work = Arc::new(work);
-    let worker_count = BROWSE_LOGO_WORKERS.min(work.len());
-
-    for w in 0..worker_count {
-        let ui_weak = ui_weak.clone();
-        let logo_svc = logo_svc.clone();
-        let work = work.clone();
-        let gen = gen.clone();
-        let next_idx = next_idx.clone();
-        std::thread::Builder::new()
-            .name(format!("browse-logo-{w}"))
-            .spawn(move || {
-                loop {
-                    if gen.load(Ordering::Relaxed) != my_gen {
-                        return;
-                    }
-                    let i = next_idx.fetch_add(1, Ordering::Relaxed) as usize;
-                    if i >= work.len() {
-                        return;
-                    }
-                    let (idx, ref station_url, ref logo_url) = work[i];
-                    let data = logo_svc.fetch_raw(logo_url).ok();
-
-                    if gen.load(Ordering::Relaxed) != my_gen {
-                        return;
-                    }
-                    if let Some(data) = data {
-                        if let Ok(img) = image::load_from_memory(&data) {
-                            let thumb = if img.width() > BROWSE_LOGO_SIZE
-                                || img.height() > BROWSE_LOGO_SIZE
-                            {
-                                img.thumbnail(BROWSE_LOGO_SIZE, BROWSE_LOGO_SIZE)
-                            } else {
-                                img
-                            };
-                            let rgba = thumb.to_rgba8();
-                            let (w, h) = rgba.dimensions();
-                            let pixels = rgba.into_raw();
-
-                            let cache_key = url_to_id(station_url);
-                            let ui_weak = ui_weak.clone();
-                            let _ = slint::invoke_from_event_loop(move || {
-                                let Some(ui) = ui_weak.upgrade() else { return };
-                                let pixel_buf =
-                                    SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                        &pixels, w, h,
-                                    );
-                                let img = slint::Image::from_rgba8(pixel_buf);
-                                // Insert into in-memory cache for instant reuse
-                                BROWSE_IMAGE_CACHE.with(|cache| {
-                                    cache.borrow_mut().insert(cache_key, img.clone());
-                                });
-                                let model = ui.get_browse_logos();
-                                if idx < model.row_count() {
-                                    model.set_row_data(idx, img);
-                                }
-                            });
-                        }
-                    }
-                }
-            })
-            .ok();
-    }
 }
 
 fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStation {
@@ -3040,36 +2979,6 @@ fn flag_image(country_code: Option<&str>, country: Option<&str>) -> slint::Image
 thread_local! {
     static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
         std::cell::RefCell::new(HashMap::new());
-
-    static BROWSE_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
-/// Build browse logos from in-memory cache, returning cached images and work items for misses.
-///
-/// `offset` is the starting index in the UI model (0 for fresh results, N for load-more).
-fn build_browse_logos_from_cache(
-    items: &[BrowseStation],
-    offset: usize,
-) -> (Vec<slint::Image>, Vec<(usize, String, String)>) {
-    BROWSE_IMAGE_CACHE.with(|cache| {
-        let cache = cache.borrow();
-        let mut logos = Vec::with_capacity(items.len());
-        let mut misses = Vec::new();
-        for (i, item) in items.iter().enumerate() {
-            let key = url_to_id(item.url.as_ref());
-            if let Some(img) = cache.get(&key) {
-                logos.push(img.clone());
-            } else {
-                logos.push(Default::default());
-                let logo_url = item.logo_url.to_string();
-                if !logo_url.is_empty() {
-                    misses.push((offset + i, item.url.to_string(), logo_url));
-                }
-            }
-        }
-        (logos, misses)
-    })
 }
 
 /// Remove a cached logo image, forcing re-decode on next refresh.

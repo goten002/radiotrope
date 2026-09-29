@@ -136,6 +136,11 @@ export component App inherits Window {
     in-out property <string> browse-typed <=> browser-dialog.search-query;
     in-out property <string> browse-shown <=> browser-dialog.shown-query;
     in-out property <length> browse-scroll <=> browser-dialog.list-scroll;
+    // Rows of the station browser on screen, and when they change
+    out property <int> browse-visible-first: browser-dialog.visible-first;
+    out property <int> browse-visible-count: browser-dialog.visible-count;
+    callback browse-rows-changed();
+    callback browse-closed();
     in-out property <string> browse-country-name <=> browser-dialog.country-name;
     in-out property <string> browse-country-code <=> browser-dialog.country-code;
     in-out property <image> browse-country-flag <=> browser-dialog.country-flag;
@@ -397,6 +402,8 @@ export component App inherits Window {
         load-more() => { root.load-more-stations(); }
         station-selected(station) => { root.play-station(station); }
         favorite-toggled(station) => { root.toggle-browse-favorite(station); }
+        visible-rows-changed() => { root.browse-rows-changed(); }
+        closed() => { root.browse-closed(); }
     }
 
     edit-dialog := EditFavoriteDialog {

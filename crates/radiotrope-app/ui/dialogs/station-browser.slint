@@ -243,6 +243,7 @@ export component StationBrowserDialog inherits Rectangle {
     changed show-dialog => {
         if !self.show-dialog {
             root.picked = "";
+            root.closed();
         }
     }
     in-out property <string> search-query: "";
@@ -250,6 +251,18 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <string> shown-query: "";
     // How far the list is scrolled (kept while the dialog is closed)
     in-out property <length> list-scroll: 0;
+    // The rows on screen: first row and how many, for loading their logos
+    out property <int> visible-first;
+    out property <int> visible-count;
+    callback visible-rows-changed();
+    // The dialog closed: its logos can be let go
+    callback closed();
+
+    function show-rows(first: int, count: int) {
+        root.visible-first = first;
+        root.visible-count = count;
+        root.visible-rows-changed();
+    }
 
     // Search by name; an empty query loads the top stations
     callback search-stations(string);
@@ -375,7 +388,7 @@ export component StationBrowserDialog inherits Rectangle {
             // Results list
             if root.search-results.length > 0: Rectangle {
                 results-flick := Flickable {
-                    content-height: results-layout.preferred-height;
+                    content-height: rows.height;
                     content-y <=> root.list-scroll;
 
                     // Infinite scroll: fetch the next page when the view
@@ -388,17 +401,36 @@ export component StationBrowserDialog inherits Rectangle {
                         }
                     }
 
-                    results-layout := VerticalLayout {
-                        padding: 4px;
+                    // Only the rows on screen (and a couple either side)
+                    // exist, however long the list; Rust loads the logos
+                    // of the rows shown
+                    rows := Rectangle {
+                        property <length> row-height: 56px;
+                        property <int> first: max(0, floor(-root.list-scroll / self.row-height) - 2);
+                        property <int> pool: ceil(results-flick.height / self.row-height) + 4;
+                        property <int> count: max(0, min(root.search-results.length - self.first, self.pool));
+                        height: root.search-results.length * self.row-height + 8px
+                            + (root.has-more ? 40px : 0px);
+                        init => { root.show-rows(self.first, self.count); }
+                        changed first => { root.show-rows(self.first, self.count); }
+                        changed count => { root.show-rows(self.first, self.count); }
 
-                        for station[idx] in root.search-results: StationRow {
+                        for k in rows.count: StationRow {
+                            // Each row keeps its station while it stays on
+                            // screen, so hover and highlight don't hop
+                            // between rows as the list scrolls
+                            property <int> idx: rows.first + mod(k - mod(rows.first, rows.count) + rows.count, rows.count);
+                            property <BrowseStation> station: root.search-results[self.idx];
+                            x: 4px;
+                            y: 4px + self.idx * rows.row-height;
+                            width: rows.width - 8px;
                             name: station.name;
                             country: station.country;
                             codec: station.codec;
                             bitrate: station.bitrate;
-                            logo-image: idx < root.browse-logos.length ? root.browse-logos[idx] : @image-url("");
-                            has-logo: idx < root.browse-logos.length
-                                ? root.browse-logos[idx].width > 0
+                            logo-image: self.idx < root.browse-logos.length ? root.browse-logos[self.idx] : @image-url("");
+                            has-logo: self.idx < root.browse-logos.length
+                                ? root.browse-logos[self.idx].width > 0
                                 : false;
                             // The row clicked here; before any click, the row
                             // whose URL is playing
@@ -420,6 +452,9 @@ export component StationBrowserDialog inherits Rectangle {
 
                         // Footer while the next page loads
                         if root.has-more: Text {
+                            x: 0;
+                            y: 4px + root.search-results.length * rows.row-height;
+                            width: rows.width;
                             height: 40px;
                             text: root.search-loading-more ? "Loading more stations..." : "";
                             color: Theme.text-secondary;

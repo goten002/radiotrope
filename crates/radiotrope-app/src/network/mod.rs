@@ -3,6 +3,7 @@
 //! HTTP client and utilities.
 
 pub mod api_cache;
+pub mod browse_logos;
 pub mod client;
 pub mod logo;
 
