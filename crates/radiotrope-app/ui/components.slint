@@ -3,7 +3,7 @@
 // Shared building blocks for the modern look (dialog shell, section
 // headers, info rows, chips, icon buttons, form fields)
 
-import { Theme } from "theme.slint";
+import { Theme, Defaults } from "defaults.slint";
 
 // Colorized icon. Draws the image 1px larger on every side and clips that
 // edge off: the femtovg renderer builds colorized textures without clearing
@@ -87,7 +87,7 @@ export component SectionHeader inherits Rectangle {
         y: parent.height - self.height - 2px;
         text: root.title;
         color: Theme.accent-text;
-        font-size: 10px;
+        font-size: Theme.font-xs;
         font-weight: 600;
         letter-spacing: 1px;
     }
@@ -111,14 +111,14 @@ export component InfoRow inherits Rectangle {
             width: root.label-width;
             text: root.label;
             color: Theme.text-secondary;
-            font-size: 11px;
+            font-size: Theme.font-sm;
             vertical-alignment: center;
         }
 
         if !root.selectable: Text {
             text: root.value;
             color: Theme.text-primary;
-            font-size: 11px;
+            font-size: Theme.font-sm;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
@@ -132,7 +132,7 @@ export component InfoRow inherits Rectangle {
                 width: 100%;
                 text: root.value;
                 color: Theme.text-primary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 vertical-alignment: center;
                 read-only: true;
                 single-line: true;
@@ -166,7 +166,7 @@ export component LinkRow inherits Rectangle {
             width: root.label-width;
             text: root.label;
             color: Theme.text-secondary;
-            font-size: 11px;
+            font-size: Theme.font-sm;
             vertical-alignment: center;
         }
 
@@ -180,7 +180,7 @@ export component LinkRow inherits Rectangle {
                     name := Text {
                         text: link.name;
                         color: touch.has-hover ? Theme.accent-hover : Theme.accent-text;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                         vertical-alignment: center;
                     }
                     // Underline on hover (Text can't underline)
@@ -198,7 +198,7 @@ export component LinkRow inherits Rectangle {
                 if i < root.links.length - 1: Text {
                     text: ", ";
                     color: Theme.text-primary;
-                    font-size: 11px;
+                    font-size: Theme.font-sm;
                     vertical-alignment: center;
                 }
             }
@@ -206,7 +206,7 @@ export component LinkRow inherits Rectangle {
             if root.note != "": Text {
                 text: " " + root.note;
                 color: Theme.text-secondary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 vertical-alignment: center;
                 overflow: elide;
             }
@@ -280,7 +280,7 @@ export component Chip inherits Rectangle {
             Text {
                 text: root.text;
                 color: root.tone;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 font-weight: 600;
                 vertical-alignment: center;
                 overflow: elide;
@@ -302,7 +302,7 @@ export component Chip inherits Rectangle {
                 separator := Text {
                     text: "·";
                     color: root.tone;
-                    font-size: 11px;
+                    font-size: Theme.font-sm;
                     font-weight: 600;
                     vertical-alignment: center;
                     horizontal-alignment: center;
@@ -312,7 +312,7 @@ export component Chip inherits Rectangle {
             if root.detail != "": Text {
                 text: root.detail;
                 color: root.tone;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 font-weight: 600;
                 vertical-alignment: center;
                 overflow: elide;
@@ -325,14 +325,14 @@ export component Chip inherits Rectangle {
     measure := Text {
         visible: false;
         text: root.steady ? TextUtil.steady-digits(root.text) : root.text;
-        font-size: 11px;
+        font-size: Theme.font-sm;
         font-weight: 600;
     }
 
     plain-measure := Text {
         visible: false;
         text: root.text;
-        font-size: 11px;
+        font-size: Theme.font-sm;
         font-weight: 600;
     }
 
@@ -342,7 +342,7 @@ export component Chip inherits Rectangle {
     detail-measure := Text {
         visible: false;
         text: root.steady ? TextUtil.steady-digits(root.detail) : root.detail;
-        font-size: 11px;
+        font-size: Theme.font-sm;
         font-weight: 600;
     }
 }
@@ -358,7 +358,7 @@ export component Field inherits VerticalLayout {
     Text {
         text: root.label;
         color: root.required ? Theme.text-primary : Theme.text-secondary;
-        font-size: 12px;
+        font-size: Theme.font-md;
         font-weight: root.required ? 700 : 500;
     }
 
@@ -373,7 +373,7 @@ export component DialogShell inherits Rectangle {
     in property <string> subtitle;
     // Optional image before the title (e.g. a flag)
     in property <image> icon;
-    in property <length> card-width: 440px;
+    in property <length> card-width: Defaults.dialog-width;
     // Fixed card height; 0 sizes the card to its content
     in property <length> card-height: 0px;
     in property <bool> close-on-backdrop: true;
@@ -487,7 +487,7 @@ export component DialogShell inherits Rectangle {
                         Text {
                             text: root.title;
                             color: Theme.text-primary;
-                            font-size: 17px;
+                            font-size: Theme.font-title;
                             font-weight: 600;
                             overflow: elide;
                         }
@@ -495,7 +495,7 @@ export component DialogShell inherits Rectangle {
                         if root.subtitle != "": Text {
                             text: root.subtitle;
                             color: Theme.text-secondary;
-                            font-size: 11px;
+                            font-size: Theme.font-sm;
                             overflow: elide;
                         }
                     }
@@ -577,7 +577,7 @@ export component Toggle inherits Rectangle {
         if root.label != "": Text {
             text: root.label;
             color: Theme.text-primary;
-            font-size: 13px;
+            font-size: Theme.font-base;
             vertical-alignment: center;
         }
     }

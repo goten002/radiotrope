@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { FavoriteStation } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton, DangerButton } from "../buttons.slint";
@@ -37,7 +37,7 @@ export component EditFavoriteDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Edit Favorite";
         subtitle: root.edit-name;
-        card-width: 460px;
+        card-width: Defaults.edit-favorite-width;
         close-requested => { root.show-dialog = false; }
 
         Field {

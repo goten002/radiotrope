@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme } from "defaults.slint";
 
 component KeyButton inherits Rectangle {
     in property <string> key;
@@ -17,7 +17,7 @@ component KeyButton inherits Rectangle {
     Text {
         text: root.key;
         color: Theme.text-primary;
-        font-size: 16px;
+        font-size: Theme.font-2xl;
         horizontal-alignment: center;
         vertical-alignment: center;
     }
@@ -57,7 +57,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: root.text == "" ? "Enter password..." : root.text;
                     color: root.text == "" ? Theme.text-secondary : Theme.text-primary;
-                    font-size: 14px;
+                    font-size: Theme.font-lg;
                     vertical-alignment: center;
                 }
             }
@@ -141,7 +141,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: "Shift";
                     color: Theme.text-primary;
-                    font-size: 12px;
+                    font-size: Theme.font-md;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -180,7 +180,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: "Del";
                     color: Theme.text-primary;
-                    font-size: 14px;
+                    font-size: Theme.font-lg;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -203,7 +203,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: root.symbols-mode ? "ABC" : "123";
                     color: Theme.text-primary;
-                    font-size: 14px;
+                    font-size: Theme.font-lg;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -220,7 +220,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: "space";
                     color: Theme.text-secondary;
-                    font-size: 14px;
+                    font-size: Theme.font-lg;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -237,7 +237,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: "Done";
                     color: Theme.button-text;
-                    font-size: 14px;
+                    font-size: Theme.font-lg;
                     font-weight: 700;
                     horizontal-alignment: center;
                     vertical-alignment: center;
@@ -255,7 +255,7 @@ export component VirtualKeyboard inherits Rectangle {
                 Text {
                     text: "Cancel";
                     color: Theme.text-primary;
-                    font-size: 13px;
+                    font-size: Theme.font-base;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }

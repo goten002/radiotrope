@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, Field, Toggle } from "../components.slint";
@@ -25,7 +25,7 @@ component PickerOption inherits Rectangle {
         text: root.label;
         color: !root.enabled ? Theme.disabled-text
             : root.selected ? Theme.button-text : Theme.text-primary;
-        font-size: 13px;
+        font-size: Theme.font-base;
         font-weight: root.selected ? 600 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -129,7 +129,7 @@ export component RecordingSettingsDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Recording Settings";
         subtitle: "Changes are saved as you make them";
-        card-width: 480px;
+        card-width: Defaults.recording-width;
         auto-focus: false;
         close-requested => { root.close(); }
 
@@ -198,7 +198,7 @@ export component RecordingSettingsDialog inherits Rectangle {
         if root.error != "": Text {
             text: root.error;
             color: Theme.danger;
-            font-size: 12px;
+            font-size: Theme.font-md;
             wrap: word-wrap;
         }
 
@@ -247,7 +247,7 @@ export component RecordingSettingsDialog inherits Rectangle {
                         ? "Record audio with your current equalizer settings."
                         : "Turn on the equalizer to use this.";
                     color: Theme.text-secondary;
-                    font-size: 12px;
+                    font-size: Theme.font-md;
                     wrap: word-wrap;
                 }
             }

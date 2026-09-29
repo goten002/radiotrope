@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, InfoRow, SectionHeader } from "../components.slint";
 
 // Headline number with a caption
@@ -27,7 +27,7 @@ component StatTile inherits Rectangle {
         Text {
             text: root.label;
             color: Theme.text-secondary;
-            font-size: 10px;
+            font-size: Theme.font-xs;
             font-weight: 600;
             letter-spacing: 0.5px;
         }
@@ -35,7 +35,7 @@ component StatTile inherits Rectangle {
         Text {
             text: root.value;
             color: root.tone;
-            font-size: 17px;
+            font-size: Theme.font-title;
             font-weight: 600;
             overflow: elide;
         }
@@ -86,7 +86,7 @@ export component StatisticsDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Statistics";
         subtitle: "Live stream, buffer and decoder details";
-        card-width: 540px;
+        card-width: Defaults.statistics-width;
         close-requested => { root.show-dialog = false; }
 
         HorizontalLayout {

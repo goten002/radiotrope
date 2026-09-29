@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme } from "defaults.slint";
 import { Visualization } from "visualization.slint";
 import { Chip, IconButton, Icon } from "components.slint";
 
@@ -86,7 +86,7 @@ export component Playback inherits Rectangle {
             Text {
                 text: root.station-name;
                 color: Theme.text-primary;
-                font-size: 18px;
+                font-size: Theme.font-station;
                 font-weight: 600;
                 overflow: elide;
             }
@@ -94,7 +94,7 @@ export component Playback inherits Rectangle {
             if root.codec-info != "": Text {
                 text: root.codec-info;
                 color: Theme.text-secondary;
-                font-size: 12px;
+                font-size: Theme.font-md;
                 overflow: elide;
             }
 

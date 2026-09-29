@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme } from "defaults.slint";
 import { Icon } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
@@ -42,7 +42,7 @@ component MenuItem inherits Rectangle {
             text: root.label;
             color: !root.enabled ? Theme.disabled-text
                 : touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: 13px;
+            font-size: Theme.font-base;
             vertical-alignment: center;
         }
     }
@@ -83,7 +83,7 @@ component CheckMenuItem inherits Rectangle {
             horizontal-stretch: 1;
             text: root.label;
             color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: 13px;
+            font-size: Theme.font-base;
             vertical-alignment: center;
         }
 
@@ -175,7 +175,7 @@ export component MenuBar inherits Rectangle {
             open-label := Text {
                 text: "Open";
                 color: Theme.menu-text;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -194,7 +194,7 @@ export component MenuBar inherits Rectangle {
             stations-label := Text {
                 text: "Stations";
                 color: Theme.menu-text;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -213,7 +213,7 @@ export component MenuBar inherits Rectangle {
             view-label := Text {
                 text: "View";
                 color: Theme.menu-text;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -232,7 +232,7 @@ export component MenuBar inherits Rectangle {
             tools-label := Text {
                 text: "Tools";
                 color: Theme.menu-text;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -251,7 +251,7 @@ export component MenuBar inherits Rectangle {
             help-label := Text {
                 text: "Help";
                 color: Theme.menu-text;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }

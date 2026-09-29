@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, Defaults } from "defaults.slint";
 import { IconButton, Icon } from "components.slint";
 import { Platform } from "@platform/wifi.slint";
 
@@ -32,7 +32,7 @@ component VolumeSlider inherits Rectangle {
     }
 
     nudge-timer := Timer {
-        interval: 900ms;
+        interval: Defaults.value-hint-time;
         running: false;
         triggered => {
             root.nudged = false;
@@ -88,7 +88,7 @@ component VolumeSlider inherits Rectangle {
 
         Text {
             text: root.muted && !touch.pressed ? "Muted" : Math.round(root.value) + "%";
-            font-size: 11px;
+            font-size: Theme.font-sm;
             font-weight: 600;
             color: Theme.text-primary;
             horizontal-alignment: center;
@@ -187,7 +187,7 @@ export component Controls inherits Rectangle {
     }
 
     copied-timer := Timer {
-        interval: 1500ms;
+        interval: Defaults.copied-time;
         running: false;
         triggered => {
             self.running = false;
@@ -205,7 +205,7 @@ export component Controls inherits Rectangle {
     title-measure := Text {
         visible: false;
         text: root.now-playing-title;
-        font-size: 12px;
+        font-size: Theme.font-md;
     }
 
     height: 64px;
@@ -263,7 +263,7 @@ export component Controls inherits Rectangle {
                 // A second press right after the first is ignored: a
                 // touchpad double tap would stop and restart the station
                 repeat-guard := Timer {
-                    interval: 500ms;
+                    interval: Defaults.repeat-click-guard;
                     running: false;
                     triggered => { self.running = false; }
                 }
@@ -308,13 +308,13 @@ export component Controls inherits Rectangle {
                     }
                     Text {
                         text: root.copied ? "Copied to clipboard" : "Now Playing";
-                        font-size: 10px;
+                        font-size: Theme.font-xs;
                         color: root.copied ? Theme.accent-text : Theme.text-secondary;
                     }
                 }
                 title-text := Text {
                     text: root.now-playing-title;
-                    font-size: 12px;
+                    font-size: Theme.font-md;
                     color: title-touch.has-hover && Platform.has-clipboard ? Theme.text-primary : Theme.text-secondary;
                     overflow: elide;
 
@@ -333,7 +333,7 @@ export component Controls inherits Rectangle {
                     }
 
                     Timer {
-                        interval: 400ms;
+                        interval: Defaults.hover-delay;
                         running: title-touch.has-hover && !root.title-hover-ready;
                         triggered => { root.title-hover-ready = true; }
                     }
@@ -415,13 +415,13 @@ export component Controls inherits Rectangle {
 
             Text {
                 text: root.now-playing-title;
-                font-size: 12px;
+                font-size: Theme.font-md;
                 color: Theme.text-primary;
                 wrap: word-wrap;
             }
             if Platform.has-clipboard: Text {
                 text: root.copied ? "Copied" : "Click to copy";
-                font-size: 10px;
+                font-size: Theme.font-xs;
                 color: Theme.text-tertiary;
             }
         }

@@ -4,7 +4,7 @@ import { MenuBar } from "menu-bar.slint";
 import { Playback } from "playback.slint";
 import { Favorites, FavoriteStation } from "favorites.slint";
 import { Controls } from "controls.slint";
-import { Theme } from "theme.slint";
+import { Theme, Defaults } from "defaults.slint";
 import { NetworkStreamDialog } from "dialogs/network-stream.slint";
 import { StatisticsDialog } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
@@ -17,7 +17,7 @@ import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.s
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
-export { AboutInfo, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
+export { AboutInfo, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -25,17 +25,17 @@ export component App inherits Window {
     icon: @image-url("../../../assets/icons/icon-256.png");
     default-font-family: "Inter 18pt";
     background: Theme.surface;
-    min-width: 640px;
-    min-height: 480px;
-    preferred-width: 800px;
-    preferred-height: 600px;
+    min-width: Defaults.window-min-width;
+    min-height: Defaults.window-min-height;
+    preferred-width: Defaults.window-width;
+    preferred-height: Defaults.window-height;
 
     // Own title bar in place of the system frame (desktop; saved in settings)
     in-out property <bool> custom-frame: Platform.has-window-frame;
     in-out property <bool> keep-on-top: false;
     no-frame: root.custom-frame;
     // Edges to grab for resizing, since there is no system frame
-    resize-border-width: root.custom-frame && !root.maximized ? 8px : 0px;
+    resize-border-width: root.custom-frame && !root.maximized ? Defaults.resize-border : 0px;
     always-on-top: root.keep-on-top;
     callback minimize-window();
     // Use our title bar (true) or the system one; Rust keeps the content size

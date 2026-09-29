@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme } from "defaults.slint";
 import { Icon } from "components.slint";
 
 export component StyledLineEdit inherits Rectangle {
@@ -30,7 +30,7 @@ export component StyledLineEdit inherits Rectangle {
     if input.text == "" && !input.has-focus: Text {
         text: root.placeholder-text;
         color: Theme.text-tertiary;
-        font-size: 13px;
+        font-size: Theme.font-base;
         vertical-alignment: center;
         x: root.margin;
         width: root.width - root.margin - root.right-margin;
@@ -46,7 +46,7 @@ export component StyledLineEdit inherits Rectangle {
         height: root.height;
         text <=> root.text;
         color: Theme.text-primary;
-        font-size: 13px;
+        font-size: Theme.font-base;
         vertical-alignment: center;
         single-line: true;
         enabled: root.enabled;

@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
 import { IconButton, NowPlayingBars, Icon } from "components.slint";
 
@@ -62,7 +62,7 @@ component RowMenuItem inherits Rectangle {
             color: !root.enabled ? Theme.disabled-text
                 : root.danger ? Theme.danger
                 : touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: 13px;
+            font-size: Theme.font-base;
             font-weight: root.confirming ? 700 : 400;
             vertical-alignment: center;
         }
@@ -153,7 +153,7 @@ component FavoriteRow inherits Rectangle {
     // Holding the row opens the menu on touch screens (right-click does
     // on the desktop)
     menu-timer := Timer {
-        interval: 500ms;
+        interval: Defaults.hold-menu-delay;
         running: false;
         triggered => {
             self.running = false;
@@ -242,7 +242,7 @@ component FavoriteRow inherits Rectangle {
                     horizontal-stretch: 0;
                     text: root.name;
                     color: root.is-current ? Theme.accent-text : Theme.text-primary;
-                    font-size: 13px;
+                    font-size: Theme.font-base;
                     font-weight: 600;
                     overflow: elide;
                 }
@@ -284,7 +284,7 @@ component FavoriteRow inherits Rectangle {
             if root.country != "": Text {
                 text: root.country;
                 color: Theme.text-secondary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 overflow: elide;
             }
         }
@@ -298,14 +298,14 @@ component FavoriteRow inherits Rectangle {
             if root.listen-time != "": Text {
                 text: root.listen-time;
                 color: root.is-current ? Theme.accent-text : Theme.text-primary;
-                font-size: 12px;
+                font-size: Theme.font-md;
                 font-weight: 600;
                 horizontal-alignment: right;
             }
             Text {
                 text: root.last-played != "" ? root.last-played : "Not played yet";
                 color: Theme.text-tertiary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 horizontal-alignment: right;
             }
         }
@@ -332,7 +332,7 @@ component FavoriteRow inherits Rectangle {
     }
 
     Timer {
-        interval: 400ms;
+        interval: Defaults.hover-delay;
         running: stats-touch.has-hover && !root.stats-ready;
         triggered => { root.stats-ready = true; }
     }
@@ -373,20 +373,20 @@ component FavoriteRow inherits Rectangle {
                 Text {
                     text: "LISTENING TIME";
                     color: Theme.text-secondary;
-                    font-size: 10px;
+                    font-size: Theme.font-xs;
                     font-weight: 600;
                     letter-spacing: 0.5px;
                 }
                 if stats-bubble.played: Text {
                     text: root.listen-time != "" ? root.listen-time : "<1 m";
                     color: Theme.text-primary;
-                    font-size: 15px;
+                    font-size: Theme.font-xl;
                     font-weight: 600;
                 }
                 if !stats-bubble.played: Text {
                     text: "Not played yet";
                     color: Theme.text-tertiary;
-                    font-size: 12px;
+                    font-size: Theme.font-md;
                     font-weight: 600;
                 }
             }
@@ -404,12 +404,12 @@ component FavoriteRow inherits Rectangle {
                     Text {
                         text: "This session";
                         color: Theme.text-secondary;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                     }
                     Text {
                         text: root.session-time;
                         color: Theme.text-primary;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                         font-weight: 600;
                         horizontal-alignment: right;
                     }
@@ -418,12 +418,12 @@ component FavoriteRow inherits Rectangle {
                     Text {
                         text: "Last played";
                         color: Theme.text-secondary;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                     }
                     Text {
                         text: root.last-played;
                         color: Theme.text-primary;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                         font-weight: 600;
                         horizontal-alignment: right;
                     }
@@ -432,12 +432,12 @@ component FavoriteRow inherits Rectangle {
                     Text {
                         text: "Plays";
                         color: Theme.text-secondary;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                     }
                     Text {
                         text: root.play-count;
                         color: Theme.text-primary;
-                        font-size: 11px;
+                        font-size: Theme.font-sm;
                         font-weight: 600;
                         horizontal-alignment: right;
                     }
@@ -536,7 +536,7 @@ component FavoriteRow inherits Rectangle {
     // After a hold on the logo (touch screens), pick the row up where
     // the finger is, without waiting for it to move
     hold-timer := Timer {
-        interval: 300ms;
+        interval: Defaults.hold-drag-delay;
         running: false;
         triggered => {
             self.running = false;
@@ -653,14 +653,14 @@ export component Favorites inherits Rectangle {
 
         Text {
             text: "No favorites yet";
-            font-size: 14px;
+            font-size: Theme.font-lg;
             color: Theme.text-secondary;
             horizontal-alignment: center;
         }
 
         Text {
             text: "Stations you favorite will appear here";
-            font-size: 11px;
+            font-size: Theme.font-sm;
             color: Theme.text-secondary;
             horizontal-alignment: center;
         }

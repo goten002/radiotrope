@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -48,7 +48,7 @@ component CountryRow inherits Rectangle {
         Text {
             text: root.name;
             color: Theme.text-primary;
-            font-size: 13px;
+            font-size: Theme.font-base;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
@@ -57,7 +57,7 @@ component CountryRow inherits Rectangle {
         Text {
             text: root.station-count > 0 ? "\{root.station-count}" : "";
             color: Theme.text-secondary;
-            font-size: 11px;
+            font-size: Theme.font-sm;
             vertical-alignment: center;
             horizontal-alignment: right;
             width: 50px;
@@ -80,8 +80,8 @@ export component CountryPickerDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Select Country";
         subtitle: "\{root.countries.length} countries";
-        card-width: 360px;
-        card-height: 640px;
+        card-width: Defaults.country-picker-width;
+        card-height: Defaults.country-picker-height;
         auto-focus: false;
         close-requested => { root.show-dialog = false; }
 
@@ -111,7 +111,7 @@ export component CountryPickerDialog inherits Rectangle {
             if root.loading: Text {
                 text: "Loading countries...";
                 color: Theme.text-secondary;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -120,7 +120,7 @@ export component CountryPickerDialog inherits Rectangle {
             if root.error != "" && !root.loading: Text {
                 text: root.error;
                 color: Theme.danger;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -160,7 +160,7 @@ export component CountryPickerDialog inherits Rectangle {
                 && root.filter-text != "": Text {
                 text: "No countries match \"\{root.filter-text}\"";
                 color: Theme.text-secondary;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }

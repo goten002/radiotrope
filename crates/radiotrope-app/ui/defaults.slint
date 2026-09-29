@@ -1,6 +1,8 @@
-// Theme tokens: reactive dark/light mode
+// UI defaults in one place: colours, text sizes, shapes and animation
+// speeds (Theme), and window and dialog sizes and delays (Defaults).
+// Change a value here and rebuild; nothing else needs to change.
 //
-// Components use these instead of literal colors, so both themes (and the
+// Components use these instead of literal values, so both themes (and the
 // accent color) apply everywhere.
 
 export global Theme {
@@ -62,6 +64,19 @@ export global Theme {
     out property <color> viz-bg: dark-mode ? #141517 : #f0f0f4;
     out property <color> viz-track: dark-mode ? #ffffff0d : #0000000d;
 
+    // ── Text sizes ──
+    out property <length> font-2xs: 9px;       // equalizer scale, signal bars
+    out property <length> font-xs: 10px;       // captions and badges
+    out property <length> font-sm: 11px;       // second lines, stats, hints
+    out property <length> font-md: 12px;       // labels, list details
+    out property <length> font-base: 13px;     // body text, menus, inputs
+    out property <length> font-lg: 14px;       // buttons, section headings
+    out property <length> font-xl: 15px;       // stats bubble total
+    out property <length> font-2xl: 16px;      // on-screen keyboard keys
+    out property <length> font-title: 17px;    // dialog titles, stats tiles
+    out property <length> font-station: 18px;  // station name in the header
+    out property <length> font-hero: 22px;     // app name in About
+
     // ── Shape ──
     out property <length> radius-sm: 4px;
     out property <length> radius-md: 6px;
@@ -70,4 +85,43 @@ export global Theme {
     // ── Motion ──
     out property <duration> fast: 120ms;
     out property <duration> normal: 180ms;
+}
+
+export global Defaults {
+    // ── Main window ──
+    out property <length> window-width: 800px;
+    out property <length> window-height: 600px;
+    out property <length> window-min-width: 640px;
+    out property <length> window-min-height: 480px;
+    // Edges to grab for resizing with the app's own title bar
+    out property <length> resize-border: 8px;
+
+    // ── Dialogs: card width, and height where it doesn't follow the content ──
+    out property <length> dialog-width: 440px;
+    out property <length> about-width: 680px;
+    out property <length> accent-color-width: 400px;
+    out property <length> country-picker-width: 360px;
+    out property <length> country-picker-height: 640px;
+    out property <length> edit-favorite-width: 460px;
+    out property <length> equalizer-width: 580px;
+    out property <length> network-stream-width: 460px;
+    out property <length> recording-width: 480px;
+    out property <length> station-browser-width: 700px;
+    out property <length> station-browser-height: 640px;
+    out property <length> statistics-width: 540px;
+
+    // ── Delays ──
+    // Resting the pointer this long shows a hover bubble
+    out property <duration> hover-delay: 400ms;
+    // Holding a favorite this long opens its menu (touch screens)
+    out property <duration> hold-menu-delay: 500ms;
+    // Holding a favorite's logo this long picks the row up (touch screens)
+    out property <duration> hold-drag-delay: 300ms;
+    // How long "Copied to clipboard" shows
+    out property <duration> copied-time: 1500ms;
+    // How long a slider moved by keys or the wheel shows its value
+    out property <duration> value-hint-time: 900ms;
+    // A second click on the same station or Play/Stop this soon after the
+    // first is ignored (touchpad double taps); also read by the Rust side
+    out property <duration> repeat-click-guard: 500ms;
 }

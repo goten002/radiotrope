@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme } from "../defaults.slint";
 import { VirtualKeyboard } from "../virtual-keyboard.slint";
 
 export struct WifiNetworkEntry {
@@ -64,7 +64,7 @@ export component WifiSettingsDialog inherits Rectangle {
                     Text {
                         text: "WiFi Settings";
                         color: Theme.text-primary;
-                        font-size: 14px;
+                        font-size: Theme.font-lg;
                         font-weight: 600;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
@@ -94,14 +94,14 @@ export component WifiSettingsDialog inherits Rectangle {
                             if root.is-scanning : Text {
                                 text: "Scanning";
                                 color: Theme.text-secondary;
-                                font-size: 11px;
+                                font-size: Theme.font-sm;
                                 vertical-alignment: center;
                             }
 
                             if !root.is-scanning : Text {
                                 text: "Scan";
                                 color: Theme.button-text;
-                                font-size: 12px;
+                                font-size: Theme.font-md;
                                 font-weight: 600;
                                 vertical-alignment: center;
                             }
@@ -129,7 +129,7 @@ export component WifiSettingsDialog inherits Rectangle {
                         Text {
                             text: "X";
                             color: close-ta.has-hover ? Theme.text-primary : Theme.text-secondary;
-                            font-size: 12px;
+                            font-size: Theme.font-md;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -154,7 +154,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             color: root.connection-status == "Disconnected" ? Theme.text-secondary :
                                    root.connection-status == "Connecting..." ? Theme.accent-text :
                                    Theme.accent-text;
-                            font-size: 12px;
+                            font-size: Theme.font-md;
                             font-weight: 500;
                             vertical-alignment: center;
                             horizontal-alignment: center;
@@ -196,7 +196,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             height: parent.height;
                             text: network.ssid;
                             color: Theme.text-primary;
-                            font-size: 13px;
+                            font-size: Theme.font-base;
                             vertical-alignment: center;
                             horizontal-alignment: left;
                             overflow: elide;
@@ -215,7 +215,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             Text {
                                 text: "Connected";
                                 color: Theme.accent-text;
-                                font-size: 10px;
+                                font-size: Theme.font-xs;
                                 font-weight: 600;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
@@ -235,7 +235,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             Text {
                                 text: network.security;
                                 color: Theme.text-secondary;
-                                font-size: 9px;
+                                font-size: Theme.font-2xs;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -259,7 +259,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             Text {
                                 text: "Disconnect";
                                 color: Theme.text-secondary;
-                                font-size: 10px;
+                                font-size: Theme.font-xs;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
@@ -277,21 +277,21 @@ export component WifiSettingsDialog inherits Rectangle {
                             if root.is-scanning : Text {
                                 text: "Scanning for networks...";
                                 color: Theme.accent-text;
-                                font-size: 13px;
+                                font-size: Theme.font-base;
                                 horizontal-alignment: center;
                             }
 
                             if !root.is-scanning : Text {
                                 text: "No networks found";
                                 color: Theme.text-primary;
-                                font-size: 13px;
+                                font-size: Theme.font-base;
                                 horizontal-alignment: center;
                             }
 
                             if !root.is-scanning : Text {
                                 text: "Tap Scan to search for WiFi networks";
                                 color: Theme.text-secondary;
-                                font-size: 11px;
+                                font-size: Theme.font-sm;
                                 horizontal-alignment: center;
                             }
                         }
@@ -311,7 +311,7 @@ export component WifiSettingsDialog inherits Rectangle {
                         Text {
                             text: "Connect to " + root.selected-network-ssid;
                             color: Theme.text-primary;
-                            font-size: 12px;
+                            font-size: Theme.font-md;
                             font-weight: 500;
                             horizontal-alignment: center;
                             vertical-alignment: center;

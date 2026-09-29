@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { DialogShell, SectionHeader, Icon, Toggle } from "../components.slint";
@@ -56,7 +56,7 @@ export component AccentColorDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Accent Color";
         subtitle: "Used for highlights, buttons and the visualizer";
-        card-width: 400px;
+        card-width: Defaults.accent-color-width;
         close-requested => { root.show-dialog = false; }
 
         // Swatches, two rows of five

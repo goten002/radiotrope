@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, Toggle } from "../components.slint";
 
 component EqFader inherits Rectangle {
@@ -18,7 +18,7 @@ component EqFader inherits Rectangle {
     property <bool> nudged;
 
     nudge-timer := Timer {
-        interval: 900ms;
+        interval: Defaults.value-hint-time;
         running: false;
         triggered => {
             root.nudged = false;
@@ -148,7 +148,7 @@ component EqFader inherits Rectangle {
 
                 Text {
                     text: (bubble.tenths > 0 ? "+" : "") + (bubble.tenths / 10) + " dB";
-                    font-size: 11px;
+                    font-size: Theme.font-sm;
                     font-weight: 600;
                     color: Theme.text-primary;
                     horizontal-alignment: center;
@@ -161,7 +161,7 @@ component EqFader inherits Rectangle {
         Text {
             text: root.label;
             color: Theme.text-secondary;
-            font-size: 10px;
+            font-size: Theme.font-xs;
             horizontal-alignment: center;
         }
     }
@@ -201,7 +201,7 @@ component PresetItem inherits Rectangle {
         Text {
             text: root.name;
             color: item-touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: 12px;
+            font-size: Theme.font-md;
             vertical-alignment: center;
         }
     }
@@ -231,7 +231,7 @@ export component EqualizerDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Equalizer";
         subtitle: "10-band EQ, applied live to the stream";
-        card-width: 580px;
+        card-width: Defaults.equalizer-width;
         close-requested => { root.show-dialog = false; }
 
         // Controls row: enable toggle + preset dropdown
@@ -267,7 +267,7 @@ export component EqualizerDialog inherits Rectangle {
                     Text {
                         text: root.preset-name == "" ? "Custom" : root.preset-name;
                         color: Theme.text-primary;
-                        font-size: 12.5px;
+                        font-size: Theme.font-base;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
                         overflow: elide;
@@ -281,7 +281,7 @@ export component EqualizerDialog inherits Rectangle {
                         Text {
                             text: "\u{2304}";
                             color: Theme.text-secondary;
-                            font-size: 14px;
+                            font-size: Theme.font-lg;
                             y: (parent.height - self.preferred-height) / 2 - 2px;
                         }
                     }
@@ -335,7 +335,7 @@ export component EqualizerDialog inherits Rectangle {
                 Text {
                     text: "+12";
                     color: Theme.text-secondary;
-                    font-size: 9px;
+                    font-size: Theme.font-2xs;
                     horizontal-alignment: right;
                     vertical-alignment: top;
                 }
@@ -343,7 +343,7 @@ export component EqualizerDialog inherits Rectangle {
                 Text {
                     text: "0 dB";
                     color: Theme.text-secondary;
-                    font-size: 9px;
+                    font-size: Theme.font-2xs;
                     horizontal-alignment: right;
                     vertical-alignment: center;
                 }
@@ -351,7 +351,7 @@ export component EqualizerDialog inherits Rectangle {
                 Text {
                     text: "-12";
                     color: Theme.text-secondary;
-                    font-size: 9px;
+                    font-size: Theme.font-2xs;
                     horizontal-alignment: right;
                     vertical-alignment: bottom;
                 }

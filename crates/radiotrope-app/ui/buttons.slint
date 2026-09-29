@@ -1,4 +1,4 @@
-import { Theme } from "theme.slint";
+import { Theme } from "defaults.slint";
 import { Icon } from "components.slint";
 
 export component AccentButton inherits Rectangle {
@@ -27,7 +27,7 @@ export component AccentButton inherits Rectangle {
     btn-text := Text {
         text: root.label;
         color: root.enabled ? Theme.button-text : Theme.disabled-text;
-        font-size: 13px;
+        font-size: Theme.font-base;
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -59,7 +59,7 @@ export component SecondaryButton inherits Rectangle {
         text: root.label;
         color: !root.enabled ? Theme.disabled-text
             : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-        font-size: 13px;
+        font-size: Theme.font-base;
         font-weight: 500;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -102,7 +102,7 @@ export component DangerButton inherits Rectangle {
         Text {
             text: root.label;
             color: Theme.danger;
-            font-size: 13px;
+            font-size: Theme.font-base;
             font-weight: 600;
             vertical-alignment: center;
         }

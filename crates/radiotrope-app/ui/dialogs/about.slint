@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { DialogShell, InfoRow, LinkRow, SectionHeader } from "../components.slint";
 
@@ -24,7 +24,7 @@ export component AboutDialog inherits Rectangle {
 
     if show-dialog: DialogShell {
         // Wide and short, so it fits the Pi's 800 x 480 screen
-        card-width: 680px;
+        card-width: Defaults.about-width;
         close-requested => { root.show-dialog = false; }
 
         HorizontalLayout {
@@ -48,7 +48,7 @@ export component AboutDialog inherits Rectangle {
                 Text {
                     text: "Radiotrope";
                     color: Theme.text-primary;
-                    font-size: 22px;
+                    font-size: Theme.font-hero;
                     font-weight: 600;
                     horizontal-alignment: center;
                 }
@@ -56,7 +56,7 @@ export component AboutDialog inherits Rectangle {
                 Text {
                     text: "Internet radio player";
                     color: Theme.text-secondary;
-                    font-size: 12px;
+                    font-size: Theme.font-md;
                     horizontal-alignment: center;
                 }
 
@@ -75,7 +75,7 @@ export component AboutDialog inherits Rectangle {
                         version-text := TextInput {
                             text: "Version \{AboutInfo.version}";
                             color: Theme.accent-text;
-                            font-size: 11px;
+                            font-size: Theme.font-sm;
                             font-weight: 600;
                             horizontal-alignment: center;
                             vertical-alignment: center;
@@ -159,7 +159,7 @@ export component AboutDialog inherits Rectangle {
                 Text {
                     text: "\{AboutInfo.license} License · © \{AboutInfo.authors}";
                     color: Theme.text-secondary;
-                    font-size: 10px;
+                    font-size: Theme.font-xs;
                 }
             }
         }

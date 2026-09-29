@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, NowPlayingBars, Icon } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
@@ -94,7 +94,7 @@ component StationRow inherits Rectangle {
                     text: root.name;
                     color: root.state == "error" ? Theme.danger
                         : root.state != "" ? Theme.accent-text : Theme.text-primary;
-                    font-size: 13px;
+                    font-size: Theme.font-base;
                     font-weight: 600;
                     overflow: elide;
                 }
@@ -136,7 +136,7 @@ component StationRow inherits Rectangle {
                 text: (root.state == "loading" || root.state == "error") && root.status != ""
                     ? root.status : root.country;
                 color: root.state == "error" ? Theme.danger : Theme.text-secondary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 overflow: elide;
             }
         }
@@ -162,7 +162,7 @@ component StationRow inherits Rectangle {
                         width: parent.width - 12px;
                         text: root.codec;
                         color: Theme.text-secondary;
-                        font-size: 10px;
+                        font-size: Theme.font-xs;
                         font-weight: 600;
                         horizontal-alignment: center;
                         overflow: elide;
@@ -179,7 +179,7 @@ component StationRow inherits Rectangle {
             Text {
                 text: root.bitrate > 0 ? "\{root.bitrate} kbps" : "";
                 color: Theme.text-secondary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 horizontal-alignment: right;
             }
         }
@@ -303,8 +303,8 @@ export component StationBrowserDialog inherits Rectangle {
             : "Search Radio Stations";
         subtitle: "From the radio-browser.info community directory";
         icon: root.search-mode == "country" ? root.country-flag : @image-url("");
-        card-width: 700px;
-        card-height: 640px;
+        card-width: Defaults.station-browser-width;
+        card-height: Defaults.station-browser-height;
         auto-focus: false;
         show-back: root.search-mode == "country";
         back-requested => { root.change-country(); }
@@ -363,7 +363,7 @@ export component StationBrowserDialog inherits Rectangle {
             if root.search-loading && root.search-results.length == 0: Text {
                 text: "Loading...";
                 color: Theme.text-secondary;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -401,7 +401,7 @@ export component StationBrowserDialog inherits Rectangle {
                     Text {
                         text: root.search-error;
                         color: Theme.danger;
-                        font-size: 13px;
+                        font-size: Theme.font-base;
                         font-weight: 500;
                     }
                 }
@@ -409,7 +409,7 @@ export component StationBrowserDialog inherits Rectangle {
                 Text {
                     text: root.retry-in > 0 ? "Trying again in \{root.retry-in}s" : "";
                     color: Theme.text-secondary;
-                    font-size: 12px;
+                    font-size: Theme.font-md;
                     horizontal-alignment: center;
                 }
 
@@ -434,7 +434,7 @@ export component StationBrowserDialog inherits Rectangle {
                     ? "No stations found in \{root.country-name}"
                     : "No stations found";
                 color: Theme.text-secondary;
-                font-size: 13px;
+                font-size: Theme.font-base;
                 horizontal-alignment: center;
                 vertical-alignment: center;
             }
@@ -514,7 +514,7 @@ export component StationBrowserDialog inherits Rectangle {
                             height: 40px;
                             text: root.search-loading-more ? "Loading more stations..." : "";
                             color: Theme.text-secondary;
-                            font-size: 12px;
+                            font-size: Theme.font-md;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -542,7 +542,7 @@ export component StationBrowserDialog inherits Rectangle {
                     ? "\{root.search-results.length} stations"
                     : "";
                 color: Theme.text-secondary;
-                font-size: 11px;
+                font-size: Theme.font-sm;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
             }
@@ -567,21 +567,21 @@ export component StationBrowserDialog inherits Rectangle {
                 Text {
                     text: root.search-error;
                     color: Theme.danger;
-                    font-size: 11px;
+                    font-size: Theme.font-sm;
                     vertical-alignment: center;
                 }
 
                 Text {
                     text: root.retry-in > 0 ? "· retrying in \{root.retry-in}s" : "";
                     color: Theme.text-secondary;
-                    font-size: 11px;
+                    font-size: Theme.font-sm;
                     vertical-alignment: center;
                 }
 
                 retry-link := Text {
                     text: "Retry";
                     color: retry-touch.has-hover ? Theme.accent : Theme.accent-text;
-                    font-size: 11px;
+                    font-size: Theme.font-sm;
                     font-weight: 600;
                     vertical-alignment: center;
 

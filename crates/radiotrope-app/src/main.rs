@@ -19,7 +19,9 @@ use radiotrope::audio::health::HealthState;
 use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
-use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
+use radiotrope_app::config::ui::{
+    LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE,
+};
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::types::{FavoriteSort, Station};
@@ -2078,10 +2080,6 @@ fn setup_wifi(ui: &App) {
     }
 }
 
-/// Persist current app state to settings.json
-/// How long "Saved ..." and recording errors stay on screen
-const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
-
 /// Largest station logo embedded as cover art in a recording
 const MAX_COVER_BYTES: usize = 512 * 1024;
 
@@ -2311,6 +2309,7 @@ fn open_folder(dir: &std::path::Path) {
     }
 }
 
+/// Persist current app state to settings.json
 fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
@@ -2394,9 +2393,11 @@ fn play_station_with_metadata(
     {
         let now = Instant::now();
         let mut last = LAST_PLAY_CLICK.lock().unwrap_or_else(|e| e.into_inner());
-        let repeat = last.as_ref().is_some_and(|(last_url, at)| {
-            *last_url == url && now.duration_since(*at) < REPEAT_CLICK_WINDOW
-        });
+        let guard =
+            Duration::from_millis(ui.global::<Defaults>().get_repeat_click_guard().max(0) as u64);
+        let repeat = last
+            .as_ref()
+            .is_some_and(|(last_url, at)| *last_url == url && now.duration_since(*at) < guard);
         if repeat {
             return;
         }
@@ -2813,10 +2814,6 @@ static PLAY_LOGO: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// double tap doesn't start it twice
 static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 
-/// A click on the same station this soon after starting it is ignored
-/// (Windows' default double-click time)
-const REPEAT_CLICK_WINDOW: Duration = Duration::from_millis(500);
-
 /// Listening time per favorite since the app was opened, by favorite ID
 static SESSION_LISTEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
@@ -2828,11 +2825,6 @@ fn session_listen_secs(id: &str) -> u64 {
         .and_then(|m| m.get(id).copied())
         .unwrap_or(0)
 }
-
-/// Listening shorter than this does not count (tuning through stations)
-const MIN_LISTEN_SECS: u64 = 30;
-/// Listening time is saved in steps of this long while a station plays
-const LISTEN_CREDIT_SECS: u64 = 60;
 
 /// A station playing without interruption since `started`
 struct ListenSession {

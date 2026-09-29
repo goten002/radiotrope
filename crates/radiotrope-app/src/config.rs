@@ -43,8 +43,20 @@ pub mod providers {
     pub const API_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 }
 
-/// UI-related configuration
+/// UI-related configuration. Sizes, colours and delays the UI draws with
+/// are in `ui/defaults.slint`.
 pub mod ui {
+    use std::time::Duration;
+
     /// Search results page size
     pub const SEARCH_PAGE_SIZE: usize = 100;
+
+    /// How long "Saved ..." and recording errors stay on screen
+    pub const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
+
+    /// Listening shorter than this does not count (tuning through stations)
+    pub const MIN_LISTEN_SECS: u64 = 30;
+
+    /// Listening time is saved in steps of this long while a station plays
+    pub const LISTEN_CREDIT_SECS: u64 = 60;
 }

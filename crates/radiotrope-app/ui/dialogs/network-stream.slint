@@ -1,4 +1,4 @@
-import { Theme } from "../theme.slint";
+import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { DialogShell, Field } from "../components.slint";
@@ -41,7 +41,7 @@ export component NetworkStreamDialog inherits Rectangle {
     if show-dialog: DialogShell {
         title: "Open Network Stream";
         subtitle: "Play any internet radio or HLS stream by its address";
-        card-width: 460px;
+        card-width: Defaults.network-stream-width;
         auto-focus: false;
         close-requested => { root.cancel(); }
 
