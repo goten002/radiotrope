@@ -148,18 +148,37 @@ export component AboutDialog inherits Rectangle {
                     open-url(url) => { root.open-url(url); }
                 }
                 LinkRow {
+                    label: "Icons";
+                    links: [{ name: "Font Awesome Free", url: "https://fontawesome.com" }];
+                    note: "(CC BY 4.0)";
+                    open-url(url) => { root.open-url(url); }
+                }
+                LinkRow {
                     label: "Font";
                     links: [{ name: "Inter", url: "https://rsms.me/inter/" }];
                     note: "(SIL Open Font License)";
                     open-url(url) => { root.open-url(url); }
                 }
 
+                // The notices GPL v3 section 5(d) asks an interactive
+                // program to show: copyright, no warranty, the license and
+                // where to read it
                 Rectangle { height: 10px; }
 
+                LinkRow {
+                    label: "License";
+                    links: [{ name: AboutInfo.license, url: "https://www.gnu.org/licenses/gpl-3.0.html" }];
+                    note: "(free software: share and change it freely)";
+                    open-url(url) => { root.open-url(url); }
+                }
+
+                Rectangle { height: 6px; }
+
                 Text {
-                    text: "License \{AboutInfo.license} · © \{AboutInfo.authors}";
+                    text: "© \{AboutInfo.authors} · This program comes with ABSOLUTELY NO WARRANTY.";
                     color: Theme.text-secondary;
                     font-size: Theme.font-xs;
+                    wrap: word-wrap;
                 }
             }
         }

@@ -72,3 +72,16 @@ GPL version 3 section 7 to convey Radiotrope linked with libfdk-aac; see the
 License section of README.md.
 
 Full license text: https://github.com/mstorsjo/fdk-aac/blob/master/NOTICE
+
+
+Font Awesome Free (icons)
+-------------------------
+The SVG icons in crates/radiotrope-app/ui/icons.
+
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+Source:  https://fontawesome.com
+SPDX:   CC-BY-4.0
+
+Credited in the About dialog, as the license requires.
+
+Full license text: https://creativecommons.org/licenses/by/4.0/
