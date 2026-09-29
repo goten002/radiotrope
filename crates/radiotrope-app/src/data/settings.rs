@@ -68,7 +68,7 @@ pub struct Settings {
     pub show_notifications: bool,
 
     // === Visualization ===
-    /// Visualization mode (wave, spectrum, mirror, vu, hbars, dots, waterfall)
+    /// Visualization mode (wave, spectrum, mirror, dots, vu, hbars)
     #[serde(default = "default_viz_mode")]
     pub viz_mode: String,
 

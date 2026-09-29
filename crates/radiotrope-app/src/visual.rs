@@ -118,66 +118,6 @@ impl PeakHold {
     }
 }
 
-/// Rows of spectrum history in the Waterfall mode
-pub const WATERFALL_ROWS: usize = 24;
-/// Time between Waterfall rows (seconds); 24 rows cover about 1.6 seconds
-pub const WATERFALL_ROW_SECS: f32 = 1.0 / 15.0;
-/// How much the oldest Waterfall row is dimmed (0-1)
-const WATERFALL_FADE: f32 = 0.55;
-/// Waterfall brightness curve: above 1 dims quiet levels so the beat stands out
-const WATERFALL_CURVE: f32 = 1.2;
-
-/// Scrolling spectrum history for the Waterfall mode. `cells` gives each
-/// cell's opacity, newest row first, one value per band.
-#[derive(Debug, Clone)]
-pub struct Waterfall {
-    bands: usize,
-    rows: std::collections::VecDeque<Vec<f32>>,
-    since_row: f32,
-}
-
-impl Waterfall {
-    pub fn new(bands: usize) -> Self {
-        Self {
-            bands,
-            rows: std::collections::VecDeque::with_capacity(WATERFALL_ROWS + 1),
-            since_row: WATERFALL_ROW_SECS,
-        }
-    }
-
-    /// Add `spectrum` as a new row once a row's time has passed; returns
-    /// true when the rows moved
-    pub fn update(&mut self, spectrum: &[f32], dt: f32) -> bool {
-        self.since_row += dt;
-        if self.since_row < WATERFALL_ROW_SECS {
-            return false;
-        }
-        self.since_row = 0.0;
-        self.rows.push_front(spectrum.to_vec());
-        self.rows.truncate(WATERFALL_ROWS);
-        true
-    }
-
-    /// Opacity of every cell, `WATERFALL_ROWS * bands` values, newest row
-    /// first. Louder is brighter, with quiet levels pushed down so the beat
-    /// stands out, and older rows are dimmed.
-    pub fn cells(&self) -> Vec<f32> {
-        let mut cells = vec![0.0; WATERFALL_ROWS * self.bands];
-        for (r, row) in self.rows.iter().enumerate() {
-            let fade = 1.0 - r as f32 / WATERFALL_ROWS as f32 * WATERFALL_FADE;
-            for (b, &level) in row.iter().take(self.bands).enumerate() {
-                cells[r * self.bands + b] = level.clamp(0.0, 1.0).powf(WATERFALL_CURVE) * fade;
-            }
-        }
-        cells
-    }
-
-    pub fn reset(&mut self) {
-        self.rows.clear();
-        self.since_row = WATERFALL_ROW_SECS;
-    }
-}
-
 /// Hue buckets used to group logo colours (30 degrees each)
 const HUE_BINS: usize = 12;
 /// Pixels darker than this (HSV value) are ignored; they count as
@@ -490,26 +430,5 @@ mod tests {
         assert_eq!(p.update(&[0.9], 0.01)[0], 0.9);
         p.reset();
         assert_eq!(p.update(&[0.0], 0.01)[0], 0.0);
-    }
-
-    #[test]
-    fn waterfall_scrolls_and_fades() {
-        let mut w = Waterfall::new(2);
-        assert!(w.update(&[1.0, 0.0], 0.01));
-        // Too soon for another row
-        assert!(!w.update(&[0.5, 0.5], 0.01));
-        assert!(w.update(&[0.5, 0.5], WATERFALL_ROW_SECS));
-        let cells = w.cells();
-        assert_eq!(cells.len(), WATERFALL_ROWS * 2);
-        // Newest row first, the older one dimmed
-        assert!((cells[0] - 0.5f32.powf(WATERFALL_CURVE)).abs() < 1e-6);
-        assert!(cells[2] < 1.0 && cells[2] > 0.9);
-        assert_eq!(cells[3], 0.0);
-        for _ in 0..WATERFALL_ROWS * 2 {
-            w.update(&[0.2, 0.2], WATERFALL_ROW_SECS);
-        }
-        assert_eq!(w.cells().len(), WATERFALL_ROWS * 2);
-        w.reset();
-        assert!(w.cells().iter().all(|&c| c == 0.0));
     }
 }

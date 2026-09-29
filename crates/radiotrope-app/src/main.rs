@@ -180,9 +180,9 @@ fn main() {
 
     // Apply saved theme and viz mode
     ui.set_dark_mode(settings.theme.is_dark());
-    // Modes that no longer exist (the old curve) fall back to mirror
+    // Modes that no longer exist (the old curve, Waterfall) fall back to Wave
     let viz_mode = match settings.viz_mode.as_str() {
-        m @ ("wave" | "spectrum" | "mirror" | "vu" | "hbars" | "dots" | "waterfall") => m,
+        m @ ("wave" | "spectrum" | "mirror" | "dots" | "vu" | "hbars") => m,
         _ => "wave",
     };
     ui.set_viz_mode(viz_mode.into());
@@ -1182,10 +1182,9 @@ fn main() {
             visual::SPECTRUM_FALL_SECS,
         );
         let mut vu_smooth = LevelSmoother::new(2, visual::VU_RISE_SECS, visual::VU_FALL_SECS);
-        // Dot Matrix columns and peaks, and the Waterfall history
-        let extras = VizExtras::new(&viz, bands);
+        // Dot Matrix columns and peaks
+        let extras = VizExtras::new(&viz);
         let mut peak_hold = visual::PeakHold::new(visual::MATRIX_COLUMNS);
-        let mut waterfall = visual::Waterfall::new(bands);
         let mut shown_mode = slint::SharedString::default();
         let mut gated = vec![0.0f32; bands];
         let mut idle = true;
@@ -1211,7 +1210,6 @@ fn main() {
                         gated.fill(0.0);
                         show_viz_frame(&viz, &[0.0, 0.0], &gated, &spectrum_model);
                         peak_hold.reset();
-                        waterfall.reset();
                         extras.clear();
                     }
                     return;
@@ -1230,27 +1228,18 @@ fn main() {
                 let vu = vu_smooth.update(&[vu_l, vu_r], dt).to_vec();
                 let smooth = spectrum_smooth.update(&gated, dt);
                 show_viz_frame(&viz, &vu, smooth, &spectrum_model);
-                // The extra modes' data is only worked out while they show,
-                // starting fresh each time one is picked
+                // The Dot Matrix data is only worked out while it shows,
+                // starting fresh each time it is picked
                 let mode = ui.get_viz_mode();
                 if mode != shown_mode {
                     peak_hold.reset();
-                    waterfall.reset();
                     extras.clear();
                     shown_mode = mode.clone();
                 }
-                match mode.as_str() {
-                    "dots" => {
-                        let cols = visual::column_levels(smooth, visual::MATRIX_COLUMNS);
-                        let peaks = peak_hold.update(&cols, dt).to_vec();
-                        extras.show_columns(&cols, &peaks);
-                    }
-                    "waterfall" => {
-                        if waterfall.update(smooth, dt) {
-                            extras.show_waterfall(&waterfall);
-                        }
-                    }
-                    _ => {}
+                if mode == "dots" {
+                    let cols = visual::column_levels(smooth, visual::MATRIX_COLUMNS);
+                    let peaks = peak_hold.update(&cols, dt).to_vec();
+                    extras.show_columns(&cols, &peaks);
                 }
             },
         );
@@ -1733,24 +1722,21 @@ fn show_viz_frame(viz: &VizData, vu: &[f32], spectrum: &[f32], spectrum_model: &
     viz.set_vu_right(vu[1]);
 }
 
-/// Models behind the Dot Matrix and Waterfall modes, updated in place
+/// Models behind the Dot Matrix mode, updated in place
 struct VizExtras {
     columns: std::rc::Rc<VecModel<f32>>,
     peaks: std::rc::Rc<VecModel<f32>>,
-    waterfall: std::rc::Rc<VecModel<f32>>,
 }
 
 impl VizExtras {
-    fn new(viz: &VizData, bands: usize) -> Self {
+    fn new(viz: &VizData) -> Self {
         let model = |n: usize| std::rc::Rc::new(VecModel::from(vec![0.0f32; n]));
         let extras = Self {
             columns: model(visual::MATRIX_COLUMNS),
             peaks: model(visual::MATRIX_COLUMNS),
-            waterfall: model(visual::WATERFALL_ROWS * bands),
         };
         viz.set_columns(ModelRc::from(extras.columns.clone()));
         viz.set_peaks(ModelRc::from(extras.peaks.clone()));
-        viz.set_waterfall(ModelRc::from(extras.waterfall.clone()));
         extras
     }
 
@@ -1759,13 +1745,9 @@ impl VizExtras {
         set_levels(&self.peaks, peaks);
     }
 
-    fn show_waterfall(&self, waterfall: &visual::Waterfall) {
-        set_levels(&self.waterfall, &waterfall.cells());
-    }
-
-    /// Clear both modes (playback stopped)
+    /// Clear the columns and peaks (playback stopped)
     fn clear(&self) {
-        for model in [&self.columns, &self.peaks, &self.waterfall] {
+        for model in [&self.columns, &self.peaks] {
             for i in 0..model.row_count() {
                 model.set_row_data(i, 0.0);
             }

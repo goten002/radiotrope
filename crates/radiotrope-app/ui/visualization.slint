@@ -9,8 +9,6 @@ export global VizData {
     // Dot Matrix: band pairs averaged into 8 columns, and their peak dots
     in property <[float]> columns;
     in property <[float]> peaks;
-    // Waterfall: opacity per cell, newest row first, one value per band
-    in property <[float]> waterfall;
     // Something is playing; off, the modes show nothing
     in property <bool> active;
 }
@@ -41,14 +39,13 @@ export global VizStyle {
     }
 
     // Mode after `mode` in the click cycle: Wave (the default), Spectrum,
-    // Mirror, VU, horizontal VU, Dot Matrix, Waterfall
+    // Mirror, Dot Matrix, VU, horizontal VU
     public pure function next-mode(mode: string) -> string {
         if mode == "wave" { return "spectrum"; }
         if mode == "spectrum" { return "mirror"; }
-        if mode == "mirror" { return "vu"; }
+        if mode == "mirror" { return "dots"; }
+        if mode == "dots" { return "vu"; }
         if mode == "vu" { return "hbars"; }
-        if mode == "hbars" { return "dots"; }
-        if mode == "dots" { return "waterfall"; }
         return "wave";
     }
 }
@@ -246,25 +243,6 @@ export component VizContent inherits Rectangle {
                 // Unlit dots are faint while something plays, gone when stopped
                 background: parent.tint.with-alpha(self.peak ? 1 : (VizData.active ? 0.12 : 0) + 0.88 * clamp(parent.fill - r, 0, 1));
             }
-        }
-    }
-
-    // Waterfall: recent spectrum rows scrolling up, louder bands brighter
-    property <int> fall-bands: max(1, VizData.spectrum.length);
-    property <length> fall-gap: 1px;
-    property <length> fall-cell: (root.width - (root.fall-bands - 1) * root.fall-gap) / root.fall-bands;
-    property <length> fall-row: root.height / max(1, VizData.waterfall.length / root.fall-bands);
-
-    if !root.is-loading && root.mode == "waterfall": Rectangle {
-        for level[k] in VizData.waterfall: Rectangle {
-            property <int> band: mod(k, root.fall-bands);
-            property <int> age: floor(k / root.fall-bands);
-
-            x: self.band * (root.fall-cell + root.fall-gap);
-            y: root.height - (self.age + 1) * root.fall-row;
-            width: root.fall-cell;
-            height: root.fall-row;
-            background: VizStyle.bar-color(self.band / max(1, root.fall-bands - 1)).with-alpha(clamp(level, 0, 1));
         }
     }
 
