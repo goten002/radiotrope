@@ -82,14 +82,35 @@ export component VizContent inherits Rectangle {
     // Gap between spectrum bars
     in property <length> gap: 1px;
 
-    // Loading animation (bouncing bars)
-    if root.is-loading: HorizontalLayout {
-        spacing: 3px;
+    // Loading animation (tuning): a needle sweeps back and forth across a
+    // row of faint dial ticks, which light up and rise as it passes, like a
+    // radio searching for the station
+    property <int> tune-ticks: 16;
+    // Needle position across the dial (0-1), easing at both ends
+    property <float> tune-pos: 0.5 - 0.5 * cos(mod(animation-tick() / 1600ms * 180deg, 360deg));
+    property <length> tune-gap: 2px;
+    property <length> tune-tick: (root.width - (root.tune-ticks - 1) * root.tune-gap) / root.tune-ticks;
 
-        for i in [0, 1, 2, 3, 4]: Bar {
-            horizontal-stretch: 1;
-            level: 0.3 + 0.7 * abs(sin(mod(animation-tick() / 800ms * 360deg - i * 36deg, 360deg)));
-            tint: VizStyle.bar-color(i / 4);
+    if root.is-loading: Rectangle {
+        for i in root.tune-ticks: Bar {
+            // How close the needle is (1 at the tick, fading within a few ticks)
+            property <float> near: pow(2.718, -pow((i + 0.5) / root.tune-ticks - root.tune-pos, 2) / 0.006);
+
+            x: i * (root.tune-tick + root.tune-gap);
+            width: root.tune-tick;
+            height: parent.height;
+            level: 0.14 + 0.5 * self.near;
+            opacity: 0.25 + 0.75 * self.near;
+            tint: VizStyle.bar-color(i / (root.tune-ticks - 1));
+        }
+
+        Rectangle {
+            x: root.tune-pos * parent.width - 1px;
+            y: 4px;
+            width: 2px;
+            height: parent.height - 4px;
+            border-radius: 1px;
+            background: VizStyle.bar-color(root.tune-pos);
         }
     }
 
