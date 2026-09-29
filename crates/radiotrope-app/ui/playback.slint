@@ -26,6 +26,8 @@ export component Playback inherits Rectangle {
     callback open-recordings-folder();
     callback toggle-favorite();
     in-out property <string> viz-mode: "wave";
+    // Off (View > Visualizer), the tile is left out of the header
+    in-out property <bool> show-visualizer: true;
 
     height: 108px;
     // No background of its own: it sits on the header (app.slint), which
@@ -142,7 +144,7 @@ export component Playback inherits Rectangle {
         }
 
         // Visualization tile
-        VerticalLayout {
+        if root.show-visualizer: VerticalLayout {
             alignment: center;
             viz := Visualization {
                 viz-mode <=> root.viz-mode;

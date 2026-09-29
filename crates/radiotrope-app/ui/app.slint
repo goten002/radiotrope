@@ -63,6 +63,7 @@ export component App inherits Window {
     callback move-favorite(FavoriteStation, /* to-top */ bool);
     // Listening stats on favorites rows (View menu)
     in-out property <bool> show-station-stats: true;
+    in-out property <bool> show-visualizer <=> playback.show-visualizer;
     callback load-top-stations();
     callback load-countries();
     callback open-url(string);
@@ -224,6 +225,7 @@ export component App inherits Window {
             VerticalLayout {
             MenuBar {
                 show-station-stats <=> root.show-station-stats;
+                show-visualizer <=> root.show-visualizer;
                 custom-frame: root.custom-frame;
                 maximized <=> root.maximized;
                 always-on-top <=> root.keep-on-top;

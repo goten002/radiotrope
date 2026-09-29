@@ -52,6 +52,8 @@ component CheckMenuItem inherits Rectangle {
     in property <string> label;
     in property <image> icon;
     in property <bool> checked;
+    // Greyed out and not clickable when false
+    in property <bool> enabled: true;
     callback clicked();
 
     height: 28px;
@@ -61,6 +63,7 @@ component CheckMenuItem inherits Rectangle {
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 
@@ -75,14 +78,16 @@ component CheckMenuItem inherits Rectangle {
                 width: 15px;
                 height: 15px;
                 source: root.icon;
-                colorize: touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                colorize: !root.enabled ? Theme.disabled-text
+                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
             }
         }
 
         Text {
             horizontal-stretch: 1;
             text: root.label;
-            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            color: !root.enabled ? Theme.disabled-text
+                : touch.has-hover ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-base;
             vertical-alignment: center;
         }
@@ -96,7 +101,7 @@ component CheckMenuItem inherits Rectangle {
                 height: 12px;
                 y: (parent.height - self.height) / 2;
                 source: @image-url("icons/tick.svg");
-                colorize: Theme.accent;
+                colorize: root.enabled ? Theme.accent : Theme.disabled-text;
             }
         }
     }
@@ -132,6 +137,8 @@ export component MenuBar inherits Rectangle {
     callback open-equalizer();
     callback open-accent-color();
     in-out property <bool> show-station-stats: true;
+    // The header visualizer tile (View > Visualizer)
+    in-out property <bool> show-visualizer: true;
     callback open-wifi-settings();
     callback open-about();
     in property <bool> is-recording;
@@ -563,9 +570,28 @@ export component MenuBar inherits Rectangle {
                         root.show-station-stats = !root.show-station-stats;
                     }
                 }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                CheckMenuItem {
+                    label: "Visualizer";
+                    icon: @image-url("icons/wave-square.svg");
+                    checked: root.show-visualizer;
+                    clicked => {
+                        view-popup.close();
+                        root.show-visualizer = !root.show-visualizer;
+                    }
+                }
+                // Keeps its choice while the visualizer is off
                 CheckMenuItem {
                     label: "Station Colors in Visualizer";
-                    icon: @image-url("icons/wave-square.svg");
+                    icon: @image-url("icons/droplet.svg");
+                    enabled: root.show-visualizer;
                     checked: VizStyle.palette == "logo";
                     clicked => {
                         view-popup.close();

@@ -76,6 +76,10 @@ pub struct Settings {
     #[serde(default = "default_viz_palette")]
     pub viz_palette: String,
 
+    /// Show the visualizer tile in the header
+    #[serde(default = "default_true")]
+    pub show_visualizer: bool,
+
     /// Show listening stats on favorites rows
     #[serde(default = "default_true")]
     pub show_station_stats: bool,
@@ -164,6 +168,7 @@ impl Default for Settings {
             show_notifications: true,
             viz_mode: default_viz_mode(),
             viz_palette: default_viz_palette(),
+            show_visualizer: true,
             show_station_stats: true,
             panel_gradient: true,
             custom_title_bar: true,
@@ -517,6 +522,7 @@ mod tests {
         assert_eq!(settings.theme, Theme::System);
         assert!(settings.show_tray_icon);
         assert!(settings.minimize_to_tray);
+        assert!(settings.show_visualizer);
         assert!(settings.show_station_stats);
         assert!(settings.panel_gradient);
         assert!(settings.custom_title_bar);

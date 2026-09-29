@@ -189,6 +189,7 @@ fn main() {
     ui.global::<VizStyle>()
         .set_palette(settings.viz_palette.as_str().into());
     ui.set_show_station_stats(settings.show_station_stats);
+    ui.set_show_visualizer(settings.show_visualizer);
     ui.set_panel_gradient(settings.panel_gradient);
     // The Pi build is full screen with no frame to replace
     if cfg!(not(feature = "embedded")) {
@@ -1200,8 +1201,9 @@ fn main() {
                 let now = Instant::now();
                 let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
                 last_frame = now;
-                // Skip polling when not playing — zero out once on stop transition
-                if !ui.get_is_playing() {
+                // Skip polling when not playing or the visualizer is off —
+                // zero out once on the transition
+                if !ui.get_is_playing() || !ui.get_show_visualizer() {
                     if !idle {
                         idle = true;
                         viz.set_active(false);
@@ -2322,6 +2324,7 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     settings.viz_mode = ui.get_viz_mode().to_string();
     settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
     settings.show_station_stats = ui.get_show_station_stats();
+    settings.show_visualizer = ui.get_show_visualizer();
     settings.panel_gradient = ui.get_panel_gradient();
     if cfg!(not(feature = "embedded")) {
         settings.custom_title_bar = ui.get_custom_frame();
