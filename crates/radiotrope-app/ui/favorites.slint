@@ -337,51 +337,111 @@ component FavoriteRow inherits Rectangle {
         triggered => { root.stats-ready = true; }
     }
 
+    // Styled like the Statistics tiles: a caption over the total, and
+    // label and value rows beside it
     stats-bubble := Rectangle {
         property <bool> shown: stats-touch.has-hover && root.stats-ready
             && !stats-touch.pressed && !root.dragging;
+        property <bool> played: root.last-played != "";
         visible: self.opacity > 0;
         opacity: self.shown ? 1 : 0;
         animate opacity { duration: Theme.fast; }
-        x: stats-touch.x - self.width - 4px;
+        x: stats-touch.x - self.width - 6px;
         y: (root.height - self.height) / 2;
         width: bubble-layout.preferred-width;
         height: bubble-layout.preferred-height;
         background: Theme.popup-bg;
-        border-radius: Theme.radius-sm;
+        border-radius: Theme.radius-md;
         border-width: 1px;
         border-color: Theme.hairline;
         drop-shadow-blur: 8px;
         drop-shadow-offset-y: 2px;
         drop-shadow-color: Theme.shadow-soft;
 
-        bubble-layout := VerticalLayout {
-            padding-left: 10px;
-            padding-right: 10px;
-            padding-top: 6px;
-            padding-bottom: 6px;
-            spacing: 2px;
+        // Side by side so the bubble stays about as tall as the row
+        bubble-layout := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 12px;
 
-            if root.last-played == "": Text {
-                text: "Listening stats appear once you play it";
-                color: Theme.text-secondary;
-                font-size: 11px;
+            VerticalLayout {
+                alignment: center;
+                spacing: 1px;
+
+                Text {
+                    text: "LISTENING TIME";
+                    color: Theme.text-secondary;
+                    font-size: 10px;
+                    font-weight: 600;
+                    letter-spacing: 0.5px;
+                }
+                if stats-bubble.played: Text {
+                    text: root.listen-time != "" ? root.listen-time : "<1 m";
+                    color: Theme.text-primary;
+                    font-size: 15px;
+                    font-weight: 600;
+                }
+                if !stats-bubble.played: Text {
+                    text: "Not played yet";
+                    color: Theme.text-tertiary;
+                    font-size: 12px;
+                    font-weight: 600;
+                }
             }
-            if root.last-played != "": Text {
-                text: "Total listening time: " + (root.listen-time != "" ? root.listen-time : "<1 m");
-                color: Theme.text-primary;
-                font-size: 11px;
+
+            if stats-bubble.played: Rectangle {
+                width: 1px;
+                background: Theme.hairline;
             }
-            if root.session-time != "": Text {
-                text: "This session: " + root.session-time;
-                color: Theme.text-primary;
-                font-size: 11px;
-            }
-            if root.last-played != "": Text {
-                text: "Last played: " + root.last-played
-                    + "  ·  " + root.play-count + (root.play-count == 1 ? " play" : " plays");
-                color: Theme.text-secondary;
-                font-size: 11px;
+
+            if stats-bubble.played: GridLayout {
+                spacing-horizontal: 12px;
+                spacing-vertical: 2px;
+
+                if root.session-time != "": Row {
+                    Text {
+                        text: "This session";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+                    Text {
+                        text: root.session-time;
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: right;
+                    }
+                }
+                Row {
+                    Text {
+                        text: "Last played";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+                    Text {
+                        text: root.last-played;
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: right;
+                    }
+                }
+                Row {
+                    Text {
+                        text: "Plays";
+                        color: Theme.text-secondary;
+                        font-size: 11px;
+                    }
+                    Text {
+                        text: root.play-count;
+                        color: Theme.text-primary;
+                        font-size: 11px;
+                        font-weight: 600;
+                        horizontal-alignment: right;
+                    }
+                }
             }
         }
     }
