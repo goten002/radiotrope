@@ -9,6 +9,8 @@ export global Platform {
     out property <bool> has-file-manager: true;
     // A desktop window: the app can draw its own title bar
     out property <bool> has-window-frame: true;
+    // A system clipboard: clicking the song title copies it
+    out property <bool> has-clipboard: true;
 }
 
 export struct WifiNetworkEntry {

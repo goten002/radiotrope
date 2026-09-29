@@ -1,5 +1,6 @@
 import { Theme } from "theme.slint";
 import { IconButton, Icon } from "components.slint";
+import { Platform } from "@platform/wifi.slint";
 
 component VolumeSlider inherits Rectangle {
     in-out property <float> value: 50;  // 0–100
@@ -170,6 +171,43 @@ export component Controls inherits Rectangle {
 
     out property <bool> volume-dragging: vol-slider.touch-pressed;
 
+    // Title copied to the clipboard just now: the label says so briefly
+    property <bool> copied: false;
+    // Hovered long enough to show the full title bubble
+    property <bool> title-hover-ready: false;
+    property <bool> title-cut: title-measure.preferred-width > np-area.width;
+
+    function copy-title() {
+        clipboard-text.select-all();
+        clipboard-text.copy();
+        clipboard-text.clear-selection();
+        root.copied = true;
+        copied-timer.running = false;
+        copied-timer.running = true;
+    }
+
+    copied-timer := Timer {
+        interval: 1500ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.copied = false;
+        }
+    }
+
+    // Hidden: copies the title and measures its full width
+    clipboard-text := TextInput {
+        visible: false;
+        text: root.now-playing-title;
+        read-only: true;
+        single-line: true;
+    }
+    title-measure := Text {
+        visible: false;
+        text: root.now-playing-title;
+        font-size: 12px;
+    }
+
     height: 64px;
     background: Theme.panel;
 
@@ -237,7 +275,9 @@ export component Controls inherits Rectangle {
         }
 
         // ── Now Playing (fills available space, left-aligned, collapses first) ──
-        Rectangle {
+        // Clicking the title copies it; a cut-off title shows in full in a
+        // bubble on hover
+        np-area := Rectangle {
             horizontal-stretch: 1;
             clip: true;
 
@@ -251,24 +291,40 @@ export component Controls inherits Rectangle {
                     Icon {
                         width: 12px;
                         height: 12px;
-                        source: @image-url("icons/music-note.svg");
-                        colorize: Theme.text-secondary;
+                        source: root.copied ? @image-url("icons/tick.svg") : @image-url("icons/music-note.svg");
+                        colorize: root.copied ? Theme.accent-text : Theme.text-secondary;
                     }
                     Text {
-                        text: "Now Playing";
+                        text: root.copied ? "Copied to clipboard" : "Now Playing";
                         font-size: 10px;
-                        color: Theme.text-secondary;
+                        color: root.copied ? Theme.accent-text : Theme.text-secondary;
                     }
                 }
-                TextInput {
+                title-text := Text {
                     text: root.now-playing-title;
                     font-size: 12px;
-                    color: Theme.text-secondary;
-                    horizontal-alignment: left;
-                    read-only: true;
-                    single-line: true;
-                    selection-background-color: Theme.selection-bg;
-                    selection-foreground-color: Theme.selection-fg;
+                    color: title-touch.has-hover && Platform.has-clipboard ? Theme.text-primary : Theme.text-secondary;
+                    overflow: elide;
+
+                    title-touch := TouchArea {
+                        mouse-cursor: Platform.has-clipboard ? pointer : default;
+                        clicked => {
+                            if Platform.has-clipboard {
+                                root.copy-title();
+                            }
+                        }
+                        changed has-hover => {
+                            if !self.has-hover {
+                                root.title-hover-ready = false;
+                            }
+                        }
+                    }
+
+                    Timer {
+                        interval: 400ms;
+                        running: title-touch.has-hover && !root.title-hover-ready;
+                        triggered => { root.title-hover-ready = true; }
+                    }
                 }
             }
         }
@@ -317,6 +373,44 @@ export component Controls inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+    // Full title above a cut-off one, styled like the favorites stats bubble
+    title-bubble := Rectangle {
+        property <bool> shown: root.title-cut && root.title-hover-ready && root.now-playing-title != "";
+        visible: self.opacity > 0;
+        opacity: self.shown ? 1 : 0;
+        animate opacity { duration: Theme.fast; }
+        x: np-area.x;
+        y: -self.height - 6px;
+        width: min(bubble-layout.preferred-width, root.width - np-area.x - 14px);
+        height: bubble-layout.preferred-height;
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: Theme.shadow-soft;
+
+        bubble-layout := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+            spacing: 3px;
+
+            Text {
+                text: root.now-playing-title;
+                font-size: 12px;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+            if Platform.has-clipboard: Text {
+                text: root.copied ? "Copied" : "Click to copy";
+                font-size: 10px;
+                color: Theme.text-tertiary;
             }
         }
     }
