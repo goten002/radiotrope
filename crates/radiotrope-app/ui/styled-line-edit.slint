@@ -7,6 +7,8 @@ export component StyledLineEdit inherits Rectangle {
     in property <bool> enabled: true;
     // Show an ✕ button on the right that clears the text
     in property <bool> clearable: false;
+    // The text field has keyboard focus
+    out property <bool> has-focus: input.has-focus;
     callback accepted(string);
     callback edited(string);
     callback cleared();

@@ -2071,24 +2071,7 @@ fn setup_recording(
         let ui_weak = ui.as_weak();
         move |path| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let path = std::path::PathBuf::from(path.trim());
-            if path.as_os_str().is_empty() {
-                ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
-                return;
-            }
-            if !path.is_absolute() {
-                ui.set_recording_folder_error("Enter a full path to a folder.".into());
-                return;
-            }
-            if let Err(e) = recordings::prepare_dir(&path) {
-                ui.set_recording_folder_error(e.into());
-                return;
-            }
-            // Choosing the default folder by hand keeps following the default
-            let custom = (path != recordings::default_dir()).then_some(path);
-            save_recording_settings(|s| s.recording_dir = custom.clone());
-            show_recording_folder(&ui, custom.as_deref());
-            ui.set_show_recording_dialog(false);
+            apply_recording_folder(&ui, &path);
         }
     });
 
@@ -2133,6 +2116,28 @@ fn setup_recording(
         let ui_weak = ui.as_weak();
         move || browse_recording_folder(ui_weak.clone())
     });
+}
+
+/// Save a folder typed or picked in the Recording Settings dialog, or show
+/// why it can't be used (the folder in use stays as it was).
+fn apply_recording_folder(ui: &App, path: &str) {
+    let path = std::path::PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
+        return;
+    }
+    if !path.is_absolute() {
+        ui.set_recording_folder_error("Enter a full path to a folder.".into());
+        return;
+    }
+    if let Err(e) = recordings::prepare_dir(&path) {
+        ui.set_recording_folder_error(e.into());
+        return;
+    }
+    // Choosing the default folder by hand keeps following the default
+    let custom = (path != recordings::default_dir()).then_some(path);
+    save_recording_settings(|s| s.recording_dir = custom.clone());
+    show_recording_folder(ui, custom.as_deref());
 }
 
 /// Show `custom` (or the default folder) in the Recording Settings dialog.
@@ -2200,7 +2205,7 @@ fn show_recording_state(
 }
 
 /// Let the user pick the recording folder with the system's folder dialog.
-/// The choice goes into the dialog's path field; Save applies it.
+/// The choice is saved straight away.
 #[cfg(feature = "desktop")]
 fn browse_recording_folder(ui_weak: slint::Weak<App>) {
     let Some(ui) = ui_weak.upgrade() else { return };
@@ -2215,9 +2220,9 @@ fn browse_recording_folder(ui_weak: slint::Weak<App>) {
     let spawned = slint::spawn_local(async move {
         let picked = pick.await;
         let Some(ui) = ui_weak.upgrade() else { return };
+        // A picked folder saves straight away, like the other settings
         if let Some(folder) = picked {
-            ui.set_recording_folder_edit(folder.path().display().to_string().into());
-            ui.set_recording_folder_error(Default::default());
+            apply_recording_folder(&ui, &folder.path().display().to_string());
         }
     });
     if let Err(e) = spawned {

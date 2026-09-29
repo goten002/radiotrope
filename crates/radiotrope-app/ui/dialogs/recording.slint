@@ -1,6 +1,6 @@
 import { Theme } from "../theme.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, Field, Toggle } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
@@ -98,7 +98,8 @@ export component RecordingSettingsDialog inherits Rectangle {
     // MP3/Opus bitrate in kbps; 0 is Auto (the station's bitrate)
     in-out property <int> bitrate: 0;
 
-    // The path being edited; reset to `folder` each time the dialog opens
+    // The path being edited; reset to `folder` each time the dialog opens.
+    // Browse, Restore Default and a typed path all save straight away
     in-out property <string> edit-path;
 
     callback browse();
@@ -116,13 +117,18 @@ export component RecordingSettingsDialog inherits Rectangle {
         root.show-dialog = true;
     }
 
+    // Every setting saves as it changes; a typed folder saves on Enter,
+    // when the field loses focus, or here when the dialog closes
     function close() {
+        if root.edited {
+            root.apply-folder(root.edit-path);
+        }
         root.show-dialog = false;
     }
 
     if show-dialog: DialogShell {
         title: "Recording Settings";
-        subtitle: "How and where recordings are saved";
+        subtitle: "Changes are saved as you make them";
         card-width: 480px;
         auto-focus: false;
         close-requested => { root.close(); }
@@ -181,6 +187,11 @@ export component RecordingSettingsDialog inherits Rectangle {
                 text <=> root.edit-path;
                 placeholder-text: "Folder for recordings";
                 accepted(path) => { root.apply-folder(path); }
+                changed has-focus => {
+                    if !self.has-focus && root.edited {
+                        root.apply-folder(root.edit-path);
+                    }
+                }
             }
         }
 
@@ -199,8 +210,9 @@ export component RecordingSettingsDialog inherits Rectangle {
                 label: "Browse...";
                 clicked => { root.browse(); }
             }
-            if root.edit-path != root.default-folder || root.folder != root.default-folder: SecondaryButton {
+            SecondaryButton {
                 label: "Restore Default";
+                enabled: root.edit-path != root.default-folder || root.folder != root.default-folder;
                 clicked => {
                     root.edit-path = root.default-folder;
                     root.restore-default();
@@ -238,22 +250,6 @@ export component RecordingSettingsDialog inherits Rectangle {
                     font-size: 12px;
                     wrap: word-wrap;
                 }
-            }
-        }
-
-        HorizontalLayout {
-            alignment: end;
-            spacing: 8px;
-
-            if root.edited: SecondaryButton {
-                label: "Cancel";
-                clicked => { root.close(); }
-            }
-            // Closing is the X in the header; Save waits for a change
-            AccentButton {
-                label: "Save";
-                enabled: root.edited;
-                clicked => { root.apply-folder(root.edit-path); }
             }
         }
     }
