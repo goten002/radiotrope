@@ -83,6 +83,7 @@ export component App inherits Window {
     in-out property <bool> is-recording;
     in-out property <bool> can-record;
     in-out property <string> recording-text;
+    in-out property <string> recording-size;
     in-out property <string> recording-notice;
     in-out property <bool> recording-notice-error;
     in-out property <string> recording-folder <=> recording-dialog.folder;
@@ -283,6 +284,7 @@ export component App inherits Window {
                 has-station: root.station-url != "";
                 is-recording: root.is-recording;
                 recording-text: root.recording-text;
+                recording-size: root.recording-size;
                 recording-notice: root.recording-notice;
                 recording-notice-error: root.recording-notice-error;
                 can-open-recordings: Platform.has-file-manager;

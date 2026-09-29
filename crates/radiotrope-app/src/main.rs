@@ -2181,7 +2181,8 @@ fn show_recording_state(
         } else {
             format!("{}:{:02}", secs / 60, secs % 60)
         };
-        ui.set_recording_text(format!("{time} · {}", format_bytes(rec.bytes)).into());
+        ui.set_recording_text(time.into());
+        ui.set_recording_size(format_bytes(rec.bytes).into());
     }
 
     match notice {

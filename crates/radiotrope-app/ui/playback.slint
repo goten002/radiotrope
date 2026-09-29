@@ -16,7 +16,9 @@ export component Playback inherits Rectangle {
     // Recording: "12:34 · 11.8 MB" while recording, and a short message
     // after a recording ends or fails
     in property <bool> is-recording;
+    // Recording time and file size, shown apart so the size stays put
     in property <string> recording-text;
+    in property <string> recording-size;
     in property <string> recording-notice;
     in property <bool> recording-notice-error;
     // A "Saved ..." notice opens the recordings folder when clicked
@@ -111,6 +113,7 @@ export component Playback inherits Rectangle {
                 // Recording progress, or what happened to the last recording
                 if root.is-recording || root.recording-notice != "": Chip {
                     text: root.is-recording ? "REC " + root.recording-text : root.recording-notice;
+                    detail: root.is-recording ? "· " + root.recording-size : "";
                     tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
                     dot: root.is-recording;
                     pulse: root.is-recording;

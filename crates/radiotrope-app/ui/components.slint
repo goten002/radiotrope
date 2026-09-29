@@ -225,6 +225,9 @@ export global TextUtil {
 
 export component Chip inherits Rectangle {
     in property <string> text;
+    // Optional second part after the text, laid out on its own so digits
+    // changing in the text don't push it around (e.g. a size after a timer)
+    in property <string> detail;
     // Keep the width steady while digits in the text change (timers, sizes)
     in property <bool> steady: false;
     in property <color> tone: Theme.text-secondary;
@@ -280,12 +283,29 @@ export component Chip inherits Rectangle {
             // and elide when space runs out
             preferred-width: measure.preferred-width;
         }
+
+        if root.detail != "": Text {
+            text: root.detail;
+            color: root.tone;
+            font-size: 11px;
+            font-weight: 600;
+            vertical-alignment: center;
+            overflow: elide;
+            preferred-width: detail-measure.preferred-width;
+        }
     }
 
     // Measures the text, with its widest digits when steady (not shown)
     measure := Text {
         visible: false;
         text: root.steady ? TextUtil.steady-digits(root.text) : root.text;
+        font-size: 11px;
+        font-weight: 600;
+    }
+
+    detail-measure := Text {
+        visible: false;
+        text: root.steady ? TextUtil.steady-digits(root.detail) : root.detail;
         font-size: 11px;
         font-weight: 600;
     }
