@@ -98,6 +98,36 @@ export component AboutDialog inherits Rectangle {
                     label: "Report an issue";
                     clicked => { root.open-url(AboutInfo.repository + "/issues"); }
                 }
+
+                // License (a link to its text) and copyright
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 8px;
+                    Rectangle {
+                        width: license-link.preferred-width;
+                        license-link := Text {
+                            text: AboutInfo.license;
+                            color: license-touch.has-hover ? Theme.accent-hover : Theme.accent-text;
+                            font-size: Theme.font-xs;
+                        }
+                        // Underline on hover (Text can't underline)
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: license-link.color;
+                            visible: license-touch.has-hover;
+                        }
+                        license-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
+                        }
+                    }
+                    Text {
+                        text: " · © \{AboutInfo.authors}";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-xs;
+                    }
+                }
             }
 
             // Details
@@ -160,39 +190,10 @@ export component AboutDialog inherits Rectangle {
                     open-url(url) => { root.open-url(url); }
                 }
 
-                // The notices GPL v3 section 5(d) asks an interactive
-                // program to show: copyright, no warranty, the license and
-                // where to read it
+                // GPL v3 section 5(d) asks an interactive program to show a
+                // copyright, no-warranty and license notice; the license and
+                // copyright sit under the buttons on the left
                 Rectangle { height: 10px; }
-
-                // License (a link to its text) and copyright on one line
-                HorizontalLayout {
-                    alignment: start;
-                    Rectangle {
-                        width: license-link.preferred-width;
-                        license-link := Text {
-                            text: AboutInfo.license;
-                            color: license-touch.has-hover ? Theme.accent-hover : Theme.accent-text;
-                            font-size: Theme.font-xs;
-                        }
-                        // Underline on hover (Text can't underline)
-                        Rectangle {
-                            y: parent.height - 1px;
-                            height: 1px;
-                            background: license-link.color;
-                            visible: license-touch.has-hover;
-                        }
-                        license-touch := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
-                        }
-                    }
-                    Text {
-                        text: " · © \{AboutInfo.authors}";
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-xs;
-                    }
-                }
 
                 Text {
                     text: "This program comes with ABSOLUTELY NO WARRANTY.";
