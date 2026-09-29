@@ -6,14 +6,16 @@ import { DialogShell, Field } from "../components.slint";
 export component NetworkStreamDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <string> url: "";
-    // Optional station details, shown in the player and kept when the
-    // stream is added to favorites with the star
+    // Station details, shown in the player and kept when the stream is
+    // added to favorites with the star (logo and country are optional)
     in-out property <string> name: "";
     in-out property <string> logo-url: "";
     in-out property <string> country: "";
     // url, name, logo url, country
     callback accepted(string, string, string, string);
     callback cancelled();
+
+    property <bool> can-play: root.name != "" && root.url != "";
 
     function reset() {
         root.url = "";
@@ -29,7 +31,7 @@ export component NetworkStreamDialog inherits Rectangle {
     }
 
     function play() {
-        if root.url != "" {
+        if root.can-play {
             root.show-dialog = false;
             root.accepted(root.url, root.name, root.logo-url, root.country);
             root.reset();
@@ -43,6 +45,17 @@ export component NetworkStreamDialog inherits Rectangle {
         auto-focus: false;
         close-requested => { root.cancel(); }
 
+        // Same fields, in the same order, as Edit Favorite
+        Field {
+            label: "Name";
+            StyledLineEdit {
+                placeholder-text: "Station name";
+                text <=> root.name;
+                accepted(text) => { root.play(); }
+                init => { self.focus-input(); }
+            }
+        }
+
         Field {
             label: "Stream URL";
             StyledLineEdit {
@@ -50,39 +63,24 @@ export component NetworkStreamDialog inherits Rectangle {
                 text <=> root.url;
                 clearable: true;
                 accepted(text) => { root.play(); }
-                init => { self.focus-input(); }
-            }
-        }
-
-        HorizontalLayout {
-            spacing: 12px;
-
-            Field {
-                horizontal-stretch: 1;
-                label: "Name";
-                StyledLineEdit {
-                    placeholder-text: "Optional";
-                    text <=> root.name;
-                    accepted(text) => { root.play(); }
-                }
-            }
-
-            Field {
-                horizontal-stretch: 1;
-                label: "Country";
-                StyledLineEdit {
-                    placeholder-text: "Optional";
-                    text <=> root.country;
-                    accepted(text) => { root.play(); }
-                }
             }
         }
 
         Field {
             label: "Logo URL";
             StyledLineEdit {
-                placeholder-text: "Optional, https://example.com/logo.png";
+                placeholder-text: "https://example.com/logo.png";
                 text <=> root.logo-url;
+                clearable: true;
+                accepted(text) => { root.play(); }
+            }
+        }
+
+        Field {
+            label: "Country";
+            StyledLineEdit {
+                placeholder-text: "United Kingdom, London";
+                text <=> root.country;
                 clearable: true;
                 accepted(text) => { root.play(); }
             }
@@ -99,7 +97,7 @@ export component NetworkStreamDialog inherits Rectangle {
 
             AccentButton {
                 label: "Play";
-                enabled: root.url != "";
+                enabled: root.can-play;
                 clicked => { root.play(); }
             }
         }
