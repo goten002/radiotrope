@@ -68,7 +68,7 @@ pub struct Settings {
     pub show_notifications: bool,
 
     // === Visualization ===
-    /// Visualization mode (mirror, spectrum, wave, dots, waterfall, vu, hbars)
+    /// Visualization mode (wave, spectrum, mirror, vu, hbars, dots, waterfall)
     #[serde(default = "default_viz_mode")]
     pub viz_mode: String,
 
@@ -137,7 +137,7 @@ fn default_volume() -> f32 {
 }
 
 fn default_viz_mode() -> String {
-    "mirror".to_string()
+    "wave".to_string()
 }
 
 fn default_viz_palette() -> String {

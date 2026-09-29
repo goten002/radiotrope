@@ -177,8 +177,8 @@ fn main() {
     ui.set_dark_mode(settings.theme.is_dark());
     // Modes that no longer exist (the old curve) fall back to mirror
     let viz_mode = match settings.viz_mode.as_str() {
-        m @ ("mirror" | "spectrum" | "wave" | "dots" | "waterfall" | "vu" | "hbars") => m,
-        _ => "mirror",
+        m @ ("wave" | "spectrum" | "mirror" | "vu" | "hbars" | "dots" | "waterfall") => m,
+        _ => "wave",
     };
     ui.set_viz_mode(viz_mode.into());
     ui.global::<VizStyle>()

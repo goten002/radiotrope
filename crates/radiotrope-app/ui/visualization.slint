@@ -38,15 +38,16 @@ export global VizStyle {
         return logo-colors[2].mix(logo-colors[1], (t - 0.5) * 2);
     }
 
-    // Mode after `mode` in the click cycle
+    // Mode after `mode` in the click cycle: Wave (the default), Spectrum,
+    // Mirror, VU, horizontal VU, Dot Matrix, Waterfall
     public pure function next-mode(mode: string) -> string {
-        if mode == "mirror" { return "spectrum"; }
-        if mode == "spectrum" { return "wave"; }
-        if mode == "wave" { return "dots"; }
-        if mode == "dots" { return "waterfall"; }
-        if mode == "waterfall" { return "vu"; }
+        if mode == "wave" { return "spectrum"; }
+        if mode == "spectrum" { return "mirror"; }
+        if mode == "mirror" { return "vu"; }
         if mode == "vu" { return "hbars"; }
-        return "mirror";
+        if mode == "hbars" { return "dots"; }
+        if mode == "dots" { return "waterfall"; }
+        return "wave";
     }
 }
 
@@ -74,7 +75,7 @@ component Bar inherits Rectangle {
 
 // The visualizer drawing for a mode, filling its area (no background)
 export component VizContent inherits Rectangle {
-    in property <string> mode: "mirror";
+    in property <string> mode: "wave";
     in property <bool> is-loading;
     // Gap between spectrum bars
     in property <length> gap: 1px;
@@ -277,7 +278,7 @@ export component VizContent inherits Rectangle {
 // 70px tile in the header; click cycles the mode
 export component Visualization inherits Rectangle {
     in property <bool> is-loading;
-    in-out property <string> viz-mode: "mirror";
+    in-out property <string> viz-mode: "wave";
 
     width: 70px;
     height: 70px;
