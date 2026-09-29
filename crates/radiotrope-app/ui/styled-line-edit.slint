@@ -96,7 +96,10 @@ export component StyledLineEdit inherits Rectangle {
         input.select-all();
     }
 
+    // Focuses the field with the cursor after the text, so a reopened
+    // dialog's search can be typed on (offsets past the end clamp to it)
     public function focus-input() {
         input.focus();
+        input.set-selection-offsets(2147483647, 2147483647);
     }
 }
