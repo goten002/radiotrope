@@ -771,6 +771,13 @@ fn main() {
 
     // Logos of the browser rows on screen, kept small on disk
     let browse_logos = Arc::new(BrowseLogos::open().expect("Failed to create the logo cache"));
+    {
+        let browse_logos = browse_logos.clone();
+        std::thread::Builder::new()
+            .name("browse-logo-cleanup".into())
+            .spawn(move || browse_logos.remove_unused())
+            .ok();
+    }
     let row_logos = row_logos::RowLogos::start(
         ui.as_weak(),
         browse_logos,

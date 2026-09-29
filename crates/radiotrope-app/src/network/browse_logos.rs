@@ -11,6 +11,9 @@ use crate::network::LogoService;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
+/// Logos not shown for this long are removed from disk at startup
+pub const UNUSED_AFTER: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 60 * 60);
+
 /// Size the browser shows logos at (2x its 40px for HiDPI screens)
 pub const ROW_LOGO_SIZE: u32 = 80;
 
@@ -44,16 +47,26 @@ impl BrowseLogos {
         self.cache.get(&url_to_id(logo_url))
     }
 
+    /// Remove logos not shown for [`UNUSED_AFTER`]
+    pub fn remove_unused(&self) -> usize {
+        self.cache.remove_unused(UNUSED_AFTER)
+    }
+
     /// A logo shrunk for a browser row: from the disk cache, else
     /// downloaded, shrunk and cached. `None` when it can't be had.
     pub fn row_logo(&self, service: &LogoService, logo_url: &str) -> Option<Rgba> {
         if logo_url.is_empty() || self.has_failed(logo_url) {
             return None;
         }
-        let png = self.cached_png(logo_url).or_else(|| {
-            let data = service.fetch_raw(logo_url).ok()?;
-            self.cache.put_thumbnail(&url_to_id(logo_url), &data)
-        });
+        let key = url_to_id(logo_url);
+        let png = self
+            .cache
+            .get(&key)
+            .inspect(|_| self.cache.touch(&key))
+            .or_else(|| {
+                let data = service.fetch_raw(logo_url).ok()?;
+                self.cache.put_thumbnail(&key, &data)
+            });
         let logo = png.and_then(|png| row_rgba(&png));
         if logo.is_none() {
             self.failed

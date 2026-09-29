@@ -269,6 +269,43 @@ impl ImageCache {
         Some(png)
     }
 
+    /// Mark a cached image as just used, so [`remove_unused`](Self::remove_unused)
+    /// keeps it
+    pub fn touch(&self, id: &str) {
+        if let Some(path) = self.find_cached_path(id) {
+            if let Ok(file) = fs::File::options().write(true).open(path) {
+                let _ = file.set_modified(std::time::SystemTime::now());
+            }
+        }
+    }
+
+    /// Delete cached images not written or touched for longer than `age`
+    ///
+    /// Returns how many were removed.
+    pub fn remove_unused(&self, age: std::time::Duration) -> usize {
+        let Ok(entries) = fs::read_dir(&self.cache_dir) else {
+            return 0;
+        };
+        let Some(cutoff) = std::time::SystemTime::now().checked_sub(age) else {
+            return 0;
+        };
+        entries
+            .flatten()
+            .filter(|entry| {
+                let path = entry.path();
+                let is_image = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()));
+                let old = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .is_ok_and(|modified| modified < cutoff);
+                is_image && old && fs::remove_file(&path).is_ok()
+            })
+            .count()
+    }
+
     /// Get total cache size in bytes
     pub fn total_size(&self) -> u64 {
         let entries = match fs::read_dir(&self.cache_dir) {
@@ -467,6 +504,34 @@ mod tests {
             .put_thumbnail("html", b"<html>not found</html>")
             .is_none());
         assert!(!cache.has("html"));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn test_remove_unused_keeps_recent_and_touched() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(200 * 86400);
+        for id in ["old", "touched", "new"] {
+            cache.put_thumbnail(id, &png(8)).unwrap();
+        }
+        for id in ["old", "touched"] {
+            fs::File::options()
+                .write(true)
+                .open(dir.join(format!("{id}.png")))
+                .unwrap()
+                .set_modified(long_ago)
+                .unwrap();
+        }
+        cache.touch("touched");
+
+        assert_eq!(
+            cache.remove_unused(std::time::Duration::from_secs(90 * 86400)),
+            1
+        );
+        assert!(!cache.has("old"));
+        assert!(cache.has("touched") && cache.has("new"));
 
         cleanup_dir(&dir);
     }
