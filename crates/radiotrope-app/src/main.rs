@@ -1816,7 +1816,7 @@ fn setup_about(ui: &App) {
     info.set_config_dir(path_text(radiotrope_app::data::storage::config_dir()).into());
     info.set_cache_dir(path_text(radiotrope_app::data::cache::cache_dir()).into());
     info.set_repository(env!("CARGO_PKG_REPOSITORY").into());
-    info.set_license(env!("CARGO_PKG_LICENSE").into());
+    info.set_license(license_label(env!("CARGO_PKG_LICENSE")).into());
     info.set_authors(author_names(env!("CARGO_PKG_AUTHORS")).into());
 
     ui.on_open_url(|url| open_url(&url));
@@ -1831,6 +1831,16 @@ fn platform_name() -> String {
         other => other,
     };
     format!("{os} {}", std::env::consts::ARCH)
+}
+
+/// Short display name for an SPDX license id, e.g. "GPLv3+" for
+/// GPL-3.0-or-later; other ids are shown as they are
+fn license_label(spdx: &str) -> &str {
+    match spdx {
+        "GPL-3.0-or-later" => "GPLv3+",
+        "GPL-3.0-only" => "GPLv3",
+        other => other,
+    }
 }
 
 /// Cargo's `authors` list without the email addresses
