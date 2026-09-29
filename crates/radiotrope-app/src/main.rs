@@ -200,6 +200,13 @@ fn main() {
                 }
             });
             let ui_weak = ui.as_weak();
+            ui.on_switch_title_bar(move |custom| {
+                if let Some(ui) = ui_weak.upgrade() {
+                    window_frame::set_system_frame(ui.window(), !custom);
+                    ui.set_custom_frame(custom);
+                }
+            });
+            let ui_weak = ui.as_weak();
             ui.on_show_system_menu(move |x, y, pressed| {
                 ui_weak
                     .upgrade()

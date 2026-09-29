@@ -38,6 +38,8 @@ export component App inherits Window {
     resize-border-width: root.custom-frame && !root.maximized ? 8px : 0px;
     always-on-top: root.keep-on-top;
     callback minimize-window();
+    // Use our title bar (true) or the system one; Rust keeps the content size
+    callback switch-title-bar(bool);
     // The OS window menu on right-click; false when there is none
     callback show-system-menu(length, length, bool) -> bool;
 
@@ -228,7 +230,7 @@ export component App inherits Window {
                 minimize => { root.minimize-window(); }
                 show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
                 close-window => { root.close(); }
-                toggle-custom-frame => { root.custom-frame = !root.custom-frame; }
+                toggle-custom-frame => { root.switch-title-bar(!root.custom-frame); }
                 open-wifi-settings => {
                     root.show-wifi-settings = true;
                     root.wifi-scan-requested();

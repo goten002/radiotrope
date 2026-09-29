@@ -9,6 +9,39 @@ pub fn minimize(window: &slint::Window) {
     window.with_winit_window(|w| w.set_minimized(true));
 }
 
+/// Switch between the system title bar (`framed`) and ours while the app
+/// runs, keeping the content the same size.
+///
+/// On Windows, winit changes the frame without changing the window's outer
+/// size, so only the area inside the frame grows or shrinks, and the app
+/// kept drawing at the old size: turning the system bar on showed the old
+/// menu row and scroll bar twice, turning it off cut off the menu and the
+/// right edge. Resizing the window so the inside keeps its size avoids that.
+/// Elsewhere the window manager keeps the inside size already, and Slint
+/// applies `no-frame` as before.
+pub fn set_system_frame(window: &slint::Window, framed: bool) {
+    #[cfg(target_os = "windows")]
+    {
+        let content = window.size();
+        let resized = window
+            .with_winit_window(|w| {
+                if w.is_decorated() == framed {
+                    return false;
+                }
+                w.set_decorations(framed);
+                // A maximized or full screen window fills the screen either way
+                !w.is_maximized() && w.fullscreen().is_none()
+            })
+            .unwrap_or(false);
+        if resized {
+            window.set_size(content);
+        }
+        window.request_redraw();
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (window, framed);
+}
+
 /// Opens the system window menu at `(x, y)` (logical, window coordinates).
 ///
 /// Called on the right button's press and on its release: Wayland needs the
