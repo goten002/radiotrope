@@ -159,6 +159,9 @@ component VolumeSlider inherits Rectangle {
 
 export component Controls inherits Rectangle {
     in property <bool> is-playing;
+    // A station is connecting: the button offers Stop, so pressing it
+    // again cancels the connection instead of starting it over
+    in property <bool> is-loading;
     in property <bool> has-station;
     in property <string> now-playing-title;
     in-out property <float> volume: 1.0;   // 0.0–1.0
@@ -235,7 +238,8 @@ export component Controls inherits Rectangle {
         VerticalLayout {
             alignment: center;
             Rectangle {
-                property <bool> can-interact: root.is-playing || root.has-station;
+                property <bool> shows-stop: root.is-playing || root.is-loading;
+                property <bool> can-interact: self.shows-stop || root.has-station;
 
                 width: 44px;
                 height: 44px;
@@ -246,7 +250,7 @@ export component Controls inherits Rectangle {
                     : Theme.accent;
                 animate background { duration: Theme.fast; }
                 // Glow while playing or hovered
-                drop-shadow-blur: can-interact && (root.is-playing || play-touch.has-hover) ? 16px : 0px;
+                drop-shadow-blur: can-interact && (self.shows-stop || play-touch.has-hover) ? 16px : 0px;
                 drop-shadow-color: Theme.accent.with-alpha(0.45);
                 animate drop-shadow-blur { duration: Theme.normal; }
 
@@ -255,7 +259,7 @@ export component Controls inherits Rectangle {
                     height: 18px;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
-                    source: root.is-playing ? @image-url("icons/stop.svg") : @image-url("icons/play.svg");
+                    source: parent.shows-stop ? @image-url("icons/stop.svg") : @image-url("icons/play.svg");
                     colorize: !can-interact ? Theme.disabled-text
                         : Theme.dark-mode ? Theme.button-text : #ffffff;
                 }
@@ -276,7 +280,7 @@ export component Controls inherits Rectangle {
                             return;
                         }
                         repeat-guard.running = true;
-                        if (root.is-playing) {
+                        if (parent.shows-stop) {
                             root.stop-clicked();
                         } else {
                             root.play-clicked();

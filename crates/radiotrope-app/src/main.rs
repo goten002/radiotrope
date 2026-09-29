@@ -2433,6 +2433,9 @@ fn play_station_with_metadata(
         url: url.clone(),
         name: name.clone(),
     });
+    // Show it as connecting right away (the Play button turns into Stop),
+    // not only at the next state poll
+    ui.set_is_loading(true);
 
     // Save settings (persists last_station, volume, eq, etc.)
     {

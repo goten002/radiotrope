@@ -322,6 +322,7 @@ export component App inherits Window {
         }
         controls := Controls {
             is-playing: root.is-playing;
+            is-loading: root.is-loading;
             has-station: root.station-url != "";
             now-playing-title: root.now-playing-title;
             volume <=> root.volume;
