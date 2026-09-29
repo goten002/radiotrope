@@ -36,11 +36,11 @@ pub struct Settings {
     pub last_station: Option<Station>,
 
     // === Window ===
-    /// Window width
+    /// Window width in logical pixels
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_width: Option<u32>,
 
-    /// Window height
+    /// Window height in logical pixels
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window_height: Option<u32>,
 

@@ -2272,10 +2272,17 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
         }
     }
 
-    let size = ui.window().size();
-    if size.width > 0 && size.height > 0 {
-        settings.window_width = Some(size.width);
-        settings.window_height = Some(size.height);
+    // Saved in logical pixels, the unit the size is restored in at startup.
+    // The window reports physical pixels, so saving those made the window
+    // grow by the display scale (e.g. 125%) on every launch. A maximized
+    // window keeps the size it had before it was maximized.
+    let window = ui.window();
+    if !window.is_maximized() {
+        let size = window.size().to_logical(window.scale_factor());
+        if size.width >= 1.0 && size.height >= 1.0 {
+            settings.window_width = Some(size.width.round() as u32);
+            settings.window_height = Some(size.height.round() as u32);
+        }
     }
 
     drop(s);
