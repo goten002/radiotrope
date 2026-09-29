@@ -6,6 +6,11 @@ export global VizData {
     in property <float> vu-right;
     // Bar heights per band (0-1), noise-gated
     in property <[float]> spectrum;
+    // Dot Matrix: band pairs averaged into 8 columns, and their peak dots
+    in property <[float]> columns;
+    in property <[float]> peaks;
+    // Waterfall: opacity per cell, newest row first, one value per band
+    in property <[float]> waterfall;
 }
 
 // Visualizer colours
@@ -36,7 +41,10 @@ export global VizStyle {
     // Mode after `mode` in the click cycle
     public pure function next-mode(mode: string) -> string {
         if mode == "mirror" { return "spectrum"; }
-        if mode == "spectrum" { return "vu"; }
+        if mode == "spectrum" { return "wave"; }
+        if mode == "wave" { return "dots"; }
+        if mode == "dots" { return "waterfall"; }
+        if mode == "waterfall" { return "vu"; }
         if mode == "vu" { return "hbars"; }
         return "mirror";
     }
@@ -102,6 +110,124 @@ export component VizContent inherits Rectangle {
             level: val;
             anchor: "center";
             tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
+        }
+    }
+
+    // Wave: the bands as one smooth curve with a soft fill below. Drawn as
+    // one piece per pair of bands so each piece has a single colour: the
+    // software renderer (Pi build) fills a path with one colour only.
+    property <float> vw: root.width / 1px;
+    property <float> vh: root.height / 1px;
+    property <int> last-band: VizData.spectrum.length - 1;
+
+    pure function wave-x(i: int) -> float {
+        return clamp(i, 0, root.last-band) * root.vw / max(1, root.last-band);
+    }
+
+    pure function wave-y(i: int) -> float {
+        return root.vh - 1 - clamp(VizData.spectrum[clamp(i, 0, root.last-band)], 0, 1) * (root.vh - 3);
+    }
+
+    // Colour of the piece from band i to i + 1
+    pure function wave-color(i: int) -> color {
+        return VizStyle.bar-color((i + 0.5) / max(1, root.last-band));
+    }
+
+    if !root.is-loading && root.mode == "wave": Rectangle {
+        // Fill: opaque (mixed with the tile colour) so the pieces can
+        // overlap slightly and leave no seams
+        for i in root.last-band: Path {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            viewbox-width: root.vw;
+            viewbox-height: root.vh;
+            fill: root.wave-color(i).mix(Theme.viz-bg, 0.28);
+
+            MoveTo { x: root.wave-x(i); y: root.vh; }
+            LineTo { x: root.wave-x(i); y: root.wave-y(i); }
+            CubicTo {
+                control-1-x: root.wave-x(i) + (root.wave-x(i + 1) - root.wave-x(i - 1)) / 6;
+                control-1-y: root.wave-y(i) + (root.wave-y(i + 1) - root.wave-y(i - 1)) / 6;
+                control-2-x: root.wave-x(i + 1) - (root.wave-x(i + 2) - root.wave-x(i)) / 6;
+                control-2-y: root.wave-y(i + 1) - (root.wave-y(i + 2) - root.wave-y(i)) / 6;
+                x: root.wave-x(i + 1);
+                y: root.wave-y(i + 1);
+            }
+            LineTo { x: root.wave-x(i + 1) + 0.6; y: root.wave-y(i + 1); }
+            LineTo { x: root.wave-x(i + 1) + 0.6; y: root.vh; }
+            Close { }
+        }
+
+        // Line on top
+        for i in root.last-band: Path {
+            x: 0;
+            y: 0;
+            width: root.width;
+            height: root.height;
+            viewbox-width: root.vw;
+            viewbox-height: root.vh;
+            stroke: root.wave-color(i);
+            stroke-width: 2px;
+            stroke-line-cap: round;
+
+            MoveTo { x: root.wave-x(i); y: root.wave-y(i); }
+            CubicTo {
+                control-1-x: root.wave-x(i) + (root.wave-x(i + 1) - root.wave-x(i - 1)) / 6;
+                control-1-y: root.wave-y(i) + (root.wave-y(i + 1) - root.wave-y(i - 1)) / 6;
+                control-2-x: root.wave-x(i + 1) - (root.wave-x(i + 2) - root.wave-x(i)) / 6;
+                control-2-y: root.wave-y(i + 1) - (root.wave-y(i + 2) - root.wave-y(i)) / 6;
+                x: root.wave-x(i + 1);
+                y: root.wave-y(i + 1);
+            }
+        }
+    }
+
+    // Dot Matrix: 8 columns of LED dots, unlit ones faint, with a peak dot
+    // on each column that hangs, then falls
+    property <int> dot-count: 8;
+    property <length> dot-gap: 2px;
+    property <length> dot: (min(root.width, root.height) - (root.dot-count - 1) * root.dot-gap) / root.dot-count;
+    property <length> dots-size: root.dot-count * root.dot + (root.dot-count - 1) * root.dot-gap;
+
+    if !root.is-loading && root.mode == "dots": Rectangle {
+        for level[c] in VizData.columns: Rectangle {
+            property <int> lit: round(clamp(level, 0, 1) * root.dot-count);
+            property <int> peak-row: round(clamp(VizData.peaks[c], 0, 1) * root.dot-count) - 1;
+            property <color> tint: VizStyle.bar-color(c / max(1, VizData.columns.length - 1));
+
+            x: (parent.width - root.dots-size) / 2 + c * (root.dot + root.dot-gap);
+            y: (parent.height - root.dots-size) / 2;
+            width: root.dot;
+            height: root.dots-size;
+
+            for r in root.dot-count: Rectangle {
+                y: parent.height - (r + 1) * root.dot - r * root.dot-gap;
+                width: root.dot;
+                height: root.dot;
+                border-radius: root.dot / 2;
+                background: parent.tint.with-alpha(r < parent.lit || r == parent.peak-row ? 1 : 0.12);
+            }
+        }
+    }
+
+    // Waterfall: recent spectrum rows scrolling up, louder bands brighter
+    property <int> fall-bands: max(1, VizData.spectrum.length);
+    property <length> fall-gap: 1px;
+    property <length> fall-cell: (root.width - (root.fall-bands - 1) * root.fall-gap) / root.fall-bands;
+    property <length> fall-row: root.height / max(1, VizData.waterfall.length / root.fall-bands);
+
+    if !root.is-loading && root.mode == "waterfall": Rectangle {
+        for level[k] in VizData.waterfall: Rectangle {
+            property <int> band: mod(k, root.fall-bands);
+            property <int> age: floor(k / root.fall-bands);
+
+            x: self.band * (root.fall-cell + root.fall-gap);
+            y: root.height - (self.age + 1) * root.fall-row;
+            width: root.fall-cell;
+            height: root.fall-row;
+            background: VizStyle.bar-color(self.band / max(1, root.fall-bands - 1)).with-alpha(clamp(level, 0, 1));
         }
     }
 
