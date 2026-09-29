@@ -303,7 +303,7 @@ export component Controls inherits Rectangle {
                     Icon {
                         width: 12px;
                         height: 12px;
-                        source: root.copied ? @image-url("icons/tick.svg") : @image-url("icons/music-note.svg");
+                        source: root.copied ? @image-url("icons/tick.svg") : @image-url("icons/music.svg");
                         colorize: root.copied ? Theme.accent-text : Theme.text-secondary;
                     }
                     Text {
@@ -358,7 +358,7 @@ export component Controls inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     IconButton {
-                        icon: root.is-muted ? @image-url("icons/volume-slash.svg")
+                        icon: root.is-muted ? @image-url("icons/volume-xmark.svg")
                             : root.volume < 0.01 ? @image-url("icons/volume-off.svg")
                             : root.volume < 0.33 ? @image-url("icons/volume-low.svg")
                             : root.volume < 0.66 ? @image-url("icons/volume-medium.svg")
