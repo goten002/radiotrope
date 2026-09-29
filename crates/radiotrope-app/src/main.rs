@@ -2388,6 +2388,21 @@ fn play_station_with_metadata(
         .unwrap_or_else(|e| e.into_inner())
         .resolve_play(req);
 
+    // A second click on the same station right after the first is ignored:
+    // a touchpad can turn one tap into two, which restarted the stream.
+    // The first click acts at once, and another station always switches.
+    {
+        let now = Instant::now();
+        let mut last = LAST_PLAY_CLICK.lock().unwrap_or_else(|e| e.into_inner());
+        let repeat = last.as_ref().is_some_and(|(last_url, at)| {
+            *last_url == url && now.duration_since(*at) < REPEAT_CLICK_WINDOW
+        });
+        if repeat {
+            return;
+        }
+        *last = Some((url.clone(), now));
+    }
+
     // Set UI metadata properties
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
     *PLAY_LOGO.lock().unwrap_or_else(|e| e.into_inner()) = logo_url
@@ -2793,6 +2808,14 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
 /// Logo URL of the last station played from the UI, by stream URL, so the
 /// poll keeps it for a station that isn't a favorite (Open Network Stream)
 static PLAY_LOGO: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// Stream URL and time of the last station started from the UI, so a
+/// double tap doesn't start it twice
+static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+/// A click on the same station this soon after starting it is ignored
+/// (Windows' default double-click time)
+const REPEAT_CLICK_WINDOW: Duration = Duration::from_millis(500);
 
 /// Listening time per favorite since the app was opened, by favorite ID
 static SESSION_LISTEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);

@@ -260,10 +260,22 @@ export component Controls inherits Rectangle {
                         : Theme.dark-mode ? Theme.button-text : #ffffff;
                 }
 
+                // A second press right after the first is ignored: a
+                // touchpad double tap would stop and restart the station
+                repeat-guard := Timer {
+                    interval: 500ms;
+                    running: false;
+                    triggered => { self.running = false; }
+                }
+
                 play-touch := TouchArea {
                     enabled: can-interact;
                     mouse-cursor: can-interact ? pointer : default;
                     clicked => {
+                        if repeat-guard.running {
+                            return;
+                        }
+                        repeat-guard.running = true;
                         if (root.is-playing) {
                             root.stop-clicked();
                         } else {
