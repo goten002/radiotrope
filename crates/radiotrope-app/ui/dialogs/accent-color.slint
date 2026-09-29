@@ -48,10 +48,7 @@ export component AccentColorDialog inherits Rectangle {
     property <string> hex-input;
     // Rust callback validates actual hex digits; Slint gates on length only
     property <bool> hex-valid: hex-input.character-count == 7;
-    property <[color]> swatches: [
-        #f7931e, #ed5b00, #e62d42, #d56199, #9141ac,
-        #3584e4, #2190a4, #3a944a, #c88800, #6f8396,
-    ];
+    property <[color]> swatches: Theme.accent-swatches;
 
     if show-dialog: DialogShell {
         title: "Accent Color";
@@ -89,7 +86,7 @@ export component AccentColorDialog inherits Rectangle {
 
                 hex-edit := StyledLineEdit {
                     horizontal-stretch: 1;
-                    placeholder-text: "#f7931e";
+                    placeholder-text: "#rrggbb";
                     text <=> root.hex-input;
                     clearable: true;
                     accepted(val) => {
@@ -123,9 +120,9 @@ export component AccentColorDialog inherits Rectangle {
             SecondaryButton {
                 label: "Reset to default";
                 clicked => {
-                    Theme.accent-base = #f7931e;
+                    Theme.accent-base = Theme.accent-default;
                     Theme.panel-gradient = true;
-                    root.color-changed(#f7931e);
+                    root.color-changed(Theme.accent-default);
                 }
             }
         }

@@ -32,7 +32,15 @@ export global Theme {
     out property <color> text-tertiary: dark-mode ? #6c6f76 : #8d9097;
 
     // ── Accent ──
-    in-out property <color> accent-base: #f7931e;
+    // Default accent, also what "Reset to default" goes back to
+    out property <color> accent-default: #f7931e;
+    // Colours offered in the Accent Color dialog, two rows of five
+    out property <[color]> accent-swatches: [
+        #f7931e, #ed5b00, #e62d42, #d56199, #9141ac,
+        #3584e4, #2190a4, #3a944a, #c88800, #6f8396,
+    ];
+    // The accent in use (the user's choice, saved in settings)
+    in-out property <color> accent-base: accent-default;
     out property <color> accent: accent-base;
     out property <color> accent-hover: accent-base.darker(0.15);
     // Accent for text and icons on surfaces; darker in light mode so it stays readable
