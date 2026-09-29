@@ -1125,7 +1125,7 @@ fn main() {
         let mut waterfall = visual::Waterfall::new(bands);
         let mut shown_mode = slint::SharedString::default();
         let mut gated = vec![0.0f32; bands];
-        let mut idle = false;
+        let mut idle = true;
         let mut last_frame = Instant::now();
         _viz_timer.start(
             slint::TimerMode::Repeated,
@@ -1142,6 +1142,7 @@ fn main() {
                 if !ui.get_is_playing() {
                     if !idle {
                         idle = true;
+                        viz.set_active(false);
                         spectrum_smooth.reset();
                         vu_smooth.reset();
                         gated.fill(0.0);
@@ -1152,7 +1153,10 @@ fn main() {
                     }
                     return;
                 }
-                idle = false;
+                if idle {
+                    idle = false;
+                    viz.set_active(true);
+                }
                 // try_lock: skip this tick if engine/analyzer holds the lock
                 let Ok(a) = analysis.try_lock() else { return };
                 let (vu_l, vu_r, spectrum) = (a.vu_left, a.vu_right, a.spectrum);
