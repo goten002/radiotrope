@@ -225,8 +225,9 @@ export global TextUtil {
 
 export component Chip inherits Rectangle {
     in property <string> text;
-    // Optional second part after the text, laid out on its own so digits
-    // changing in the text don't push it around (e.g. a size after a timer)
+    // Optional second part after the text, behind a centred "·" and laid
+    // out on its own so digits changing in the text don't push it around
+    // (e.g. a size after a timer)
     in property <string> detail;
     // Keep the width steady while digits in the text change (timers, sizes)
     in property <bool> steady: false;
@@ -279,9 +280,28 @@ export component Chip inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
-            // Sized from the measuring copy below, so it can still shrink
-            // and elide when space runs out
-            preferred-width: measure.preferred-width;
+            // Sized from the measuring copies below, so it can still shrink
+            // and elide when space runs out. With a detail, the text takes
+            // its real width and the room kept for wider digits goes around
+            // the separator instead.
+            preferred-width: root.detail != "" ? plain-measure.preferred-width : measure.preferred-width;
+        }
+
+        // Separator between the text and the detail. Its box also holds the
+        // room kept for wider digits, with the "·" centred in it, so the gaps
+        // on both sides stay equal and the detail stays put.
+        if root.detail != "": Rectangle {
+            width: separator.preferred-width + root.digit-room;
+            horizontal-stretch: 0;
+
+            separator := Text {
+                text: "·";
+                color: root.tone;
+                font-size: 11px;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-alignment: center;
+            }
         }
 
         if root.detail != "": Text {
@@ -302,6 +322,16 @@ export component Chip inherits Rectangle {
         font-size: 11px;
         font-weight: 600;
     }
+
+    plain-measure := Text {
+        visible: false;
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+    }
+
+    // Room the text keeps for wider digits than it shows now
+    property <length> digit-room: max(0px, measure.preferred-width - plain-measure.preferred-width);
 
     detail-measure := Text {
         visible: false;

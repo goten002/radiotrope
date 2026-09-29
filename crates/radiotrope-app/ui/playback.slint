@@ -113,7 +113,7 @@ export component Playback inherits Rectangle {
                 // Recording progress, or what happened to the last recording
                 if root.is-recording || root.recording-notice != "": Chip {
                     text: root.is-recording ? "REC " + root.recording-text : root.recording-notice;
-                    detail: root.is-recording ? "· " + root.recording-size : "";
+                    detail: root.is-recording ? root.recording-size : "";
                     tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
                     dot: root.is-recording;
                     pulse: root.is-recording;
