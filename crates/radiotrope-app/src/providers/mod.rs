@@ -3,6 +3,7 @@
 //! Providers for discovering radio stations (Radio Browser, SHOUTcast, etc.)
 
 pub mod radio_browser;
+pub mod radio_browser_servers;
 pub mod traits;
 pub mod types;
 

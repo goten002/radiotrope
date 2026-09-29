@@ -100,26 +100,30 @@ impl HttpClient {
         ttl: Duration,
         request: impl FnOnce() -> reqwest::blocking::RequestBuilder,
     ) -> Result<T> {
+        self.get_or_fetch(key, ttl, || body_of(request()))
+    }
+
+    /// Serve `key` from the cache if fresh; otherwise `fetch` the body and
+    /// store it. If fetching fails, fall back to a stale entry.
+    pub fn get_or_fetch<T: DeserializeOwned>(
+        &self,
+        key: &str,
+        ttl: Duration,
+        fetch: impl FnOnce() -> Result<Vec<u8>>,
+    ) -> Result<T> {
         let Some(cache) = &self.cache else {
-            return Ok(request().send()?.json::<T>()?);
+            return parse(&fetch()?);
         };
         if let Some(data) = cache.get_fresh(key, ttl).and_then(|b| parse(&b).ok()) {
             return Ok(data);
         }
-        let fetched = request()
-            .send()
-            .and_then(|r| r.error_for_status())
-            .and_then(|r| r.bytes());
-        match fetched {
+        match fetch() {
             Ok(bytes) => {
                 let data = parse(&bytes)?;
                 cache.put(key, &bytes);
                 Ok(data)
             }
-            Err(e) => cache
-                .get_any(key)
-                .and_then(|b| parse(&b).ok())
-                .ok_or_else(|| e.into()),
+            Err(e) => cache.get_any(key).and_then(|b| parse(&b).ok()).ok_or(e),
         }
     }
 
@@ -127,6 +131,16 @@ impl HttpClient {
     pub fn inner(&self) -> &reqwest::blocking::Client {
         &self.inner
     }
+}
+
+/// Send `request` and return the body of a successful response; an HTTP
+/// error status is an error
+pub fn body_of(request: reqwest::blocking::RequestBuilder) -> Result<Vec<u8>> {
+    Ok(request
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.bytes())?
+        .to_vec())
 }
 
 fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {

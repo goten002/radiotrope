@@ -10,8 +10,22 @@ pub mod app {
 pub mod providers {
     use std::time::Duration;
 
-    /// Default Radio Browser API server
-    pub const RADIO_BROWSER_DEFAULT_SERVER: &str = "https://de1.api.radio-browser.info";
+    /// Radio Browser API servers to start from. More are learned from the
+    /// server list of the first one that answers. `all.api` points (by DNS)
+    /// at whichever servers radio-browser runs, in case the others are gone.
+    /// The first is also the name cached responses are stored under.
+    pub const RADIO_BROWSER_SERVERS: &[&str] = &[
+        "https://de1.api.radio-browser.info",
+        "https://all.api.radio-browser.info",
+    ];
+
+    /// How long the server list learned from radio-browser is used before
+    /// it is asked for again
+    pub const RADIO_BROWSER_SERVER_LIST_TTL: Duration = Duration::from_secs(24 * 3600);
+
+    /// How long a server gets to answer the quick check made before it is
+    /// picked, and the server list request
+    pub const RADIO_BROWSER_SERVER_PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
     /// Default search result limit
     pub const DEFAULT_SEARCH_LIMIT: usize = 100;
