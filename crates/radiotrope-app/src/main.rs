@@ -2331,20 +2331,15 @@ fn play_station_with_metadata(
         .map(|logo| (url.clone(), logo.clone()));
     ui.set_station_country(country.as_deref().unwrap_or("").into());
 
-    // Try cached logo first to avoid placeholder flash
-    let cache_hit = if let Some(ref logo) = logo_url {
-        if !logo.is_empty() {
-            let tmp = Station::new(name.as_deref().unwrap_or(""), &url).with_logo(logo);
-            if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
-                let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
-                ui.set_current_logo(slint::Image::from_rgba8(pb));
-                true
-            } else {
-                false
-            }
-        } else {
-            false
-        }
+    // Try cached logo first to avoid placeholder flash. The cache is keyed
+    // by the stream URL, so a logo cached earlier shows even when the
+    // station has no logo URL now (as the poll timer does on a station
+    // change); otherwise replaying the same station would lose it.
+    let cached = logo_service.get_cached_rgba(&Station::new(name.as_deref().unwrap_or(""), &url));
+    let cache_hit = if let Some((rgba, w, h)) = cached {
+        let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
+        ui.set_current_logo(slint::Image::from_rgba8(pb));
+        true
     } else {
         false
     };
