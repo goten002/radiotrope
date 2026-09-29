@@ -62,13 +62,23 @@ impl ProviderRegistry {
     /// Search across all providers, merging results
     pub fn search_all(&self, query: &str, limit: usize) -> Result<Vec<Station>> {
         let mut all_stations = Vec::new();
+        let mut failed = None;
+        let mut answered = false;
         for provider in &self.providers {
             match provider.search(query, limit, 0) {
-                Ok(results) => all_stations.extend(results.stations),
-                Err(_) => continue, // skip failing providers
+                Ok(results) => {
+                    answered = true;
+                    all_stations.extend(results.stations);
+                }
+                // Skip a failing provider while another answers
+                Err(e) => failed = Some(e),
             }
         }
-        Ok(all_stations)
+        // Every provider failed: say why, rather than "no stations found"
+        match failed {
+            Some(e) if !answered => Err(e),
+            _ => Ok(all_stations),
+        }
     }
 
     /// Number of registered providers
@@ -446,5 +456,12 @@ mod tests {
         let results = registry.search_all("rock", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "Rock FM");
+    }
+
+    #[test]
+    fn test_registry_search_all_reports_when_every_provider_fails() {
+        let mut registry = ProviderRegistry::new();
+        registry.register(Box::new(FailingProvider));
+        assert!(registry.search_all("rock", 10).is_err());
     }
 }

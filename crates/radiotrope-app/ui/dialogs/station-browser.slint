@@ -1,7 +1,7 @@
 import { Theme } from "../theme.slint";
 import { DialogShell, NowPlayingBars, Icon } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton } from "../buttons.slint";
+import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
 export struct BrowseStation {
@@ -223,6 +223,8 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <bool> search-loading: false;
     in-out property <bool> search-loading-more: false;
     in-out property <string> search-error: "";
+    // Seconds until a failed request is tried again on its own
+    in-out property <int> retry-in: 0;
     in-out property <[BrowseStation]> search-results: [];
     in-out property <[image]> browse-logos: [];
     in-out property <bool> has-more: false;
@@ -272,6 +274,8 @@ export component StationBrowserDialog inherits Rectangle {
     // Back to the country list (country mode only)
     callback change-country();
     callback load-more();
+    // Try the failed request again (the first page, or the next one)
+    callback retry();
     callback station-selected(BrowseStation);
     callback favorite-toggled(BrowseStation);
 
@@ -364,13 +368,63 @@ export component StationBrowserDialog inherits Rectangle {
                 vertical-alignment: center;
             }
 
-            // Error state
-            if root.search-error != "" && !root.search-loading: Text {
-                text: root.search-error;
-                color: Theme.danger;
-                font-size: 13px;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            // Counts down to the next try while a request has failed.
+            // It lives with the dialog, so nothing is retried while closed.
+            Timer {
+                interval: 1s;
+                running: root.search-error != "" && root.retry-in > 0;
+                triggered => {
+                    root.retry-in -= 1;
+                    if root.retry-in == 0 {
+                        root.retry();
+                    }
+                }
+            }
+
+            // Error state: the first page failed
+            if root.search-error != "" && !root.search-loading
+                && root.search-results.length == 0: VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+
+                    Icon {
+                        width: 14px;
+                        height: 14px;
+                        source: @image-url("../icons/circle-exclamation.svg");
+                        colorize: Theme.danger;
+                    }
+
+                    Text {
+                        text: root.search-error;
+                        color: Theme.danger;
+                        font-size: 13px;
+                        font-weight: 500;
+                    }
+                }
+
+                Text {
+                    text: root.retry-in > 0 ? "Trying again in \{root.retry-in}s" : "";
+                    color: Theme.text-secondary;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 6px;
+
+                    SecondaryButton {
+                        label: "Try again";
+                        clicked => {
+                            root.retry-in = 0;
+                            root.retry();
+                        }
+                    }
+                }
             }
 
             // Empty state
@@ -394,7 +448,9 @@ export component StationBrowserDialog inherits Rectangle {
                     // Infinite scroll: fetch the next page when the view
                     // comes within about five rows of the end
                     changed content-y => {
+                        // After a failure, the countdown or Retry fetches it
                         if root.has-more && !root.search-loading-more
+                           && root.search-error == ""
                            && self.height - self.content-y > self.content-height - 300px {
                             root.search-loading-more = true;
                             root.load-more();
@@ -489,6 +545,54 @@ export component StationBrowserDialog inherits Rectangle {
                 font-size: 11px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+            }
+
+            // The next page failed: the list stays, with the reason here
+            if root.search-error != "" && root.search-results.length > 0: HorizontalLayout {
+                horizontal-stretch: 0;
+                alignment: end;
+                spacing: 6px;
+
+                VerticalLayout {
+                    alignment: center;
+
+                    Icon {
+                        width: 12px;
+                        height: 12px;
+                        source: @image-url("../icons/circle-exclamation.svg");
+                        colorize: Theme.danger;
+                    }
+                }
+
+                Text {
+                    text: root.search-error;
+                    color: Theme.danger;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    text: root.retry-in > 0 ? "· retrying in \{root.retry-in}s" : "";
+                    color: Theme.text-secondary;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+
+                retry-link := Text {
+                    text: "Retry";
+                    color: retry-touch.has-hover ? Theme.accent : Theme.accent-text;
+                    font-size: 11px;
+                    font-weight: 600;
+                    vertical-alignment: center;
+
+                    retry-touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.retry-in = 0;
+                            root.retry();
+                        }
+                    }
+                }
             }
         }
     }

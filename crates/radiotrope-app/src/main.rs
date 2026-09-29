@@ -23,6 +23,7 @@ use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::types::{FavoriteSort, Station};
+use radiotrope_app::error::ServiceProblem;
 use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
@@ -887,15 +888,38 @@ fn main() {
                                 show_browse_results(&ui, results, true, &favs, &row_logos)
                             }
                             Err(e) => {
-                                // Step back so the next scroll retries this page
+                                // Step back so the retry asks for this page again
                                 let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                                 s.1 = s.1.saturating_sub(SEARCH_PAGE_SIZE);
-                                ui.set_search_error(format!("{e}").into());
+                                show_browse_error(&ui, &e);
                             }
                         }
                     });
                 })
                 .ok();
+        });
+    }
+
+    // Try the failed browser request again: the first page, or the next one
+    {
+        let ui_weak = ui.as_weak();
+        let state = browse_state.clone();
+        let gen = browse_logo_gen.clone();
+        let row_logos = row_logos.clone();
+        let favs = favorites.clone();
+        ui.on_retry_browse(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if ui.get_search_loading() || ui.get_search_loading_more() {
+                return;
+            }
+            ui.set_search_error(Default::default());
+            if ui.get_search_results().row_count() == 0 {
+                let query = state.lock().unwrap_or_else(|e| e.into_inner()).0.clone();
+                start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
+            } else {
+                ui.set_search_loading_more(true);
+                ui.invoke_load_more_stations();
+            }
         });
     }
 
@@ -2644,7 +2668,7 @@ fn start_browse(
                 }
                 match results {
                     Ok(results) => show_browse_results(&ui, results, false, &favs, &row_logos),
-                    Err(e) => ui.set_search_error(format!("{e}").into()),
+                    Err(e) => show_browse_error(&ui, &e),
                 }
                 ui.set_search_loading(false);
             });
@@ -2686,7 +2710,22 @@ fn show_browse_results(
     ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
     ui.set_has_more(results.has_more);
     ui.set_search_error(Default::default());
+    BROWSE_FAILURES.set(0);
     row_logos.refresh(ui);
+}
+
+thread_local! {
+    /// Station browser requests failed in a row, which spaces out the retries
+    static BROWSE_FAILURES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Say why a station browser request failed, and when it is tried again
+fn show_browse_error(ui: &App, e: &radiotrope_app::error::AppError) {
+    let failures = BROWSE_FAILURES.get() + 1;
+    BROWSE_FAILURES.set(failures);
+    let problem = ServiceProblem::of(e);
+    ui.set_search_error(problem.message().into());
+    ui.set_search_retry_in(problem.retry_delay_secs(failures) as i32);
 }
 
 fn station_to_browse(s: &Station) -> BrowseStation {

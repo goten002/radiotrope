@@ -129,6 +129,7 @@ export component App inherits Window {
     in-out property <bool> search-loading <=> browser-dialog.search-loading;
     in-out property <bool> search-loading-more <=> browser-dialog.search-loading-more;
     in-out property <string> search-error <=> browser-dialog.search-error;
+    in-out property <int> search-retry-in <=> browser-dialog.retry-in;
     in-out property <bool> has-more <=> browser-dialog.has-more;
     // What the station browser shows, so Rust can put a mode's list aside
     // and bring it back when that mode is opened again
@@ -141,6 +142,8 @@ export component App inherits Window {
     out property <int> browse-visible-count: browser-dialog.visible-count;
     callback browse-rows-changed();
     callback browse-closed();
+    // Try the station browser's failed request again
+    callback retry-browse();
     in-out property <string> browse-country-name <=> browser-dialog.country-name;
     in-out property <string> browse-country-code <=> browser-dialog.country-code;
     in-out property <image> browse-country-flag <=> browser-dialog.country-flag;
@@ -400,6 +403,7 @@ export component App inherits Window {
             root.show-country-list();
         }
         load-more() => { root.load-more-stations(); }
+        retry() => { root.retry-browse(); }
         station-selected(station) => { root.play-station(station); }
         favorite-toggled(station) => { root.toggle-browse-favorite(station); }
         visible-rows-changed() => { root.browse-rows-changed(); }
