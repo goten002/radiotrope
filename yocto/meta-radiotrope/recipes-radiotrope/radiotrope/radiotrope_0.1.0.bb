@@ -1,8 +1,8 @@
 SUMMARY = "Radiotrope Internet Radio"
 DESCRIPTION = "Embedded internet radio player with Slint UI, running in kiosk mode on DRM/KMS"
 HOMEPAGE = "https://github.com/goten002/radiotrope"
-LICENSE = "MIT"
-LIC_FILES_CHKSUM = "file://LICENSE;md5=e40b6b6cd3e82d94e6b825a9e7695926"
+LICENSE = "GPL-3.0-or-later"
+LIC_FILES_CHKSUM = "file://LICENSE;md5=1ebbd3e34237af26da5dc08a4e440464"
 
 # Use cargo_bin from meta-rust-bin (modern Rust toolchain, standard Yocto Rust pattern)
 inherit cargo_bin systemd

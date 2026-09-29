@@ -2,8 +2,31 @@ Third-Party Licenses
 ====================
 
 Radiotrope depends on the following third-party libraries that have licenses
-differing from the project's MIT license. All other dependencies are licensed
-under MIT, Apache-2.0, or a dual MIT/Apache-2.0 license.
+differing from the project's GPL-3.0-or-later license. All other dependencies
+are under permissive licenses (mostly MIT, Apache-2.0, BSD, ISC or Zlib) that
+are compatible with the GPL version 3.
+
+
+Slint
+-----
+GUI toolkit.
+
+License: GNU General Public License version 3 (one of three license options)
+Source:  https://github.com/slint-ui/slint
+SPDX:   GPL-3.0-only OR LicenseRef-Slint-Royalty-free-2.0 OR LicenseRef-Slint-Software-3.0
+
+Radiotrope uses Slint under its GPL-3.0 option. Because Slint offers only
+version 3 of the GPL, distributed Radiotrope binaries that include Slint are
+effectively under GPL-3.0.
+
+
+LAME (via mp3lame-encoder)
+--------------------------
+MP3 encoder used for recording.
+
+License: GNU Lesser General Public License version 3
+Source:  https://lame.sourceforge.io
+SPDX:   LGPL-3.0
 
 
 Symphonia
@@ -42,5 +65,10 @@ under the Fraunhofer FDK AAC license, which includes the following notice:
 This means no patent license is provided for AAC encoding or decoding. Users
 distributing binaries that include FDK-AAC should be aware of potential patent
 obligations in their jurisdiction.
+
+The Free Software Foundation considers the FDK AAC license incompatible with
+the GPL. Radiotrope's licensors therefore grant an additional permission under
+GPL version 3 section 7 to convey Radiotrope linked with libfdk-aac; see the
+License section of README.md.
 
 Full license text: https://github.com/mstorsjo/fdk-aac/blob/master/NOTICE

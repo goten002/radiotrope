@@ -1,7 +1,7 @@
 # Radiotrope
 
 [![CI](https://github.com/goten002/radiotrope/actions/workflows/ci.yml/badge.svg)](https://github.com/goten002/radiotrope/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: GPL v3](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
 An AI agent-enabled internet radio player built with Rust and [Slint](https://slint.dev). Control playback from your AI assistant via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), or use the desktop GUI and terminal interfaces directly.
 
@@ -181,7 +181,23 @@ radiotrope-cli <URL>
 
 ## License
 
-Radiotrope is provided under the MIT license. See [LICENSE](LICENSE) for details.
+Copyright (C) 2026 George Alexiou
+
+Radiotrope is free software: you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation, either version 3 of the License, or (at your option) any later
+version. See [LICENSE](LICENSE) for the full text.
+
+Radiotrope is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU General Public License for more details.
+
+**Additional permission under GNU GPL version 3 section 7:** if you modify
+Radiotrope, or any covered work, by linking or combining it with the
+Fraunhofer FDK AAC library (libfdk-aac), or a modified version of that library,
+containing parts covered by the terms of the Fraunhofer FDK AAC Codec Library
+license, the licensors of Radiotrope grant you additional permission to convey
+the resulting work.
 
 This project includes third-party dependencies with different licenses.
 See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) for details.
