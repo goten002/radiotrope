@@ -193,8 +193,11 @@ export component VizContent inherits Rectangle {
 
     if !root.is-loading && root.mode == "dots": Rectangle {
         for level[c] in VizData.columns: Rectangle {
-            property <int> lit: round(clamp(level, 0, 1) * root.dot-count);
-            property <int> peak-row: round(clamp(VizData.peaks[c], 0, 1) * root.dot-count) - 1;
+            // Level in dots: whole dots are lit, the one above lights by the
+            // fraction, so the column fades between dots instead of jumping
+            property <float> fill: clamp(level, 0, 1) * root.dot-count;
+            // Dot holding the peak, shown only above the lit ones
+            property <int> peak-row: ceil(clamp(VizData.peaks[c], 0, 1) * root.dot-count) - 1;
             property <color> tint: VizStyle.bar-color(c / max(1, VizData.columns.length - 1));
 
             x: (parent.width - root.dots-size) / 2 + c * (root.dot + root.dot-gap);
@@ -207,7 +210,8 @@ export component VizContent inherits Rectangle {
                 width: root.dot;
                 height: root.dot;
                 border-radius: root.dot / 2;
-                background: parent.tint.with-alpha(r < parent.lit || r == parent.peak-row ? 1 : 0.12);
+                property <bool> peak: r == parent.peak-row && r >= ceil(parent.fill);
+                background: parent.tint.with-alpha(self.peak ? 1 : 0.12 + 0.88 * clamp(parent.fill - r, 0, 1));
             }
         }
     }
