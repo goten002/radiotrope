@@ -105,6 +105,7 @@ export component Playback inherits Rectangle {
                     tone: root.is-error ? Theme.danger : Theme.accent-text;
                     dot: true;
                     pulse: root.status-text == "Playing" || root.is-loading;
+                    steady: true;
                 }
 
                 // Recording progress, or what happened to the last recording
@@ -113,6 +114,7 @@ export component Playback inherits Rectangle {
                     tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
                     dot: root.is-recording;
                     pulse: root.is-recording;
+                    steady: root.is-recording;
                     clickable: !root.is-recording && !root.recording-notice-error && root.can-open-recordings;
                     clicked => { root.open-recordings-folder(); }
                 }

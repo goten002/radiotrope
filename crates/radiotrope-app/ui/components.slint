@@ -215,8 +215,18 @@ export component LinkRow inherits Rectangle {
 }
 
 // Pill with short text; `tone` colors the text and a soft background
+// Text helpers implemented in Rust
+export global TextUtil {
+    // The text with every digit replaced by the widest one ("4" in Inter).
+    // Sizing a label to this keeps it from shifting as a counter ticks,
+    // since Inter's digits have different widths.
+    pure callback steady-digits(string) -> string;
+}
+
 export component Chip inherits Rectangle {
     in property <string> text;
+    // Keep the width steady while digits in the text change (timers, sizes)
+    in property <bool> steady: false;
     in property <color> tone: Theme.text-secondary;
     // Show a dot before the text (e.g. a live status)
     in property <bool> dot: false;
@@ -266,7 +276,18 @@ export component Chip inherits Rectangle {
             vertical-alignment: center;
             overflow: elide;
             horizontal-stretch: 1;
+            // Sized from the measuring copy below, so it can still shrink
+            // and elide when space runs out
+            preferred-width: measure.preferred-width;
         }
+    }
+
+    // Measures the text, with its widest digits when steady (not shown)
+    measure := Text {
+        visible: false;
+        text: root.steady ? TextUtil.steady-digits(root.text) : root.text;
+        font-size: 11px;
+        font-weight: 600;
     }
 }
 

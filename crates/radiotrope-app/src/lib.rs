@@ -8,6 +8,7 @@ pub mod data;
 pub mod error;
 pub mod network;
 pub mod providers;
+pub mod text;
 pub mod visual;
 
 #[cfg(feature = "embedded")]

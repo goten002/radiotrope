@@ -751,6 +751,7 @@ fn main() {
     setup_wifi(&ui);
 
     setup_about(&ui);
+    setup_text_util(&ui);
     setup_recording(
         &ui,
         &settings,
@@ -1732,6 +1733,12 @@ fn apply_logo_palette(ui: &App) {
         .collect();
     ui.global::<VizStyle>()
         .set_logo_colors(ModelRc::from(std::rc::Rc::new(VecModel::from(colors))));
+}
+
+/// Text helpers the UI calls back into
+fn setup_text_util(ui: &App) {
+    ui.global::<TextUtil>()
+        .on_steady_digits(|text| radiotrope_app::text::steady_digits(&text).into());
 }
 
 /// Fill in the About dialog and handle its links
