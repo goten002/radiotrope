@@ -165,17 +165,37 @@ export component AboutDialog inherits Rectangle {
                 // where to read it
                 Rectangle { height: 10px; }
 
-                LinkRow {
-                    label: "License";
-                    links: [{ name: AboutInfo.license, url: "https://www.gnu.org/licenses/gpl-3.0.html" }];
-                    note: "(free software: share and change it freely)";
-                    open-url(url) => { root.open-url(url); }
+                // License (a link to its text) and copyright on one line
+                HorizontalLayout {
+                    alignment: start;
+                    Rectangle {
+                        width: license-link.preferred-width;
+                        license-link := Text {
+                            text: AboutInfo.license;
+                            color: license-touch.has-hover ? Theme.accent-hover : Theme.accent-text;
+                            font-size: Theme.font-xs;
+                        }
+                        // Underline on hover (Text can't underline)
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: license-link.color;
+                            visible: license-touch.has-hover;
+                        }
+                        license-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
+                        }
+                    }
+                    Text {
+                        text: " · © \{AboutInfo.authors}";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-xs;
+                    }
                 }
 
-                Rectangle { height: 6px; }
-
                 Text {
-                    text: "© \{AboutInfo.authors} · This program comes with ABSOLUTELY NO WARRANTY.";
+                    text: "This program comes with ABSOLUTELY NO WARRANTY.";
                     color: Theme.text-secondary;
                     font-size: Theme.font-xs;
                     wrap: word-wrap;
