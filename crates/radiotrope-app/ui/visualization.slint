@@ -11,6 +11,8 @@ export global VizData {
     in property <[float]> peaks;
     // Something is playing; off, the modes show nothing
     in property <bool> active;
+    // Some band has a level (not silence)
+    in property <bool> has-signal;
 }
 
 // Visualizer colours
@@ -149,18 +151,16 @@ export component VizContent inherits Rectangle {
         return root.vh - 1 - clamp(VizData.spectrum[clamp(i, 0, root.last-band)], 0, 1) * (root.vh - 3);
     }
 
-    // A piece shows only while one of its ends has a level, so silence
-    // leaves the tile empty like the bars instead of a flat line
-    pure function wave-shown(i: int) -> bool {
-        return max(VizData.spectrum[i], VizData.spectrum[i + 1]) > 0.01;
-    }
 
     // Colour of the piece from band i to i + 1
     pure function wave-color(i: int) -> color {
         return VizStyle.bar-color((i + 0.5) / max(1, root.last-band));
     }
 
-    if !root.is-loading && root.mode == "wave": Rectangle {
+    // The whole curve shows while any band has a level, running along the
+    // bottom where bands are quiet; silence leaves the tile empty like the
+    // bars instead of a flat line
+    if !root.is-loading && root.mode == "wave" && VizData.has-signal: Rectangle {
         // Fill: opaque (mixed with the tile colour) so the pieces can
         // overlap slightly and leave no seams
         for i in root.last-band: Path {
@@ -171,7 +171,6 @@ export component VizContent inherits Rectangle {
             viewbox-width: root.vw;
             viewbox-height: root.vh;
             fill: root.wave-color(i).mix(Theme.viz-bg, 0.28);
-            visible: root.wave-shown(i);
 
             MoveTo { x: root.wave-x(i); y: root.vh; }
             LineTo { x: root.wave-x(i); y: root.wave-y(i); }
@@ -197,7 +196,6 @@ export component VizContent inherits Rectangle {
             viewbox-width: root.vw;
             viewbox-height: root.vh;
             stroke: root.wave-color(i);
-            visible: root.wave-shown(i);
             stroke-width: 2px;
             stroke-line-cap: round;
 

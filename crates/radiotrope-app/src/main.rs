@@ -1722,6 +1722,7 @@ fn show_viz_frame(viz: &VizData, vu: &[f32], spectrum: &[f32], spectrum_model: &
     }
     viz.set_vu_left(vu[0]);
     viz.set_vu_right(vu[1]);
+    viz.set_has_signal(spectrum.iter().any(|&level| level > 0.01));
 }
 
 /// Models behind the Dot Matrix mode, updated in place
