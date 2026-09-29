@@ -376,7 +376,7 @@ export component StationBrowserDialog inherits Rectangle {
             if root.search-results.length > 0: Rectangle {
                 results-flick := Flickable {
                     content-height: results-layout.preferred-height;
-                    viewport-y <=> root.list-scroll;
+                    content-y <=> root.list-scroll;
 
                     // Infinite scroll: fetch the next page when the view
                     // comes within about five rows of the end
