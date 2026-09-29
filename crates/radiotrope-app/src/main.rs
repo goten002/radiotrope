@@ -2478,7 +2478,7 @@ fn clear_stats_ui(ui: &App) {
 fn format_health(state: &HealthState) -> String {
     match state {
         HealthState::WaitingForAudio => "Connecting".into(),
-        HealthState::Healthy => "Stable".into(),
+        HealthState::Healthy => "OK".into(),
         HealthState::Stalled => "Stalled".into(),
         HealthState::Failed(reason) => format!("Failed ({reason:?})"),
     }

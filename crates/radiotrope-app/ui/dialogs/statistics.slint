@@ -95,7 +95,7 @@ export component StatisticsDialog inherits Rectangle {
             StatTile {
                 label: "STREAM";
                 value: root.stat-health;
-                tone: root.stat-health == "Stable" ? Theme.success
+                tone: root.stat-health == "OK" ? Theme.success
                     : root.stat-health == "--" || root.stat-health == "Stopped"
                         ? Theme.text-primary : Theme.accent-text;
             }
