@@ -269,38 +269,6 @@ impl ImageCache {
         Some(png)
     }
 
-    /// Delete the oldest cached images until at most `max_files` are left
-    ///
-    /// Returns how many were removed.
-    pub fn trim_to(&self, max_files: usize) -> usize {
-        let Ok(entries) = fs::read_dir(&self.cache_dir) else {
-            return 0;
-        };
-        let mut files: Vec<(std::time::SystemTime, PathBuf)> = entries
-            .flatten()
-            .filter_map(|entry| {
-                let path = entry.path();
-                let ext = path.extension()?.to_str()?.to_lowercase();
-                if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-                    return None;
-                }
-                let modified = entry.metadata().ok()?.modified().ok()?;
-                Some((modified, path))
-            })
-            .collect();
-        if files.len() <= max_files {
-            return 0;
-        }
-        // Oldest first
-        files.sort();
-        let excess = files.len() - max_files;
-        files
-            .iter()
-            .take(excess)
-            .filter(|(_, path)| fs::remove_file(path).is_ok())
-            .count()
-    }
-
     /// Get total cache size in bytes
     pub fn total_size(&self) -> u64 {
         let entries = match fs::read_dir(&self.cache_dir) {
@@ -499,33 +467,6 @@ mod tests {
             .put_thumbnail("html", b"<html>not found</html>")
             .is_none());
         assert!(!cache.has("html"));
-
-        cleanup_dir(&dir);
-    }
-
-    #[test]
-    fn test_trim_to_removes_oldest() {
-        let dir = temp_cache_dir();
-        let cache = ImageCache::with_dir(dir.clone()).unwrap();
-        let now = std::time::SystemTime::now();
-        for (i, id) in ["a", "b", "c", "d"].iter().enumerate() {
-            let path = cache
-                .put_thumbnail(id, &png(8))
-                .map(|_| dir.join(format!("{id}.png")));
-            // a is the oldest, d the newest
-            let age = std::time::Duration::from_secs(100 * (4 - i as u64));
-            fs::File::options()
-                .write(true)
-                .open(path.unwrap())
-                .unwrap()
-                .set_modified(now - age)
-                .unwrap();
-        }
-
-        assert_eq!(cache.trim_to(10), 0);
-        assert_eq!(cache.trim_to(2), 2);
-        assert!(!cache.has("a") && !cache.has("b"));
-        assert!(cache.has("c") && cache.has("d"));
 
         cleanup_dir(&dir);
     }

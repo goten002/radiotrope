@@ -11,9 +11,6 @@ use crate::network::LogoService;
 use std::collections::HashSet;
 use std::sync::Mutex;
 
-/// Logos kept on disk; the oldest go first beyond this
-pub const MAX_CACHED: usize = 2000;
-
 /// Size the browser shows logos at (2x its 40px for HiDPI screens)
 pub const ROW_LOGO_SIZE: u32 = 80;
 
@@ -72,11 +69,6 @@ impl BrowseLogos {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .contains(logo_url)
-    }
-
-    /// Keep the disk cache within [`MAX_CACHED`] logos
-    pub fn trim(&self) -> usize {
-        self.cache.trim_to(MAX_CACHED)
     }
 }
 
