@@ -58,6 +58,9 @@ component Bar inherits Rectangle {
     in property <float> level;
     in property <color> tint: Theme.accent;
     in property <string> anchor: "bottom";
+    // Colour the bar with all the palette colours along its length (the
+    // VU meters) instead of one tint
+    in property <bool> spread: false;
 
     property <bool> horizontal: anchor == "left";
     property <float> amount: clamp(root.level, 0, 1);
@@ -70,7 +73,20 @@ component Bar inherits Rectangle {
             : root.anchor == "center" ? (parent.height - self.height) / 2
             : 0;
         border-radius: 1.5px;
-        background: root.tint;
+        clip: root.spread;
+        background: root.spread ? transparent : root.tint;
+
+        // The gradient covers the whole meter and the level uncovers it,
+        // so each colour stays at its height as the level moves
+        if root.spread: Rectangle {
+            x: -parent.x;
+            y: -parent.y;
+            width: root.width;
+            height: root.height;
+            background: root.horizontal
+                ? @linear-gradient(90deg, VizStyle.bar-color(0) 0%, VizStyle.bar-color(0.5) 50%, VizStyle.bar-color(1) 100%)
+                : @linear-gradient(0deg, VizStyle.bar-color(0) 0%, VizStyle.bar-color(0.5) 50%, VizStyle.bar-color(1) 100%);
+        }
     }
 }
 
@@ -152,6 +168,19 @@ export component VizContent inherits Rectangle {
     }
 
 
+    // Slope of the curve at band i (per band). It is flat at peaks and
+    // dips and limited so the curve never swings past its neighbours:
+    // no dip below the quiet line after a peak, no bump above a peak.
+    pure function wave-slope(i: int) -> float {
+        let before = root.wave-y(i) - root.wave-y(i - 1);
+        let after = root.wave-y(i + 1) - root.wave-y(i);
+        if before * after <= 0 {
+            return 0;
+        }
+        let limit = 3 * min(abs(before), abs(after));
+        return clamp((before + after) / 2, -limit, limit);
+    }
+
     // Colour of the piece from band i to i + 1
     pure function wave-color(i: int) -> color {
         return VizStyle.bar-color((i + 0.5) / max(1, root.last-band));
@@ -176,9 +205,9 @@ export component VizContent inherits Rectangle {
             LineTo { x: root.wave-x(i); y: root.wave-y(i); }
             CubicTo {
                 control-1-x: root.wave-x(i) + (root.wave-x(i + 1) - root.wave-x(i - 1)) / 6;
-                control-1-y: root.wave-y(i) + (root.wave-y(i + 1) - root.wave-y(i - 1)) / 6;
+                control-1-y: root.wave-y(i) + root.wave-slope(i) / 3;
                 control-2-x: root.wave-x(i + 1) - (root.wave-x(i + 2) - root.wave-x(i)) / 6;
-                control-2-y: root.wave-y(i + 1) - (root.wave-y(i + 2) - root.wave-y(i)) / 6;
+                control-2-y: root.wave-y(i + 1) - root.wave-slope(i + 1) / 3;
                 x: root.wave-x(i + 1);
                 y: root.wave-y(i + 1);
             }
@@ -202,9 +231,9 @@ export component VizContent inherits Rectangle {
             MoveTo { x: root.wave-x(i); y: root.wave-y(i); }
             CubicTo {
                 control-1-x: root.wave-x(i) + (root.wave-x(i + 1) - root.wave-x(i - 1)) / 6;
-                control-1-y: root.wave-y(i) + (root.wave-y(i + 1) - root.wave-y(i - 1)) / 6;
+                control-1-y: root.wave-y(i) + root.wave-slope(i) / 3;
                 control-2-x: root.wave-x(i + 1) - (root.wave-x(i + 2) - root.wave-x(i)) / 6;
-                control-2-y: root.wave-y(i + 1) - (root.wave-y(i + 2) - root.wave-y(i)) / 6;
+                control-2-y: root.wave-y(i + 1) - root.wave-slope(i + 1) / 3;
                 x: root.wave-x(i + 1);
                 y: root.wave-y(i + 1);
             }
@@ -252,13 +281,13 @@ export component VizContent inherits Rectangle {
         Bar {
             width: 20px;
             level: VizData.vu-left;
-            tint: VizStyle.bar-color(0);
+            spread: true;
         }
 
         Bar {
             width: 20px;
             level: VizData.vu-right;
-            tint: VizStyle.bar-color(1);
+            spread: true;
         }
     }
 
@@ -271,14 +300,14 @@ export component VizContent inherits Rectangle {
             height: 20px;
             level: VizData.vu-left;
             anchor: "left";
-            tint: VizStyle.bar-color(0);
+            spread: true;
         }
 
         Bar {
             height: 20px;
             level: VizData.vu-right;
             anchor: "left";
-            tint: VizStyle.bar-color(1);
+            spread: true;
         }
     }
 }
