@@ -1477,6 +1477,8 @@ fn main() {
             let volume = s.volume;
             let is_muted = s.is_muted;
             let station_url: Option<slint::SharedString> = s.station_url.as_deref().map(Into::into);
+            // Given with the Play, by the UI or an agent
+            let station_logo = s.station_logo_url.clone();
             let eq_gains = s.eq_gains;
             let eq_preamp = s.eq_preamp;
             let eq_enabled = s.eq_enabled;
@@ -1555,14 +1557,7 @@ fn main() {
                                     .filter(|(u, _)| u == url.as_str())
                                     .map(|(_, logo)| logo.clone())
                             })
-                            .or_else(|| {
-                                PLAY_LOGO
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .as_ref()
-                                    .filter(|(u, _)| u == url.as_str())
-                                    .map(|(_, logo)| logo.clone())
-                            });
+                            .or(station_logo);
                         if let Some(logo) = logo_url {
                             if !logo.is_empty() {
                                 ui.set_station_logo_url(logo.as_str().into());
@@ -1699,6 +1694,7 @@ fn setup_rotary_encoder(
                     let is_playing = s.playback == radiotrope::audio::PlaybackState::Playing;
                     let station_url = s.station_url.clone();
                     let station_name = s.station_name.clone();
+                    let station_logo = s.station_logo_url.clone();
                     drop(s);
 
                     if is_playing {
@@ -1707,6 +1703,7 @@ fn setup_rotary_encoder(
                         let _ = cmd_tx.send(app::state::AppCommand::Play {
                             url,
                             name: station_name,
+                            logo_url: station_logo,
                         });
                     }
 
@@ -2697,10 +2694,6 @@ fn play_station_with_metadata(
 
     // Set UI metadata properties
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
-    *PLAY_LOGO.lock().unwrap_or_else(|e| e.into_inner()) = logo_url
-        .as_ref()
-        .filter(|logo| !logo.is_empty())
-        .map(|logo| (url.clone(), logo.clone()));
     ui.set_station_country(country.as_deref().unwrap_or("").into());
 
     // Try cached logo first to avoid placeholder flash. The cache is keyed
@@ -2723,6 +2716,7 @@ fn play_station_with_metadata(
     let _ = cmd_tx.send(app::state::AppCommand::Play {
         url: url.clone(),
         name: name.clone(),
+        logo_url: logo_url.clone(),
     });
     // Show it as connecting right away (the Play button turns into Stop),
     // not only at the next state poll
@@ -3108,10 +3102,6 @@ fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStati
         session_time: format_listen_time(session_listen_secs(&f.id())).into(),
     }
 }
-
-/// Logo URL of the last station played from the UI, by stream URL, so the
-/// poll keeps it for a station that isn't a favorite (Open Network Stream)
-static PLAY_LOGO: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 /// Stream URL and time of the last station started from the UI, so a
 /// double tap doesn't start it twice

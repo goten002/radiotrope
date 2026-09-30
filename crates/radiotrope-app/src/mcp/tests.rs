@@ -77,7 +77,10 @@ impl StationProvider for FakeDirectory {
         Ok(vec![])
     }
     fn get_station(&self, id: &str) -> radiotrope_app::error::Result<Option<Station>> {
-        Ok((id == "jazz-id").then(|| Station::new("Jazz FM", "http://jazz.test/stream")))
+        Ok((id == "jazz-id").then(|| {
+            Station::new("Jazz FM", "http://jazz.test/stream")
+                .with_logo("http://jazz.test/logo.png")
+        }))
     }
 }
 
@@ -465,7 +468,12 @@ async fn favorites_can_be_added_listed_played_and_removed() {
 fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>>) {
     std::thread::spawn(move || {
         while let Ok(cmd) = commands.recv() {
-            let AppCommand::Play { url, name } = cmd else {
+            let AppCommand::Play {
+                url,
+                name,
+                logo_url,
+            } = cmd
+            else {
                 continue;
             };
             {
@@ -473,6 +481,7 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 st.play_seq += 1;
                 st.station_url = Some(url.clone());
                 st.station_name = name;
+                st.station_logo_url = logo_url;
                 st.is_resolving = true;
                 st.last_error = None;
                 st.playback = radiotrope::audio::PlaybackState::Stopped;
@@ -513,6 +522,11 @@ async fn play_waits_for_the_outcome() {
 
     let by_id = s.call("play_station", json!({"id": "jazz-id"})).await;
     assert!(text(&by_id).starts_with("Playing Jazz FM"), "{by_id}");
+    // The logo goes with it, for the header
+    assert_eq!(
+        s.state.lock().unwrap().station_logo_url.as_deref(),
+        Some("http://jazz.test/logo.png")
+    );
     let unknown = s.call("play_station", json!({"id": "nope"})).await;
     assert_eq!(unknown["isError"], true);
 }
