@@ -40,7 +40,7 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 | `play_favorite` | Play a favorite station by ID |
 | `stop` | Stop playback |
 | `set_volume` | Set volume 0-100 |
-| `get_status` | Playback state, station, song, volume, stream format, equalizer, recording and the last error |
+| `get_status` | Playback state, station, song, volume, stream format, recording and the last error |
 | `search_stations` | Search for radio stations by name via radio-browser.info (with genres, codec and bitrate) |
 | `list_favorites` | List all saved favorite stations with IDs |
 | `add_favorite` | Add a station to favorites (with optional logo URL and country) |

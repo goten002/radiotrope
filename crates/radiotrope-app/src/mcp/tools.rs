@@ -160,8 +160,6 @@ pub struct Status {
     pub muted: bool,
     /// Codec and format of the stream playing
     pub stream: Option<StreamInfo>,
-    /// Equalizer state
-    pub equalizer: EqualizerInfo,
     /// The recording in progress, if any
     pub recording: Option<RecordingInfo>,
     /// The last error, e.g. why a station failed to start
@@ -185,13 +183,6 @@ pub struct StreamInfo {
     pub bitrate_kbps: Option<u32>,
     pub sample_rate: u32,
     pub channels: u16,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct EqualizerInfo {
-    pub enabled: bool,
-    /// Preset name, or none for a custom curve
-    pub preset: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -423,7 +414,7 @@ impl RadioTools {
     #[tool(
         title = "Player status",
         description = "What is playing: playback state, station, song, volume, stream format, \
-                       equalizer, recording and the last error",
+                       recording and the last error",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_status(&self) -> Json<Status> {
@@ -456,10 +447,6 @@ impl RadioTools {
             volume: (s.volume * 100.0).round() as u8,
             muted: s.is_muted,
             stream,
-            equalizer: EqualizerInfo {
-                enabled: s.eq_enabled,
-                preset: s.eq_preset_name.clone(),
-            },
             recording: s.recording.as_ref().map(|r| RecordingInfo {
                 path: r.path.display().to_string(),
                 seconds: r.duration.as_secs(),
