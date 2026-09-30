@@ -143,7 +143,7 @@ export component AgentsDialog inherits Rectangle {
         // Agents on this computer need no setting: whoever runs them can
         // use the player anyway
         Text {
-            text: "Agents on this computer connect with radiotrope --mcp, e.g. Claude Code or Claude Desktop.";
+            text: "Agents on this computer connect with radiotrope --mcp.";
             color: Theme.text-secondary;
             font-size: Theme.font-md;
             wrap: word-wrap;
@@ -188,7 +188,7 @@ export component AgentsDialog inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     InfoTip {
-                        text: "127.0.0.1 is this computer only. Use this computer's network or Tailscale address, or 0.0.0.0 for all.";
+                        text: "127.0.0.1 is this computer only. Use this computer's network address, or 0.0.0.0 for all.";
                     }
                 }
             }
