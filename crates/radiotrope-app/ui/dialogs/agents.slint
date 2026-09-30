@@ -4,7 +4,7 @@ import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, Toggle, InfoTip, Icon } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
-// A value to read and copy: the token, or the command for Claude Code
+// A value to read and copy: the token, or a command that adds Radiotrope
 component CopyLine inherits Rectangle {
     in property <string> text;
     in property <string> placeholder;
@@ -24,14 +24,33 @@ component CopyLine inherits Rectangle {
         padding-right: 4px;
         spacing: 8px;
 
-        Text {
-            text: root.text != "" ? root.text : root.placeholder;
-            color: !root.enabled || root.text == "" ? Theme.disabled-text : Theme.text-primary;
-            font-size: Theme.font-md;
-            overflow: elide;
+        // Read-only but selectable, so part of a line can be copied too;
+        // a long line scrolls with the cursor
+        Rectangle {
             min-width: 0px;
             horizontal-stretch: 1;
-            vertical-alignment: center;
+            clip: true;
+
+            if root.text == "": Text {
+                width: 100%;
+                text: root.placeholder;
+                color: Theme.disabled-text;
+                font-size: Theme.font-md;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            if root.text != "": TextInput {
+                width: 100%;
+                text: root.text;
+                read-only: true;
+                single-line: true;
+                enabled: root.enabled;
+                color: root.enabled ? Theme.text-primary : Theme.disabled-text;
+                selection-background-color: Theme.selection-bg;
+                selection-foreground-color: Theme.selection-fg;
+                font-size: Theme.font-md;
+                vertical-alignment: center;
+            }
         }
 
         if Platform.has-clipboard: VerticalLayout {
@@ -151,13 +170,14 @@ component AgentPicker inherits Rectangle {
             horizontal-stretch: 1;
             overflow: elide;
         }
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                width: 10px;
-                height: 10px;
-                source: @image-url("../icons/angles-down.svg");
-                colorize: Theme.text-secondary;
+        // Chevron, as on the EQ preset list
+        Rectangle {
+            width: 14px;
+            Text {
+                text: "\u{2304}";
+                color: root.enabled ? Theme.text-secondary : Theme.disabled-text;
+                font-size: Theme.font-lg;
+                y: (parent.height - self.preferred-height) / 2 - 2px;
             }
         }
     }
@@ -198,11 +218,12 @@ component AgentPicker inherits Rectangle {
 // Line of help under a toggle, lined up with its label (36px switch + 8px gap)
 component ToggleNote inherits HorizontalLayout {
     in property <string> text;
+    in property <bool> error;
     padding-left: 44px;
 
     Text {
         text: root.text;
-        color: Theme.text-secondary;
+        color: root.error ? Theme.danger : Theme.text-secondary;
         font-size: Theme.font-md;
         wrap: word-wrap;
     }
@@ -280,12 +301,6 @@ export component AgentsDialog inherits Rectangle {
         VerticalLayout {
             spacing: 8px;
 
-            Text {
-                text: "Agents on this computer connect with radiotrope --mcp.";
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
-                wrap: word-wrap;
-            }
             HorizontalLayout {
                 spacing: 8px;
                 RowLabel { text: "Command"; }
@@ -317,8 +332,11 @@ export component AgentsDialog inherits Rectangle {
                     checked <=> root.network-on;
                     toggled(on) => { root.network-toggled(on); }
                 }
+                // While on, what the server says (listening, or why not)
                 ToggleNote {
-                    text: "Agents on other computers connect with the token.";
+                    text: root.network-on && root.available && root.status != ""
+                        ? root.status : "Agents on other computers connect with the token.";
+                    error: root.network-on && root.available && root.status-error;
                 }
             }
 
@@ -336,18 +354,6 @@ export component AgentsDialog inherits Rectangle {
                         }
                     }
                 }
-                VerticalLayout {
-                    alignment: center;
-                    InfoTip {
-                        text: "127.0.0.1 is this computer only. Use this computer's network address, or 0.0.0.0 for all.";
-                    }
-                }
-            }
-            if root.network-on && root.available: Text {
-                text: root.status;
-                color: root.status-error ? Theme.danger : Theme.text-secondary;
-                font-size: Theme.font-md;
-                wrap: word-wrap;
             }
         }
 
