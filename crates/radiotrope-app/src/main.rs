@@ -80,7 +80,13 @@ fn main() {
     }
 
     // Load settings
-    let settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    // A preset that has since been renamed or retired: its saved band
+    // gains still play, as a custom curve
+    settings.eq_preset_name = settings
+        .eq_preset_name
+        .take()
+        .filter(|name| radiotrope::audio::find_preset(name).is_some());
     {
         let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.volume = settings.volume;

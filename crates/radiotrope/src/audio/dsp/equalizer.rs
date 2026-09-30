@@ -65,9 +65,10 @@ impl EqParams {
         self.dirty = true;
     }
 
-    /// Apply a named preset.
+    /// Apply a named preset, with the preamp that goes with it.
     pub fn apply_preset(&mut self, preset: &EqPreset) {
         self.gains_db = preset.gains;
+        self.preamp_db = preset.preamp_db();
         self.preset_name = Some(preset.name.to_string());
         self.dirty = true;
     }
@@ -98,68 +99,120 @@ impl EqParams {
 // Presets
 // ---------------------------------------------------------------------------
 
+/// Where a preset sits in the preset menu
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PresetGroup {
+    /// Flat, on its own above the groups
+    None,
+    /// For a place or a way of listening (talk, a laptop, late at night)
+    Listening,
+    /// Broad changes to the balance of any station
+    Tone,
+    /// Shaped for a kind of music
+    Music,
+}
+
 /// A named EQ preset.
 pub struct EqPreset {
     pub name: &'static str,
+    pub group: PresetGroup,
     pub gains: [f32; NUM_BANDS],
 }
 
+impl EqPreset {
+    /// The preamp that goes with this preset: minus its largest boost,
+    /// so picking it doesn't make the stream louder and the limiter has
+    /// nothing to catch. Rounded down to half a dB, 0 for a preset that
+    /// only cuts.
+    pub fn preamp_db(&self) -> f32 {
+        let boost = peak_boost_db(&self.gains, PREAMP_SAMPLE_RATE);
+        -(boost * 2.0).ceil() / 2.0
+    }
+}
+
+/// Sample rate the preset preamps are worked out at
+const PREAMP_SAMPLE_RATE: f32 = 48_000.0;
+
+/// Gentle presets, most of them under 3.5 dB at their loudest. Radio is
+/// mastered loud already, so they lean on cuts, and each lowers the preamp
+/// by its own largest boost.
 pub const PRESETS: &[EqPreset] = &[
     EqPreset {
         name: "Flat",
+        group: PresetGroup::None,
         gains: [0.0; 10],
     },
+    // Rumble and boom out, 1 to 4 kHz up, where speech is understood
     EqPreset {
-        name: "Radio Enhance",
-        gains: [1.0, 2.0, 1.0, -1.0, -0.5, 0.0, 1.5, 2.5, 2.0, 1.0],
+        name: "Voice",
+        group: PresetGroup::Listening,
+        gains: [-6.0, -4.0, -2.0, -1.5, 0.0, 1.0, 2.5, 2.0, 0.0, -1.0],
+    },
+    // Drops the deep bass laptops and phones can't play, which frees
+    // headroom, and lifts upper bass and presence so music keeps its body
+    EqPreset {
+        name: "Small Speakers",
+        group: PresetGroup::Listening,
+        gains: [-6.0, -3.0, 1.0, 1.5, 0.0, 0.0, 1.0, 1.5, 1.0, 0.0],
+    },
+    // Low volume: lifts the ends the ear loses first
+    EqPreset {
+        name: "Quiet Listening",
+        group: PresetGroup::Listening,
+        gains: [2.5, 2.5, 1.5, 0.0, 0.0, 0.0, 0.0, 0.5, 1.0, 1.5],
+    },
+    // Hides the swish and sizzle of low-bitrate streams
+    EqPreset {
+        name: "Soften Highs",
+        group: PresetGroup::Listening,
+        gains: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -0.5, -2.0, -2.5, -1.5],
+    },
+    EqPreset {
+        name: "Warm",
+        group: PresetGroup::Tone,
+        gains: [1.5, 1.5, 1.5, 0.5, 0.0, 0.0, -0.5, -1.0, -1.5, -2.0],
+    },
+    EqPreset {
+        name: "Bright",
+        group: PresetGroup::Tone,
+        gains: [0.0, 0.0, -0.5, -1.0, -0.5, 0.0, 1.0, 1.5, 1.5, 2.0],
+    },
+    // Where speakers can play it, 60 to 125 Hz, rather than the deep sub
+    EqPreset {
+        name: "Bass Lift",
+        group: PresetGroup::Tone,
+        gains: [2.0, 3.5, 3.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    },
+    EqPreset {
+        name: "Bass Cut",
+        group: PresetGroup::Tone,
+        gains: [-4.0, -3.0, -1.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+    },
+    EqPreset {
+        name: "Electronic",
+        group: PresetGroup::Music,
+        gains: [3.0, 3.0, 1.5, -1.0, -1.0, 0.0, 0.0, 1.0, 1.5, 2.0],
+    },
+    EqPreset {
+        name: "Hip-Hop",
+        group: PresetGroup::Music,
+        gains: [3.0, 3.5, 2.0, 0.0, -1.0, -0.5, 1.0, 0.5, 0.0, 0.0],
     },
     EqPreset {
         name: "Rock",
-        gains: [5.0, 4.0, 3.0, 1.5, -0.5, -1.0, 0.5, 2.5, 3.5, 4.0],
+        group: PresetGroup::Music,
+        gains: [1.5, 2.0, 1.0, 0.0, -1.0, -0.5, 1.0, 2.0, 1.5, 1.0],
+    },
+    // Jazz, folk, classical: close to flat
+    EqPreset {
+        name: "Acoustic",
+        group: PresetGroup::Music,
+        gains: [0.0, 0.5, 1.0, 0.5, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0],
     },
     EqPreset {
-        name: "Pop",
-        gains: [-1.5, -1.0, 0.0, 2.0, 4.0, 4.0, 2.0, 0.0, -1.0, -1.5],
-    },
-    EqPreset {
-        name: "Classical",
-        gains: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, -2.0, -2.0, -2.0, -4.0],
-    },
-    EqPreset {
-        name: "Jazz",
-        gains: [4.0, 3.0, 1.0, 2.0, -1.5, -1.5, 0.0, 1.0, 3.0, 4.0],
-    },
-    EqPreset {
-        name: "Bass Boost",
-        gains: [6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-    },
-    EqPreset {
-        name: "Treble Boost",
-        gains: [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 5.0, 6.0],
-    },
-    EqPreset {
-        name: "Dance",
-        gains: [6.0, 4.0, 2.0, 0.0, 0.0, -2.0, -1.0, 1.0, 4.0, 3.0],
-    },
-    EqPreset {
-        name: "Soft",
-        gains: [0.0, 1.0, 1.5, 2.0, 1.0, 0.0, -1.0, -1.5, -1.0, 0.0],
-    },
-    EqPreset {
-        name: "Live",
-        gains: [-2.0, 0.0, 2.0, 3.0, 3.5, 3.5, 3.0, 2.0, 1.0, 0.0],
-    },
-    EqPreset {
-        name: "Club",
-        gains: [0.0, 0.0, 4.0, 3.0, 3.0, 3.0, 2.0, 0.0, 0.0, 0.0],
-    },
-    EqPreset {
-        name: "Headphones",
-        gains: [3.0, 5.0, 3.0, 1.0, -1.0, -0.5, 1.0, 3.0, 5.0, 6.0],
-    },
-    EqPreset {
-        name: "Techno",
-        gains: [5.0, 4.0, 1.0, -2.0, -1.0, 0.0, 1.0, 3.0, 4.0, 4.5],
+        name: "Vocal Pop",
+        group: PresetGroup::Music,
+        gains: [-1.0, -0.5, 0.0, 0.0, 0.5, 1.5, 2.5, 2.0, 0.5, 0.0],
     },
 ];
 
@@ -189,6 +242,38 @@ fn band_coefficients(band: usize, gain_db: f32, sample_rate: f32) -> Option<Coef
         return None;
     }
     Coefficients::<f32>::from_params(filter_type, sample_rate.hz(), freq.hz(), q).ok()
+}
+
+/// Gain in dB of `coeffs` at `freq` Hz
+fn response_db(coeffs: &Coefficients<f32>, freq: f32, sample_rate: f32) -> f32 {
+    let w = std::f64::consts::TAU * freq as f64 / sample_rate as f64;
+    let c = |k: f64| (k * w).cos();
+    let s = |k: f64| (k * w).sin();
+    let (b0, b1, b2) = (coeffs.b0 as f64, coeffs.b1 as f64, coeffs.b2 as f64);
+    let (a1, a2) = (coeffs.a1 as f64, coeffs.a2 as f64);
+    let num = (b0 + b1 * c(1.0) + b2 * c(2.0)).hypot(b1 * s(1.0) + b2 * s(2.0));
+    let den = (1.0 + a1 * c(1.0) + a2 * c(2.0)).hypot(a1 * s(1.0) + a2 * s(2.0));
+    (20.0 * (num / den).log10()) as f32
+}
+
+/// The largest boost all ten bands add up to, in dB (0 when they only cut).
+/// Neighbouring bands overlap, so this can be more than any one slider.
+pub fn peak_boost_db(gains: &[f32; NUM_BANDS], sample_rate: f32) -> f32 {
+    let bands: Vec<_> = (0..NUM_BANDS)
+        .filter_map(|band| band_coefficients(band, gains[band], sample_rate))
+        .collect();
+    // 20 Hz up to the top of the stream, 1/48 octave apart
+    let mut peak = 0.0f32;
+    let mut freq = 20.0f32;
+    while freq < sample_rate / 2.0 && freq <= 20_000.0 {
+        let total: f32 = bands
+            .iter()
+            .map(|c| response_db(c, freq, sample_rate))
+            .sum();
+        peak = peak.max(total);
+        freq *= 2.0f32.powf(1.0 / 48.0);
+    }
+    peak
 }
 
 /// Turns down peaks that would clip. One gain for all channels, so the
@@ -415,6 +500,11 @@ mod tests {
     use rodio::buffer::SamplesBuffer;
     use std::num::NonZero;
 
+    /// Band gains that lift the low end, with no preamp to offset them
+    const BASS_BOOST: [f32; NUM_BANDS] = [6.0, 5.0, 4.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    /// Band gains that lift the top end, with no preamp to offset them
+    const TREBLE_BOOST: [f32; NUM_BANDS] = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 2.0, 4.0, 5.0, 6.0];
+
     fn nz16(v: u16) -> NonZero<u16> {
         NonZero::new(v).unwrap()
     }
@@ -466,6 +556,56 @@ mod tests {
         p.apply_preset(rock);
         assert_eq!(p.preset_name.as_deref(), Some("Rock"));
         assert_eq!(p.gains_db, rock.gains);
+        assert_eq!(p.preamp_db, rock.preamp_db());
+    }
+
+    #[test]
+    fn each_preset_lowers_the_preamp_by_its_largest_boost() {
+        for preset in PRESETS {
+            for rate in [44100.0, 48000.0] {
+                let boost = peak_boost_db(&preset.gains, rate);
+                // Rounded to half a dB at 48 kHz, so a hair of slack at 44.1
+                assert!(
+                    boost + preset.preamp_db() <= 0.05,
+                    "{}: {boost:.2} dB boost, preamp {}",
+                    preset.name,
+                    preset.preamp_db(),
+                );
+            }
+            assert!(preset.preamp_db() <= 0.0);
+        }
+        assert_eq!(find_preset("Flat").unwrap().preamp_db(), 0.0);
+        assert_eq!(find_preset("Bass Cut").unwrap().preamp_db(), 0.0);
+    }
+
+    #[test]
+    fn presets_stay_gentle() {
+        for preset in PRESETS {
+            let boost = peak_boost_db(&preset.gains, 48000.0);
+            assert!(boost <= 5.0, "{} boosts {boost:.2} dB", preset.name);
+        }
+    }
+
+    #[test]
+    fn only_flat_sits_outside_the_groups() {
+        for preset in PRESETS {
+            assert_eq!(
+                preset.group == PresetGroup::None,
+                preset.name == "Flat",
+                "{}",
+                preset.name
+            );
+        }
+    }
+
+    #[test]
+    fn peak_boost_adds_up_neighbouring_bands() {
+        let mut one = [0.0; NUM_BANDS];
+        one[5] = 6.0;
+        assert!((peak_boost_db(&one, 44100.0) - 6.0).abs() < 0.05);
+        // Overlapping bells: more than any one slider
+        assert!(peak_boost_db(&[6.0; NUM_BANDS], 44100.0) > 7.0);
+        assert_eq!(peak_boost_db(&[-3.0; NUM_BANDS], 44100.0), 0.0);
     }
 
     #[test]
@@ -721,7 +861,7 @@ mod tests {
         let params = EqParams::new_shared();
         {
             let mut p = params.lock().unwrap();
-            p.apply_preset(find_preset("Bass Boost").unwrap());
+            p.set_gains(BASS_BOOST, None);
             p.set_enabled(true);
         }
         let eq = EqSource::new(buf, params);
@@ -757,7 +897,7 @@ mod tests {
         let params = EqParams::new_shared();
         {
             let mut p = params.lock().unwrap();
-            p.apply_preset(find_preset("Treble Boost").unwrap());
+            p.set_gains(TREBLE_BOOST, None);
             p.set_enabled(true);
         }
         let eq = EqSource::new(buf, params);
@@ -789,7 +929,7 @@ mod tests {
         let params = EqParams::new_shared();
         {
             let mut p = params.lock().unwrap();
-            p.apply_preset(find_preset("Bass Boost").unwrap());
+            p.set_gains(BASS_BOOST, None);
             p.set_enabled(true);
         }
         let eq = EqSource::new(buf, params);
@@ -833,7 +973,7 @@ mod tests {
         let params = EqParams::new_shared();
         {
             let mut p = params.lock().unwrap();
-            p.apply_preset(find_preset("Treble Boost").unwrap());
+            p.set_gains(TREBLE_BOOST, None);
             p.set_enabled(true);
         }
         let eq = EqSource::new(buf, params);
@@ -1063,18 +1203,6 @@ mod tests {
         samples.iter().fold(0.0f32, |m, v| m.max(v.abs()))
     }
 
-    /// Gain in dB of `coeffs` at `freq` Hz
-    fn response_db(coeffs: &Coefficients<f32>, freq: f32, sample_rate: f32) -> f32 {
-        let w = std::f64::consts::TAU * freq as f64 / sample_rate as f64;
-        let c = |k: f64| (k * w).cos();
-        let s = |k: f64| (k * w).sin();
-        let (b0, b1, b2) = (coeffs.b0 as f64, coeffs.b1 as f64, coeffs.b2 as f64);
-        let (a1, a2) = (coeffs.a1 as f64, coeffs.a2 as f64);
-        let num = (b0 + b1 * c(1.0) + b2 * c(2.0)).hypot(b1 * s(1.0) + b2 * s(2.0));
-        let den = (1.0 + a1 * c(1.0) + a2 * c(2.0)).hypot(a1 * s(1.0) + a2 * s(2.0));
-        (20.0 * (num / den).log10()) as f32
-    }
-
     #[test]
     fn boosts_are_limited_instead_of_clipping() {
         let params = EqParams::new_shared();
@@ -1171,9 +1299,9 @@ mod tests {
             assert!(top > 5.0, "top of a {rate} Hz stream raised by {top:.2} dB");
             assert!(mid.abs() < 0.1, "1 kHz moved by {mid:.2} dB at {rate} Hz");
         }
-        // Where 16 kHz fits, the band stays at 16 kHz
+        // Where 12 kHz fits, the band stays at 12 kHz
         let at_44 = band_coefficients(NUM_BANDS - 1, 6.0, 44100.0).unwrap();
-        assert!((response_db(&at_44, 16_000.0, 44100.0) - 3.0).abs() < 0.2);
+        assert!((response_db(&at_44, 12_000.0, 44100.0) - 3.0).abs() < 0.2);
     }
 
     #[test]

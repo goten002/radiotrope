@@ -213,12 +213,17 @@ impl AppController {
             }
             AppCommand::SetEqPreset(ref name) => {
                 if let Some(preset) = radiotrope::audio::find_preset(name) {
+                    // Each preset brings its own preamp, so it doesn't
+                    // play louder than Flat
+                    let preamp = preset.preamp_db();
                     if let Some(engine) = &self.engine {
                         engine.set_eq_gains(preset.gains, Some(preset.name.to_string()));
+                        engine.set_eq_preamp(preamp);
                     }
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.eq_gains = preset.gains;
                     state.eq_preset_name = Some(preset.name.to_string());
+                    state.eq_preamp = preamp;
                 }
             }
             AppCommand::SetEqGains(gains) => {
