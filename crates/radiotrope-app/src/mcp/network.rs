@@ -28,6 +28,7 @@ use tower_service::Service;
 
 use radiotrope_app::data::agent_token;
 
+use super::presence::{Presence, RemoteIp};
 use super::tools::RadioTools;
 
 /// What the network server needs from the settings
@@ -78,6 +79,7 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
 
     let url = format!("http://{}/mcp", connect_authority(addr));
     let cancel = CancellationToken::new();
+    let presence = tools.presence();
     let service = mcp_service(tools, addr.ip(), cancel.clone());
     let token: Arc<str> = options.token.clone().into();
 
@@ -95,7 +97,7 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
                     return;
                 }
             };
-            runtime.block_on(serve(listener, service, token, stop));
+            runtime.block_on(serve(listener, service, token, presence, stop));
             // Streams still open (SSE) end with the runtime
             runtime.shutdown_background();
         })
@@ -131,6 +133,7 @@ async fn serve(
     listener: StdListener,
     service: McpService,
     token: Arc<str>,
+    presence: Presence,
     cancel: CancellationToken,
 ) {
     let listener = match tokio::net::TcpListener::from_std(listener) {
@@ -141,7 +144,7 @@ async fn serve(
         }
     };
     loop {
-        let (stream, _) = tokio::select! {
+        let (stream, peer) = tokio::select! {
             _ = cancel.cancelled() => return,
             accepted = listener.accept() => match accepted {
                 Ok(conn) => conn,
@@ -154,20 +157,33 @@ async fn serve(
         let service = service.clone();
         let token = token.clone();
         let cancel = cancel.clone();
-        tokio::spawn(serve_connection(stream, service, token, cancel));
+        let from = Sender {
+            ip: peer.ip().to_canonical(),
+            presence: presence.clone(),
+        };
+        tokio::spawn(serve_connection(stream, service, token, from, cancel));
     }
+}
+
+/// Who is on the other end of a connection
+#[derive(Clone)]
+struct Sender {
+    ip: IpAddr,
+    presence: Presence,
 }
 
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     service: McpService,
     token: Arc<str>,
+    from: Sender,
     cancel: CancellationToken,
 ) {
     let handler = hyper::service::service_fn(move |request: Request<Incoming>| {
         let mut service = service.clone();
         let token = token.clone();
-        async move { Ok::<_, Infallible>(handle(&mut service, &token, request).await) }
+        let from = from.clone();
+        async move { Ok::<_, Infallible>(handle(&mut service, &token, &from, request).await) }
     });
     let connection =
         hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), handler);
@@ -181,7 +197,8 @@ async fn serve_connection(
 async fn handle(
     service: &mut McpService,
     token: &str,
-    request: Request<Incoming>,
+    from: &Sender,
+    mut request: Request<Incoming>,
 ) -> Response<BoxBody<Bytes, Infallible>> {
     if request.uri().path() != "/mcp" {
         return plain(StatusCode::NOT_FOUND, "Not found: agents connect to /mcp");
@@ -200,6 +217,9 @@ async fn handle(
         );
         return response;
     }
+    // Counts on the header's agents icon; the tools learn its name
+    from.presence.network_seen(from.ip);
+    request.extensions_mut().insert(RemoteIp(from.ip));
     match service.call(request).await {
         Ok(response) => response,
         Err(never) => match never {},

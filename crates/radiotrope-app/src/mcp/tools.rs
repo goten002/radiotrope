@@ -24,6 +24,7 @@ use radiotrope_app::data::settings::Settings;
 use radiotrope_app::data::types::{url_to_id, Favorite, FavoriteSort, Station};
 use radiotrope_app::providers::{CategoryType, ProviderRegistry, SearchOrder, StationFilter};
 
+use super::presence::{Place, Presence, RemoteIp};
 use crate::app::state::{AppCommand, AppSnapshot};
 
 /// Default number of results returned by search_stations
@@ -53,6 +54,11 @@ pub struct RadioTools {
     favorites_file: Option<std::path::PathBuf>,
     /// The last change an agent made, shared by every agent's session
     last_change: Arc<Mutex<Option<LastChange>>>,
+    /// The agents using the player, for the header icon
+    presence: Presence,
+    /// Set on a local agent's own copy; network agents are told apart by
+    /// their address, which comes with each request
+    place: Option<Place>,
     pub(super) tool_router: ToolRouter<Self>,
 }
 
@@ -461,6 +467,8 @@ impl RadioTools {
             providers: Arc::new(Mutex::new(None)),
             favorites_file: None,
             last_change: Arc::new(Mutex::new(None)),
+            presence: Presence::default(),
+            place: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -1086,17 +1094,44 @@ impl RadioTools {
         let _ = self.cmd_tx.send(cmd);
     }
 
+    /// The agents using the player, shared by every session
+    pub fn presence(&self) -> Presence {
+        self.presence.clone()
+    }
+
+    /// A copy for one local agent's session
+    pub fn for_local(&self, place: Place) -> Self {
+        Self {
+            place: Some(place),
+            ..self.clone()
+        }
+    }
+
+    /// Put the agent's name on the header icon's list
+    pub(super) fn note_agent(&self, name: Option<String>, extensions: &rmcp::model::Extensions) {
+        let place = self.place.or_else(|| {
+            extensions
+                .get::<http::request::Parts>()
+                .and_then(|parts| parts.extensions.get::<RemoteIp>())
+                .map(|ip| Place::Network(ip.0))
+        });
+        if let (Some(place), Some(name)) = (place, name) {
+            self.presence.set_name(place, &name);
+        }
+    }
+
     /// Remember which agent changed the player, for get_status
     fn note_change(&self, ctx: &RequestContext<RoleServer>, action: impl Into<String>) {
         // 2026-07-28 clients name themselves on every request; older ones
         // once, in initialize
-        let by = ctx
+        let name = ctx
             .meta
             .client_info()
             .map(|info| info.name)
             .or_else(|| ctx.peer.peer_info().map(|p| p.client_info.name.clone()))
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| "an agent".into());
+            .filter(|name| !name.is_empty());
+        self.note_agent(name.clone(), &ctx.extensions);
+        let by = name.unwrap_or_else(|| "an agent".into());
         *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = Some(LastChange {
             by,
             action: action.into(),

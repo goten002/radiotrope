@@ -187,6 +187,7 @@ fn main() {
     });
     // Network agents, when turned on, and the Agents dialog
     setup_agents(&ui, agents.clone(), &settings);
+    let _agents_timer = watch_agents(&ui, agents.as_ref().map(|a| a.tools().presence()));
 
     // Initial load of favorites into UI model
     refresh_favorites(&ui, &favorites, &logo_service);
@@ -2221,6 +2222,7 @@ fn setup_agents(
     settings: &radiotrope_app::data::settings::Settings,
 ) {
     ui.set_agents_available(agents.is_some());
+    ui.set_agents_local_command(mcp::agents::local_command().into());
     ui.set_agents_network(settings.mcp_network);
     ui.set_agents_address(settings.mcp_address.as_str().into());
     let Some(agents) = agents else { return };
@@ -2272,6 +2274,32 @@ fn setup_agents(
             apply(&|_| {})
         }
     });
+}
+
+/// Keep the header's agents chip up to date: who uses the player now
+fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::Timer {
+    let timer = slint::Timer::default();
+    let Some(presence) = presence else {
+        return timer;
+    };
+    let ui_weak = ui.as_weak();
+    let mut shown: Option<Vec<mcp::presence::AgentInfo>> = None;
+    timer.start(
+        slint::TimerMode::Repeated,
+        radiotrope_app::config::ui::AGENTS_REFRESH,
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let agents = presence.agents();
+            if shown.as_ref() == Some(&agents) {
+                return;
+            }
+            let list: Vec<String> = agents.iter().map(|a| a.describe()).collect();
+            ui.set_agent_count(agents.len() as i32);
+            ui.set_agent_list(list.join("\n").into());
+            shown = Some(agents);
+        },
+    );
+    timer
 }
 
 fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {

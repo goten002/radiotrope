@@ -112,6 +112,10 @@ export component App inherits Window {
     in-out property <string> agents-status <=> agents-dialog.status;
     in-out property <bool> agents-status-error <=> agents-dialog.status-error;
     in-out property <string> agents-command <=> agents-dialog.command;
+    in-out property <string> agents-local-command <=> agents-dialog.local-command;
+    // Agents using the player now, for the chip in the header
+    in property <int> agent-count;
+    in property <string> agent-list;
 
     // WiFi (embedded only — connected from Rust when feature = "embedded")
     callback wifi-scan-requested();
@@ -323,6 +327,9 @@ export component App inherits Window {
                 can-open-recordings: Platform.has-file-manager;
                 open-recordings-folder => { root.open-recordings-folder(); }
                 toggle-favorite => { root.toggle-favorite(); }
+                agent-count: root.agent-count;
+                agent-list: root.agent-list;
+                open-agents => { agents-dialog.open(); }
             }
             }
         }

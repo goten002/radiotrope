@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Sender;
 use rmcp::model::{Implementation, ServerCapabilities, ServerConfig};
-use rmcp::{tool_handler, ServerHandler, ServiceExt};
+use rmcp::service::NotificationContext;
+use rmcp::{tool_handler, RoleServer, ServerHandler, ServiceExt};
 
 use crate::app::state::{AppCommand, AppSnapshot};
 use radiotrope_app::data::favorites::FavoritesManager;
@@ -35,6 +36,16 @@ impl ServerHandler for RadioTools {
                     .with_website_url("https://github.com/goten002/radiotrope"),
             )
             .with_instructions(INSTRUCTIONS)
+    }
+
+    // Older clients name themselves once, in initialize
+    async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
+        let name = context
+            .peer
+            .peer_info()
+            .map(|p| p.client_info.name.clone())
+            .filter(|name| !name.is_empty());
+        self.note_agent(name, &context.extensions);
     }
 }
 
