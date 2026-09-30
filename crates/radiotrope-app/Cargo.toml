@@ -31,10 +31,15 @@ libc = "0.2"
 # MCP server (official Rust SDK), for `radiotrope --mcp`
 rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
 schemars = "1"
+# One player per user: `--mcp` and later launches reach it over a local socket
+interprocess = { version = "2.4", features = ["tokio"] }
 # WiFi settings over iwd (embedded only)
 zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "sync", "time"] }
 rfd = { version = "0.17", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
 
 [features]
 default = ["desktop"]

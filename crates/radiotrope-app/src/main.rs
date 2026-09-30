@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod instance;
 mod mcp;
 mod row_logos;
 #[cfg(feature = "desktop")]
@@ -43,9 +44,14 @@ use app::state::AppSnapshot;
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// Enable MCP server on stdio (for AI agent integration)
+    /// Connect an AI agent over MCP on stdio. Talks to the running player,
+    /// starting it first if needed, so all agents share one player.
     #[arg(long)]
     mcp: bool,
+
+    /// With --mcp: run a separate player for this agent alone instead
+    #[arg(long, requires = "mcp")]
+    standalone: bool,
 }
 
 /// When started from a terminal, write there: `--help`, `--version` and the
@@ -73,6 +79,31 @@ fn main() {
 
     let args = Args::parse();
 
+    // `--mcp` relays the agent to the running player and never opens a
+    // window of its own
+    if args.mcp && !args.standalone {
+        std::process::exit(mcp::local::run_relay());
+    }
+
+    // One player per user; a second launch brings the first one forward
+    let instance = if args.standalone {
+        None
+    } else {
+        match instance::acquire() {
+            instance::Acquire::Primary(guard) => Some(Arc::new(guard)),
+            instance::Acquire::Running => {
+                if !instance::ask_to_show() {
+                    eprintln!("Radiotrope is already running");
+                }
+                return;
+            }
+            instance::Acquire::Unavailable(e) => {
+                eprintln!("Single instance check unavailable, agents can't connect: {e}");
+                None
+            }
+        }
+    };
+
     // Shared command channel + state
     let (cmd_tx, cmd_rx) = bounded(64);
     let shared_state = Arc::new(Mutex::new(AppSnapshot::default()));
@@ -92,7 +123,7 @@ fn main() {
     // Generation counter for browse logo fetches (to cancel stale requests)
     let browse_logo_gen = Arc::new(AtomicU64::new(0));
 
-    // If --mcp, spawn MCP stdio server on a background thread
+    // `--mcp --standalone`: serve this agent on stdio, in this process
     if args.mcp {
         let mcp_tx = cmd_tx.clone();
         let mcp_state = shared_state.clone();
@@ -131,6 +162,25 @@ fn main() {
     // `radiotrope.desktop` file (and its StartupWMClass) to find the icon.
     // A no-op on Windows and macOS.
     let _ = slint::set_xdg_app_id("radiotrope");
+
+    // Agents (`radiotrope --mcp`) and later launches reach us over a local
+    // socket
+    if let Some(instance) = instance.as_ref() {
+        let instance = Arc::clone(instance);
+        let mcp_tx = cmd_tx.clone();
+        let mcp_state = shared_state.clone();
+        let mcp_favs = favorites.clone();
+        let window = ui.as_weak();
+        let show_window: mcp::local::ShowWindow = Arc::new(move || {
+            let _ = window.upgrade_in_event_loop(|ui| bring_to_front(ui.window()));
+        });
+        std::thread::Builder::new()
+            .name("mcp-local".into())
+            .spawn(move || {
+                mcp::local::serve(&instance, mcp_tx, mcp_state, mcp_favs, show_window);
+            })
+            .expect("Failed to spawn MCP thread");
+    }
 
     // Initial load of favorites into UI model
     refresh_favorites(&ui, &favorites, &logo_service);
@@ -1594,6 +1644,13 @@ fn main() {
     while !controller.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// Show the window and ask for focus (a second launch of radiotrope)
+fn bring_to_front(window: &slint::Window) {
+    let _ = window.show();
+    #[cfg(feature = "desktop")]
+    window_frame::bring_to_front(window);
 }
 
 /// Longest wait at exit for the controller to finish (e.g. a recording)
