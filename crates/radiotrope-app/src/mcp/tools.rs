@@ -505,16 +505,19 @@ impl RadioTools {
             return Err("url must not be empty".into());
         }
         // Enrich from favorites, as the GUI does
-        let name = self
-            .favorites()
-            .resolve_play(PlayMetadata {
-                url: url.to_string(),
-                name: args.name.clone(),
-                ..Default::default()
-            })
-            .name;
-        self.play(&ctx, url.to_string(), name, play_wait(args.wait_seconds))
-            .await
+        let known = self.favorites().resolve_play(PlayMetadata {
+            url: url.to_string(),
+            name: args.name.clone(),
+            ..Default::default()
+        });
+        self.play(
+            &ctx,
+            url.to_string(),
+            known.name,
+            known.logo_url,
+            play_wait(args.wait_seconds),
+        )
+        .await
     }
 
     #[tool(
@@ -554,6 +557,7 @@ impl RadioTools {
             &ctx,
             station.url.clone(),
             Some(station.name.clone()),
+            station.logo_url.clone(),
             play_wait(args.wait_seconds),
         )
         .await
@@ -575,14 +579,18 @@ impl RadioTools {
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let id = args.id.trim();
-        let (url, name) = {
+        let (url, name, logo) = {
             let favorites = self.favorites();
             let fav = favorites
                 .get(id)
                 .ok_or_else(|| format!("No favorite with id {id}; list_favorites gives the ids"))?;
-            (fav.url().to_string(), fav.name().to_string())
+            (
+                fav.url().to_string(),
+                fav.name().to_string(),
+                fav.station.logo_url.clone(),
+            )
         };
-        self.play(&ctx, url, Some(name), play_wait(args.wait_seconds))
+        self.play(&ctx, url, Some(name), logo, play_wait(args.wait_seconds))
             .await
     }
 
@@ -1145,13 +1153,17 @@ impl RadioTools {
         ctx: &RequestContext<RoleServer>,
         url: String,
         name: Option<String>,
+        logo_url: Option<String>,
         wait: Duration,
     ) -> Result<String, String> {
         let label = name.clone().unwrap_or_else(|| url.clone());
         let before = self.snapshot().play_seq;
+        // The logo goes with it, so the header shows it as it does for a
+        // station picked in the UI
         self.send(AppCommand::Play {
             url: url.clone(),
             name,
+            logo_url,
         });
         self.note_change(ctx, format!("play {label}"));
         if wait.is_zero() {

@@ -138,8 +138,12 @@ impl AppController {
         match cmd {
             AppCommand::Shutdown => return true,
 
-            AppCommand::Play { url, name } => {
-                self.start_stream(&url, name);
+            AppCommand::Play {
+                url,
+                name,
+                logo_url,
+            } => {
+                self.start_stream(&url, name, logo_url);
             }
             AppCommand::Stop => {
                 self.stop_recording();
@@ -279,7 +283,7 @@ impl AppController {
     ///
     /// Each call increments `resolve_generation`; stale results from earlier
     /// calls are discarded in `handle_stream_resolved`.
-    fn start_stream(&mut self, url: &str, name: Option<String>) {
+    fn start_stream(&mut self, url: &str, name: Option<String>, logo_url: Option<String>) {
         // Switching station ends the recording of the old one
         self.stop_recording();
 
@@ -301,6 +305,7 @@ impl AppController {
             state.play_seq += 1;
             state.station_url = Some(url.to_string());
             state.station_name = name;
+            state.station_logo_url = logo_url.filter(|logo| !logo.is_empty());
             state.title.clear();
             state.artist.clear();
             state.last_error = None;
@@ -808,7 +813,7 @@ mod tests {
         #[test]
         fn a_stop_while_resolving_ends_the_resolve_and_stays_stopped() {
             let (mut controller, state) = controller();
-            controller.start_stream(&silent_station(), Some("Silent FM".into()));
+            controller.start_stream(&silent_station(), Some("Silent FM".into()), None);
             let cancel = controller.stream_cancel.clone().unwrap();
             assert!(state.lock().unwrap().is_resolving);
 
@@ -831,7 +836,7 @@ mod tests {
             let (mut controller, state) = controller();
             controller.stream_id = Some(StreamId(1));
             controller.handle_engine_event(on(1, playing()));
-            controller.start_stream(&silent_station(), Some("Next".into()));
+            controller.start_stream(&silent_station(), Some("Next".into()), None);
             assert_eq!(controller.stream_id, None);
             {
                 let state = state.lock().unwrap();
@@ -845,9 +850,9 @@ mod tests {
         fn switching_station_cancels_the_one_resolving() {
             let (mut controller, state) = controller();
             let station = silent_station();
-            controller.start_stream(&station, Some("First".into()));
+            controller.start_stream(&station, Some("First".into()), None);
             let first = controller.stream_cancel.clone().unwrap();
-            controller.start_stream(&station, Some("Second".into()));
+            controller.start_stream(&station, Some("Second".into()), None);
             let second = controller.stream_cancel.clone().unwrap();
             assert!(first.is_cancelled());
             assert!(!second.is_cancelled());

@@ -15,6 +15,8 @@ pub enum AppCommand {
     Play {
         url: String,
         name: Option<String>,
+        /// The station's logo, for the header while it plays
+        logo_url: Option<String>,
     },
     Stop,
     #[allow(dead_code)] // planned: pause/resume from MCP
@@ -69,6 +71,9 @@ pub struct AppSnapshot {
     pub playback: PlaybackState,
     pub station_name: Option<String>,
     pub station_url: Option<String>,
+    /// Logo of the station being played, as given with its Play: the GUI
+    /// shows it whoever started the station (the UI or an agent)
+    pub station_logo_url: Option<String>,
     pub title: String,
     pub artist: String,
     pub volume: f32,
@@ -130,6 +135,7 @@ impl Default for AppSnapshot {
             playback: PlaybackState::default(),
             station_name: None,
             station_url: None,
+            station_logo_url: None,
             title: String::new(),
             artist: String::new(),
             volume: 1.0,
