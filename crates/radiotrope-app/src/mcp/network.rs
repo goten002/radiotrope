@@ -45,6 +45,7 @@ pub struct Options {
 pub struct Server {
     cancel: CancellationToken,
     url: String,
+    all_networks: bool,
     /// Hears once the server has let go of its port
     stopped: std::sync::mpsc::Receiver<()>,
 }
@@ -53,6 +54,11 @@ impl Server {
     /// The URL agents connect to, e.g. `http://192.168.1.20:8765/mcp`
     pub fn url(&self) -> &str {
         &self.url
+    }
+
+    /// Listening on every network (0.0.0.0), not one address
+    pub fn on_all_networks(&self) -> bool {
+        self.all_networks
     }
 }
 
@@ -115,6 +121,7 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
     Ok(Server {
         cancel,
         url,
+        all_networks: addr.ip().is_unspecified(),
         stopped,
     })
 }
@@ -300,6 +307,38 @@ fn connect_authority(addr: SocketAddr) -> String {
         addr.ip()
     };
     SocketAddr::new(ip, addr.port()).to_string()
+}
+
+/// A network interface the server can listen on
+#[derive(Debug, Clone, PartialEq)]
+pub struct Interface {
+    /// "eth0", "wlan0"; on Windows the adapter's name, e.g. "Wi-Fi"
+    pub name: String,
+    pub ip: IpAddr,
+}
+
+/// This computer's IPv4 addresses on its networks, loopback left out
+pub fn interfaces() -> Vec<Interface> {
+    let Ok(all) = if_addrs::get_if_addrs() else {
+        return Vec::new();
+    };
+    let mut found: Vec<Interface> = all
+        .into_iter()
+        .filter(|i| !i.is_loopback() && i.ip().is_ipv4())
+        .filter(|i| i.oper_status != if_addrs::IfOperStatus::Down)
+        .map(|i| Interface {
+            ip: i.ip(),
+            name: i.name,
+        })
+        .collect();
+    found.sort_by(|a, b| a.name.cmp(&b.name).then(a.ip.cmp(&b.ip)));
+    found.dedup();
+    found
+}
+
+/// The address and port of a saved "host:port", for showing them apart
+pub fn split_address(address: &str) -> Option<SocketAddr> {
+    resolve(address).ok()
 }
 
 /// This computer's address on the network it would use to go out. Nothing

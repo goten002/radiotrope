@@ -102,13 +102,17 @@ export component App inherits Window {
 
     // Agents (MCP)
     callback agents-network-toggled(bool);
-    callback agents-apply-address(string);
+    callback agents-apply-port(string);
+    callback agents-listen-changed(int);
+    callback agents-refresh-listen();
     callback agents-regenerate-token();
     in-out property <bool> agents-available <=> agents-dialog.available;
     in-out property <bool> agents-network <=> agents-dialog.network-on;
-    in-out property <string> agents-address <=> agents-dialog.address;
+    in-out property <[string]> agents-listen-options <=> agents-dialog.listen-options;
+    in-out property <int> agents-listen <=> agents-dialog.listen;
+    in-out property <string> agents-port <=> agents-dialog.port;
     in-out property <string> agents-token <=> agents-dialog.token;
-    in-out property <string> agents-edit-address <=> agents-dialog.edit-address;
+    in-out property <string> agents-edit-port <=> agents-dialog.edit-port;
     in-out property <string> agents-status <=> agents-dialog.status;
     in-out property <bool> agents-status-error <=> agents-dialog.status-error;
     in-out property <string> agents-command <=> agents-dialog.command;
@@ -490,7 +494,9 @@ export component App inherits Window {
 
     agents-dialog := AgentsDialog {
         network-toggled(on) => { root.agents-network-toggled(on); }
-        apply-address(text) => { root.agents-apply-address(text); }
+        apply-port(text) => { root.agents-apply-port(text); }
+        listen-changed(index) => { root.agents-listen-changed(index); }
+        refresh-listen() => { root.agents-refresh-listen(); }
         regenerate-token() => { root.agents-regenerate-token(); }
         app-changed(index) => { root.agents-app-changed(index); }
         auth-changed(index) => { root.agents-auth-changed(index); }

@@ -44,6 +44,8 @@ http = "1"
 http-body-util = "0.1"
 tower-service = "0.3"
 bytes = "1"
+# The network interfaces to offer in the Agents dialog (Linux, Windows)
+if-addrs = "0.15"
 getrandom = "0.3"
 rfd = { version = "0.17", optional = true }
 
