@@ -25,8 +25,9 @@ pub struct NetworkStatus {
     pub is_error: bool,
     /// Empty until network agents are first turned on
     pub token: String,
-    /// A `claude mcp add` line for Claude Code
-    pub command: String,
+    /// The URL network agents connect to; empty for an address that
+    /// doesn't work
+    pub url: String,
 }
 
 impl Agents {
@@ -49,14 +50,11 @@ impl Agents {
 
         if !settings.mcp_network {
             let token = agent_token::load_existing().unwrap_or_default();
-            let command = network::url_for(&settings.mcp_address)
-                .map(|url| claude_command(&url, &token))
-                .unwrap_or_default();
             return NetworkStatus {
                 text: "Off".into(),
                 is_error: false,
                 token,
-                command,
+                url: network::url_for(&settings.mcp_address).unwrap_or_default(),
             };
         }
 
@@ -70,9 +68,7 @@ impl Agents {
                 }
             }
         };
-        let command = network::url_for(&settings.mcp_address)
-            .map(|url| claude_command(&url, &token))
-            .unwrap_or_default();
+        let url = network::url_for(&settings.mcp_address).unwrap_or_default();
         let started = network::start(
             &network::Options {
                 address: settings.mcp_address.clone(),
@@ -88,43 +84,17 @@ impl Agents {
                     text,
                     is_error: false,
                     token,
-                    command,
+                    url,
                 }
             }
             Err(e) => NetworkStatus {
                 text: e,
                 is_error: true,
                 token,
-                command,
+                url,
             },
         }
     }
-}
-
-/// The `claude mcp add` line for Claude Code on this computer: it runs
-/// this very program with `--mcp`
-pub fn local_command() -> String {
-    // An AppImage runs from a temporary mount; the file itself stays put
-    let exe = std::env::var_os("APPIMAGE")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|| "radiotrope".into());
-    local_command_for(&exe)
-}
-
-fn local_command_for(exe: &str) -> String {
-    let exe = if exe.contains(char::is_whitespace) {
-        format!("\"{exe}\"")
-    } else {
-        exe.to_string()
-    };
-    format!("claude mcp add radiotrope -- {exe} --mcp")
-}
-
-fn claude_command(url: &str, token: &str) -> String {
-    let token = if token.is_empty() { "<token>" } else { token };
-    format!("claude mcp add --transport http radiotrope {url} --header \"Authorization: Bearer {token}\"")
 }
 
 #[cfg(test)]
@@ -145,24 +115,10 @@ mod tests {
     }
 
     #[test]
-    fn the_local_command_runs_this_program() {
-        assert_eq!(
-            local_command_for("/usr/bin/radiotrope"),
-            "claude mcp add radiotrope -- /usr/bin/radiotrope --mcp"
-        );
-        assert_eq!(
-            local_command_for(r"C:\Program Files\Radiotrope\radiotrope.exe"),
-            r#"claude mcp add radiotrope -- "C:\Program Files\Radiotrope\radiotrope.exe" --mcp"#
-        );
-    }
-
-    #[test]
     fn network_agents_are_off_by_default() {
         let agents = agents();
         let status = agents.apply_network(&Settings::default());
         assert_eq!(status.text, "Off");
-        assert!(status
-            .command
-            .starts_with("claude mcp add --transport http radiotrope http://127.0.0.1:8765/mcp"));
+        assert_eq!(status.url, "http://127.0.0.1:8765/mcp");
     }
 }

@@ -34,7 +34,7 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 
 Every agent shares the one player running on your computer. `radiotrope --mcp` connects the agent to it, and starts the player (with its window) if it isn't running yet. Closing an agent leaves the music playing; closing the player's window ends every agent's session. Starting `radiotrope` a second time brings the running window forward instead of opening another. For a separate player of its own, give an agent `--mcp --standalone`.
 
-**Tools > Agents (MCP)** has a ready `claude mcp add` line for Claude Code on this computer, with a Copy button. While agents use the player, a small robot chip at the right of the menu bar shows how many; hover it to see which (a network agent counts until it has been quiet for 5 minutes), click it to open the Agents dialog.
+**Tools > Agents (MCP)** has a ready line that adds Radiotrope to your agent, with a Copy button. Pick the agent at the top: Claude Code, Codex CLI, Gemini CLI, VS Code, or the JSON that Cursor and Claude Desktop read from their settings file. While agents use the player, a small robot chip at the right of the menu bar shows how many; hover it to see which (a network agent counts until it has been quiet for 5 minutes), click it to open the Agents dialog.
 
 ### Agents on other computers
 
@@ -42,11 +42,13 @@ Radiotrope can also take agents over the network (MCP Streamable HTTP). It is of
 
 - **Address**: `127.0.0.1:8765` (this computer only) by default. Enter this computer's network address, or `0.0.0.0` for all networks, to let other computers in.
 - **Token**: every request must carry it as `Authorization: Bearer <token>`. It is made the first time you turn network agents on, kept in `mcp-token` in the config folder (readable by you only), and can be regenerated.
-- **A ready line for Claude Code** with a Copy button:
+- **A ready line for the picked agent** with a Copy button, for example for Claude Code:
 
   ```bash
   claude mcp add --transport http radiotrope http://192.168.1.20:8765/mcp --header "Authorization: Bearer <token>"
   ```
+
+  Codex CLI takes the token from the `RADIOTROPE_TOKEN` environment variable instead. Claude Desktop only takes agents on this computer.
 
 Requests from web pages (with an `Origin` header) are refused. While the server listens on this computer only, other host names are refused too (DNS rebinding).
 

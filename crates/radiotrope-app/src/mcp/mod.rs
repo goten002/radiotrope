@@ -8,6 +8,7 @@ pub mod local;
 pub mod network;
 pub mod presence;
 pub mod server;
+pub mod setup;
 pub mod tools;
 
 #[cfg(test)]
