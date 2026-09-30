@@ -346,13 +346,14 @@ fn main() {
                     let logo_svc = logo_service.clone();
                     let ui_weak = ui.as_weak();
                     let station_url = station.url.clone();
+                    let state = shared_state.clone();
                     std::thread::Builder::new()
                         .name("last-logo-fetch".into())
                         .spawn(move || {
                             if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     let Some(ui) = ui_weak.upgrade() else { return };
-                                    if ui.get_station_url() == station_url.as_str() {
+                                    if is_current_station(&state, &ui, &station_url) {
                                         let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                                         ui.set_current_logo(slint::Image::from_rgba8(pb));
                                     }
@@ -648,6 +649,7 @@ fn main() {
                 let favs = favs.clone();
                 let ui_weak = ui_weak.clone();
                 let url = url.clone();
+                let state = edit_shared_state.clone();
                 std::thread::Builder::new()
                     .name("edit-logo-fetch".into())
                     .spawn(move || {
@@ -656,8 +658,7 @@ fn main() {
                             let _ = slint::invoke_from_event_loop(move || {
                                 let Some(ui) = ui_weak.upgrade() else { return };
                                 // Update playback logo if this is the current station
-                                let current_url = ui.get_station_url().to_string();
-                                if current_url == url {
+                                if is_current_station(&state, &ui, &url) {
                                     let pixel_buf =
                                         SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                                             &rgba, width, height,
@@ -1568,6 +1569,7 @@ fn main() {
                                 let ui_weak2 = ui.as_weak();
                                 let station_name = ui.get_station_name().to_string();
                                 let station_url = url.to_string();
+                                let state = poll_state.clone();
                                 std::thread::Builder::new()
                                     .name("poll-logo-fetch".into())
                                     .spawn(move || {
@@ -1576,7 +1578,7 @@ fn main() {
                                         if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                             let _ = slint::invoke_from_event_loop(move || {
                                                 let Some(ui) = ui_weak2.upgrade() else { return };
-                                                if ui.get_station_url() == station_url.as_str() {
+                                                if is_current_station(&state, &ui, &station_url) {
                                                     let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                                                     ui.set_current_logo(slint::Image::from_rgba8(pb));
                                                 }
@@ -2564,6 +2566,19 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
 
 /// Shared helper for all play actions. Enriches metadata from favorites if available,
 /// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
+/// Whether `url` is still the current station, for a logo that finished
+/// downloading in the background. The shared state changes the moment
+/// another station is picked (from the UI or MCP); the UI's station URL
+/// only follows at the next poll, so a late logo could slip past it.
+fn is_current_station(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App, url: &str) -> bool {
+    let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    match state.station_url.as_deref() {
+        Some(current) => current == url,
+        // A station that failed to start is cleared there but stays on screen
+        None => ui.get_station_url() == url,
+    }
+}
+
 fn play_station_with_metadata(
     ui: &App,
     cmd_tx: &crossbeam_channel::Sender<app::state::AppCommand>,
@@ -2652,6 +2667,7 @@ fn play_station_with_metadata(
                 let play_name = name.unwrap_or_default();
                 let play_url = url;
                 let play_logo = logo.clone();
+                let state = shared_state.clone();
                 std::thread::Builder::new()
                     .name("logo-fetch".into())
                     .spawn(move || {
@@ -2659,6 +2675,11 @@ fn play_station_with_metadata(
                         if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
                             let _ = slint::invoke_from_event_loop(move || {
                                 let Some(ui) = ui_weak.upgrade() else { return };
+                                // Another station may have been picked while
+                                // this one's logo was downloading
+                                if !is_current_station(&state, &ui, &play_url) {
+                                    return;
+                                }
                                 let pixel_buf =
                                     SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                                         &rgba, width, height,
