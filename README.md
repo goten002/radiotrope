@@ -32,6 +32,8 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 }
 ```
 
+Every agent shares the one player running on your computer. `radiotrope --mcp` connects the agent to it, and starts the player (with its window) if it isn't running yet. Closing an agent leaves the music playing; closing the player's window ends every agent's session. Starting `radiotrope` a second time brings the running window forward instead of opening another. For a separate player of its own, give an agent `--mcp --standalone`.
+
 ### Available Tools
 
 | Tool | Description |
@@ -157,7 +159,8 @@ radiotrope
 ### MCP mode (for AI agents)
 
 ```bash
-radiotrope --mcp
+radiotrope --mcp               # connect to the running player, start it if needed
+radiotrope --mcp --standalone  # a separate player for this agent alone
 ```
 
 ### Terminal player

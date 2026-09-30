@@ -36,8 +36,9 @@ impl ServerHandler for RadioTools {
     }
 }
 
-/// Run the MCP server on stdin/stdout until the client closes stdin
-/// (blocking: call from a dedicated thread)
+/// `--mcp --standalone`: run the MCP server on stdin/stdout, in this
+/// process, until the client closes stdin (blocking: call from a dedicated
+/// thread)
 pub fn run(
     cmd_tx: Sender<AppCommand>,
     state: Arc<Mutex<AppSnapshot>>,
