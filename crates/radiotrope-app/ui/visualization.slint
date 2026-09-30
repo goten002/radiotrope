@@ -64,6 +64,17 @@ component Bar inherits Rectangle {
 
     property <bool> horizontal: anchor == "left";
     property <float> amount: clamp(root.level, 0, 1);
+    property <length> radius: 1.5px;
+    // Spread mode: the fill shows the part of the meter's gradient it
+    // covers, so each colour stays at its place as the level moves.
+    // bar-color bends at 0.5, so a fill past the middle is drawn as two
+    // pieces meeting there, each with a plain two-stop gradient. (A clipped
+    // full-size gradient layer stopped short or left stale strips while the
+    // level moved, and the software renderer draws a dark line at a middle
+    // gradient stop.)
+    property <bool> split: root.amount > 0.5;
+    // Share of the fill taken by the first piece
+    property <float> first-share: root.split ? 0.5 / root.amount : 1;
 
     if root.amount > 0.01: Rectangle {
         width: root.horizontal ? max(2px, root.amount * parent.width) : parent.width;
@@ -72,20 +83,37 @@ component Bar inherits Rectangle {
         y: root.anchor == "bottom" ? parent.height - self.height
             : root.anchor == "center" ? (parent.height - self.height) / 2
             : 0;
-        border-radius: 1.5px;
-        clip: root.spread;
+        border-radius: root.spread ? 0 : root.radius;
         background: root.spread ? transparent : root.tint;
 
-        // The gradient covers the whole meter and the level uncovers it,
-        // so each colour stays at its height as the level moves
+        // From the start of the meter to the middle (or the level)
         if root.spread: Rectangle {
-            x: -parent.x;
-            y: -parent.y;
-            width: root.width;
-            height: root.height;
+            width: root.horizontal ? parent.width * root.first-share : parent.width;
+            height: root.horizontal ? parent.height : parent.height * root.first-share;
+            x: 0;
+            y: parent.height - self.height;
+            border-top-left-radius: root.horizontal || !root.split ? root.radius : 0;
+            border-bottom-left-radius: root.radius;
+            border-bottom-right-radius: root.horizontal && root.split ? 0 : root.radius;
+            border-top-right-radius: root.split ? 0 : root.radius;
             background: root.horizontal
-                ? @linear-gradient(90deg, VizStyle.bar-color(0) 0%, VizStyle.bar-color(0.5) 50%, VizStyle.bar-color(1) 100%)
-                : @linear-gradient(0deg, VizStyle.bar-color(0) 0%, VizStyle.bar-color(0.5) 50%, VizStyle.bar-color(1) 100%);
+                ? @linear-gradient(90deg, VizStyle.bar-color(0) 0%, VizStyle.bar-color(min(root.amount, 0.5)) 100%)
+                : @linear-gradient(0deg, VizStyle.bar-color(0) 0%, VizStyle.bar-color(min(root.amount, 0.5)) 100%);
+        }
+
+        // From the middle to the level, overlapping the first piece by a
+        // pixel so no gap shows where they meet
+        if root.spread && root.split: Rectangle {
+            width: root.horizontal ? parent.width * (1 - root.first-share) + 1px : parent.width;
+            height: root.horizontal ? parent.height : parent.height * (1 - root.first-share) + 1px;
+            x: parent.width - self.width;
+            y: 0;
+            border-top-right-radius: root.radius;
+            border-bottom-right-radius: root.horizontal ? root.radius : 0;
+            border-top-left-radius: root.horizontal ? 0 : root.radius;
+            background: root.horizontal
+                ? @linear-gradient(90deg, VizStyle.bar-color(0.5) 0%, VizStyle.bar-color(root.amount) 100%)
+                : @linear-gradient(0deg, VizStyle.bar-color(0.5) 0%, VizStyle.bar-color(root.amount) 100%);
         }
     }
 }
