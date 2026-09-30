@@ -442,7 +442,7 @@ impl AudioEngine {
         self.send(AudioCommand::Resume);
     }
 
-    /// Set volume (clamped to 0.0..=2.0)
+    /// Set volume (clamped to 0.0..=2.0; NaN and infinities are ignored)
     pub fn set_volume(&self, volume: f32) {
         self.send(AudioCommand::SetVolume(volume));
     }
@@ -725,10 +725,12 @@ impl AudioEngine {
                             }
                         }
                     }
-                    AudioCommand::SetVolume(vol) => {
+                    // NaN would survive the clamp and silence every later station
+                    AudioCommand::SetVolume(vol) if vol.is_finite() => {
                         current_volume = vol.clamp(0.0, 2.0);
                         sink.set_volume(volume_curve(current_volume));
                     }
+                    AudioCommand::SetVolume(_) => {}
                     AudioCommand::SetEqBand { band, gain_db } => {
                         if let Ok(mut p) = eq_params.lock() {
                             p.set_band(band, gain_db);

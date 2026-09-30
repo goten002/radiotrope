@@ -12,7 +12,7 @@ use crate::network::{ApiCache, HttpClient};
 use super::radio_browser_servers::Servers;
 
 use super::traits::StationProvider;
-use super::types::{Category, CategoryType, SearchResults};
+use super::types::{Category, CategoryType, SearchOrder, SearchResults, StationFilter};
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -236,6 +236,44 @@ fn category_filter(category: &Category) -> (&'static str, &str) {
     }
 }
 
+/// `/json/stations/search` parameters for a [`StationFilter`]
+fn filtered_search_params(
+    filter: &StationFilter,
+    limit: usize,
+    offset: usize,
+) -> Vec<(&'static str, String)> {
+    let mut params = Vec::new();
+    let mut text = |key: &'static str, value: &Option<String>| {
+        if let Some(v) = value.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+            params.push((key, v.to_string()));
+        }
+    };
+    text("name", &filter.name);
+    text("tag", &filter.genre);
+    text("language", &filter.language);
+    text("codec", &filter.codec);
+    match filter.country_code() {
+        Some(code) => params.push(("countrycode", code)),
+        None => text("country", &filter.country),
+    }
+    if let Some(min) = filter.min_bitrate {
+        params.push(("bitrateMin", min.to_string()));
+    }
+    let (order, reverse) = match filter.order {
+        SearchOrder::Popular => ("clickcount", true),
+        SearchOrder::Votes => ("votes", true),
+        SearchOrder::Trending => ("clicktrend", true),
+        SearchOrder::Bitrate => ("bitrate", true),
+        SearchOrder::Name => ("name", false),
+    };
+    params.push(("order", order.to_string()));
+    params.push(("reverse", reverse.to_string()));
+    params.push(("hidebroken", "true".to_string()));
+    params.push(("limit", limit.to_string()));
+    params.push(("offset", offset.to_string()));
+    params
+}
+
 impl StationProvider for RadioBrowserProvider {
     fn name(&self) -> &'static str {
         "Radio Browser"
@@ -340,6 +378,19 @@ impl StationProvider for RadioBrowserProvider {
         self.search_stations(&params)
     }
 
+    fn search_filtered(
+        &self,
+        filter: &StationFilter,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResults> {
+        let params = filtered_search_params(filter, limit, offset);
+        let params: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
+        let mut results = self.search_stations(&params)?;
+        results.has_more = results.stations.len() >= limit;
+        Ok(results)
+    }
+
     fn get_popular(&self, limit: usize) -> Result<Vec<Station>> {
         let rb_stations: Vec<RbStation> = self.get_cached(
             &format!("/json/stations/topclick/{limit}"),
@@ -372,6 +423,47 @@ impl StationProvider for RadioBrowserProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn filtered_search_sends_every_filter() {
+        let filter = StationFilter {
+            name: Some(" kiss ".into()),
+            genre: Some("pop".into()),
+            country: Some("gr".into()),
+            language: None,
+            codec: Some("AAC".into()),
+            min_bitrate: Some(96),
+            order: SearchOrder::Name,
+        };
+        let params = filtered_search_params(&filter, 20, 40);
+        let get = |k: &str| {
+            params
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("name"), Some("kiss"));
+        assert_eq!(get("tag"), Some("pop"));
+        assert_eq!(get("countrycode"), Some("GR"));
+        assert_eq!(get("country"), None);
+        assert_eq!(get("language"), None);
+        assert_eq!(get("codec"), Some("AAC"));
+        assert_eq!(get("bitrateMin"), Some("96"));
+        assert_eq!(get("order"), Some("name"));
+        assert_eq!(get("reverse"), Some("false"));
+        assert_eq!(get("limit"), Some("20"));
+        assert_eq!(get("offset"), Some("40"));
+
+        // A country name is a name filter; no filter at all is the most played
+        let by_name = StationFilter {
+            country: Some("Greece".into()),
+            ..Default::default()
+        };
+        let params = filtered_search_params(&by_name, 5, 0);
+        assert!(params.contains(&("country", "Greece".to_string())));
+        assert!(params.contains(&("order", "clickcount".to_string())));
+        assert!(params.contains(&("reverse", "true".to_string())));
+    }
 
     // ---- RbStation -> Station conversion tests ----
 

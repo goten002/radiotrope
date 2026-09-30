@@ -23,7 +23,7 @@ pub struct Settings {
 
     // === Audio ===
     /// Volume level (0.0 - 1.0)
-    #[serde(default = "default_volume")]
+    #[serde(default = "default_volume", deserialize_with = "volume_or_default")]
     pub volume: f32,
 
     /// Muted state
@@ -130,6 +130,31 @@ pub struct Settings {
     /// MP3/Opus bitrate in kbps; `None` means Auto (the station's bitrate)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_bitrate: Option<u32>,
+
+    // === Agents (MCP) ===
+    /// Agents on this computer (`radiotrope --mcp`) may use the player
+    #[serde(default = "default_true")]
+    pub mcp_local: bool,
+
+    /// Agents over the network may use the player (with the token)
+    #[serde(default)]
+    pub mcp_network: bool,
+
+    /// Address and port the network server listens on
+    #[serde(default = "default_mcp_address")]
+    pub mcp_address: String,
+
+    /// TLS certificate (PEM) for https; used together with `mcp_tls_key`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tls_cert: Option<PathBuf>,
+
+    /// TLS private key (PKCS#8 PEM) for https
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tls_key: Option<PathBuf>,
+}
+
+fn default_mcp_address() -> String {
+    crate::config::mcp::DEFAULT_ADDRESS.to_string()
 }
 
 fn default_version() -> u32 {
@@ -138,6 +163,16 @@ fn default_version() -> u32 {
 
 fn default_volume() -> f32 {
     1.0
+}
+
+/// A volume saved as `null` (serde's spelling of NaN, which older builds
+/// could save) or out of range reads as the default or is clamped, instead
+/// of failing the whole file and resetting every setting
+fn volume_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<f32, D::Error> {
+    let volume: Option<f32> = Option::deserialize(d)?;
+    Ok(volume
+        .filter(|v| v.is_finite())
+        .map_or_else(default_volume, |v| v.clamp(0.0, 1.0)))
 }
 
 fn default_viz_mode() -> String {
@@ -182,6 +217,11 @@ impl Default for Settings {
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,
             recording_bitrate: None,
+            mcp_local: true,
+            mcp_network: false,
+            mcp_address: default_mcp_address(),
+            mcp_tls_cert: None,
+            mcp_tls_key: None,
         }
     }
 }
@@ -341,6 +381,17 @@ mod tests {
         assert!(settings.show_tray_icon);
         assert!(settings.minimize_to_tray);
         assert_eq!(settings.theme, Theme::System);
+    }
+
+    #[test]
+    fn null_volume_reads_as_default_and_keeps_other_settings() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"volume": null, "muted": true}"#).unwrap();
+        assert_eq!(settings.volume, 1.0);
+        assert!(settings.muted);
+
+        let settings: Settings = serde_json::from_str(r#"{"volume": 7.5}"#).unwrap();
+        assert_eq!(settings.volume, 1.0);
     }
 
     #[test]

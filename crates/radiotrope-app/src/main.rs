@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod instance;
 mod mcp;
 mod row_logos;
 #[cfg(feature = "desktop")]
@@ -43,9 +44,14 @@ use app::state::AppSnapshot;
 #[derive(Parser)]
 #[command(version, about)]
 struct Args {
-    /// Enable MCP server on stdio (for AI agent integration)
+    /// Connect an AI agent over MCP on stdio. Talks to the running player,
+    /// starting it first if needed, so all agents share one player.
     #[arg(long)]
     mcp: bool,
+
+    /// With --mcp: run a separate player for this agent alone instead
+    #[arg(long, requires = "mcp")]
+    standalone: bool,
 }
 
 /// When started from a terminal, write there: `--help`, `--version` and the
@@ -73,6 +79,31 @@ fn main() {
 
     let args = Args::parse();
 
+    // `--mcp` relays the agent to the running player and never opens a
+    // window of its own
+    if args.mcp && !args.standalone {
+        std::process::exit(mcp::local::run_relay());
+    }
+
+    // One player per user; a second launch brings the first one forward
+    let instance = if args.standalone {
+        None
+    } else {
+        match instance::acquire() {
+            instance::Acquire::Primary(guard) => Some(Arc::new(guard)),
+            instance::Acquire::Running => {
+                if !instance::ask_to_show() {
+                    eprintln!("Radiotrope is already running");
+                }
+                return;
+            }
+            instance::Acquire::Unavailable(e) => {
+                eprintln!("Single instance check unavailable, agents can't connect: {e}");
+                None
+            }
+        }
+    };
+
     // Shared command channel + state
     let (cmd_tx, cmd_rx) = bounded(64);
     let shared_state = Arc::new(Mutex::new(AppSnapshot::default()));
@@ -92,7 +123,7 @@ fn main() {
     // Generation counter for browse logo fetches (to cancel stale requests)
     let browse_logo_gen = Arc::new(AtomicU64::new(0));
 
-    // If --mcp, spawn MCP stdio server on a background thread
+    // `--mcp --standalone`: serve this agent on stdio, in this process
     if args.mcp {
         let mcp_tx = cmd_tx.clone();
         let mcp_state = shared_state.clone();
@@ -131,6 +162,31 @@ fn main() {
     // `radiotrope.desktop` file (and its StartupWMClass) to find the icon.
     // A no-op on Windows and macOS.
     let _ = slint::set_xdg_app_id("radiotrope");
+
+    // Agents (`radiotrope --mcp`) and later launches reach us over a local
+    // socket
+    let agents = instance.as_ref().map(|instance| {
+        let agents = Arc::new(mcp::agents::Agents::new(
+            mcp::tools::RadioTools::new(cmd_tx.clone(), shared_state.clone(), favorites.clone()),
+            &settings,
+        ));
+        let instance = Arc::clone(instance);
+        let tools = agents.tools();
+        let allowed = agents.local_allowed();
+        let window = ui.as_weak();
+        let show_window: mcp::local::ShowWindow = Arc::new(move || {
+            let _ = window.upgrade_in_event_loop(|ui| bring_to_front(ui.window()));
+        });
+        std::thread::Builder::new()
+            .name("mcp-local".into())
+            .spawn(move || {
+                mcp::local::serve(&instance, tools, allowed, show_window);
+            })
+            .expect("Failed to spawn MCP thread");
+        agents
+    });
+    // Network agents, when turned on, and the Agents dialog
+    setup_agents(&ui, agents.clone(), &settings);
 
     // Initial load of favorites into UI model
     refresh_favorites(&ui, &favorites, &logo_service);
@@ -1596,6 +1652,13 @@ fn main() {
     }
 }
 
+/// Show the window and ask for focus (a second launch of radiotrope)
+fn bring_to_front(window: &slint::Window) {
+    let _ = window.show();
+    #[cfg(feature = "desktop")]
+    window_frame::bring_to_front(window);
+}
+
 /// Longest wait at exit for the controller to finish (e.g. a recording)
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
@@ -2146,6 +2209,187 @@ fn setup_wifi(ui: &App) {
 
 /// Largest station logo embedded as cover art in a recording
 const MAX_COVER_BYTES: usize = 512 * 1024;
+
+/// Wire the Agents (MCP) dialog, and start network agents when they are on.
+/// `agents` is `None` in a `--mcp --standalone` player, which serves one
+/// agent on stdio only: the dialog shows the settings greyed out.
+fn setup_agents(
+    ui: &App,
+    agents: Option<Arc<mcp::agents::Agents>>,
+    settings: &radiotrope_app::data::settings::Settings,
+) {
+    let path_text = |p: &Option<std::path::PathBuf>| {
+        p.as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default()
+    };
+    ui.set_agents_available(agents.is_some());
+    ui.set_agents_local(settings.mcp_local);
+    ui.set_agents_network(settings.mcp_network);
+    ui.set_agents_address(settings.mcp_address.as_str().into());
+    ui.set_agents_cert(path_text(&settings.mcp_tls_cert).into());
+    ui.set_agents_key(path_text(&settings.mcp_tls_key).into());
+    let Some(agents) = agents else { return };
+    show_agents_network(ui, &agents.apply_network(settings));
+
+    ui.on_agents_local_toggled({
+        let agents = agents.clone();
+        move |on| {
+            agents.set_local(on);
+            save_agent_settings(|s| s.mcp_local = on);
+        }
+    });
+
+    // Every change saves and restarts the network server with it
+    let apply = {
+        let ui_weak = ui.as_weak();
+        let agents = agents.clone();
+        move |change: &dyn Fn(&mut radiotrope_app::data::settings::Settings)| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+            change(&mut settings);
+            if let Err(e) = settings.save() {
+                eprintln!("Failed to save agent settings: {e}");
+            }
+            ui.set_agents_address(settings.mcp_address.as_str().into());
+            ui.set_agents_cert(path_text(&settings.mcp_tls_cert).into());
+            ui.set_agents_key(path_text(&settings.mcp_tls_key).into());
+            show_agents_network(&ui, &agents.apply_network(&settings));
+        }
+    };
+    let apply = std::rc::Rc::new(apply);
+
+    ui.on_agents_network_toggled({
+        let apply = apply.clone();
+        move |on| apply(&|s| s.mcp_network = on)
+    });
+    ui.on_agents_apply_address({
+        let apply = apply.clone();
+        let ui_weak = ui.as_weak();
+        move |text| {
+            let text = text.trim();
+            let address = if text.is_empty() {
+                radiotrope_app::config::mcp::DEFAULT_ADDRESS.to_string()
+            } else {
+                text.to_string()
+            };
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_agents_edit_address(address.as_str().into());
+            }
+            apply(&|s| s.mcp_address = address.clone())
+        }
+    });
+    ui.on_agents_apply_tls({
+        let apply = apply.clone();
+        move |cert, key| {
+            let path = |t: &str| {
+                Some(t.trim())
+                    .filter(|t| !t.is_empty())
+                    .map(std::path::PathBuf::from)
+            };
+            let (cert, key) = (path(&cert), path(&key));
+            apply(&|s| {
+                s.mcp_tls_cert = cert.clone();
+                s.mcp_tls_key = key.clone();
+            })
+        }
+    });
+    ui.on_agents_regenerate_token({
+        let apply = apply.clone();
+        move || {
+            if let Err(e) = radiotrope_app::data::agent_token::regenerate() {
+                eprintln!("Failed to make a new token: {e}");
+            }
+            apply(&|_| {})
+        }
+    });
+    ui.on_agents_browse_cert({
+        let ui_weak = ui.as_weak();
+        let apply = apply.clone();
+        move || {
+            let apply = apply.clone();
+            browse_pem_file(
+                ui_weak.clone(),
+                "Choose TLS Certificate",
+                move |ui, path| {
+                    ui.set_agents_edit_cert(path.as_str().into());
+                    let key = ui.get_agents_edit_key().to_string();
+                    let path = path.clone();
+                    apply(&|s| {
+                        s.mcp_tls_cert = Some(path.clone().into());
+                        s.mcp_tls_key = Some(key.clone()).filter(|k| !k.is_empty()).map(Into::into);
+                    })
+                },
+            )
+        }
+    });
+    ui.on_agents_browse_key({
+        let ui_weak = ui.as_weak();
+        let apply = apply.clone();
+        move || {
+            let apply = apply.clone();
+            browse_pem_file(ui_weak.clone(), "Choose TLS Key", move |ui, path| {
+                ui.set_agents_edit_key(path.as_str().into());
+                let cert = ui.get_agents_edit_cert().to_string();
+                let path = path.clone();
+                apply(&|s| {
+                    s.mcp_tls_cert = Some(cert.clone()).filter(|c| !c.is_empty()).map(Into::into);
+                    s.mcp_tls_key = Some(path.clone().into());
+                })
+            })
+        }
+    });
+}
+
+fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
+    ui.set_agents_status(status.text.as_str().into());
+    ui.set_agents_status_error(status.is_error);
+    ui.set_agents_token(status.token.as_str().into());
+    ui.set_agents_command(status.command.as_str().into());
+}
+
+fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
+    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    change(&mut settings);
+    if let Err(e) = settings.save() {
+        eprintln!("Failed to save agent settings: {e}");
+    }
+}
+
+/// Pick a certificate or key file, then hand its path to `picked`
+#[cfg(feature = "desktop")]
+fn browse_pem_file(
+    ui_weak: slint::Weak<App>,
+    title: &str,
+    picked: impl FnOnce(&App, String) + 'static,
+) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let pick = rfd::AsyncFileDialog::new()
+        .set_title(title)
+        .add_filter("PEM", &["pem", "crt", "cer", "key"])
+        .add_filter("All files", &["*"])
+        .set_parent(&ui.window().window_handle())
+        .pick_file();
+    let spawned = slint::spawn_local(async move {
+        let file = pick.await;
+        let Some(ui) = ui_weak.upgrade() else { return };
+        if let Some(file) = file {
+            picked(&ui, file.path().display().to_string());
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("Failed to open the file dialog: {e}");
+    }
+}
+
+/// The kiosk build has no file dialog; paths are typed instead.
+#[cfg(not(feature = "desktop"))]
+fn browse_pem_file(
+    _ui_weak: slint::Weak<App>,
+    _title: &str,
+    _picked: impl FnOnce(&App, String) + 'static,
+) {
+}
 
 /// Wire the Tools menu recording items and the Recording Settings
 /// dialog. The format, folder and before/after-EQ choice are saved right away.

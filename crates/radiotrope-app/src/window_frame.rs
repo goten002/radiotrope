@@ -9,6 +9,16 @@ pub fn minimize(window: &slint::Window) {
     window.with_winit_window(|w| w.set_minimized(true));
 }
 
+/// Restore a minimized window and ask for focus. Wayland compositors may
+/// only flag the window as wanting attention, since they give focus only
+/// to what the user starts.
+pub fn bring_to_front(window: &slint::Window) {
+    window.with_winit_window(|w| {
+        w.set_minimized(false);
+        w.focus_window();
+    });
+}
+
 /// Switch between the system title bar (`framed`) and ours while the app
 /// runs, keeping the content the same size.
 ///

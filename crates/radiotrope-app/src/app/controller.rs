@@ -169,6 +169,11 @@ impl AppController {
                 }
             }
             AppCommand::SetVolume(vol) => {
+                // Keep NaN out of the shared state and the saved settings
+                if !vol.is_finite() {
+                    return false;
+                }
+                let vol = vol.clamp(0.0, 1.0);
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.volume = vol;
                 // Auto-unmute when volume is changed to a non-zero value
@@ -293,6 +298,7 @@ impl AppController {
 
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.play_seq += 1;
             state.station_url = Some(url.to_string());
             state.station_name = name;
             state.title.clear();
@@ -789,6 +795,14 @@ mod tests {
                 .expect("the cancelled resolve must end at once");
             assert!(matches!(cmd, AppCommand::InternalStreamResolved { .. }));
             cmd
+        }
+
+        #[test]
+        fn a_nan_volume_is_ignored() {
+            let (mut controller, state) = controller();
+            controller.handle_command(AppCommand::SetVolume(0.4));
+            controller.handle_command(AppCommand::SetVolume(f32::NAN));
+            assert_eq!(state.lock().unwrap().volume, 0.4);
         }
 
         #[test]

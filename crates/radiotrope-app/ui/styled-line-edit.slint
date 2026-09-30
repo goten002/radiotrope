@@ -45,7 +45,8 @@ export component StyledLineEdit inherits Rectangle {
         width: max(root.width - root.margin - root.right-margin, self.preferred-width);
         height: root.height;
         text <=> root.text;
-        color: Theme.text-primary;
+        // Greyed out while the field can't be used
+        color: root.enabled ? Theme.text-primary : Theme.disabled-text;
         font-size: Theme.font-base;
         vertical-alignment: center;
         single-line: true;

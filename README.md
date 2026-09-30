@@ -32,19 +32,46 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 }
 ```
 
+Every agent shares the one player running on your computer. `radiotrope --mcp` connects the agent to it, and starts the player (with its window) if it isn't running yet. Closing an agent leaves the music playing; closing the player's window ends every agent's session. Starting `radiotrope` a second time brings the running window forward instead of opening another. For a separate player of its own, give an agent `--mcp --standalone`.
+
+### Agents on other computers
+
+Radiotrope can also take agents over the network (MCP Streamable HTTP). It is off until you turn it on in **Tools > Agents (MCP)**, where you also find:
+
+- **Address**: `127.0.0.1:8765` (this computer only) by default. Enter this computer's network address, or `0.0.0.0` for all networks, to let other computers in.
+- **Token**: every request must carry it as `Authorization: Bearer <token>`. It is made the first time you turn network agents on, kept in `mcp-token` in the config folder (readable by you only), and can be regenerated.
+- **A ready line for Claude Code** with a Copy button:
+
+  ```bash
+  claude mcp add --transport http radiotrope http://192.168.1.20:8765/mcp --header "Authorization: Bearer <token>"
+  ```
+
+- **TLS (optional)**: a certificate and a PKCS#8 key in PEM format switch the server to https. Agents must trust the certificate; for Claude Code, point `NODE_EXTRA_CA_CERTS` at it or at your own CA.
+
+Requests from web pages (with an `Origin` header) are refused. While the server listens on this computer only, other host names are refused too (DNS rebinding).
+
+Plain http sends the token unencrypted over your network. To reach the radio from anywhere without opening ports, or without setting up TLS, run it over a private network such as [Tailscale](https://tailscale.com): put the computer's Tailscale address (100.x.y.z) in the address field. The traffic is then encrypted end to end. The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's cloud, so they can't reach a radio on your home network; use Claude Code, or `radiotrope --mcp` on the same computer.
+
 ### Available Tools
 
 | Tool | Description |
 |------|-------------|
-| `play_url` | Play a radio station by stream URL |
+| `play_url` | Play a station by stream URL and wait until it plays or fails |
+| `play_station` | Play a station from search results by its id |
 | `play_favorite` | Play a favorite station by ID |
 | `stop` | Stop playback |
 | `set_volume` | Set volume 0-100 |
-| `get_status` | Get playback state, track info, volume, and errors |
-| `search_stations` | Search for radio stations by name via radio-browser.info |
+| `set_muted` | Mute or unmute |
+| `get_status` | Playback state, station, song, volume, stream format, recording, the last error and which agent changed the player last |
+| `search_stations` | Search radio-browser.info by name, genre, country, language, codec and minimum bitrate; with nothing given, the most popular stations |
+| `list_categories` | List the directory's genres, countries or languages |
 | `list_favorites` | List all saved favorite stations with IDs |
 | `add_favorite` | Add a station to favorites (with optional logo URL and country) |
-| `remove_favorite` | Remove a station from favorites by URL |
+| `remove_favorite` | Remove a station from favorites by ID or URL |
+| `start_recording` | Record the station playing, with the player's recording settings |
+| `stop_recording` | Stop and save the recording |
+
+The server speaks every MCP version from 2024-11-05 to 2026-07-28 (it is built on [rmcp](https://github.com/modelcontextprotocol/rust-sdk), the official Rust SDK). Tools that return data return structured JSON with an output schema, and every tool carries a title and behaviour hints (read-only, destructive, open-world) that clients use when asking for confirmation.
 
 Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*, *"search for jazz stations"*, *"set volume to 50"*, or *"what's currently playing?"*.
 
@@ -155,7 +182,8 @@ radiotrope
 ### MCP mode (for AI agents)
 
 ```bash
-radiotrope --mcp
+radiotrope --mcp               # connect to the running player, start it if needed
+radiotrope --mcp --standalone  # a separate player for this agent alone
 ```
 
 ### Terminal player
