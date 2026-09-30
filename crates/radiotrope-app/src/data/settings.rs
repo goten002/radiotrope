@@ -130,6 +130,31 @@ pub struct Settings {
     /// MP3/Opus bitrate in kbps; `None` means Auto (the station's bitrate)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_bitrate: Option<u32>,
+
+    // === Agents (MCP) ===
+    /// Agents on this computer (`radiotrope --mcp`) may use the player
+    #[serde(default = "default_true")]
+    pub mcp_local: bool,
+
+    /// Agents over the network may use the player (with the token)
+    #[serde(default)]
+    pub mcp_network: bool,
+
+    /// Address and port the network server listens on
+    #[serde(default = "default_mcp_address")]
+    pub mcp_address: String,
+
+    /// TLS certificate (PEM) for https; used together with `mcp_tls_key`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tls_cert: Option<PathBuf>,
+
+    /// TLS private key (PKCS#8 PEM) for https
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_tls_key: Option<PathBuf>,
+}
+
+fn default_mcp_address() -> String {
+    crate::config::mcp::DEFAULT_ADDRESS.to_string()
 }
 
 fn default_version() -> u32 {
@@ -192,6 +217,11 @@ impl Default for Settings {
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,
             recording_bitrate: None,
+            mcp_local: true,
+            mcp_network: false,
+            mcp_address: default_mcp_address(),
+            mcp_tls_cert: None,
+            mcp_tls_key: None,
         }
     }
 }

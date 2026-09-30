@@ -2,6 +2,7 @@
 //!
 //! Handles favorites, settings, history, and caching.
 
+pub mod agent_token;
 pub mod cache;
 pub mod favorites;
 pub mod flags;

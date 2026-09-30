@@ -34,6 +34,24 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 
 Every agent shares the one player running on your computer. `radiotrope --mcp` connects the agent to it, and starts the player (with its window) if it isn't running yet. Closing an agent leaves the music playing; closing the player's window ends every agent's session. Starting `radiotrope` a second time brings the running window forward instead of opening another. For a separate player of its own, give an agent `--mcp --standalone`.
 
+### Agents on other computers
+
+Radiotrope can also take agents over the network (MCP Streamable HTTP). It is off until you turn it on in **Tools > Agents (MCP)**, where you also find:
+
+- **Address**: `127.0.0.1:8765` (this computer only) by default. Enter this computer's network address, or `0.0.0.0` for all networks, to let other computers in.
+- **Token**: every request must carry it as `Authorization: Bearer <token>`. It is made the first time you turn network agents on, kept in `mcp-token` in the config folder (readable by you only), and can be regenerated.
+- **A ready line for Claude Code** with a Copy button:
+
+  ```bash
+  claude mcp add --transport http radiotrope http://192.168.1.20:8765/mcp --header "Authorization: Bearer <token>"
+  ```
+
+- **TLS (optional)**: a certificate and a PKCS#8 key in PEM format switch the server to https. Agents must trust the certificate; for Claude Code, point `NODE_EXTRA_CA_CERTS` at it or at your own CA.
+
+Requests from web pages (with an `Origin` header) are refused. While the server listens on this computer only, other host names are refused too (DNS rebinding).
+
+Plain http sends the token unencrypted over your network. To reach the radio from anywhere without opening ports, or without setting up TLS, run it over a private network such as [Tailscale](https://tailscale.com): put the computer's Tailscale address (100.x.y.z) in the address field. The traffic is then encrypted end to end. The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's cloud, so they can't reach a radio on your home network; use Claude Code, or `radiotrope --mcp` on the same computer.
+
 ### Available Tools
 
 | Tool | Description |

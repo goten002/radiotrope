@@ -60,3 +60,14 @@ pub mod ui {
     /// Listening time is saved in steps of this long while a station plays
     pub const LISTEN_CREDIT_SECS: u64 = 60;
 }
+
+/// Agents over MCP
+pub mod mcp {
+    /// Where the network server listens unless the user picks another
+    /// address: this computer only, on a port of our choosing
+    pub const DEFAULT_ADDRESS: &str = "127.0.0.1:8765";
+
+    /// File in the config folder holding the network token, readable by the
+    /// user only
+    pub const TOKEN_FILE: &str = "mcp-token";
+}
