@@ -298,6 +298,7 @@ impl AppController {
 
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.play_seq += 1;
             state.station_url = Some(url.to_string());
             state.station_name = name;
             state.title.clear();

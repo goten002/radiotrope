@@ -5,7 +5,7 @@
 use crate::data::types::Station;
 use crate::error::Result;
 
-use super::types::{Category, SearchResults};
+use super::types::{Category, SearchResults, StationFilter};
 
 /// A source of radio station listings
 ///
@@ -60,6 +60,25 @@ pub trait StationProvider: Send + Sync {
                 .stations
                 .retain(|s| s.name.to_lowercase().contains(&query));
         }
+        Ok(results)
+    }
+
+    /// Search with several filters at once, in the filter's order
+    ///
+    /// The default searches by name and keeps the stations of that page
+    /// that pass the rest of the filter (ordered as [`search`] orders them).
+    /// Providers that can filter server-side should override it.
+    ///
+    /// [`search`]: StationProvider::search
+    fn search_filtered(
+        &self,
+        filter: &StationFilter,
+        limit: usize,
+        offset: usize,
+    ) -> Result<SearchResults> {
+        let name = filter.name.as_deref().unwrap_or("");
+        let mut results = self.search(name, limit, offset)?;
+        results.stations.retain(|s| filter.matches(s));
         Ok(results)
     }
 

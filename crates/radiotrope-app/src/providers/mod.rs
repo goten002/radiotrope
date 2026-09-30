@@ -10,7 +10,7 @@ pub mod types;
 // Re-exports
 pub use radio_browser::RadioBrowserProvider;
 pub use traits::StationProvider;
-pub use types::{Category, CategoryType, SearchResults};
+pub use types::{Category, CategoryType, SearchOrder, SearchResults, StationFilter};
 
 use crate::data::types::Station;
 use crate::error::Result;
