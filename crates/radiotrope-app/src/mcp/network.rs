@@ -4,16 +4,15 @@
 //! Off until the user turns it on. Every request must carry the token as
 //! `Authorization: Bearer <token>`. Requests from web pages (an `Origin`
 //! header) are refused, and while the server listens on this computer only,
-//! so are requests for other host names (DNS rebinding). TLS is optional,
-//! with the user's own certificate and key, through the system's TLS library
-//! (the one reqwest already uses).
+//! so are requests for other host names (DNS rebinding). Plain HTTP: meant
+//! for the local network or a private one such as Tailscale, where the token
+//! is enough.
 //!
 //! Serves both kinds of client: stateless 2026-07-28 ones, and older ones
 //! with an `initialize` handshake and an `Mcp-Session-Id`.
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr, TcpListener as StdListener, ToSocketAddrs};
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use bytes::Bytes;
@@ -24,7 +23,6 @@ use hyper_util::rt::TokioIo;
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::sync::CancellationToken;
 use tower_service::Service;
 
@@ -38,8 +36,6 @@ pub struct Options {
     /// "host:port"
     pub address: String,
     pub token: String,
-    /// Certificate and key files (PEM) for https
-    pub tls: Option<(PathBuf, PathBuf)>,
 }
 
 /// The running server; dropping it stops the server
@@ -61,14 +57,10 @@ impl Drop for Server {
     }
 }
 
-/// Start listening. Binding and TLS setup happen before this returns, so
-/// their errors come back here, in words for the user.
+/// Start listening. Binding happens before this returns, so its errors come
+/// back here, in words for the user.
 pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
     let addr = resolve(&options.address)?;
-    let tls = match &options.tls {
-        Some((cert, key)) => Some(tls_acceptor(cert, key)?),
-        None => None,
-    };
     let listener = StdListener::bind(addr).map_err(|e| match e.kind() {
         std::io::ErrorKind::AddrInUse => {
             format!("Port {} is in use by another program", addr.port())
@@ -84,8 +76,7 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
     // The port the system gave, when asked for port 0
     let addr = listener.local_addr().unwrap_or(addr);
 
-    let scheme = if tls.is_some() { "https" } else { "http" };
-    let url = format!("{scheme}://{}/mcp", connect_authority(addr));
+    let url = format!("http://{}/mcp", connect_authority(addr));
     let cancel = CancellationToken::new();
     let service = mcp_service(tools, addr.ip(), cancel.clone());
     let token: Arc<str> = options.token.clone().into();
@@ -104,7 +95,7 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
                     return;
                 }
             };
-            runtime.block_on(serve(listener, tls, service, token, stop));
+            runtime.block_on(serve(listener, service, token, stop));
             // Streams still open (SSE) end with the runtime
             runtime.shutdown_background();
         })
@@ -138,7 +129,6 @@ fn mcp_service(tools: RadioTools, bind: IpAddr, cancel: CancellationToken) -> Mc
 
 async fn serve(
     listener: StdListener,
-    tls: Option<tokio_native_tls::TlsAcceptor>,
     service: McpService,
     token: Arc<str>,
     cancel: CancellationToken,
@@ -163,31 +153,17 @@ async fn serve(
         };
         let service = service.clone();
         let token = token.clone();
-        let tls = tls.clone();
         let cancel = cancel.clone();
-        tokio::spawn(async move {
-            match tls {
-                Some(tls) => {
-                    // A client that never finishes the handshake only holds
-                    // its own task
-                    if let Ok(stream) = tls.accept(stream).await {
-                        serve_connection(stream, service, token, cancel).await;
-                    }
-                }
-                None => serve_connection(stream, service, token, cancel).await,
-            }
-        });
+        tokio::spawn(serve_connection(stream, service, token, cancel));
     }
 }
 
-async fn serve_connection<S>(
-    stream: S,
+async fn serve_connection(
+    stream: tokio::net::TcpStream,
     service: McpService,
     token: Arc<str>,
     cancel: CancellationToken,
-) where
-    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
-{
+) {
     let handler = hyper::service::service_fn(move |request: Request<Incoming>| {
         let mut service = service.clone();
         let token = token.clone();
@@ -242,10 +218,9 @@ fn plain(status: StatusCode, text: &'static str) -> Response<BoxBody<Bytes, Infa
 
 /// The URL agents would use for this address, whether or not the server
 /// runs: for showing in the settings
-pub fn url_for(address: &str, tls: bool) -> Result<String, String> {
+pub fn url_for(address: &str) -> Result<String, String> {
     let addr = resolve(address)?;
-    let scheme = if tls { "https" } else { "http" };
-    Ok(format!("{scheme}://{}/mcp", connect_authority(addr)))
+    Ok(format!("http://{}/mcp", connect_authority(addr)))
 }
 
 /// "host:port" to a socket address; a missing port gets the default one
@@ -300,32 +275,6 @@ fn lan_address() -> Option<IpAddr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     socket.connect("192.0.2.1:9").ok()?;
     socket.local_addr().ok().map(|a| a.ip())
-}
-
-fn tls_acceptor(
-    cert: &std::path::Path,
-    key: &std::path::Path,
-) -> Result<tokio_native_tls::TlsAcceptor, String> {
-    let cert_pem = std::fs::read(cert)
-        .map_err(|e| format!("Can't read the certificate {}: {e}", cert.display()))?;
-    let key_pem =
-        std::fs::read(key).map_err(|e| format!("Can't read the key {}: {e}", key.display()))?;
-    if String::from_utf8_lossy(&key_pem).contains("BEGIN RSA PRIVATE KEY")
-        || String::from_utf8_lossy(&key_pem).contains("BEGIN EC PRIVATE KEY")
-    {
-        return Err(
-            "The key must be PKCS#8 (\"BEGIN PRIVATE KEY\"). Convert it with: \
-                    openssl pkcs8 -topk8 -nocrypt -in old.key -out new.key"
-                .into(),
-        );
-    }
-    let identity = native_tls::Identity::from_pkcs8(&cert_pem, &key_pem)
-        .map_err(|e| format!("The certificate and key don't work together: {e}"))?;
-    let acceptor = native_tls::TlsAcceptor::builder(identity)
-        .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
-        .build()
-        .map_err(|e| format!("Can't set up TLS: {e}"))?;
-    Ok(acceptor.into())
 }
 
 #[cfg(test)]
@@ -394,7 +343,6 @@ mod tests {
             &Options {
                 address: "127.0.0.1:0".into(),
                 token: token.clone(),
-                tls: None,
             },
             test_tools(),
         )
@@ -446,19 +394,5 @@ mod tests {
         drop(server);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
-    }
-
-    #[test]
-    fn an_rsa_key_is_explained() {
-        let dir = std::env::temp_dir().join(format!("rt-tls-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let (cert, key) = (dir.join("c.pem"), dir.join("k.pem"));
-        std::fs::write(&cert, "-----BEGIN CERTIFICATE-----\n").unwrap();
-        std::fs::write(&key, "-----BEGIN RSA PRIVATE KEY-----\n").unwrap();
-        let err = tls_acceptor(&cert, &key).err().unwrap();
-        assert!(err.contains("PKCS#8"), "{err}");
-        let err = tls_acceptor(&dir.join("missing.pem"), &key).err().unwrap();
-        assert!(err.contains("Can't read the certificate"), "{err}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

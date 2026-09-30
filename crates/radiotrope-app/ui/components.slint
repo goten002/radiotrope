@@ -582,3 +582,78 @@ export component Toggle inherits Rectangle {
         }
     }
 }
+
+// Small ⓘ that shows a line of help in a bubble above it: after a short
+// hover, or on tap (touch screens have no hover). Keeps help text out of
+// the layout. The bubble opens upward, over what comes before it.
+export component InfoTip inherits Rectangle {
+    in property <string> text;
+
+    property <bool> open: false;
+
+    width: 18px;
+    height: 18px;
+
+    Icon {
+        x: 1px;
+        y: 1px;
+        width: 16px;
+        height: 16px;
+        source: @image-url("icons/circle-info.svg");
+        colorize: touch.has-hover || root.open ? Theme.text-primary : Theme.text-tertiary;
+    }
+
+    touch := TouchArea {
+        clicked => {
+            delay.running = false;
+            root.open = !root.open;
+        }
+        changed has-hover => {
+            delay.running = self.has-hover && !root.open;
+            if !self.has-hover {
+                root.open = false;
+            }
+        }
+    }
+
+    delay := Timer {
+        interval: Defaults.hover-delay;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.open = true;
+        }
+    }
+
+    // Same style as the other hover bubbles
+    Rectangle {
+        visible: self.opacity > 0;
+        opacity: root.open ? 1 : 0;
+        animate opacity { duration: Theme.fast; }
+        width: Defaults.info-tip-width;
+        height: tip-layout.preferred-height;
+        x: root.width - self.width;
+        y: -self.height - 6px;
+        background: Theme.popup-bg;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.hairline;
+        drop-shadow-blur: 8px;
+        drop-shadow-offset-y: 2px;
+        drop-shadow-color: Theme.shadow-soft;
+
+        tip-layout := VerticalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+
+            Text {
+                text: root.text;
+                font-size: Theme.font-md;
+                color: Theme.text-primary;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

@@ -101,23 +101,14 @@ export component App inherits Window {
     in-out property <bool> show-recording-dialog <=> recording-dialog.show-dialog;
 
     // Agents (MCP)
-    callback agents-local-toggled(bool);
     callback agents-network-toggled(bool);
     callback agents-apply-address(string);
     callback agents-regenerate-token();
-    callback agents-apply-tls(string, string);
-    callback agents-browse-cert();
-    callback agents-browse-key();
     in-out property <bool> agents-available <=> agents-dialog.available;
-    in-out property <bool> agents-local <=> agents-dialog.local-on;
     in-out property <bool> agents-network <=> agents-dialog.network-on;
     in-out property <string> agents-address <=> agents-dialog.address;
     in-out property <string> agents-token <=> agents-dialog.token;
-    in-out property <string> agents-cert <=> agents-dialog.cert;
-    in-out property <string> agents-key <=> agents-dialog.key;
     in-out property <string> agents-edit-address <=> agents-dialog.edit-address;
-    in-out property <string> agents-edit-cert <=> agents-dialog.edit-cert;
-    in-out property <string> agents-edit-key <=> agents-dialog.edit-key;
     in-out property <string> agents-status <=> agents-dialog.status;
     in-out property <bool> agents-status-error <=> agents-dialog.status-error;
     in-out property <string> agents-command <=> agents-dialog.command;
@@ -481,13 +472,9 @@ export component App inherits Window {
     }
 
     agents-dialog := AgentsDialog {
-        local-toggled(on) => { root.agents-local-toggled(on); }
         network-toggled(on) => { root.agents-network-toggled(on); }
         apply-address(text) => { root.agents-apply-address(text); }
         regenerate-token() => { root.agents-regenerate-token(); }
-        apply-tls(cert, key) => { root.agents-apply-tls(cert, key); }
-        browse-cert() => { root.agents-browse-cert(); }
-        browse-key() => { root.agents-browse-key(); }
     }
 
     about-dialog := AboutDialog {

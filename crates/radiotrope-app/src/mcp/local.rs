@@ -8,7 +8,6 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -32,20 +31,13 @@ const HELLO_MAX: u64 = 64;
 
 /// The player's answer to [`HELLO_MCP`]: go ahead
 const WELCOME: &str = "ok";
-/// The player's answer to [`HELLO_MCP`] when the user turned local agents off
-const REFUSED: &str = "off";
 
 /// Called when a second launch asks the player to show its window
 pub type ShowWindow = Arc<dyn Fn() + Send + Sync>;
 
 /// Serve MCP sessions and show requests on the local socket (blocking: call
 /// from a dedicated thread)
-pub fn serve(
-    instance: &Instance,
-    tools: RadioTools,
-    allowed: Arc<AtomicBool>,
-    show_window: ShowWindow,
-) {
+pub fn serve(instance: &Instance, tools: RadioTools, show_window: ShowWindow) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -67,12 +59,7 @@ pub fn serve(
         loop {
             match listener.accept().await {
                 Ok(conn) => {
-                    tokio::spawn(handle(
-                        conn,
-                        tools.clone(),
-                        allowed.clone(),
-                        show_window.clone(),
-                    ));
+                    tokio::spawn(handle(conn, tools.clone(), show_window.clone()));
                 }
                 Err(e) => {
                     eprintln!("MCP: accept failed: {e}");
@@ -84,7 +71,7 @@ pub fn serve(
 }
 
 /// One connection: read what it wants, then serve it
-async fn handle<S>(conn: S, tools: RadioTools, allowed: Arc<AtomicBool>, show_window: ShowWindow)
+async fn handle<S>(conn: S, tools: RadioTools, show_window: ShowWindow)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -97,15 +84,10 @@ where
     }
     match hello.trim_end() {
         HELLO_MCP => {
-            // Local agents are checked as they connect: turning them off
-            // leaves the sessions already open alone
-            let on = allowed.load(Ordering::Relaxed);
-            let answer = if on { WELCOME } else { REFUSED };
             if conn
-                .write_all(format!("{answer}\n").as_bytes())
+                .write_all(format!("{WELCOME}\n").as_bytes())
                 .await
                 .is_err()
-                || !on
             {
                 return;
             }
@@ -194,11 +176,6 @@ where
     from_player.read_line(&mut answer).await?;
     match answer.trim_end() {
         WELCOME => {}
-        REFUSED => {
-            return Err(std::io::Error::other(
-                "agents on this computer are turned off in the player (Tools > Agents (MCP))",
-            ))
-        }
         _ => return Err(std::io::Error::other("the player did not answer")),
     }
 
@@ -388,26 +365,6 @@ mod tests {
         .unwrap();
     }
 
-    fn on() -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(true))
-    }
-
-    #[tokio::test]
-    async fn the_relay_says_when_local_agents_are_off() {
-        let (relay_side, player_side) = duplex(4096);
-        let player = tokio::spawn(handle(
-            player_side,
-            test_tools(),
-            Arc::new(AtomicBool::new(false)),
-            Arc::new(|| {}),
-        ));
-        let (_agent_in, relay_in) = duplex(64);
-        let (relay_out, _agent_out) = duplex(64);
-        let err = relay(relay_in, relay_out, relay_side).await.unwrap_err();
-        assert!(err.to_string().contains("turned off"), "{err}");
-        player.await.unwrap();
-    }
-
     fn test_tools() -> RadioTools {
         let (tx, _rx) = crossbeam_channel::bounded(8);
         RadioTools::new(
@@ -433,7 +390,7 @@ mod tests {
             .write_all(format!("{HELLO_SHOW}\n").as_bytes())
             .await
             .unwrap();
-        handle(server, test_tools(), on(), show).await;
+        handle(server, test_tools(), show).await;
         assert_eq!(shown.load(Ordering::SeqCst), 1);
     }
 
@@ -449,7 +406,7 @@ mod tests {
             .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
             .await
             .unwrap();
-        handle(server, test_tools(), on(), show).await;
+        handle(server, test_tools(), show).await;
         assert_eq!(shown.load(Ordering::SeqCst), 0);
         let mut rest = Vec::new();
         client.read_to_end(&mut rest).await.unwrap();
@@ -460,7 +417,7 @@ mod tests {
     async fn an_mcp_hello_starts_a_session() {
         let show: ShowWindow = Arc::new(|| {});
         let (client, server) = duplex(64 * 1024);
-        let session = tokio::spawn(handle(server, test_tools(), on(), show));
+        let session = tokio::spawn(handle(server, test_tools(), show));
         let (read, mut write) = tokio::io::split(client);
         let mut read = BufReader::new(read);
         write
