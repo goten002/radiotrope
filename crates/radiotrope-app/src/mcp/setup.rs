@@ -4,6 +4,8 @@
 //!
 //! Most agents have an "add MCP server" command; the rest (Cursor, Claude
 //! Desktop) read a JSON settings file, so they get the JSON to paste.
+//! Claude Desktop's file only takes programs on this computer, so it has no
+//! network line.
 
 use serde_json::json;
 
@@ -14,18 +16,21 @@ pub enum AgentApp {
     Codex,
     Gemini,
     VsCode,
-    /// Cursor, Claude Desktop and others with an `mcpServers` JSON file
-    Json,
+    /// `~/.cursor/mcp.json`
+    Cursor,
+    /// `claude_desktop_config.json`: programs on this computer only
+    ClaudeDesktop,
 }
 
 impl AgentApp {
     /// In the order the dialog lists them
-    pub const ALL: [AgentApp; 5] = [
+    pub const ALL: [AgentApp; 6] = [
         AgentApp::ClaudeCode,
+        AgentApp::ClaudeDesktop,
         AgentApp::Codex,
         AgentApp::Gemini,
         AgentApp::VsCode,
-        AgentApp::Json,
+        AgentApp::Cursor,
     ];
 
     /// Saved in the settings
@@ -35,7 +40,8 @@ impl AgentApp {
             AgentApp::Codex => "codex",
             AgentApp::Gemini => "gemini",
             AgentApp::VsCode => "vscode",
-            AgentApp::Json => "json",
+            AgentApp::Cursor => "cursor",
+            AgentApp::ClaudeDesktop => "claude-desktop",
         }
     }
 
@@ -45,12 +51,17 @@ impl AgentApp {
             AgentApp::Codex => "Codex CLI",
             AgentApp::Gemini => "Gemini CLI",
             AgentApp::VsCode => "VS Code",
-            AgentApp::Json => "Cursor, Claude Desktop (JSON)",
+            AgentApp::Cursor => "Cursor",
+            AgentApp::ClaudeDesktop => "Claude Desktop",
         }
     }
 
     /// Claude Code for an unknown or missing id
     pub fn from_id(id: Option<&str>) -> AgentApp {
+        // Cursor and Claude Desktop shared one "json" entry at first
+        if id == Some("json") {
+            return AgentApp::Cursor;
+        }
         Self::ALL
             .into_iter()
             .find(|app| Some(app.id()) == id)
@@ -60,9 +71,10 @@ impl AgentApp {
     /// Help shown next to the line for this computer, if any
     pub fn local_note(self) -> &'static str {
         match self {
-            AgentApp::Json => {
-                "Paste into the agent's settings: claude_desktop_config.json for Claude \
-                 Desktop, ~/.cursor/mcp.json for Cursor."
+            AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
+            AgentApp::ClaudeDesktop => {
+                "Add to claude_desktop_config.json (Settings > Developer > Edit Config), \
+                 then restart Claude Desktop."
             }
             _ => "",
         }
@@ -75,10 +87,7 @@ impl AgentApp {
                 "Codex reads the token from the RADIOTROPE_TOKEN environment variable: \
                  set it to the token above."
             }
-            AgentApp::Json => {
-                "For Cursor. Claude Desktop only takes agents on this computer (the line \
-                 above)."
-            }
+            AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
             _ => "",
         }
     }
@@ -114,9 +123,17 @@ pub fn local_line(app: AgentApp, exe: &str) -> String {
 }
 
 /// The line that adds Radiotrope over the network; `token` may be empty
-/// until one is made
-pub fn network_line(app: AgentApp, url: &str, token: &str) -> String {
+/// until one is made. `None` for an agent that can't use the network.
+pub fn network_line(app: AgentApp, url: &str, token: &str) -> Option<String> {
     network_line_for(app, url, token, SHELL)
+}
+
+/// Shown in place of the network line when there is none
+pub fn no_network_line(app: AgentApp) -> &'static str {
+    match app {
+        AgentApp::ClaudeDesktop => "Claude Desktop only takes agents on this computer",
+        _ => "Ready once there is a token",
+    }
 }
 
 fn local_line_for(app: AgentApp, exe: &str, shell: Shell) -> String {
@@ -130,17 +147,17 @@ fn local_line_for(app: AgentApp, exe: &str, shell: Shell) -> String {
             json!({ "name": "radiotrope", "command": exe, "args": ["--mcp"] }),
             shell,
         ),
-        AgentApp::Json => json!({
+        AgentApp::Cursor | AgentApp::ClaudeDesktop => json!({
             "mcpServers": { "radiotrope": { "command": exe, "args": ["--mcp"] } }
         })
         .to_string(),
     }
 }
 
-fn network_line_for(app: AgentApp, url: &str, token: &str, shell: Shell) -> String {
+fn network_line_for(app: AgentApp, url: &str, token: &str, shell: Shell) -> Option<String> {
     let token = if token.is_empty() { "<token>" } else { token };
     let bearer = format!("Bearer {token}");
-    match app {
+    Some(match app {
         AgentApp::ClaudeCode => format!(
             "claude mcp add --transport http radiotrope {url} --header \"Authorization: {bearer}\""
         ),
@@ -160,13 +177,16 @@ fn network_line_for(app: AgentApp, url: &str, token: &str, shell: Shell) -> Stri
             }),
             shell,
         ),
-        AgentApp::Json => json!({
+        AgentApp::Cursor => json!({
             "mcpServers": {
                 "radiotrope": { "url": url, "headers": { "Authorization": bearer } }
             }
         })
         .to_string(),
-    }
+        // Its settings file takes programs only; remote servers are added
+        // as connectors, which connect from Anthropic's cloud
+        AgentApp::ClaudeDesktop => return None,
+    })
 }
 
 /// `code --add-mcp` with the server as one JSON argument
@@ -201,9 +221,12 @@ mod tests {
             let local = local_line_for(app, "/usr/bin/radiotrope", Shell::Unix);
             assert!(local.contains("/usr/bin/radiotrope"), "{local}");
             assert!(local.contains("--mcp"), "{local}");
-            let network = network_line_for(app, URL, "abc", Shell::Unix);
-            assert!(network.contains(URL), "{network}");
+            match network_line_for(app, URL, "abc", Shell::Unix) {
+                Some(network) => assert!(network.contains(URL), "{network}"),
+                None => assert_eq!(app, AgentApp::ClaudeDesktop),
+            }
         }
+        assert_eq!(AgentApp::from_id(Some("json")), AgentApp::Cursor);
         assert_eq!(AgentApp::from_id(Some("nope")), AgentApp::ClaudeCode);
         assert_eq!(AgentApp::from_id(None), AgentApp::ClaudeCode);
     }
@@ -223,7 +246,7 @@ mod tests {
             r#"claude mcp add radiotrope -- "C:\Program Files\Radiotrope\radiotrope.exe" --mcp"#
         );
         assert_eq!(
-            network_line_for(AgentApp::ClaudeCode, URL, "", Shell::Unix),
+            network_line_for(AgentApp::ClaudeCode, URL, "", Shell::Unix).unwrap(),
             format!(
                 "claude mcp add --transport http radiotrope {URL} --header \"Authorization: Bearer <token>\""
             )
@@ -233,12 +256,17 @@ mod tests {
     #[test]
     fn the_json_lines_are_valid_json() {
         let exe = r"C:\Program Files\Radiotrope\radiotrope.exe";
-        let local: serde_json::Value =
-            serde_json::from_str(&local_line_for(AgentApp::Json, exe, Shell::Windows)).unwrap();
+        let local: serde_json::Value = serde_json::from_str(&local_line_for(
+            AgentApp::ClaudeDesktop,
+            exe,
+            Shell::Windows,
+        ))
+        .unwrap();
         assert_eq!(local["mcpServers"]["radiotrope"]["command"], exe);
-        let network: serde_json::Value =
-            serde_json::from_str(&network_line_for(AgentApp::Json, URL, "abc", Shell::Unix))
-                .unwrap();
+        let network: serde_json::Value = serde_json::from_str(
+            &network_line_for(AgentApp::Cursor, URL, "abc", Shell::Unix).unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             network["mcpServers"]["radiotrope"]["headers"]["Authorization"],
             "Bearer abc"

@@ -2343,11 +2343,11 @@ fn show_agent_lines(ui: &App) {
         .unwrap_or(AgentApp::ClaudeCode);
     let url = ui.get_agents_url();
     ui.set_agents_local_command(setup::local_line(app, &setup::this_program()).into());
-    ui.set_agents_command(if url.is_empty() {
-        "".into()
-    } else {
-        setup::network_line(app, &url, &ui.get_agents_token()).into()
-    });
+    let network = (!url.is_empty())
+        .then(|| setup::network_line(app, &url, &ui.get_agents_token()))
+        .flatten();
+    ui.set_agents_command(network.unwrap_or_default().into());
+    ui.set_agents_network_placeholder(setup::no_network_line(app).into());
     ui.set_agents_local_note(app.local_note().into());
     ui.set_agents_network_note(app.network_note().into());
 }
