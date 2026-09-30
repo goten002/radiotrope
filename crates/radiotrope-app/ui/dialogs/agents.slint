@@ -103,6 +103,8 @@ export component AgentsDialog inherits Rectangle {
     in property <string> status;
     in property <bool> status-error;
     in property <string> command;
+    // The `claude mcp add` line for Claude Code on this computer
+    in property <string> local-command;
 
     // Fields being edited; reset from the saved values when the dialog opens
     in-out property <string> edit-address;
@@ -142,11 +144,23 @@ export component AgentsDialog inherits Rectangle {
 
         // Agents on this computer need no setting: whoever runs them can
         // use the player anyway
-        Text {
-            text: "Agents on this computer connect with radiotrope --mcp.";
-            color: Theme.text-secondary;
-            font-size: Theme.font-md;
-            wrap: word-wrap;
+        VerticalLayout {
+            spacing: 8px;
+
+            Text {
+                text: "Agents on this computer connect with radiotrope --mcp.";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+                RowLabel { text: "Claude Code"; }
+                CopyLine {
+                    text: root.local-command;
+                    enabled: root.available;
+                }
+            }
         }
 
         Rectangle {

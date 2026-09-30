@@ -101,6 +101,27 @@ impl Agents {
     }
 }
 
+/// The `claude mcp add` line for Claude Code on this computer: it runs
+/// this very program with `--mcp`
+pub fn local_command() -> String {
+    // An AppImage runs from a temporary mount; the file itself stays put
+    let exe = std::env::var_os("APPIMAGE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "radiotrope".into());
+    local_command_for(&exe)
+}
+
+fn local_command_for(exe: &str) -> String {
+    let exe = if exe.contains(char::is_whitespace) {
+        format!("\"{exe}\"")
+    } else {
+        exe.to_string()
+    };
+    format!("claude mcp add radiotrope -- {exe} --mcp")
+}
+
 fn claude_command(url: &str, token: &str) -> String {
     let token = if token.is_empty() { "<token>" } else { token };
     format!("claude mcp add --transport http radiotrope {url} --header \"Authorization: Bearer {token}\"")
@@ -121,6 +142,18 @@ mod tests {
             )),
         );
         Agents::new(tools)
+    }
+
+    #[test]
+    fn the_local_command_runs_this_program() {
+        assert_eq!(
+            local_command_for("/usr/bin/radiotrope"),
+            "claude mcp add radiotrope -- /usr/bin/radiotrope --mcp"
+        );
+        assert_eq!(
+            local_command_for(r"C:\Program Files\Radiotrope\radiotrope.exe"),
+            r#"claude mcp add radiotrope -- "C:\Program Files\Radiotrope\radiotrope.exe" --mcp"#
+        );
     }
 
     #[test]

@@ -6,6 +6,7 @@
 pub mod agents;
 pub mod local;
 pub mod network;
+pub mod presence;
 pub mod server;
 pub mod tools;
 

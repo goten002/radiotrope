@@ -51,6 +51,9 @@ pub mod ui {
     /// Search results page size
     pub const SEARCH_PAGE_SIZE: usize = 100;
 
+    /// How often the menu bar's agents chip checks who uses the player
+    pub const AGENTS_REFRESH: Duration = Duration::from_secs(1);
+
     /// How long "Saved ..." and recording errors stay on screen
     pub const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
 
@@ -70,4 +73,8 @@ pub mod mcp {
     /// File in the config folder holding the network token, readable by the
     /// user only
     pub const TOKEN_FILE: &str = "mcp-token";
+
+    /// A network agent has no lasting connection: it counts as connected
+    /// (the menu bar's agents chip) until this long after its last request
+    pub const AGENT_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 }
