@@ -113,6 +113,13 @@ export component App inherits Window {
     in-out property <bool> agents-status-error <=> agents-dialog.status-error;
     in-out property <string> agents-command <=> agents-dialog.command;
     in-out property <string> agents-local-command <=> agents-dialog.local-command;
+    in-out property <string> agents-local-note <=> agents-dialog.local-note;
+    in-out property <string> agents-network-note <=> agents-dialog.network-note;
+    in-out property <[string]> agents-apps <=> agents-dialog.apps;
+    in-out property <int> agents-app <=> agents-dialog.app;
+    // Where network agents connect, for the setup lines (Rust side)
+    in-out property <string> agents-url;
+    callback agents-app-changed(int);
     // Agents using the player now, for the chip in the menu bar
     in property <int> agent-count;
     in property <string> agent-list;
@@ -481,6 +488,7 @@ export component App inherits Window {
         network-toggled(on) => { root.agents-network-toggled(on); }
         apply-address(text) => { root.agents-apply-address(text); }
         regenerate-token() => { root.agents-regenerate-token(); }
+        app-changed(index) => { root.agents-app-changed(index); }
     }
 
     about-dialog := AboutDialog {

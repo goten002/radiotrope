@@ -2221,10 +2221,34 @@ fn setup_agents(
     agents: Option<Arc<mcp::agents::Agents>>,
     settings: &radiotrope_app::data::settings::Settings,
 ) {
+    use mcp::setup::AgentApp;
     ui.set_agents_available(agents.is_some());
-    ui.set_agents_local_command(mcp::agents::local_command().into());
     ui.set_agents_network(settings.mcp_network);
     ui.set_agents_address(settings.mcp_address.as_str().into());
+
+    // Setup lines for the agent picked in the dialog
+    let labels: Vec<slint::SharedString> =
+        AgentApp::ALL.iter().map(|app| app.label().into()).collect();
+    ui.set_agents_apps(std::rc::Rc::new(slint::VecModel::from(labels)).into());
+    let picked = AgentApp::from_id(settings.mcp_client.as_deref());
+    let index = AgentApp::ALL
+        .iter()
+        .position(|app| *app == picked)
+        .unwrap_or(0);
+    ui.set_agents_app(index as i32);
+    ui.on_agents_app_changed({
+        let ui_weak = ui.as_weak();
+        move |index| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(app) = AgentApp::ALL.get(index as usize) else {
+                return;
+            };
+            save_agent_settings(|s| s.mcp_client = Some(app.id().to_string()));
+            show_agent_lines(&ui);
+        }
+    });
+    show_agent_lines(ui);
+
     let Some(agents) = agents else { return };
     show_agents_network(ui, &agents.apply_network(settings));
 
@@ -2306,7 +2330,34 @@ fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
     ui.set_agents_status(status.text.as_str().into());
     ui.set_agents_status_error(status.is_error);
     ui.set_agents_token(status.token.as_str().into());
-    ui.set_agents_command(status.command.as_str().into());
+    ui.set_agents_url(status.url.as_str().into());
+    show_agent_lines(ui);
+}
+
+/// The lines that add Radiotrope to the agent picked in the dialog
+fn show_agent_lines(ui: &App) {
+    use mcp::setup::{self, AgentApp};
+    let app = AgentApp::ALL
+        .get(ui.get_agents_app().max(0) as usize)
+        .copied()
+        .unwrap_or(AgentApp::ClaudeCode);
+    let url = ui.get_agents_url();
+    ui.set_agents_local_command(setup::local_line(app, &setup::this_program()).into());
+    ui.set_agents_command(if url.is_empty() {
+        "".into()
+    } else {
+        setup::network_line(app, &url, &ui.get_agents_token()).into()
+    });
+    ui.set_agents_local_note(app.local_note().into());
+    ui.set_agents_network_note(app.network_note().into());
+}
+
+fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
+    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    change(&mut settings);
+    if let Err(e) = settings.save() {
+        eprintln!("Failed to save agent settings: {e}");
+    }
 }
 
 /// Wire the Tools menu recording items and the Recording Settings

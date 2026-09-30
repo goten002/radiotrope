@@ -139,6 +139,11 @@ pub struct Settings {
     /// Address and port the network server listens on
     #[serde(default = "default_mcp_address")]
     pub mcp_address: String,
+
+    /// The agent the Agents dialog shows setup lines for, e.g. "codex";
+    /// `None` is Claude Code
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_client: Option<String>,
 }
 
 fn default_mcp_address() -> String {
@@ -207,6 +212,7 @@ impl Default for Settings {
             recording_bitrate: None,
             mcp_network: false,
             mcp_address: default_mcp_address(),
+            mcp_client: None,
         }
     }
 }

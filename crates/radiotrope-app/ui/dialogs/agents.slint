@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle, InfoTip } from "../components.slint";
+import { DialogShell, Toggle, InfoTip, Icon } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or the command for Claude Code
@@ -78,6 +78,123 @@ component RowLabel inherits Text {
     vertical-alignment: center;
 }
 
+// One agent in the picker's list, with the menus' tick when picked
+component AgentItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 28px;
+    border-radius: 4px;
+    background: touch.has-hover ? Theme.menu-hover : transparent;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 10px;
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            font-size: Theme.font-md;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: 12px;
+            if root.selected: Icon {
+                width: 12px;
+                height: 12px;
+                y: (parent.height - self.height) / 2;
+                source: @image-url("../icons/tick.svg");
+                colorize: Theme.accent;
+            }
+        }
+    }
+}
+
+// Which agent the setup lines are for: a dropdown like the EQ presets
+component AgentPicker inherits Rectangle {
+    in property <[string]> apps;
+    in-out property <int> selected;
+    in property <bool> enabled: true;
+    callback changed(int);
+
+    height: 32px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    background: root.enabled && touch.has-hover ? Theme.menu-hover : Theme.elevated;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { popup.show(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+
+        Text {
+            text: root.apps[root.selected];
+            color: root.enabled ? Theme.text-primary : Theme.disabled-text;
+            font-size: Theme.font-md;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 10px;
+                height: 10px;
+                source: @image-url("../icons/angles-down.svg");
+                colorize: Theme.text-secondary;
+            }
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        width: root.width;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-color: Theme.shadow-soft;
+
+            VerticalLayout {
+                padding: 4px;
+                for label[index] in root.apps: AgentItem {
+                    label: label;
+                    selected: index == root.selected;
+                    // Picks before closing: the list's rows (and their
+                    // index) go away with the popup
+                    clicked => {
+                        if root.selected != index {
+                            root.selected = index;
+                            root.changed(index);
+                        }
+                        popup.close();
+                    }
+                }
+            }
+        }
+    }
+}
+
 // Line of help under a toggle, lined up with its label (36px switch + 8px gap)
 component ToggleNote inherits HorizontalLayout {
     in property <string> text;
@@ -103,8 +220,14 @@ export component AgentsDialog inherits Rectangle {
     in property <string> status;
     in property <bool> status-error;
     in property <string> command;
-    // The `claude mcp add` line for Claude Code on this computer
+    // Lines that add Radiotrope to the picked agent, on this computer and
+    // over the network, with a note each where the line needs one
     in property <string> local-command;
+    in property <string> local-note;
+    in property <string> network-note;
+    in property <[string]> apps;
+    in-out property <int> app;
+    callback app-changed(int);
 
     // Fields being edited; reset from the saved values when the dialog opens
     in-out property <string> edit-address;
@@ -144,6 +267,16 @@ export component AgentsDialog inherits Rectangle {
 
         // Agents on this computer need no setting: whoever runs them can
         // use the player anyway
+        HorizontalLayout {
+            spacing: 8px;
+            RowLabel { text: "Agent"; }
+            AgentPicker {
+                apps: root.apps;
+                selected <=> root.app;
+                changed(index) => { root.app-changed(index); }
+            }
+        }
+
         VerticalLayout {
             spacing: 8px;
 
@@ -155,10 +288,14 @@ export component AgentsDialog inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 8px;
-                RowLabel { text: "Claude Code"; }
+                RowLabel { text: "Command"; }
                 CopyLine {
                     text: root.local-command;
                     enabled: root.available;
+                }
+                if root.local-note != "": VerticalLayout {
+                    alignment: center;
+                    InfoTip { text: root.local-note; }
                 }
             }
         }
@@ -233,11 +370,15 @@ export component AgentsDialog inherits Rectangle {
             }
             HorizontalLayout {
                 spacing: 8px;
-                RowLabel { text: "Claude Code"; }
+                RowLabel { text: "Command"; }
                 CopyLine {
                     text: root.token != "" ? root.command : "";
-                    placeholder: "claude mcp add ... (once there is a token)";
+                    placeholder: "Ready once there is a token";
                     enabled: root.network-fields;
+                }
+                if root.network-note != "": VerticalLayout {
+                    alignment: center;
+                    InfoTip { text: root.network-note; }
                 }
             }
         }
