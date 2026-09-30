@@ -5063,6 +5063,7 @@ dependencies = [
  "chardetng",
  "crossbeam-channel",
  "encoding_rs",
+ "fdk-aac",
  "m3u8-rs",
  "mp3lame-encoder",
  "mpeg2ts",

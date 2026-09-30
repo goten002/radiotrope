@@ -32,3 +32,4 @@ sys-locale = { workspace = true }
 [dev-dependencies]
 mpeg2ts = { workspace = true }
 proptest = { workspace = true }
+fdk-aac = { workspace = true }

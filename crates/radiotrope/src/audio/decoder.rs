@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use rodio::Source;
+use symphonia::core::codecs::audio::well_known::CODEC_ID_AAC;
 use symphonia::core::codecs::audio::{
     AudioCodecId, AudioCodecParameters, AudioDecoder, AudioDecoderOptions,
 };
@@ -18,7 +19,7 @@ use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader};
-use symphonia::core::io::{MediaSourceStream, ReadOnlySource};
+use symphonia::core::io::{BitReaderLtr, MediaSourceStream, ReadBitsLtr, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia_adapter_fdk_aac::AacDecoder as LibAacDecoder;
 use symphonia_adapter_libopus::OpusDecoder as LibOpusDecoder;
@@ -58,6 +59,46 @@ pub fn codec_type_to_name(codec: AudioCodecId) -> String {
         CODEC_ID_ALAC => "ALAC".to_string(),
         _ => "Audio".to_string(),
     }
+}
+
+/// Audio object types that name SBR outright: HE-AAC and HE-AAC v2
+const AOT_SBR: u32 = 5;
+const AOT_PS: u32 = 29;
+
+/// Sampling rates by `samplingFrequencyIndex` (ISO/IEC 14496-3, 1.6.3.3)
+const AAC_SAMPLE_RATES: [u32; 13] = [
+    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
+];
+
+/// Whether an AAC stream is AAC+ (HE-AAC v1 or v2), given the rate its
+/// first frame decoded at.
+///
+/// AAC+ codes the audio at half the rate, and SBR rebuilds the top half,
+/// so FDK puts out twice the rate the stream declares. ADTS (ICY, HLS TS)
+/// declares that core rate in its header; MP4 gives it in the
+/// AudioSpecificConfig, or names SBR there outright. The rare single-rate
+/// SBR, which keeps the rate, reads as plain AAC.
+fn is_aac_plus(params: &AudioCodecParameters, decoded_rate: u32) -> bool {
+    let core_rate = match params.extra_data.as_deref().and_then(audio_specific_config) {
+        Some((AOT_SBR | AOT_PS, _)) => return true,
+        Some((_, rate)) => Some(rate),
+        None => params.sample_rate,
+    };
+    core_rate.is_some_and(|core| decoded_rate > core)
+}
+
+/// The object type and sampling rate an AudioSpecificConfig starts with
+fn audio_specific_config(config: &[u8]) -> Option<(u32, u32)> {
+    let mut bits = BitReaderLtr::new(config);
+    let object_type = match bits.read_bits_leq32(5).ok()? {
+        31 => 32 + bits.read_bits_leq32(6).ok()?,
+        object_type => object_type,
+    };
+    let rate = match bits.read_bits_leq32(4).ok()? {
+        15 => bits.read_bits_leq32(24).ok()?,
+        index => *AAC_SAMPLE_RATES.get(index as usize)?,
+    };
+    Some((object_type, rate))
 }
 
 /// Create a codec registry with Opus support via libopus
@@ -218,7 +259,11 @@ impl SymphoniaSource {
         let (track_id, codec_params, decoder) = open_audio_track(format.as_ref())?;
 
         let codec_name = codec_type_to_name(codec_params.codec);
-        let channels = codec_params.channels.map(|c| c.count() as u16).unwrap_or(2);
+        let channels = codec_params
+            .channels
+            .as_ref()
+            .map(|c| c.count() as u16)
+            .unwrap_or(2);
         let sample_rate = codec_params.sample_rate.unwrap_or(44100);
         let bits_per_sample = codec_params.bits_per_sample;
         if channels == 0 || sample_rate == 0 {
@@ -248,7 +293,15 @@ impl SymphoniaSource {
         // sample rate (e.g., 24kHz→48kHz). Without this, rodio would configure
         // its resampler using the core rate from the ADTS header before any
         // frames are decoded, causing low-pitch playback.
-        source.decode_next_packet();
+        let decoded = source.decode_next_packet();
+
+        // The same doubled rate tells AAC+ from plain AAC
+        if decoded
+            && codec_params.codec == CODEC_ID_AAC
+            && is_aac_plus(&codec_params, source.sample_rate)
+        {
+            source.codec_name = "AAC+".to_string();
+        }
 
         Ok(source)
     }
@@ -1378,6 +1431,233 @@ mod tests {
         let wav = make_wav(0, 1, &[0i16; 1000]);
         let result = SymphoniaSource::new(Cursor::new(wav));
         assert!(result.is_err());
+    }
+
+    // --- AAC and AAC+ ---
+
+    mod aac_plus {
+        use super::*;
+        use fdk_aac::enc::{
+            AudioObjectType, BitRate, ChannelMode, Encoder, EncoderParams, Transport,
+        };
+        use symphonia::core::codecs::audio::AudioCodecParameters;
+
+        /// Stereo test audio: tones across the band, different left and right
+        fn music(rate: u32, secs: f32) -> Vec<i16> {
+            (0..(rate as f32 * secs) as usize)
+                .flat_map(|i| {
+                    let t = i as f32 / rate as f32;
+                    let tone = |f: f32| (2.0 * std::f32::consts::PI * f * t).sin();
+                    let band = (tone(220.0) + tone(1760.0) + tone(5000.0) + tone(9000.0)) / 6.0;
+                    [band + tone(330.0) / 5.0, band + tone(660.0) / 5.0]
+                })
+                .map(|s| (s * 20000.0) as i16)
+                .collect()
+        }
+
+        /// Test audio encoded by FDK as ADTS, the way ICY stations and HLS
+        /// TS segments send AAC. Like them, it signals SBR and PS only
+        /// inside the frames: every ADTS header says AAC-LC.
+        fn adts(object_type: AudioObjectType, bit_rate: u32, rate: u32, stereo: bool) -> Vec<u8> {
+            let encoder = Encoder::new(EncoderParams {
+                bit_rate: BitRate::Cbr(bit_rate),
+                sample_rate: rate,
+                transport: Transport::Adts,
+                channels: if stereo {
+                    ChannelMode::Stereo
+                } else {
+                    ChannelMode::Mono
+                },
+                audio_object_type: object_type,
+            })
+            .unwrap();
+            let mut pcm = music(rate, 1.5);
+            if !stereo {
+                pcm = pcm.into_iter().step_by(2).collect();
+            }
+            let mut stream = Vec::new();
+            let mut out = [0u8; 8192];
+            let mut at = 0;
+            while at < pcm.len() {
+                let end = (at + 4096).min(pcm.len());
+                let encoded = encoder.encode(&pcm[at..end], &mut out).unwrap();
+                stream.extend_from_slice(&out[..encoded.output_size]);
+                at += encoded.input_consumed.max(1);
+            }
+            stream
+        }
+
+        /// `stream` from its `n`-th ADTS frame on, as when tuning in to a
+        /// station that is already playing
+        fn from_frame(stream: &[u8], n: usize) -> Vec<u8> {
+            let mut at = 0;
+            for _ in 0..n {
+                let header = &stream[at..at + 7];
+                at += ((header[3] as usize & 0x03) << 11)
+                    | ((header[4] as usize) << 3)
+                    | (header[5] as usize >> 5);
+            }
+            stream[at..].to_vec()
+        }
+
+        fn open(stream: Vec<u8>) -> CodecInfo {
+            SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac"))
+                .unwrap()
+                .codec_info()
+        }
+
+        #[test]
+        fn plain_aac_is_called_aac() {
+            let info = open(adts(
+                AudioObjectType::Mpeg4LowComplexity,
+                128_000,
+                44_100,
+                true,
+            ));
+            assert_eq!(info.codec_name, "AAC");
+            assert_eq!((info.sample_rate, info.channels), (44_100, 2));
+        }
+
+        #[test]
+        fn plain_aac_at_a_low_rate_is_still_aac() {
+            // A low rate alone doesn't make AAC+: the decoder must double it
+            let info = open(adts(
+                AudioObjectType::Mpeg4LowComplexity,
+                32_000,
+                22_050,
+                false,
+            ));
+            assert_eq!(info.codec_name, "AAC");
+            assert_eq!((info.sample_rate, info.channels), (22_050, 1));
+        }
+
+        #[test]
+        fn he_aac_is_called_aac_plus() {
+            let info = open(adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true));
+            assert_eq!(info.codec_name, "AAC+");
+            assert_eq!((info.sample_rate, info.channels), (44_100, 2));
+        }
+
+        #[test]
+        fn he_aac_at_48_khz_is_called_aac_plus() {
+            let info = open(adts(AudioObjectType::Mpeg4HeAac, 48_000, 48_000, true));
+            assert_eq!(info.codec_name, "AAC+");
+            assert_eq!(info.sample_rate, 48_000);
+        }
+
+        #[test]
+        fn mono_he_aac_is_called_aac_plus() {
+            let info = open(adts(AudioObjectType::Mpeg4HeAac, 32_000, 44_100, false));
+            assert_eq!(info.codec_name, "AAC+");
+        }
+
+        #[test]
+        fn he_aac_v2_is_called_aac_plus() {
+            let info = open(adts(AudioObjectType::Mpeg4HeAacV2, 32_000, 44_100, true));
+            assert_eq!(info.codec_name, "AAC+");
+            assert_eq!((info.sample_rate, info.channels), (44_100, 2));
+        }
+
+        #[test]
+        fn tuning_in_mid_stream_still_finds_aac_plus() {
+            let v1 = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
+            let v2 = adts(AudioObjectType::Mpeg4HeAacV2, 32_000, 44_100, true);
+            for n in [1, 7, 20] {
+                assert_eq!(
+                    open(from_frame(&v1, n)).codec_name,
+                    "AAC+",
+                    "HE-AAC from frame {n}"
+                );
+                assert_eq!(
+                    open(from_frame(&v2, n)).codec_name,
+                    "AAC+",
+                    "HE-AAC v2 from frame {n}"
+                );
+            }
+        }
+
+        #[test]
+        fn tuning_in_mid_frame_still_tells_them_apart() {
+            // A station's first bytes can land anywhere in a frame
+            let plain = from_frame(
+                &adts(AudioObjectType::Mpeg4LowComplexity, 128_000, 44_100, true),
+                7,
+            );
+            let plus = from_frame(&adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true), 7);
+            for cut in [1, 100, 250] {
+                assert_eq!(
+                    open(plain[cut..].to_vec()).codec_name,
+                    "AAC",
+                    "AAC cut at {cut}"
+                );
+                assert_eq!(
+                    open(plus[cut..].to_vec()).codec_name,
+                    "AAC+",
+                    "AAC+ cut at {cut}"
+                );
+            }
+        }
+
+        /// An MP4 track's AudioSpecificConfig: object type, rate index and
+        /// stereo, as MP4 and fMP4 (HLS) carry it
+        fn config(object_type: u16, rate_index: u16) -> Box<[u8]> {
+            Box::new(((object_type << 11) | (rate_index << 7) | (2 << 3)).to_be_bytes())
+        }
+
+        fn mp4_track(
+            sample_rate: Option<u32>,
+            extra_data: Option<Box<[u8]>>,
+        ) -> AudioCodecParameters {
+            let mut params = AudioCodecParameters::new();
+            params.for_codec(CODEC_ID_AAC);
+            if let Some(rate) = sample_rate {
+                params.with_sample_rate(rate);
+            }
+            if let Some(config) = extra_data {
+                params.with_extra_data(config);
+            }
+            params
+        }
+
+        #[test]
+        fn an_mp4_config_that_names_sbr_is_aac_plus() {
+            // Explicit signalling: HE-AAC (5) or HE-AAC v2 (29), whatever the
+            // rates say. The sample entry often gives the output rate.
+            for object_type in [5, 29] {
+                let track = mp4_track(Some(44_100), Some(config(object_type, 7)));
+                assert!(is_aac_plus(&track, 44_100), "object type {object_type}");
+            }
+        }
+
+        #[test]
+        fn an_mp4_config_gives_the_core_rate() {
+            // Implicit signalling: the config has AAC-LC at the core rate,
+            // while the sample entry may already say 44100
+            let he_aac = mp4_track(Some(44_100), Some(config(2, 7)));
+            assert!(is_aac_plus(&he_aac, 44_100));
+            let plain = mp4_track(Some(44_100), Some(config(2, 4)));
+            assert!(!is_aac_plus(&plain, 44_100));
+        }
+
+        #[test]
+        fn a_config_with_escape_codes_is_read() {
+            // Object type 42 (USAC) after the escape 31, then an explicit
+            // 24-bit rate of 24000 Hz after the rate index 15
+            let bits: u64 = (31 << 43) | (10 << 37) | (15 << 33) | (24_000 << 9);
+            let config = &bits.to_be_bytes()[2..];
+            assert_eq!(audio_specific_config(config), Some((42, 24_000)));
+            let track = mp4_track(Some(48_000), Some(Box::from(config)));
+            assert!(is_aac_plus(&track, 48_000));
+        }
+
+        #[test]
+        fn a_broken_config_falls_back_to_the_track_rate() {
+            let track = mp4_track(Some(22_050), Some(Box::new([0x12])));
+            assert!(is_aac_plus(&track, 44_100));
+            assert!(!is_aac_plus(&track, 22_050));
+            let unknown = mp4_track(None, None);
+            assert!(!is_aac_plus(&unknown, 44_100));
+        }
     }
 
     // --- Garbage from the demuxer ---
