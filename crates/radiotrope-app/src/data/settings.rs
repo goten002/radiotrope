@@ -23,7 +23,7 @@ pub struct Settings {
 
     // === Audio ===
     /// Volume level (0.0 - 1.0)
-    #[serde(default = "default_volume")]
+    #[serde(default = "default_volume", deserialize_with = "volume_or_default")]
     pub volume: f32,
 
     /// Muted state
@@ -138,6 +138,16 @@ fn default_version() -> u32 {
 
 fn default_volume() -> f32 {
     1.0
+}
+
+/// A volume saved as `null` (serde's spelling of NaN, which older builds
+/// could save) or out of range reads as the default or is clamped, instead
+/// of failing the whole file and resetting every setting
+fn volume_or_default<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<f32, D::Error> {
+    let volume: Option<f32> = Option::deserialize(d)?;
+    Ok(volume
+        .filter(|v| v.is_finite())
+        .map_or_else(default_volume, |v| v.clamp(0.0, 1.0)))
 }
 
 fn default_viz_mode() -> String {
@@ -341,6 +351,17 @@ mod tests {
         assert!(settings.show_tray_icon);
         assert!(settings.minimize_to_tray);
         assert_eq!(settings.theme, Theme::System);
+    }
+
+    #[test]
+    fn null_volume_reads_as_default_and_keeps_other_settings() {
+        let settings: Settings =
+            serde_json::from_str(r#"{"volume": null, "muted": true}"#).unwrap();
+        assert_eq!(settings.volume, 1.0);
+        assert!(settings.muted);
+
+        let settings: Settings = serde_json::from_str(r#"{"volume": 7.5}"#).unwrap();
+        assert_eq!(settings.volume, 1.0);
     }
 
     #[test]

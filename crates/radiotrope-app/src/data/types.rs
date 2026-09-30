@@ -4,7 +4,6 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 // =============================================================================
@@ -32,11 +31,17 @@ pub trait HasLogo {
 /// Using URL hash as ID provides:
 /// - Deterministic: same URL always produces same ID
 /// - Fast deduplication: check if ID exists without scanning
-/// - Stable: ID doesn't change across sessions
+/// - Stable: ID doesn't change across sessions or Rust versions (MCP clients
+///   and the logo cache keep these ids, so `DefaultHasher` won't do)
 pub fn url_to_id(url: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("{:016x}", hasher.finish())
+    format!("{:016x}", fnv1a(url.as_bytes()))
+}
+
+/// 64-bit FNV-1a, stable across Rust versions (unlike `DefaultHasher`)
+pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
+        (hash ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
 
 // =============================================================================
@@ -673,5 +678,12 @@ mod tests {
         let id2 = url_to_id(url);
         assert_eq!(id1, id2);
         assert_eq!(id1.len(), 16); // 16 hex characters
+    }
+
+    #[test]
+    fn url_to_id_is_fixed_across_builds() {
+        // Known FNV-1a values: ids saved by clients must never change
+        assert_eq!(url_to_id(""), "cbf29ce484222325");
+        assert_eq!(url_to_id("a"), "af63dc4c8601ec8c");
     }
 }

@@ -8,6 +8,7 @@
 
 use crate::config::providers::API_CACHE_MAX_AGE;
 use crate::data::cache::ensure_cache_dir;
+use crate::data::types::fnv1a;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -97,13 +98,6 @@ fn age_of(path: &Path) -> Option<Duration> {
             .duration_since(modified)
             .unwrap_or_default(),
     )
-}
-
-/// 64-bit FNV-1a, stable across Rust versions (unlike `DefaultHasher`)
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
-        (hash ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }
 
 #[cfg(test)]

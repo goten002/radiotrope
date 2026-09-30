@@ -41,23 +41,30 @@ impl Default for EqParams {
 }
 
 impl EqParams {
-    /// Set a single band gain (clamped to MIN/MAX).
+    /// Set a single band gain (clamped to MIN/MAX; NaN and infinities are ignored).
     pub fn set_band(&mut self, band: usize, gain_db: f32) {
-        if band < NUM_BANDS {
+        if band < NUM_BANDS && gain_db.is_finite() {
             self.gains_db[band] = gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
             self.preset_name = None;
             self.dirty = true;
         }
     }
 
-    /// Set the preamp gain (clamped to MIN/MAX).
+    /// Set the preamp gain (clamped to MIN/MAX; NaN and infinities are ignored).
     pub fn set_preamp(&mut self, db: f32) {
+        if !db.is_finite() {
+            return;
+        }
         self.preamp_db = db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
         self.dirty = true;
     }
 
-    /// Set all band gains at once, optionally naming a preset.
+    /// Set all band gains at once, optionally naming a preset. Ignored as a
+    /// whole if any gain is NaN or infinite.
     pub fn set_gains(&mut self, gains: [f32; NUM_BANDS], preset_name: Option<String>) {
+        if gains.iter().any(|g| !g.is_finite()) {
+            return;
+        }
         for (i, &g) in gains.iter().enumerate() {
             self.gains_db[i] = g.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
         }
@@ -764,6 +771,21 @@ mod tests {
     fn flat_preset_is_all_zeros() {
         let flat = find_preset("Flat").unwrap();
         assert!(flat.gains.iter().all(|&g| g == 0.0));
+    }
+
+    #[test]
+    fn non_finite_gains_are_ignored() {
+        let mut p = EqParams::default();
+        p.set_band(0, 3.0);
+        p.set_preamp(-2.0);
+        p.set_band(0, f32::NAN);
+        p.set_preamp(f32::INFINITY);
+        let mut gains = [1.0; NUM_BANDS];
+        gains[4] = f32::NAN;
+        p.set_gains(gains, None);
+        assert_eq!(p.gains_db[0], 3.0);
+        assert_eq!(p.gains_db[1], 0.0);
+        assert_eq!(p.preamp_db, -2.0);
     }
 
     #[test]

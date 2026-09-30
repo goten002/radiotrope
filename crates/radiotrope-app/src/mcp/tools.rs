@@ -24,11 +24,13 @@ const MCP_SEARCH_LIMIT: usize = 20;
 
 /// Extract a numeric value from a JSON argument, accepting both numbers and string
 /// representations. MCP clients frequently send integers as strings (e.g. `"45"`
-/// instead of `45`), so we must handle both forms.
+/// instead of `45`), so we must handle both forms. `"NaN"` and `"inf"` parse
+/// as floats, so non-finite numbers are rejected here.
 fn arg_as_f64(value: &Value) -> Option<f64> {
     value
         .as_f64()
         .or_else(|| value.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+        .filter(|v| v.is_finite())
 }
 
 /// Return all tool definitions for tools/list
@@ -428,5 +430,19 @@ fn handle_remove_favorite(args: &Value, favorites: &Arc<Mutex<FavoritesManager>>
             ToolResult::text(format!("Removed \"{}\" from favorites", removed.name()))
         }
         Err(e) => ToolResult::error(format!("{e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_as_strings_are_accepted_but_not_nan() {
+        assert_eq!(arg_as_f64(&json!(45)), Some(45.0));
+        assert_eq!(arg_as_f64(&json!(" 45 ")), Some(45.0));
+        assert_eq!(arg_as_f64(&json!("NaN")), None);
+        assert_eq!(arg_as_f64(&json!("inf")), None);
+        assert_eq!(arg_as_f64(&json!("loud")), None);
     }
 }
