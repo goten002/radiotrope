@@ -739,7 +739,7 @@ mod tests {
         for preset in PRESETS {
             for (i, &g) in preset.gains.iter().enumerate() {
                 assert!(
-                    g >= MIN_GAIN_DB && g <= MAX_GAIN_DB,
+                    (MIN_GAIN_DB..=MAX_GAIN_DB).contains(&g),
                     "preset '{}' band {} gain {} out of range",
                     preset.name,
                     i,

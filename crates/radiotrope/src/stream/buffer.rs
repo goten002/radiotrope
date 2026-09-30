@@ -1304,7 +1304,7 @@ mod tests {
 
             // Periodic stall
             if let Some((every_n, stall_dur)) = self.stall_every_n_reads {
-                if self.read_count % every_n == 0 {
+                if self.read_count.is_multiple_of(every_n) {
                     thread::sleep(stall_dur);
                 }
             }
@@ -2274,7 +2274,7 @@ mod tests {
             underrun_after(&mut reader, 1.0);
         }
         assert_eq!(reader.effective_watermark(), MAX_WATERMARK_BYTES);
-        assert!(MAX_WATERMARK_BYTES < MAX_BUFFER_SIZE - COMPACTION_THRESHOLD);
+        const { assert!(MAX_WATERMARK_BYTES < MAX_BUFFER_SIZE - COMPACTION_THRESHOLD) };
 
         stop.cancel();
         handle.join().unwrap();
