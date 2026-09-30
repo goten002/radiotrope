@@ -1,6 +1,8 @@
 //! Which agents are using the player right now, for the menu bar's agents chip
 //!
-//! A local agent (`radiotrope --mcp`) counts while its connection is open.
+//! A local agent (`radiotrope --mcp`) counts while its connection is open;
+//! sessions started by one app (Claude Desktop opens one for its chat and
+//! one for its agent mode) count as one agent.
 //! Network agents have no lasting connection (each request stands alone),
 //! so one counts while it keeps making requests: it drops off after
 //! [`AGENT_IDLE`](radiotrope_app::config::mcp::AGENT_IDLE) without one.
@@ -48,7 +50,8 @@ impl AgentInfo {
 #[derive(Default)]
 struct Inner {
     next_local: u64,
-    local: BTreeMap<u64, Option<String>>,
+    /// Name, and the app that started the relay (its process id)
+    local: BTreeMap<u64, (Option<String>, Option<u32>)>,
     network: HashMap<IpAddr, (Option<String>, Instant)>,
 }
 
@@ -79,12 +82,13 @@ impl Presence {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// A local agent connected
-    pub fn local_connected(&self) -> LocalGuard {
+    /// A local agent connected, from `app` (the relay's parent process)
+    /// where known
+    pub fn local_connected(&self, app: Option<u32>) -> LocalGuard {
         let mut inner = self.lock();
         let id = inner.next_local;
         inner.next_local += 1;
-        inner.local.insert(id, None);
+        inner.local.insert(id, (None, app));
         LocalGuard {
             presence: self.clone(),
             id,
@@ -109,7 +113,7 @@ impl Presence {
         }
         let mut inner = self.lock();
         let slot = match place {
-            Place::Local(id) => inner.local.get_mut(&id),
+            Place::Local(id) => inner.local.get_mut(&id).map(|(name, _)| name),
             Place::Network(ip) => inner.network.get_mut(&ip).map(|(name, _)| name),
         };
         if let Some(slot) = slot {
@@ -140,13 +144,41 @@ impl Presence {
             Place::Network(ip) => Some(ip),
             Place::Local(_) => None,
         });
-        inner
-            .local
-            .iter()
-            .map(|(id, name)| AgentInfo {
-                name: name.clone(),
-                place: Place::Local(*id),
-            })
+        // One entry per app, in the order they connected, with the names of
+        // all its sessions
+        let mut local: Vec<(Option<u32>, AgentInfo)> = Vec::new();
+        for (id, (name, app)) in &inner.local {
+            let same_app = app.and_then(|app| {
+                local
+                    .iter_mut()
+                    .find(|(other, _)| *other == Some(app))
+                    .map(|(_, agent)| agent)
+            });
+            match same_app {
+                Some(agent) => {
+                    if let Some(name) = name {
+                        match &mut agent.name {
+                            Some(names) if names.split(" + ").all(|n| n != name) => {
+                                names.push_str(" + ");
+                                names.push_str(name);
+                            }
+                            Some(_) => {}
+                            None => agent.name = Some(name.clone()),
+                        }
+                    }
+                }
+                None => local.push((
+                    *app,
+                    AgentInfo {
+                        name: name.clone(),
+                        place: Place::Local(*id),
+                    },
+                )),
+            }
+        }
+        local
+            .into_iter()
+            .map(|(_, agent)| agent)
             .chain(network)
             .collect()
     }
@@ -159,8 +191,8 @@ mod tests {
     #[test]
     fn local_agents_count_while_connected() {
         let presence = Presence::default();
-        let first = presence.local_connected();
-        let second = presence.local_connected();
+        let first = presence.local_connected(None);
+        let second = presence.local_connected(None);
         presence.set_name(first.place(), "claude-code");
         assert_eq!(
             presence
@@ -172,6 +204,42 @@ mod tests {
         );
         drop(first);
         drop(second);
+        assert!(presence.agents().is_empty());
+    }
+
+    #[test]
+    fn the_sessions_of_one_app_count_once() {
+        let presence = Presence::default();
+        let chat = presence.local_connected(Some(100));
+        let agent_mode = presence.local_connected(Some(100));
+        let other = presence.local_connected(Some(200));
+        presence.set_name(chat.place(), "claude-ai");
+        presence.set_name(agent_mode.place(), "local-agent-mode-radiotrope");
+        presence.set_name(other.place(), "claude-code");
+        let describe = |p: &Presence| {
+            p.agents()
+                .iter()
+                .map(AgentInfo::describe)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            describe(&presence),
+            [
+                "claude-ai + local-agent-mode-radiotrope, this computer",
+                "claude-code, this computer"
+            ]
+        );
+        // Still there while one of its sessions is
+        drop(chat);
+        assert_eq!(
+            describe(&presence),
+            [
+                "local-agent-mode-radiotrope, this computer",
+                "claude-code, this computer"
+            ]
+        );
+        drop(agent_mode);
+        drop(other);
         assert!(presence.agents().is_empty());
     }
 
@@ -192,7 +260,7 @@ mod tests {
     #[test]
     fn a_name_for_an_agent_that_left_is_ignored() {
         let presence = Presence::default();
-        let place = presence.local_connected().place();
+        let place = presence.local_connected(None).place();
         presence.set_name(place, "late");
         presence.set_name(Place::Network("10.0.0.1".parse().unwrap()), "late");
         assert!(presence.agents().is_empty());
