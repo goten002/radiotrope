@@ -40,11 +40,13 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 | `play_favorite` | Play a favorite station by ID |
 | `stop` | Stop playback |
 | `set_volume` | Set volume 0-100 |
-| `get_status` | Get playback state, track info, volume, and errors |
-| `search_stations` | Search for radio stations by name via radio-browser.info |
+| `get_status` | Playback state, station, song, volume, stream format, recording and the last error |
+| `search_stations` | Search for radio stations by name via radio-browser.info (with genres, codec and bitrate) |
 | `list_favorites` | List all saved favorite stations with IDs |
 | `add_favorite` | Add a station to favorites (with optional logo URL and country) |
-| `remove_favorite` | Remove a station from favorites by URL |
+| `remove_favorite` | Remove a station from favorites by ID or URL |
+
+The server speaks every MCP version from 2024-11-05 to 2026-07-28 (it is built on [rmcp](https://github.com/modelcontextprotocol/rust-sdk), the official Rust SDK). Tools that return data return structured JSON with an output schema, and every tool carries a title and behaviour hints (read-only, destructive, open-world) that clients use when asking for confirmation.
 
 Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*, *"search for jazz stations"*, *"set volume to 50"*, or *"what's currently playing?"*.
 

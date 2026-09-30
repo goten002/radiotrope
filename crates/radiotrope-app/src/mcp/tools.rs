@@ -1,448 +1,609 @@
-//! MCP tool definitions and handlers
+//! MCP tools
 //!
-//! Each tool is a function that takes arguments + shared state, returns a ToolResult.
-
-use std::sync::{Arc, Mutex};
+//! Each tool is a method on [`RadioTools`]; the `#[tool]` attributes give
+//! the name, title, description and behaviour hints clients show and use.
+//! Tools that return data return it as structured JSON (with an output
+//! schema) and as the same JSON in text, for clients that only read text.
 
 use std::collections::HashSet;
+use std::sync::{Arc, Mutex};
 
 use crossbeam_channel::Sender;
-use serde_json::{json, Value};
+use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::wrapper::{Json, Parameters};
+use rmcp::{schemars, tool, tool_router};
+use serde::{Deserialize, Deserializer, Serialize};
 
+use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
-use radiotrope_app::data::types::Favorite;
+use radiotrope_app::data::types::{url_to_id, Favorite, FavoriteSort, Station};
 use radiotrope_app::providers::ProviderRegistry;
 
 use crate::app::state::{AppCommand, AppSnapshot};
 
-use super::types::{ToolDefinition, ToolResult};
+/// Default number of results returned by search_stations
+const DEFAULT_SEARCH_LIMIT: usize = 20;
 
-/// Maximum number of results returned by the search tool.
-/// Capped below SEARCH_PAGE_SIZE to keep MCP responses concise.
-const MCP_SEARCH_LIMIT: usize = 20;
+/// Everything the tools reach into: the controller's command channel and
+/// the state and favorites shared with the GUI
+#[derive(Clone)]
+pub struct RadioTools {
+    cmd_tx: Sender<AppCommand>,
+    state: Arc<Mutex<AppSnapshot>>,
+    favorites: Arc<Mutex<FavoritesManager>>,
+    /// Built on first search; shares its HTTP client and server list
+    providers: Arc<Mutex<Option<Arc<ProviderRegistry>>>>,
+    /// Where favorites are saved; `None` is the usual data folder
+    favorites_file: Option<std::path::PathBuf>,
+    pub(super) tool_router: ToolRouter<Self>,
+}
 
-/// Extract a numeric value from a JSON argument, accepting both numbers and string
-/// representations. MCP clients frequently send integers as strings (e.g. `"45"`
-/// instead of `45`), so we must handle both forms. `"NaN"` and `"inf"` parse
-/// as floats, so non-finite numbers are rejected here.
-fn arg_as_f64(value: &Value) -> Option<f64> {
+// ---------------------------------------------------------------------------
+// Arguments
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PlayUrlArgs {
+    /// Station stream URL (http or https), e.g. from search_stations
+    pub url: String,
+    /// Display name for the station
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct FavoriteIdArgs {
+    /// Favorite id, from list_favorites
+    pub id: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SetVolumeArgs {
+    /// Volume from 0 (silent) to 100 (full)
+    #[serde(deserialize_with = "lenient_number")]
+    #[schemars(schema_with = "volume_schema")]
+    pub volume: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SearchArgs {
+    /// Words to match against station names
+    pub query: String,
+    /// Maximum number of stations to return (1-100, default 20)
+    #[serde(default, deserialize_with = "lenient_optional_number")]
+    #[schemars(schema_with = "limit_schema")]
+    pub limit: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddFavoriteArgs {
+    /// Station stream URL
+    pub url: String,
+    /// Station display name
+    pub name: String,
+    /// Country name or code
+    #[serde(default)]
+    pub country: Option<String>,
+    /// Station logo URL
+    #[serde(default)]
+    pub logo_url: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RemoveFavoriteArgs {
+    /// Favorite id, from list_favorites (give this or url)
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Station stream URL (give this or id)
+    #[serde(default)]
+    pub url: Option<String>,
+}
+
+fn volume_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Volume from 0 (silent) to 100 (full)"
+    })
+}
+
+fn limit_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 1,
+        "maximum": SEARCH_PAGE_SIZE,
+        "description": "Maximum number of stations to return (1-100, default 20)"
+    })
+}
+
+/// Clients often send numbers as strings (`"45"`), so accept both. `"NaN"`
+/// and `"inf"` parse as floats and are refused.
+fn lenient_number<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumberOrText {
+        Number(f64),
+        Text(String),
+    }
+    let value = match NumberOrText::deserialize(d)? {
+        NumberOrText::Number(n) => Some(n),
+        NumberOrText::Text(s) => s.trim().parse::<f64>().ok(),
+    };
     value
-        .as_f64()
-        .or_else(|| value.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
         .filter(|v| v.is_finite())
+        .ok_or_else(|| serde::de::Error::custom("expected a number"))
 }
 
-/// Return all tool definitions for tools/list
-pub fn list_tools() -> Vec<ToolDefinition> {
-    vec![
-        ToolDefinition {
-            name: "play_url",
-            description: "Play a radio station by its stream URL",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Station stream URL (e.g. http://stream.example.com/radio)"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Optional display name for the station"
-                    }
-                },
-                "required": ["url"]
-            }),
-        },
-        ToolDefinition {
-            name: "play_favorite",
-            description: "Play a favorite station by its ID (use list_favorites to get IDs)",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "id": {
-                        "type": "string",
-                        "description": "Favorite station ID (from list_favorites)"
-                    }
-                },
-                "required": ["id"]
-            }),
-        },
-        ToolDefinition {
-            name: "stop",
-            description: "Stop playback",
-            input_schema: json!({ "type": "object", "properties": {} }),
-        },
-        ToolDefinition {
-            name: "set_volume",
-            description: "Set playback volume (0-100)",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "volume": {
-                        "type": "integer",
-                        "description": "Volume level from 0 to 100",
-                        "minimum": 0,
-                        "maximum": 100
-                    }
-                },
-                "required": ["volume"]
-            }),
-        },
-        ToolDefinition {
-            name: "get_status",
-            description:
-                "Get full application status including playback state, volume, and current station",
-            input_schema: json!({ "type": "object", "properties": {} }),
-        },
-        ToolDefinition {
-            name: "search_stations",
-            description: "Search for radio stations by name. Returns matching stations from the radio-browser.info directory.",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search term to match against station names"
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of results to return (1-100, default 20)",
-                        "minimum": 1,
-                        "maximum": 100
-                    }
-                },
-                "required": ["query"]
-            }),
-        },
-        ToolDefinition {
-            name: "list_favorites",
-            description: "List all saved favorite stations",
-            input_schema: json!({ "type": "object", "properties": {} }),
-        },
-        ToolDefinition {
-            name: "add_favorite",
-            description: "Add a station to favorites",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Station stream URL"
-                    },
-                    "name": {
-                        "type": "string",
-                        "description": "Station display name"
-                    },
-                    "country": {
-                        "type": "string",
-                        "description": "Optional country name"
-                    },
-                    "logo_url": {
-                        "type": "string",
-                        "description": "Optional station logo/favicon URL"
-                    }
-                },
-                "required": ["url", "name"]
-            }),
-        },
-        ToolDefinition {
-            name: "remove_favorite",
-            description: "Remove a station from favorites by URL",
-            input_schema: json!({
-                "type": "object",
-                "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "Station stream URL to remove"
-                    }
-                },
-                "required": ["url"]
-            }),
-        },
-    ]
+fn lenient_optional_number<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
+    lenient_number(d).map(Some)
 }
 
-/// Dispatch a tool call to the appropriate handler
-pub fn call_tool(
-    name: &str,
-    args: &Value,
-    cmd_tx: &Sender<AppCommand>,
-    state: &Arc<Mutex<AppSnapshot>>,
-    favorites: &Arc<Mutex<FavoritesManager>>,
-) -> ToolResult {
-    match name {
-        "play_url" => handle_play_url(args, cmd_tx, favorites),
-        "play_favorite" => handle_play_favorite(args, cmd_tx, favorites),
-        // Keep old name as alias for backwards compatibility
-        "play_station" => handle_play_url(args, cmd_tx, favorites),
-        "stop" => handle_stop(cmd_tx),
-        "set_volume" => handle_set_volume(args, cmd_tx, state),
-        "get_status" => handle_get_status(state),
-        "search_stations" => handle_search(args),
-        "list_favorites" => handle_list_favorites(favorites),
-        "add_favorite" => handle_add_favorite(args, favorites),
-        "remove_favorite" => handle_remove_favorite(args, favorites),
-        _ => ToolResult::error(format!("Unknown tool: {name}")),
+// ---------------------------------------------------------------------------
+// Results
+// ---------------------------------------------------------------------------
+
+/// The player's state, as get_status returns it
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct Status {
+    /// "stopped", "resolving", "playing" or "paused"
+    pub playback: String,
+    /// The station playing or starting, if any
+    pub station: Option<StationRef>,
+    /// Song title from the stream, if the station sends one
+    pub title: Option<String>,
+    /// Artist from the stream, if the station sends one
+    pub artist: Option<String>,
+    /// Volume from 0 to 100
+    pub volume: u8,
+    pub muted: bool,
+    /// Codec and format of the stream playing
+    pub stream: Option<StreamInfo>,
+    /// The recording in progress, if any
+    pub recording: Option<RecordingInfo>,
+    /// The last error, e.g. why a station failed to start
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct StationRef {
+    pub name: Option<String>,
+    pub url: Option<String>,
+    /// Favorite id when the station is a favorite
+    pub favorite_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct StreamInfo {
+    pub codec: String,
+    /// e.g. "ICY", "HLS"
+    #[serde(rename = "type")]
+    pub stream_type: String,
+    pub bitrate_kbps: Option<u32>,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct RecordingInfo {
+    pub path: String,
+    pub seconds: u64,
+    pub bytes: u64,
+}
+
+/// A station found by search_stations
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct FoundStation {
+    pub name: String,
+    /// Stream URL to pass to play_url or add_favorite
+    pub url: String,
+    pub country: Option<String>,
+    pub language: Option<String>,
+    /// Genre tags
+    pub genres: Vec<String>,
+    pub codec: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+    pub homepage: Option<String>,
+    pub logo_url: Option<String>,
+    /// Favorite id when the station is already a favorite
+    pub favorite_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SearchResult {
+    pub query: String,
+    pub count: usize,
+    pub stations: Vec<FoundStation>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct FavoriteItem {
+    /// Id for play_favorite and remove_favorite; stays the same for a URL
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    pub country: Option<String>,
+    pub genres: Vec<String>,
+    pub play_count: u32,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct FavoritesList {
+    /// In the user's own order
+    pub favorites: Vec<FavoriteItem>,
+}
+
+fn non_empty(s: &str) -> Option<String> {
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+fn sorted_genres(genres: &HashSet<String>) -> Vec<String> {
+    let mut genres: Vec<String> = genres.iter().cloned().collect();
+    genres.sort();
+    genres
+}
+
+fn playback_name(s: &AppSnapshot) -> &'static str {
+    if s.is_resolving {
+        return "resolving";
+    }
+    match s.playback {
+        PlaybackState::Stopped => "stopped",
+        PlaybackState::Playing => "playing",
+        PlaybackState::Paused => "paused",
     }
 }
 
-fn handle_play_url(
-    args: &Value,
-    cmd_tx: &Sender<AppCommand>,
-    favorites: &Arc<Mutex<FavoritesManager>>,
-) -> ToolResult {
-    // Accept both "url" and legacy "query" param
-    let url = args
-        .get("url")
-        .or_else(|| args.get("query"))
-        .and_then(|v| v.as_str());
-    let url = match url {
-        Some(u) if !u.trim().is_empty() => u.trim(),
-        _ => return ToolResult::error("Missing required parameter: url"),
-    };
-    let name = args.get("name").and_then(|v| v.as_str()).map(String::from);
-    // Enrich from favorites using the same logic as the UI path
-    let name = favorites
-        .lock()
-        .ok()
-        .map(|f| {
-            f.resolve_play(PlayMetadata {
+// ---------------------------------------------------------------------------
+// Tools
+// ---------------------------------------------------------------------------
+
+#[tool_router]
+impl RadioTools {
+    pub fn new(
+        cmd_tx: Sender<AppCommand>,
+        state: Arc<Mutex<AppSnapshot>>,
+        favorites: Arc<Mutex<FavoritesManager>>,
+    ) -> Self {
+        Self {
+            cmd_tx,
+            state,
+            favorites,
+            providers: Arc::new(Mutex::new(None)),
+            favorites_file: None,
+            tool_router: Self::tool_router(),
+        }
+    }
+
+    /// Search these providers and save favorites to this file (for tests)
+    #[cfg(test)]
+    pub fn with_test_setup(
+        mut self,
+        providers: ProviderRegistry,
+        favorites_file: std::path::PathBuf,
+    ) -> Self {
+        self.providers = Arc::new(Mutex::new(Some(Arc::new(providers))));
+        self.favorites_file = Some(favorites_file);
+        self
+    }
+
+    fn save_favorites(
+        &self,
+        favorites: &mut FavoritesManager,
+    ) -> radiotrope_app::error::Result<()> {
+        match &self.favorites_file {
+            Some(path) => favorites.save_to(path),
+            None => favorites.save(),
+        }
+    }
+
+    fn favorites(&self) -> std::sync::MutexGuard<'_, FavoritesManager> {
+        self.favorites.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn send(&self, cmd: AppCommand) {
+        let _ = self.cmd_tx.send(cmd);
+    }
+
+    #[tool(
+        title = "Play a stream URL",
+        description = "Play a radio station by its stream URL. Starts in the background: \
+                       call get_status to see whether it plays.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn play_url(&self, Parameters(args): Parameters<PlayUrlArgs>) -> Result<String, String> {
+        let url = args.url.trim();
+        if url.is_empty() {
+            return Err("url must not be empty".into());
+        }
+        // Enrich from favorites, as the GUI does
+        let name = self
+            .favorites()
+            .resolve_play(PlayMetadata {
                 url: url.to_string(),
-                name: name.clone(),
+                name: args.name.clone(),
                 ..Default::default()
             })
-            .name
-        })
-        .unwrap_or(name);
-    cmd_tx
-        .send(AppCommand::Play {
+            .name;
+        self.send(AppCommand::Play {
             url: url.to_string(),
             name,
-        })
-        .ok();
-    ToolResult::text(format!("Resolving stream: {url}"))
-}
+        });
+        Ok(format!("Resolving stream: {url}"))
+    }
 
-fn handle_play_favorite(
-    args: &Value,
-    cmd_tx: &Sender<AppCommand>,
-    favorites: &Arc<Mutex<FavoritesManager>>,
-) -> ToolResult {
-    let id = match args.get("id").and_then(|v| v.as_str()) {
-        Some(id) if !id.trim().is_empty() => id.trim(),
-        _ => return ToolResult::error("Missing required parameter: id"),
-    };
-
-    let f = favorites.lock().unwrap_or_else(|e| e.into_inner());
-    let fav = match f.get(id) {
-        Some(fav) => fav,
-        None => return ToolResult::error(format!("No favorite found with ID: {id}")),
-    };
-
-    let url = fav.url().to_string();
-    let name = fav.name().to_string();
-    drop(f);
-
-    cmd_tx
-        .send(AppCommand::Play {
+    #[tool(
+        title = "Play a favorite",
+        description = "Play a favorite station by its id (ids come from list_favorites)",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn play_favorite(
+        &self,
+        Parameters(args): Parameters<FavoriteIdArgs>,
+    ) -> Result<String, String> {
+        let id = args.id.trim();
+        let (url, name) = {
+            let favorites = self.favorites();
+            let fav = favorites
+                .get(id)
+                .ok_or_else(|| format!("No favorite with id {id}; list_favorites gives the ids"))?;
+            (fav.url().to_string(), fav.name().to_string())
+        };
+        self.send(AppCommand::Play {
             url: url.clone(),
             name: Some(name.clone()),
-        })
-        .ok();
-    ToolResult::text(format!("Playing favorite: {name} ({url})"))
-}
-
-fn handle_stop(cmd_tx: &Sender<AppCommand>) -> ToolResult {
-    cmd_tx.send(AppCommand::Stop).ok();
-    ToolResult::text("Playback stopped")
-}
-
-fn handle_set_volume(
-    args: &Value,
-    cmd_tx: &Sender<AppCommand>,
-    state: &Arc<Mutex<AppSnapshot>>,
-) -> ToolResult {
-    let volume = match args.get("volume").and_then(arg_as_f64) {
-        Some(v) => (v as f32).clamp(0.0, 100.0) / 100.0,
-        None => {
-            return ToolResult::error("Missing required parameter: volume (expected number 0-100)")
-        }
-    };
-    let was_muted = {
-        let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-        let muted = s.is_muted;
-        // Pre-set volume in shared state so the UI poll timer reflects it immediately
-        s.volume = volume;
-        if muted && volume > 0.0 {
-            s.is_muted = false;
-        }
-        muted
-    };
-    cmd_tx.send(AppCommand::SetVolume(volume)).ok();
-    let display = (volume * 100.0) as u8;
-    if was_muted && volume > 0.0 {
-        ToolResult::text(format!("Volume set to {display}% (auto-unmuted)"))
-    } else {
-        ToolResult::text(format!("Volume set to {display}%"))
-    }
-}
-
-fn handle_get_status(state: &Arc<Mutex<AppSnapshot>>) -> ToolResult {
-    let s = state.lock().unwrap_or_else(|e| e.into_inner());
-    let mut status = format!(
-        "Playback: {:?}\nStation: {}\nTrack: {}\nArtist: {}\nVolume: {}%",
-        s.playback,
-        s.station_name.as_deref().unwrap_or("—"),
-        if s.title.is_empty() { "—" } else { &s.title },
-        if s.artist.is_empty() {
-            "—"
-        } else {
-            &s.artist
-        },
-        (s.volume * 100.0) as u8,
-    );
-    if s.is_resolving {
-        status.push_str("\nResolving: true");
-    }
-    if let Some(ref err) = s.last_error {
-        status.push_str(&format!("\nLast error: {err}"));
-    }
-    ToolResult::text(status)
-}
-
-fn handle_search(args: &Value) -> ToolResult {
-    let query = match args.get("query").and_then(|v| v.as_str()) {
-        Some(q) if !q.trim().is_empty() => q.trim(),
-        Some(_) => return ToolResult::error("Parameter 'query' must not be empty"),
-        None => return ToolResult::error("Missing required parameter: query"),
-    };
-
-    let limit = args
-        .get("limit")
-        .and_then(arg_as_f64)
-        .map(|v| (v as usize).clamp(1, SEARCH_PAGE_SIZE))
-        .unwrap_or(MCP_SEARCH_LIMIT);
-
-    let registry = match ProviderRegistry::with_defaults() {
-        Ok(r) => r,
-        Err(e) => return ToolResult::error(format!("Failed to initialize provider: {e}")),
-    };
-
-    let stations = match registry.search_all(query, limit) {
-        Ok(s) => s,
-        Err(e) => return ToolResult::error(format!("Search failed: {e}")),
-    };
-
-    if stations.is_empty() {
-        return ToolResult::text(format!("No stations found for \"{query}\""));
+        });
+        Ok(format!("Playing favorite: {name} ({url})"))
     }
 
-    let results: Vec<Value> = stations
-        .iter()
-        .map(|s| {
-            json!({
-                "name": s.name,
-                "url": s.url,
-                "country": s.country.as_deref().unwrap_or(""),
-                "logo_url": s.logo_url.as_deref().unwrap_or(""),
-            })
-        })
-        .collect();
-
-    let response = json!({
-        "query": query,
-        "count": results.len(),
-        "stations": results,
-    });
-
-    ToolResult::text(serde_json::to_string_pretty(&response).unwrap_or_default())
-}
-
-fn handle_list_favorites(favorites: &Arc<Mutex<FavoritesManager>>) -> ToolResult {
-    let f = favorites.lock().unwrap_or_else(|e| e.into_inner());
-    if f.is_empty() {
-        return ToolResult::text("No favorites saved");
-    }
-    let sorted = f.sorted(radiotrope_app::data::types::FavoriteSort::Manual);
-    let items: Vec<Value> = sorted
-        .iter()
-        .map(|fav| {
-            json!({
-                "id": fav.id(),
-                "name": fav.name(),
-                "url": fav.url(),
-                "country": fav.station.country.as_deref().unwrap_or(""),
-            })
-        })
-        .collect();
-    ToolResult::text(serde_json::to_string_pretty(&items).unwrap_or_default())
-}
-
-fn handle_add_favorite(args: &Value, favorites: &Arc<Mutex<FavoritesManager>>) -> ToolResult {
-    let url = match args.get("url").and_then(|v| v.as_str()) {
-        Some(u) if !u.trim().is_empty() => u.trim(),
-        _ => return ToolResult::error("Missing required parameter: url"),
-    };
-    let name = match args.get("name").and_then(|v| v.as_str()) {
-        Some(n) if !n.trim().is_empty() => n.trim(),
-        _ => return ToolResult::error("Missing required parameter: name"),
-    };
-    let country = args
-        .get("country")
-        .and_then(|v| v.as_str())
-        .map(String::from);
-    let logo_url = args
-        .get("logo_url")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-
-    let mut fav = Favorite::new(name, url);
-    if let Some(logo) = logo_url {
-        fav = fav.with_logo(logo);
-    }
-    if country.is_some() {
-        fav = fav.with_metadata(country, None, HashSet::new());
+    #[tool(
+        title = "Stop",
+        description = "Stop playback",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn stop(&self) -> String {
+        self.send(AppCommand::Stop);
+        "Playback stopped".into()
     }
 
-    let mut f = favorites.lock().unwrap_or_else(|e| e.into_inner());
-    if let Err(e) = f.add(fav) {
-        return ToolResult::error(format!("{e}"));
-    }
-    if let Err(e) = f.save() {
-        return ToolResult::error(format!("Failed to save: {e}"));
-    }
-    ToolResult::text(format!("Added \"{}\" to favorites", name))
-}
-
-fn handle_remove_favorite(args: &Value, favorites: &Arc<Mutex<FavoritesManager>>) -> ToolResult {
-    let url = match args.get("url").and_then(|v| v.as_str()) {
-        Some(u) if !u.trim().is_empty() => u.trim(),
-        _ => return ToolResult::error("Missing required parameter: url"),
-    };
-
-    let mut f = favorites.lock().unwrap_or_else(|e| e.into_inner());
-    match f.remove_by_url(url) {
-        Ok(removed) => {
-            if let Err(e) = f.save() {
-                return ToolResult::error(format!("Removed but failed to save: {e}"));
+    #[tool(
+        title = "Set volume",
+        description = "Set the volume from 0 to 100. Unmutes when above 0.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_volume(&self, Parameters(args): Parameters<SetVolumeArgs>) -> String {
+        let volume = (args.volume as f32).clamp(0.0, 100.0) / 100.0;
+        let was_muted = {
+            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+            let muted = s.is_muted;
+            // Set it in the shared state now so the GUI shows it at once
+            s.volume = volume;
+            if muted && volume > 0.0 {
+                s.is_muted = false;
             }
-            ToolResult::text(format!("Removed \"{}\" from favorites", removed.name()))
+            muted
+        };
+        self.send(AppCommand::SetVolume(volume));
+        let percent = (volume * 100.0).round() as u8;
+        if was_muted && volume > 0.0 {
+            format!("Volume set to {percent}% (unmuted)")
+        } else {
+            format!("Volume set to {percent}%")
         }
-        Err(e) => ToolResult::error(format!("{e}")),
+    }
+
+    #[tool(
+        title = "Player status",
+        description = "What is playing: playback state, station, song, volume, stream format, \
+                       recording and the last error",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn get_status(&self) -> Json<Status> {
+        let s = self.state.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let favorite_id = s
+            .station_url
+            .as_deref()
+            .filter(|url| self.favorites().is_favorite(url))
+            .map(url_to_id);
+        let station = (s.station_name.is_some() || s.station_url.is_some()).then(|| StationRef {
+            name: s.station_name.clone(),
+            url: s.station_url.clone(),
+            favorite_id,
+        });
+        let stream =
+            (s.playback != PlaybackState::Stopped && !s.codec_name.is_empty()).then(|| {
+                StreamInfo {
+                    codec: s.codec_name.clone(),
+                    stream_type: s.stream_type.clone(),
+                    bitrate_kbps: s.bitrate,
+                    sample_rate: s.sample_rate,
+                    channels: s.channels,
+                }
+            });
+        Json(Status {
+            playback: playback_name(&s).into(),
+            station,
+            title: non_empty(&s.title),
+            artist: non_empty(&s.artist),
+            volume: (s.volume * 100.0).round() as u8,
+            muted: s.is_muted,
+            stream,
+            recording: s.recording.as_ref().map(|r| RecordingInfo {
+                path: r.path.display().to_string(),
+                seconds: r.duration.as_secs(),
+                bytes: r.bytes,
+            }),
+            last_error: s.last_error.clone(),
+        })
+    }
+
+    #[tool(
+        title = "Search stations",
+        description = "Search the radio-browser.info directory for stations by name. \
+                       Station names and tags come from that public directory.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn search_stations(
+        &self,
+        Parameters(args): Parameters<SearchArgs>,
+    ) -> Result<Json<SearchResult>, String> {
+        let query = args.query.trim().to_string();
+        if query.is_empty() {
+            return Err("query must not be empty".into());
+        }
+        let limit = args
+            .limit
+            .map(|v| (v as usize).clamp(1, SEARCH_PAGE_SIZE))
+            .unwrap_or(DEFAULT_SEARCH_LIMIT);
+        // Blocking HTTP (reqwest's blocking client, which must not even be
+        // built inside the async runtime): off it, so other calls keep flowing
+        let tools = self.clone();
+        let q = query.clone();
+        let stations = tokio::task::spawn_blocking(move || {
+            tools
+                .providers()?
+                .search_all(&q, limit)
+                .map_err(|e| format!("Search failed: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Search failed: {e}"))??;
+
+        let favorites = self.favorites();
+        let stations: Vec<FoundStation> = stations
+            .into_iter()
+            .map(|s: Station| FoundStation {
+                favorite_id: favorites.is_favorite(&s.url).then(|| url_to_id(&s.url)),
+                genres: sorted_genres(&s.genres),
+                name: s.name,
+                url: s.url,
+                country: s.country,
+                language: s.language,
+                codec: s.codec,
+                bitrate_kbps: s.bitrate.filter(|b| *b > 0),
+                homepage: s.homepage,
+                logo_url: s.logo_url,
+            })
+            .collect();
+        Ok(Json(SearchResult {
+            query,
+            count: stations.len(),
+            stations,
+        }))
+    }
+
+    #[tool(
+        title = "List favorites",
+        description = "List the saved favorite stations, in the user's order, with their ids",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn list_favorites(&self) -> Json<FavoritesList> {
+        let favorites = self.favorites();
+        let favorites = favorites
+            .sorted(FavoriteSort::Manual)
+            .into_iter()
+            .map(|fav| FavoriteItem {
+                id: fav.id(),
+                name: fav.name().to_string(),
+                url: fav.url().to_string(),
+                country: fav.station.country.clone(),
+                genres: sorted_genres(&fav.station.genres),
+                play_count: fav.play_count,
+            })
+            .collect();
+        Json(FavoritesList { favorites })
+    }
+
+    #[tool(
+        title = "Add a favorite",
+        description = "Save a station to the favorites",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn add_favorite(
+        &self,
+        Parameters(args): Parameters<AddFavoriteArgs>,
+    ) -> Result<String, String> {
+        let url = args.url.trim();
+        let name = args.name.trim();
+        if url.is_empty() || name.is_empty() {
+            return Err("url and name must not be empty".into());
+        }
+        let mut fav = Favorite::new(name, url);
+        if let Some(logo) = args.logo_url.filter(|s| !s.is_empty()) {
+            fav = fav.with_logo(logo);
+        }
+        if args.country.is_some() {
+            fav = fav.with_metadata(args.country, None, HashSet::new());
+        }
+        let id = fav.id();
+        let mut favorites = self.favorites();
+        favorites.add(fav).map_err(|e| e.to_string())?;
+        self.save_favorites(&mut favorites)
+            .map_err(|e| format!("Failed to save: {e}"))?;
+        Ok(format!("Added \"{name}\" to favorites (id {id})"))
+    }
+
+    #[tool(
+        title = "Remove a favorite",
+        description = "Remove a station from the favorites, by id or URL",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn remove_favorite(
+        &self,
+        Parameters(args): Parameters<RemoveFavoriteArgs>,
+    ) -> Result<String, String> {
+        let id = match (args.id.as_deref(), args.url.as_deref()) {
+            (Some(id), _) if !id.trim().is_empty() => id.trim().to_string(),
+            (_, Some(url)) if !url.trim().is_empty() => url_to_id(url.trim()),
+            _ => return Err("Give the favorite's id or url".into()),
+        };
+        let mut favorites = self.favorites();
+        let removed = favorites.remove(&id).map_err(|e| e.to_string())?;
+        self.save_favorites(&mut favorites)
+            .map_err(|e| format!("Removed but failed to save: {e}"))?;
+        Ok(format!("Removed \"{}\" from favorites", removed.name()))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn numbers_as_strings_are_accepted_but_not_nan() {
-        assert_eq!(arg_as_f64(&json!(45)), Some(45.0));
-        assert_eq!(arg_as_f64(&json!(" 45 ")), Some(45.0));
-        assert_eq!(arg_as_f64(&json!("NaN")), None);
-        assert_eq!(arg_as_f64(&json!("inf")), None);
-        assert_eq!(arg_as_f64(&json!("loud")), None);
+impl RadioTools {
+    fn providers(&self) -> Result<Arc<ProviderRegistry>, String> {
+        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(p) = providers.as_ref() {
+            return Ok(p.clone());
+        }
+        let registry = Arc::new(
+            ProviderRegistry::with_defaults()
+                .map_err(|e| format!("Failed to initialize provider: {e}"))?,
+        );
+        *providers = Some(registry.clone());
+        Ok(registry)
     }
 }

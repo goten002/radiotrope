@@ -28,15 +28,18 @@ dirs = "7.0"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "ico"] }
 libc = "0.2"
+# MCP server (official Rust SDK), for `radiotrope --mcp`
+rmcp = { version = "3.5", default-features = false, features = ["server", "macros", "transport-io"] }
+schemars = "1"
 # WiFi settings over iwd (embedded only)
 zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
-tokio = { version = "1", features = ["rt", "macros"], optional = true }
+tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "sync", "time"] }
 rfd = { version = "0.17", optional = true }
 
 [features]
 default = ["desktop"]
 desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd"]
-embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "dep:tokio"]
+embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus"]
 
 [build-dependencies]
 slint-build = "1.18"
