@@ -146,6 +146,7 @@ export component MenuBar inherits Rectangle {
     callback toggle-recording();
     callback open-recording-settings();
     callback open-recordings-folder();
+    callback open-agents();
 
     // Our own title bar: the bar moves the window and ends with the window
     // buttons (desktop only, when the system frame is turned off)
@@ -695,6 +696,22 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/folder-open.svg");
                     clicked => {
                         root.open-recordings-folder();
+                        tools-popup.close();
+                    }
+                }
+                Rectangle {
+                    height: 9px;
+                    Rectangle {
+                        y: 4px;
+                        height: 1px;
+                        background: Theme.menu-hover;
+                    }
+                }
+                MenuItem {
+                    label: "Agents (MCP)";
+                    icon: @image-url("icons/link.svg");
+                    clicked => {
+                        root.open-agents();
                         tools-popup.close();
                     }
                 }
