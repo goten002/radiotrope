@@ -143,14 +143,6 @@ pub struct Settings {
     /// Address and port the network server listens on
     #[serde(default = "default_mcp_address")]
     pub mcp_address: String,
-
-    /// TLS certificate (PEM) for https; used together with `mcp_tls_key`
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_tls_cert: Option<PathBuf>,
-
-    /// TLS private key (PKCS#8 PEM) for https
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mcp_tls_key: Option<PathBuf>,
 }
 
 fn default_mcp_address() -> String {
@@ -220,8 +212,6 @@ impl Default for Settings {
             mcp_local: true,
             mcp_network: false,
             mcp_address: default_mcp_address(),
-            mcp_tls_cert: None,
-            mcp_tls_key: None,
         }
     }
 }

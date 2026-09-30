@@ -59,16 +59,9 @@ impl Agents {
         // The old server lets go of its port before a new one binds it
         running.take();
 
-        let tls = match (&settings.mcp_tls_cert, &settings.mcp_tls_key) {
-            (Some(cert), Some(key)) => Ok(Some((cert.clone(), key.clone()))),
-            (None, None) => Ok(None),
-            _ => Err("Choose both a certificate and a key, or neither".to_string()),
-        };
-        let with_tls = matches!(tls, Ok(Some(_)));
-
         if !settings.mcp_network {
             let token = agent_token::load_existing().unwrap_or_default();
-            let command = network::url_for(&settings.mcp_address, with_tls)
+            let command = network::url_for(&settings.mcp_address)
                 .map(|url| claude_command(&url, &token))
                 .unwrap_or_default();
             return NetworkStatus {
@@ -79,20 +72,6 @@ impl Agents {
             };
         }
 
-        let tls = match tls {
-            Ok(tls) => tls,
-            Err(text) => {
-                let token = agent_token::load_existing().unwrap_or_default();
-                return NetworkStatus {
-                    text,
-                    is_error: true,
-                    command: network::url_for(&settings.mcp_address, false)
-                        .map(|url| claude_command(&url, &token))
-                        .unwrap_or_default(),
-                    token,
-                };
-            }
-        };
         let token = match agent_token::load_or_create() {
             Ok(t) => t,
             Err(e) => {
@@ -103,14 +82,13 @@ impl Agents {
                 }
             }
         };
-        let command = network::url_for(&settings.mcp_address, with_tls)
+        let command = network::url_for(&settings.mcp_address)
             .map(|url| claude_command(&url, &token))
             .unwrap_or_default();
         let started = network::start(
             &network::Options {
                 address: settings.mcp_address.clone(),
                 token: token.clone(),
-                tls,
             },
             self.tools.clone(),
         );
@@ -165,18 +143,5 @@ mod tests {
             .command
             .starts_with("claude mcp add --transport http radiotrope http://127.0.0.1:8765/mcp"));
         assert!(agents.local_allowed().load(Ordering::Relaxed));
-    }
-
-    #[test]
-    fn half_a_tls_setup_is_refused() {
-        let settings = Settings {
-            mcp_network: true,
-            mcp_address: "127.0.0.1:0".into(),
-            mcp_tls_cert: Some("cert.pem".into()),
-            ..Settings::default()
-        };
-        let status = agents().apply_network(&settings);
-        assert!(status.is_error);
-        assert!(status.text.contains("both"), "{}", status.text);
     }
 }

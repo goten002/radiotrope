@@ -2218,17 +2218,10 @@ fn setup_agents(
     agents: Option<Arc<mcp::agents::Agents>>,
     settings: &radiotrope_app::data::settings::Settings,
 ) {
-    let path_text = |p: &Option<std::path::PathBuf>| {
-        p.as_ref()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default()
-    };
     ui.set_agents_available(agents.is_some());
     ui.set_agents_local(settings.mcp_local);
     ui.set_agents_network(settings.mcp_network);
     ui.set_agents_address(settings.mcp_address.as_str().into());
-    ui.set_agents_cert(path_text(&settings.mcp_tls_cert).into());
-    ui.set_agents_key(path_text(&settings.mcp_tls_key).into());
     let Some(agents) = agents else { return };
     show_agents_network(ui, &agents.apply_network(settings));
 
@@ -2252,8 +2245,6 @@ fn setup_agents(
                 eprintln!("Failed to save agent settings: {e}");
             }
             ui.set_agents_address(settings.mcp_address.as_str().into());
-            ui.set_agents_cert(path_text(&settings.mcp_tls_cert).into());
-            ui.set_agents_key(path_text(&settings.mcp_tls_key).into());
             show_agents_network(&ui, &agents.apply_network(&settings));
         }
     };
@@ -2279,21 +2270,6 @@ fn setup_agents(
             apply(&|s| s.mcp_address = address.clone())
         }
     });
-    ui.on_agents_apply_tls({
-        let apply = apply.clone();
-        move |cert, key| {
-            let path = |t: &str| {
-                Some(t.trim())
-                    .filter(|t| !t.is_empty())
-                    .map(std::path::PathBuf::from)
-            };
-            let (cert, key) = (path(&cert), path(&key));
-            apply(&|s| {
-                s.mcp_tls_cert = cert.clone();
-                s.mcp_tls_key = key.clone();
-            })
-        }
-    });
     ui.on_agents_regenerate_token({
         let apply = apply.clone();
         move || {
@@ -2301,42 +2277,6 @@ fn setup_agents(
                 eprintln!("Failed to make a new token: {e}");
             }
             apply(&|_| {})
-        }
-    });
-    ui.on_agents_browse_cert({
-        let ui_weak = ui.as_weak();
-        let apply = apply.clone();
-        move || {
-            let apply = apply.clone();
-            browse_pem_file(
-                ui_weak.clone(),
-                "Choose TLS Certificate",
-                move |ui, path| {
-                    ui.set_agents_edit_cert(path.as_str().into());
-                    let key = ui.get_agents_edit_key().to_string();
-                    let path = path.clone();
-                    apply(&|s| {
-                        s.mcp_tls_cert = Some(path.clone().into());
-                        s.mcp_tls_key = Some(key.clone()).filter(|k| !k.is_empty()).map(Into::into);
-                    })
-                },
-            )
-        }
-    });
-    ui.on_agents_browse_key({
-        let ui_weak = ui.as_weak();
-        let apply = apply.clone();
-        move || {
-            let apply = apply.clone();
-            browse_pem_file(ui_weak.clone(), "Choose TLS Key", move |ui, path| {
-                ui.set_agents_edit_key(path.as_str().into());
-                let cert = ui.get_agents_edit_cert().to_string();
-                let path = path.clone();
-                apply(&|s| {
-                    s.mcp_tls_cert = Some(cert.clone()).filter(|c| !c.is_empty()).map(Into::into);
-                    s.mcp_tls_key = Some(path.clone().into());
-                })
-            })
         }
     });
 }
@@ -2354,41 +2294,6 @@ fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::
     if let Err(e) = settings.save() {
         eprintln!("Failed to save agent settings: {e}");
     }
-}
-
-/// Pick a certificate or key file, then hand its path to `picked`
-#[cfg(feature = "desktop")]
-fn browse_pem_file(
-    ui_weak: slint::Weak<App>,
-    title: &str,
-    picked: impl FnOnce(&App, String) + 'static,
-) {
-    let Some(ui) = ui_weak.upgrade() else { return };
-    let pick = rfd::AsyncFileDialog::new()
-        .set_title(title)
-        .add_filter("PEM", &["pem", "crt", "cer", "key"])
-        .add_filter("All files", &["*"])
-        .set_parent(&ui.window().window_handle())
-        .pick_file();
-    let spawned = slint::spawn_local(async move {
-        let file = pick.await;
-        let Some(ui) = ui_weak.upgrade() else { return };
-        if let Some(file) = file {
-            picked(&ui, file.path().display().to_string());
-        }
-    });
-    if let Err(e) = spawned {
-        eprintln!("Failed to open the file dialog: {e}");
-    }
-}
-
-/// The kiosk build has no file dialog; paths are typed instead.
-#[cfg(not(feature = "desktop"))]
-fn browse_pem_file(
-    _ui_weak: slint::Weak<App>,
-    _title: &str,
-    _picked: impl FnOnce(&App, String) + 'static,
-) {
 }
 
 /// Wire the Tools menu recording items and the Recording Settings

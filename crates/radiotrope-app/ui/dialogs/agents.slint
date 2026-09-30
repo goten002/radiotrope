@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle } from "../components.slint";
+import { DialogShell, Toggle, InfoTip } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or the command for Claude Code
@@ -78,13 +78,6 @@ component RowLabel inherits Text {
     vertical-alignment: center;
 }
 
-// Small print under a group
-component Hint inherits Text {
-    color: Theme.text-secondary;
-    font-size: Theme.font-sm;
-    wrap: word-wrap;
-}
-
 // Line of help under a toggle, lined up with its label (36px switch + 8px gap)
 component ToggleNote inherits HorizontalLayout {
     in property <string> text;
@@ -105,44 +98,32 @@ export component AgentsDialog inherits Rectangle {
     in property <bool> available: true;
     in-out property <bool> local-on: true;
     in-out property <bool> network-on: false;
-    // Saved address, token, TLS files, and what the server says
+    // Saved address, token, and what the server says
     in property <string> address;
     in property <string> token;
-    in property <string> cert;
-    in property <string> key;
     in property <string> status;
     in property <bool> status-error;
     in property <string> command;
 
     // Fields being edited; reset from the saved values when the dialog opens
     in-out property <string> edit-address;
-    in-out property <string> edit-cert;
-    in-out property <string> edit-key;
 
     callback local-toggled(bool);
     callback network-toggled(bool);
     callback apply-address(string);
     callback regenerate-token();
-    callback apply-tls(string, string);
-    callback browse-cert();
-    callback browse-key();
 
     property <bool> network-fields: root.available && root.network-on;
 
     public function open() {
         root.edit-address = root.address;
-        root.edit-cert = root.cert;
-        root.edit-key = root.key;
         root.show-dialog = true;
     }
 
-    // Typed fields save on Enter, when they lose focus, or here
+    // The address saves on Enter, when it loses focus, or here
     function close() {
         if root.edit-address != root.address {
             root.apply-address(root.edit-address);
-        }
-        if root.edit-cert != root.cert || root.edit-key != root.key {
-            root.apply-tls(root.edit-cert, root.edit-key);
         }
         root.show-dialog = false;
     }
@@ -211,9 +192,12 @@ export component AgentsDialog inherits Rectangle {
                         }
                     }
                 }
-            }
-            Hint {
-                text: "127.0.0.1 is this computer only; use this computer's network or Tailscale address, or 0.0.0.0 for all.";
+                VerticalLayout {
+                    alignment: center;
+                    InfoTip {
+                        text: "127.0.0.1 is this computer only. Use this computer's network or Tailscale address, or 0.0.0.0 for all.";
+                    }
+                }
             }
             if root.network-on && root.available: Text {
                 text: root.status;
@@ -248,59 +232,6 @@ export component AgentsDialog inherits Rectangle {
                     placeholder: "claude mcp add ... (once there is a token)";
                     enabled: root.network-fields;
                 }
-            }
-        }
-
-        Rectangle {
-            height: 1px;
-            background: Theme.hairline;
-        }
-
-        VerticalLayout {
-            spacing: 8px;
-
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Certificate"; }
-                StyledLineEdit {
-                    enabled: root.network-fields;
-                    text <=> root.edit-cert;
-                    placeholder-text: "Optional: PEM file, for https";
-                    accepted(text) => { root.apply-tls(text, root.edit-key); }
-                    changed has-focus => {
-                        if !self.has-focus && root.edit-cert != root.cert {
-                            root.apply-tls(root.edit-cert, root.edit-key);
-                        }
-                    }
-                }
-                if Platform.has-file-manager: SecondaryButton {
-                    label: "Browse...";
-                    enabled: root.network-fields;
-                    clicked => { root.browse-cert(); }
-                }
-            }
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Key"; }
-                StyledLineEdit {
-                    enabled: root.network-fields;
-                    text <=> root.edit-key;
-                    placeholder-text: "Optional: PKCS#8 PEM file";
-                    accepted(text) => { root.apply-tls(root.edit-cert, text); }
-                    changed has-focus => {
-                        if !self.has-focus && root.edit-key != root.key {
-                            root.apply-tls(root.edit-cert, root.edit-key);
-                        }
-                    }
-                }
-                if Platform.has-file-manager: SecondaryButton {
-                    label: "Browse...";
-                    enabled: root.network-fields;
-                    clicked => { root.browse-key(); }
-                }
-            }
-            Hint {
-                text: "Agents must trust the certificate; for Claude Code, set NODE_EXTRA_CA_CERTS to your CA file.";
             }
         }
     }

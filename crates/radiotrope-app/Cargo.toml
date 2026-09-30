@@ -44,8 +44,6 @@ http = "1"
 http-body-util = "0.1"
 tower-service = "0.3"
 bytes = "1"
-native-tls = "0.2"
-tokio-native-tls = "0.3"
 getrandom = "0.3"
 rfd = { version = "0.17", optional = true }
 
