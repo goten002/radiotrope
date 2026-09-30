@@ -217,7 +217,7 @@ async fn handle(
         );
         return response;
     }
-    // Counts on the header's agents icon; the tools learn its name
+    // Counts on the menu bar's agents chip; the tools learn its name
     from.presence.network_seen(from.ip);
     request.extensions_mut().insert(RemoteIp(from.ip));
     match service.call(request).await {

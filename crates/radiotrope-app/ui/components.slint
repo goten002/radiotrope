@@ -657,3 +657,109 @@ export component InfoTip inherits Rectangle {
         }
     }
 }
+
+// How many agents use the player; hovering lists them in a bubble below,
+// a click opens the Agents dialog. The bubble is a popup so it draws over
+// the header under the menu bar.
+export component AgentsChip inherits Rectangle {
+    in property <int> count;
+    in property <string> list;
+    callback clicked();
+
+    property <bool> open: false;
+
+    width: row.preferred-width + 14px;
+    height: 20px;
+    border-radius: Theme.radius-sm;
+    background: Theme.accent-text.with-alpha(touch.has-hover ? 0.26 : 0.14);
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            delay.running = false;
+            root.open = false;
+            bubble-popup.close();
+            root.clicked();
+        }
+        changed has-hover => {
+            delay.running = self.has-hover;
+            if !self.has-hover {
+                root.open = false;
+                bubble-popup.close();
+            }
+        }
+    }
+
+    delay := Timer {
+        interval: Defaults.hover-delay;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.open = true;
+            bubble-popup.show();
+        }
+    }
+
+    row := HorizontalLayout {
+        x: 7px;
+        spacing: 4px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 11px;
+                height: 11px;
+                source: @image-url("icons/robot.svg");
+                colorize: Theme.accent-text;
+            }
+        }
+        Text {
+            text: root.count;
+            color: Theme.accent-text;
+            font-size: Theme.font-sm;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+
+    // Same style as the other hover bubbles
+    bubble-popup := PopupWindow {
+        close-policy: no-auto-close;
+        // Right edge under the chip's right edge, just below the bar
+        x: root.width - self.width;
+        y: root.height + 6px;
+        width: max(Defaults.info-tip-width, bubble.preferred-width);
+        height: bubble.preferred-height;
+
+        Rectangle {
+            background: Theme.popup-bg;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 8px;
+            drop-shadow-offset-y: 2px;
+            drop-shadow-color: Theme.shadow-soft;
+
+            bubble := VerticalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                padding-top: 8px;
+                padding-bottom: 8px;
+                spacing: 3px;
+
+                Text {
+                    text: root.count == 1 ? "1 agent is using the player" : root.count + " agents are using the player";
+                    font-size: Theme.font-md;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: root.list;
+                    font-size: Theme.font-md;
+                    color: Theme.text-secondary;
+                }
+            }
+        }
+    }
+}

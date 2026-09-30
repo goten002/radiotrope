@@ -54,7 +54,7 @@ pub struct RadioTools {
     favorites_file: Option<std::path::PathBuf>,
     /// The last change an agent made, shared by every agent's session
     last_change: Arc<Mutex<Option<LastChange>>>,
-    /// The agents using the player, for the header icon
+    /// The agents using the player, for the menu bar's agents chip
     presence: Presence,
     /// Set on a local agent's own copy; network agents are told apart by
     /// their address, which comes with each request
@@ -1107,7 +1107,7 @@ impl RadioTools {
         }
     }
 
-    /// Put the agent's name on the header icon's list
+    /// Put the agent's name on the agents chip's list
     pub(super) fn note_agent(&self, name: Option<String>, extensions: &rmcp::model::Extensions) {
         let place = self.place.or_else(|| {
             extensions

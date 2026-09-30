@@ -113,7 +113,7 @@ export component App inherits Window {
     in-out property <bool> agents-status-error <=> agents-dialog.status-error;
     in-out property <string> agents-command <=> agents-dialog.command;
     in-out property <string> agents-local-command <=> agents-dialog.local-command;
-    // Agents using the player now, for the chip in the header
+    // Agents using the player now, for the chip in the menu bar
     in property <int> agent-count;
     in property <string> agent-list;
 
@@ -307,6 +307,8 @@ export component App inherits Window {
                 }
                 open-recordings-folder => { root.open-recordings-folder(); }
                 open-agents => { agents-dialog.open(); }
+                agent-count: root.agent-count;
+                agent-list: root.agent-list;
             }
             playback := Playback {
                 station-name: root.station-name;
@@ -327,9 +329,6 @@ export component App inherits Window {
                 can-open-recordings: Platform.has-file-manager;
                 open-recordings-folder => { root.open-recordings-folder(); }
                 toggle-favorite => { root.toggle-favorite(); }
-                agent-count: root.agent-count;
-                agent-list: root.agent-list;
-                open-agents => { agents-dialog.open(); }
             }
             }
         }

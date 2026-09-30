@@ -1,5 +1,5 @@
 import { Theme } from "defaults.slint";
-import { Icon } from "components.slint";
+import { Icon, AgentsChip } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 
@@ -147,6 +147,10 @@ export component MenuBar inherits Rectangle {
     callback open-recording-settings();
     callback open-recordings-folder();
     callback open-agents();
+    // Agents (MCP) using the player now, and one line about each: a chip
+    // at the end of the bar, only while there are any
+    in property <int> agent-count;
+    in property <string> agent-list;
 
     // Our own title bar: the bar moves the window and ends with the window
     // buttons (desktop only, when the system frame is turned off)
@@ -287,6 +291,16 @@ export component MenuBar inherits Rectangle {
                         root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false);
                     }
                 }
+            }
+        }
+
+        if root.agent-count > 0: VerticalLayout {
+            alignment: center;
+            padding-right: 6px;
+            AgentsChip {
+                count: root.agent-count;
+                list: root.agent-list;
+                clicked => { root.open-agents(); }
             }
         }
 

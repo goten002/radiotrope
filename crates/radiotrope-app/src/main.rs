@@ -2276,7 +2276,7 @@ fn setup_agents(
     });
 }
 
-/// Keep the header's agents chip up to date: who uses the player now
+/// Keep the menu bar's agents chip up to date: who uses the player now
 fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::Timer {
     let timer = slint::Timer::default();
     let Some(presence) = presence else {

@@ -1,4 +1,4 @@
-//! Which agents are using the player right now, for the header icon
+//! Which agents are using the player right now, for the menu bar's agents chip
 //!
 //! A local agent (`radiotrope --mcp`) counts while its connection is open.
 //! Network agents have no lasting connection (each request stands alone),

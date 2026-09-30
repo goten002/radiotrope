@@ -91,7 +91,7 @@ where
             {
                 return;
             }
-            // Counts on the header's agents icon while connected
+            // Counts on the menu bar's agents chip while connected
             let here = tools.presence().local_connected();
             match tools.for_local(here.place()).serve(conn).await {
                 Ok(session) => {
