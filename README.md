@@ -34,7 +34,7 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 
 Every agent shares the one player running on your computer. `radiotrope --mcp` connects the agent to it, and starts the player (with its window) if it isn't running yet. Closing an agent leaves the music playing; closing the player's window ends every agent's session. Starting `radiotrope` a second time brings the running window forward instead of opening another. For a separate player of its own, give an agent `--mcp --standalone`.
 
-**Tools > Agents (MCP)** has a ready line that adds Radiotrope to your agent, with a Copy button. Pick the agent at the top: Claude Code, Claude Desktop, Codex CLI, Gemini CLI, VS Code or Cursor (the last two and Claude Desktop get the JSON for their settings file). While agents use the player, a small robot chip at the right of the menu bar shows how many; hover it to see which (a network agent counts until it has been quiet for 5 minutes), click it to open the Agents dialog.
+**Tools > Agents (MCP)** has a ready line that adds Radiotrope to your agent, with a Copy button. Pick the agent at the top: Claude Code, Claude Desktop, Codex CLI, Gemini CLI, VS Code or Cursor (the last two and Claude Desktop get the JSON for their settings file). While agents use the player, a small robot chip at the right of the menu bar shows how many; hover it to see which (a network agent counts until it has been quiet for 5 minutes).
 
 ### Agents on other computers
 
