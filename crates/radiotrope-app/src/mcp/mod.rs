@@ -1,8 +1,10 @@
-//! MCP stdio server
+//! MCP server (`radiotrope --mcp`)
 //!
-//! Manual implementation of the Model Context Protocol over stdin/stdout.
-//! No async runtime — runs on a plain std::thread.
+//! Lets AI agents drive the player over the Model Context Protocol. The
+//! protocol side is rmcp's; this module holds the tools and the transport.
 
 pub mod server;
 pub mod tools;
-pub mod types;
+
+#[cfg(test)]
+mod tests;
