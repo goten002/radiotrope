@@ -16,7 +16,9 @@ pub mod types;
 
 pub use analyzer::AnalyzingSource;
 pub use decoder::SymphoniaSource;
-pub use dsp::equalizer::{find_preset, EqParams, EqPreset, EqSource, SharedEqParams, PRESETS};
+pub use dsp::equalizer::{
+    find_preset, peak_boost_db, EqParams, EqPreset, EqSource, PresetGroup, SharedEqParams, PRESETS,
+};
 pub use engine::{AudioEngine, EngineConfig, EngineOutput};
 pub use recording::{
     Recorder, RecordingFormat, RecordingOptions, RecordingStatus, RecordingTags, RecordingTap,

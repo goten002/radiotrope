@@ -148,14 +148,17 @@ pub mod eq {
     /// Number of EQ bands
     pub const NUM_BANDS: usize = 10;
 
-    /// Center frequencies for each band (Hz)
+    /// Center frequencies for each band (Hz). The two outer bands are
+    /// shelves, and a shelf's frequency is where it reaches half its gain:
+    /// 40 Hz still moves the kick drum, and 12 kHz lands below where radio
+    /// encoders cut off (about 17 kHz for a 128 kbps MP3)
     pub const CENTER_FREQUENCIES: [f32; 10] = [
-        31.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 16000.0,
+        40.0, 62.0, 125.0, 250.0, 500.0, 1000.0, 2000.0, 4000.0, 8000.0, 12000.0,
     ];
 
     /// Display labels for each band
     pub const FREQ_LABELS: [&str; 10] = [
-        "32", "64", "125", "250", "500", "1K", "2K", "4K", "8K", "16K",
+        "40", "64", "125", "250", "500", "1K", "2K", "4K", "8K", "12K",
     ];
 
     /// Minimum gain per band (dB)
@@ -172,8 +175,7 @@ pub mod eq {
     pub const SHELF_Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
     /// The highest band's shelf moves down to this fraction of the sample
-    /// rate when 16 kHz is past it, so it still works on 22.05 and 32 kHz
-    /// streams
+    /// rate when 12 kHz is past it, so it still works on 22.05 kHz streams
     pub const TOP_SHELF_MAX_FRACTION: f32 = 0.4;
 
     /// Loudest sample the EQ passes on (full scale): its limiter turns

@@ -2,4 +2,6 @@
 
 pub mod equalizer;
 
-pub use equalizer::{find_preset, EqParams, EqPreset, EqSource, SharedEqParams, PRESETS};
+pub use equalizer::{
+    find_preset, peak_boost_db, EqParams, EqPreset, EqSource, PresetGroup, SharedEqParams, PRESETS,
+};
