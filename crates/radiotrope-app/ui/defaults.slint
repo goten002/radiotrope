@@ -107,7 +107,8 @@ export global Defaults {
     // ── Dialogs: card width, and height where it doesn't follow the content ──
     out property <length> dialog-width: 440px;
     out property <length> about-width: 680px;
-    out property <length> agents-width: 520px;
+    // As wide as the search, up to the window: the command lines are long
+    out property <length> agents-width: station-browser-width;
     // Width of an ⓘ help bubble
     out property <length> info-tip-width: 280px;
     out property <length> accent-color-width: 400px;
