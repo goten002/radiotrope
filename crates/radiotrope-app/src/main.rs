@@ -2219,9 +2219,17 @@ fn setup_agents(
     settings: &radiotrope_app::data::settings::Settings,
 ) {
     use mcp::setup::AgentApp;
+    use radiotrope_app::data::settings::McpAuth;
     ui.set_agents_available(agents.is_some());
     ui.set_agents_network(settings.mcp_network);
     ui.set_agents_address(settings.mcp_address.as_str().into());
+    let auths: Vec<slint::SharedString> = McpAuth::ALL.iter().map(|a| a.label().into()).collect();
+    ui.set_agents_auths(std::rc::Rc::new(slint::VecModel::from(auths)).into());
+    let auth = McpAuth::ALL
+        .iter()
+        .position(|a| *a == settings.mcp_auth)
+        .unwrap_or(0);
+    ui.set_agents_auth(auth as i32);
 
     // Setup lines for the agent picked in the dialog
     let labels: Vec<slint::SharedString> =
@@ -2269,6 +2277,15 @@ fn setup_agents(
     ui.on_agents_network_toggled({
         let apply = apply.clone();
         move |on| apply(&|s| s.mcp_network = on)
+    });
+    ui.on_agents_auth_changed({
+        let apply = apply.clone();
+        move |index| {
+            let Some(auth) = McpAuth::ALL.get(index as usize).copied() else {
+                return;
+            };
+            apply(&|s| s.mcp_auth = auth)
+        }
     });
     ui.on_agents_apply_address({
         let apply = apply.clone();
@@ -2334,19 +2351,23 @@ fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
 /// The lines that add Radiotrope to the agent picked in the dialog
 fn show_agent_lines(ui: &App) {
     use mcp::setup::{self, AgentApp};
+    use radiotrope_app::data::settings::McpAuth;
     let app = AgentApp::ALL
         .get(ui.get_agents_app().max(0) as usize)
         .copied()
         .unwrap_or(AgentApp::ClaudeCode);
     let url = ui.get_agents_url();
+    let token = ui.get_agents_token();
+    let wants_token =
+        McpAuth::ALL.get(ui.get_agents_auth().max(0) as usize) == Some(&McpAuth::Token);
     ui.set_agents_local_command(setup::local_line(app, &setup::this_program()).into());
     let network = (!url.is_empty())
-        .then(|| setup::network_line(app, &url, &ui.get_agents_token()))
+        .then(|| setup::network_line(app, &url, wants_token.then_some(token.as_str())))
         .flatten();
     ui.set_agents_command(network.unwrap_or_default().into());
     ui.set_agents_network_placeholder(setup::no_network_line(app).into());
     ui.set_agents_local_note(app.local_note().into());
-    ui.set_agents_network_note(app.network_note().into());
+    ui.set_agents_network_note(app.network_note(wants_token).into());
 }
 
 fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {

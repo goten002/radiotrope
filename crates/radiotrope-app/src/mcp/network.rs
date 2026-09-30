@@ -1,12 +1,13 @@
 //! Network MCP: agents on other computers reach the player over Streamable
 //! HTTP at `/mcp`
 //!
-//! Off until the user turns it on. Every request must carry the token as
-//! `Authorization: Bearer <token>`. Requests from web pages (an `Origin`
-//! header) are refused, and while the server listens on this computer only,
-//! so are requests for other host names (DNS rebinding). Plain HTTP: meant
-//! for the local network or a private one such as Tailscale, where the token
-//! is enough.
+//! Off until the user turns it on. With a token set, every request must
+//! carry it as `Authorization: Bearer <token>`; without one, anyone who
+//! reaches the address may use the player. Requests from web pages (an
+//! `Origin` header) are refused either way, and while the server listens on
+//! this computer only, so are requests for other host names (DNS
+//! rebinding). Plain HTTP: meant for the local network or a private one such
+//! as Tailscale, where the token is enough.
 //!
 //! Serves both kinds of client: stateless 2026-07-28 ones, and older ones
 //! with an `initialize` handshake and an `Mcp-Session-Id`.
@@ -36,13 +37,16 @@ use super::tools::RadioTools;
 pub struct Options {
     /// "host:port"
     pub address: String,
-    pub token: String,
+    /// The token requests must carry; `None` lets any request in
+    pub token: Option<String>,
 }
 
 /// The running server; dropping it stops the server
 pub struct Server {
     cancel: CancellationToken,
     url: String,
+    /// Hears once the server has let go of its port
+    stopped: std::sync::mpsc::Receiver<()>,
 }
 
 impl Server {
@@ -55,6 +59,9 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         self.cancel.cancel();
+        // A restart binds the same port next, so wait for it to be free;
+        // the server stops at once, the limit only guards against a hang
+        let _ = self.stopped.recv_timeout(std::time::Duration::from_secs(2));
     }
 }
 
@@ -81,9 +88,10 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
     let cancel = CancellationToken::new();
     let presence = tools.presence();
     let service = mcp_service(tools, addr.ip(), cancel.clone());
-    let token: Arc<str> = options.token.clone().into();
+    let token: Option<Arc<str>> = options.token.as_deref().map(Arc::from);
 
     let stop = cancel.clone();
+    let (stopped_tx, stopped) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("mcp-network".into())
         .spawn(move || {
@@ -98,12 +106,17 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
                 }
             };
             runtime.block_on(serve(listener, service, token, presence, stop));
+            let _ = stopped_tx.send(());
             // Streams still open (SSE) end with the runtime
             runtime.shutdown_background();
         })
         .map_err(|e| format!("Can't start the network server: {e}"))?;
 
-    Ok(Server { cancel, url })
+    Ok(Server {
+        cancel,
+        url,
+        stopped,
+    })
 }
 
 type McpService = StreamableHttpService<RadioTools, LocalSessionManager>;
@@ -118,7 +131,7 @@ fn mcp_service(tools: RadioTools, bind: IpAddr, cancel: CancellationToken) -> Mc
     // Listening on this computer only: accept loopback host names only, so
     // a web page can't reach us through DNS rebinding. Listening on the
     // network, agents use whatever name or address reaches this computer;
-    // the token keeps others out.
+    // the token, if set, keeps others out.
     if !bind.is_loopback() {
         config = config.disable_allowed_hosts();
     }
@@ -132,7 +145,7 @@ fn mcp_service(tools: RadioTools, bind: IpAddr, cancel: CancellationToken) -> Mc
 async fn serve(
     listener: StdListener,
     service: McpService,
-    token: Arc<str>,
+    token: Option<Arc<str>>,
     presence: Presence,
     cancel: CancellationToken,
 ) {
@@ -175,7 +188,7 @@ struct Sender {
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     service: McpService,
-    token: Arc<str>,
+    token: Option<Arc<str>>,
     from: Sender,
     cancel: CancellationToken,
 ) {
@@ -183,7 +196,7 @@ async fn serve_connection(
         let mut service = service.clone();
         let token = token.clone();
         let from = from.clone();
-        async move { Ok::<_, Infallible>(handle(&mut service, &token, &from, request).await) }
+        async move { Ok::<_, Infallible>(handle(&mut service, token.as_deref(), &from, request).await) }
     });
     let connection =
         hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), handler);
@@ -196,7 +209,7 @@ async fn serve_connection(
 
 async fn handle(
     service: &mut McpService,
-    token: &str,
+    token: Option<&str>,
     from: &Sender,
     mut request: Request<Incoming>,
 ) -> Response<BoxBody<Bytes, Infallible>> {
@@ -209,7 +222,7 @@ async fn handle(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
-    if !agent_token::matches(token, presented.trim()) {
+    if token.is_some_and(|token| !agent_token::matches(token, presented.trim())) {
         let mut response = plain(StatusCode::UNAUTHORIZED, "Missing or wrong token");
         response.headers_mut().insert(
             http::header::WWW_AUTHENTICATE,
@@ -356,51 +369,79 @@ mod tests {
         )
     }
 
-    #[test]
-    fn the_server_wants_the_token_and_no_web_pages() {
-        let token = "a".repeat(64);
-        let server = start(
-            &Options {
-                address: "127.0.0.1:0".into(),
-                token: token.clone(),
-            },
-            test_tools(),
-        )
-        .unwrap();
-        let port: u16 = server
+    const INIT: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
+
+    fn port_of(server: &Server) -> u16 {
+        server
             .url()
             .trim_end_matches("/mcp")
             .rsplit(':')
             .next()
             .unwrap()
             .parse()
-            .unwrap();
-        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}"#;
-        let post = |extra: &str| {
-            format!(
-                "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream{extra}"
-            )
-        };
+            .unwrap()
+    }
 
-        let (status, _) = http(port, &post(""), init);
+    fn post_request(port: u16, extra: &str) -> String {
+        format!(
+            "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream{extra}"
+        )
+    }
+
+    #[test]
+    fn without_a_token_anyone_but_web_pages_gets_in() {
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: None,
+            },
+            test_tools(),
+        )
+        .unwrap();
+        let port = port_of(&server);
+
+        let (status, body) = http(port, &post_request(port, ""), INIT);
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(body.contains("\"radiotrope\""), "{body}");
+
+        let web_page = post_request(port, "\r\nOrigin: https://evil.example");
+        let (status, _) = http(port, &web_page, INIT);
+        assert!(status.contains(" 403 "), "{status}");
+    }
+
+    #[test]
+    fn the_server_wants_the_token_and_no_web_pages() {
+        let token = "a".repeat(64);
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: Some(token.clone()),
+            },
+            test_tools(),
+        )
+        .unwrap();
+        let port = port_of(&server);
+        let post = |extra: &str| post_request(port, extra);
+
+        let (status, _) = http(port, &post(""), INIT);
         assert!(status.contains(" 401 "), "{status}");
-        let (status, _) = http(port, &post("\r\nAuthorization: Bearer wrong"), init);
+        let (status, _) = http(port, &post("\r\nAuthorization: Bearer wrong"), INIT);
         assert!(status.contains(" 401 "), "{status}");
 
         let auth = format!("\r\nAuthorization: Bearer {token}");
-        let (status, body) = http(port, &post(&auth), init);
+        let (status, body) = http(port, &post(&auth), INIT);
         assert!(status.contains(" 200 "), "{status}");
         assert!(body.contains("\"radiotrope\""), "{body}");
 
         let (status, _) = http(
             port,
             &post(&format!("{auth}\r\nOrigin: https://evil.example")),
-            init,
+            INIT,
         );
         assert!(status.contains(" 403 "), "{status}");
 
         let rebinding = post(&auth).replace(&format!("127.0.0.1:{port}"), "evil.example");
-        let (status, _) = http(port, &rebinding, init);
+        let (status, _) = http(port, &rebinding, INIT);
         assert!(status.contains(" 403 "), "{status}");
 
         let (status, _) = http(

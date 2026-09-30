@@ -108,8 +108,8 @@ component RowLabel inherits Text {
     vertical-alignment: center;
 }
 
-// One agent in the picker's list, with the menus' tick when picked
-component AgentItem inherits Rectangle {
+// One choice in a picker's list, with the menus' tick when picked
+component PickerItem inherits Rectangle {
     in property <string> label;
     in property <bool> selected;
     callback clicked();
@@ -148,9 +148,10 @@ component AgentItem inherits Rectangle {
     }
 }
 
-// Which agent the setup lines are for: a dropdown like the EQ presets
-component AgentPicker inherits Rectangle {
-    in property <[string]> apps;
+// A dropdown like the EQ presets: which agent the setup lines are for,
+// and how network agents sign in
+component Picker inherits Rectangle {
+    in property <[string]> items;
     in-out property <int> selected;
     in property <bool> enabled: true;
     callback changed(int);
@@ -174,7 +175,7 @@ component AgentPicker inherits Rectangle {
         padding-right: 10px;
 
         Text {
-            text: root.apps[root.selected];
+            text: root.items[root.selected];
             color: root.enabled ? Theme.text-primary : Theme.disabled-text;
             font-size: Theme.font-md;
             vertical-alignment: center;
@@ -208,7 +209,7 @@ component AgentPicker inherits Rectangle {
 
             VerticalLayout {
                 padding: 4px;
-                for label[index] in root.apps: AgentItem {
+                for label[index] in root.items: PickerItem {
                     label: label;
                     selected: index == root.selected;
                     // Picks before closing: the list's rows (and their
@@ -262,6 +263,10 @@ export component AgentsDialog inherits Rectangle {
     in property <[string]> apps;
     in-out property <int> app;
     callback app-changed(int);
+    // How network agents sign in: None, or Token (the second choice)
+    in property <[string]> auths;
+    in-out property <int> auth;
+    callback auth-changed(int);
 
     // Fields being edited; reset from the saved values when the dialog opens
     in-out property <string> edit-address;
@@ -271,6 +276,8 @@ export component AgentsDialog inherits Rectangle {
     callback regenerate-token();
 
     property <bool> network-fields: root.available && root.network-on;
+    property <bool> token-on: root.auth == 1;
+    property <bool> token-fields: root.network-fields && root.token-on;
 
     public function open() {
         root.edit-address = root.address;
@@ -304,8 +311,8 @@ export component AgentsDialog inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             RowLabel { text: "Agent"; }
-            AgentPicker {
-                apps: root.apps;
+            Picker {
+                items: root.apps;
                 selected <=> root.app;
                 changed(index) => { root.app-changed(index); }
             }
@@ -348,7 +355,9 @@ export component AgentsDialog inherits Rectangle {
                 // While on, what the server says (listening, or why not)
                 ToggleNote {
                     text: root.network-on && root.available && root.status != ""
-                        ? root.status : "Agents on other computers connect with the token.";
+                        ? root.status
+                        : root.token-on ? "Agents on other computers connect with the token."
+                        : "Agents on other computers connect without a token.";
                     error: root.network-on && root.available && root.status-error;
                 }
             }
@@ -368,6 +377,17 @@ export component AgentsDialog inherits Rectangle {
                     }
                 }
             }
+
+            HorizontalLayout {
+                spacing: 8px;
+                RowLabel { text: "Authentication"; }
+                Picker {
+                    items: root.auths;
+                    selected <=> root.auth;
+                    enabled: root.network-fields;
+                    changed(index) => { root.auth-changed(index); }
+                }
+            }
         }
 
         VerticalLayout {
@@ -378,12 +398,12 @@ export component AgentsDialog inherits Rectangle {
                 RowLabel { text: "Token"; }
                 CopyLine {
                     text: root.token;
-                    placeholder: "Made when you allow network agents";
-                    enabled: root.network-fields;
+                    placeholder: "Made when network agents first need one";
+                    enabled: root.token-fields;
                 }
                 SecondaryButton {
-                    label: "Regenerate";
-                    enabled: root.network-fields && root.token != "";
+                    label: "New token";
+                    enabled: root.token-fields && root.token != "";
                     clicked => { root.regenerate-token(); }
                 }
             }
@@ -391,7 +411,7 @@ export component AgentsDialog inherits Rectangle {
                 spacing: 8px;
                 RowLabel { text: "Command"; }
                 CopyLine {
-                    text: root.token != "" ? root.command : "";
+                    text: root.token-on && root.token == "" ? "" : root.command;
                     placeholder: root.network-placeholder;
                     enabled: root.network-fields;
                 }
