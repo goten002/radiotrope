@@ -82,8 +82,17 @@ where
     if !matches!(tokio::time::timeout(HELLO_WAIT, read).await, Ok(Ok(_))) {
         return;
     }
-    match hello.trim_end() {
-        HELLO_MCP => {
+    let hello = hello.trim_end();
+    // "radiotrope/1 mcp from=<pid>": the relay's parent, the agent app
+    let mcp = hello.strip_prefix(HELLO_MCP).and_then(|rest| {
+        if rest.is_empty() {
+            return Some(None);
+        }
+        let pid = rest.strip_prefix(" from=")?;
+        Some(pid.parse::<u32>().ok())
+    });
+    if let Some(app) = mcp {
+        {
             if conn
                 .write_all(format!("{WELCOME}\n").as_bytes())
                 .await
@@ -91,8 +100,9 @@ where
             {
                 return;
             }
-            // Counts on the menu bar's agents chip while connected
-            let here = tools.presence().local_connected();
+            // Counts on the menu bar's agents chip while connected; the
+            // sessions of one app count once
+            let here = tools.presence().local_connected(app);
             match tools.for_local(here.place()).serve(conn).await {
                 Ok(session) => {
                     let _ = session.waiting().await;
@@ -100,8 +110,25 @@ where
                 Err(e) => eprintln!("MCP: session failed: {e}"),
             }
         }
-        HELLO_SHOW => show_window(),
-        _ => {}
+    } else if hello == HELLO_SHOW {
+        show_window();
+    }
+}
+
+/// The relay's first line: [`HELLO_MCP`], with the process that started the
+/// relay where we know it. One app can open several sessions (Claude
+/// Desktop's chat and its agent mode each start one), and they share it.
+fn mcp_hello() -> String {
+    #[cfg(unix)]
+    {
+        // SAFETY: getppid has no preconditions and cannot fail
+        let parent = unsafe { libc::getppid() };
+        format!("{HELLO_MCP} from={parent}\n")
+    }
+    // Windows has no cheap way to the parent; each session counts alone
+    #[cfg(not(unix))]
+    {
+        format!("{HELLO_MCP}\n")
     }
 }
 
@@ -177,9 +204,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (from_player, mut to_player) = tokio::io::split(conn);
-    to_player
-        .write_all(format!("{HELLO_MCP}\n").as_bytes())
-        .await?;
+    to_player.write_all(mcp_hello().as_bytes()).await?;
     let mut from_player = BufReader::new(from_player);
     let mut answer = String::new();
     from_player.read_line(&mut answer).await?;
@@ -310,7 +335,8 @@ mod tests {
         let mut read = BufReader::new(read);
         let mut line = String::new();
         read.read_line(&mut line).await.unwrap();
-        assert_eq!(line.trim_end(), HELLO_MCP);
+        // With the app that started the relay where known
+        assert!(line.starts_with(HELLO_MCP), "{line}");
         write.write_all(b"ok\n").await.unwrap();
         loop {
             line.clear();
