@@ -657,12 +657,14 @@ fn main() {
             if let Some(ui) = ui_weak.upgrade() {
                 let model = ui.get_favorites_list();
                 let logos_model = ui.get_favorite_logos();
+                let fogs_model = ui.get_favorite_logo_fogs();
                 let mut items: Vec<FavoriteStation> = (0..model.row_count())
                     .filter_map(|i| model.row_data(i))
                     .collect();
                 let mut logos: Vec<slint::Image> = (0..logos_model.row_count())
                     .filter_map(|i| logos_model.row_data(i))
                     .collect();
+                let mut fogs: Vec<LogoFog> = fogs_model.iter().collect();
 
                 if from < items.len() && to < items.len() {
                     let item = items.remove(from);
@@ -671,10 +673,15 @@ fn main() {
                         let logo = logos.remove(from);
                         logos.insert(to, logo);
                     }
+                    if from < fogs.len() && to < fogs.len() {
+                        let fog = fogs.remove(from);
+                        fogs.insert(to, fog);
+                    }
                 }
 
                 ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
                 ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
+                ui.set_favorite_logo_fogs(ModelRc::from(std::rc::Rc::new(VecModel::from(fogs))));
             }
 
             // Save to disk in background
@@ -1010,6 +1017,7 @@ fn main() {
                         offset,
                         results: ui.get_search_results(),
                         logos: ui.get_browse_logos(),
+                        fogs: ui.get_browse_logo_fogs(),
                         has_more: ui.get_has_more(),
                         typed: ui.get_browse_typed(),
                         shown: ui.get_browse_shown(),
@@ -1040,6 +1048,7 @@ fn main() {
                 ui.set_browse_mode(mode);
                 ui.set_search_results(kept.results);
                 ui.set_browse_logos(kept.logos.clone());
+                ui.set_browse_logo_fogs(kept.fogs.clone());
                 ui.set_has_more(kept.has_more);
                 ui.set_search_error(Default::default());
                 ui.set_search_loading(false);
@@ -1767,12 +1776,13 @@ fn set_levels(model: &VecModel<f32>, levels: &[f32]) {
     }
 }
 
-/// Colour the visualizer with the main colours of the station logo
+/// Colour the visualizer with the main colours of the station logo, and
+/// give the header logo its colour fog if it would vanish on the tile
 fn apply_logo_palette(ui: &App) {
     let dark = ui.get_dark_mode();
-    let colors: Vec<slint::Color> = ui
-        .get_current_logo()
-        .to_rgba8()
+    let pixels = ui.get_current_logo().to_rgba8();
+    let colors: Vec<slint::Color> = pixels
+        .as_ref()
         .map(|buf| logo_palette(buf.as_bytes(), dark))
         .unwrap_or_default()
         .into_iter()
@@ -1780,6 +1790,33 @@ fn apply_logo_palette(ui: &App) {
         .collect();
     ui.global::<VizStyle>()
         .set_logo_colors(ModelRc::from(std::rc::Rc::new(VecModel::from(colors))));
+    ui.set_current_logo_fog(
+        pixels
+            .map(|buf| logo_fog(buf.as_bytes(), buf.width()))
+            .unwrap_or_default(),
+    );
+}
+
+/// The colour fog a logo gets behind it on each theme (off where it shows
+/// well as it is). `rgba` is the logo's pixels in RGBA order, `width` to a
+/// row.
+pub(crate) fn logo_fog(rgba: &[u8], width: u32) -> LogoFog {
+    let colors = |dark| match visual::logo_backdrop(rgba, width as usize, dark) {
+        Some(fog) => {
+            let color = |[r, g, b]: [u8; 3]| slint::Color::from_rgb_u8(r, g, b);
+            FogColors {
+                on: true,
+                first: color(fog.first),
+                second: color(fog.second),
+                ground: color(fog.ground),
+            }
+        }
+        None => FogColors::default(),
+    };
+    LogoFog {
+        dark: colors(true),
+        light: colors(false),
+    }
 }
 
 /// Text helpers the UI calls back into
@@ -2649,6 +2686,7 @@ struct BrowseStash {
     offset: usize,
     results: ModelRc<BrowseStation>,
     logos: ModelRc<slint::Image>,
+    fogs: ModelRc<LogoFog>,
     has_more: bool,
     typed: slint::SharedString,
     shown: slint::SharedString,
@@ -2671,6 +2709,7 @@ fn start_browse(
     if let Some(ui) = ui_weak.upgrade() {
         ui.set_search_results(ModelRc::default());
         ui.set_browse_logos(ModelRc::default());
+        ui.set_browse_logo_fogs(ModelRc::default());
         ui.set_has_more(false);
         ui.set_search_error(Default::default());
         ui.set_search_loading(true);
@@ -2715,21 +2754,22 @@ fn show_browse_results(
             item.is_favorite = browse_is_favorite(&f, item);
         }
     }
-    let (mut items, mut logos) = if append {
-        let existing = ui.get_search_results();
-        let existing_logos = ui.get_browse_logos();
+    let (mut items, mut logos, mut fogs) = if append {
         (
-            existing.iter().collect::<Vec<_>>(),
-            existing_logos.iter().collect::<Vec<_>>(),
+            ui.get_search_results().iter().collect::<Vec<_>>(),
+            ui.get_browse_logos().iter().collect::<Vec<_>>(),
+            ui.get_browse_logo_fogs().iter().collect::<Vec<_>>(),
         )
     } else {
-        (Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new())
     };
     // No logos yet: rows get theirs as they come on screen
     logos.resize(items.len() + new_items.len(), slint::Image::default());
+    fogs.resize(logos.len(), LogoFog::default());
     items.extend(new_items);
     ui.set_search_results(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
     ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
+    ui.set_browse_logo_fogs(ModelRc::from(std::rc::Rc::new(VecModel::from(fogs))));
     ui.set_has_more(results.has_more);
     ui.set_search_error(Default::default());
     BROWSE_FAILURES.set(0);
@@ -3037,7 +3077,7 @@ fn flag_image(country_code: Option<&str>, country: Option<&str>) -> slint::Image
 // All callers run on the Slint event-loop thread, so thread_local is safe and avoids
 // threading slint::Image (which is !Send) through closures.
 thread_local! {
-    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, (slint::Image, LogoFog)>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -3057,28 +3097,29 @@ fn refresh_favorites(
     let sorted = favs.sorted(FavoriteSort::Manual);
     let items: Vec<FavoriteStation> = sorted.iter().map(|f| favorite_to_slint(f)).collect();
 
-    // Build parallel logos model, using in-memory cache to avoid re-decoding
-    let logos: Vec<slint::Image> = LOGO_IMAGE_CACHE.with(|cache| {
+    // Build parallel logo and fog models, using in-memory cache to avoid
+    // re-decoding
+    let (logos, fogs): (Vec<slint::Image>, Vec<LogoFog>) = LOGO_IMAGE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         sorted
             .iter()
             .map(|f| {
                 let key = f.id();
-                if let Some(img) = cache.get(&key) {
-                    return img.clone();
+                if let Some(logo) = cache.get(&key) {
+                    return logo.clone();
                 }
                 if let Some((rgba, width, height)) = logo_service.get_cached_rgba(*f) {
                     let pixel_buf = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                         &rgba, width, height,
                     );
-                    let img = slint::Image::from_rgba8(pixel_buf);
-                    cache.insert(key, img.clone());
-                    img
+                    let logo = (slint::Image::from_rgba8(pixel_buf), logo_fog(&rgba, width));
+                    cache.insert(key, logo.clone());
+                    logo
                 } else {
                     Default::default()
                 }
             })
-            .collect()
+            .unzip()
     });
 
     mark_browse_favorites(ui, &favs);
@@ -3086,6 +3127,7 @@ fn refresh_favorites(
 
     ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
     ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
+    ui.set_favorite_logo_fogs(ModelRc::from(std::rc::Rc::new(VecModel::from(fogs))));
 }
 
 fn format_codec_line(s: &AppSnapshot) -> String {

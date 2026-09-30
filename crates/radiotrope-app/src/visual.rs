@@ -2,8 +2,9 @@
 //!
 //! A noise gate so quiet bands (like the empty top of a low-passed MP3) drop
 //! to nothing instead of sitting as frozen stubs, smoothing so bars glide
-//! instead of flickering, and the palette sampled from a station logo that
-//! colours the bars.
+//! instead of flickering, the palette sampled from a station logo that
+//! colours the bars, and the colour fog put behind logos that would vanish
+//! on their tile.
 
 /// Levels at or below this are noise; the rest is rescaled to 0-1
 const NOISE_FLOOR: f32 = 0.08;
@@ -210,6 +211,138 @@ pub fn logo_palette(rgba: &[u8], dark: bool) -> Vec<[u8; 3]> {
         .collect()
 }
 
+/// Logo tile colour on the dark theme (Theme.elevated in ui/defaults.slint)
+const TILE_DARK: [u8; 3] = [0x1b, 0x1c, 0x1f];
+/// Logo tile colour on the light theme (Theme.elevated in ui/defaults.slint)
+const TILE_LIGHT: [u8; 3] = [0xf0, 0xf0, 0xf4];
+/// Share of transparent pixels that makes a logo see-through. Logos with
+/// their own background (JPEGs, filled squares) never get a fog.
+const MIN_TRANSPARENT: f32 = 0.10;
+/// Pixels with less contrast than this against the tile are hard to see
+/// (WCAG contrast ratio; 1 is the same colour, 21 black on white)
+const MIN_CONTRAST: f32 = 1.8;
+/// Share of the logo's outline (visible pixels next to transparent ones,
+/// where the logo meets the tile) that must be hard to see before the logo
+/// gets a fog. A white mark inside a coloured shape never touches the tile,
+/// so it does not count.
+const MIN_HIDDEN_OUTLINE: f32 = 0.4;
+/// Share of all visible pixels that must be hard to see as well, so a thin
+/// dark ring around a coloured shape is left alone
+const MIN_HIDDEN: f32 = 0.10;
+/// Fog colour of logos with no colours of their own, per theme
+const FOG_GREY_DARK: [u8; 3] = [0xc8, 0xc9, 0xcc];
+const FOG_GREY_LIGHT: [u8; 3] = [0x3a, 0x3c, 0x41];
+
+/// The colour fog behind a logo: a soft glow in each of two corners over a
+/// flat ground colour
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Backdrop {
+    /// Glow in the top left corner
+    pub first: [u8; 3],
+    /// Glow in the bottom right corner
+    pub second: [u8; 3],
+    pub ground: [u8; 3],
+}
+
+/// The fog a see-through logo needs behind it so it does not vanish on the
+/// tile, on the dark theme (`dark`) or the light one. `None` when the logo
+/// shows well as it is.
+///
+/// `rgba` is the image's pixels in RGBA order, `width` pixels to a row.
+/// A logo gets one when it is partly transparent and much of it, above all
+/// where it meets the tile, is too close to the tile colour: black
+/// lettering on the dark theme, white lettering on the light one. The fog
+/// uses the
+/// logo's own colours (as the visualizer does), made pale on the dark theme
+/// and deep on the light one so the lettering stands out; logos with no
+/// colours get a grey fog.
+pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> {
+    let pixels = rgba.len() / 4;
+    if width == 0 || pixels == 0 {
+        return None;
+    }
+    let height = pixels / width;
+    // Beyond the image's edge is the tile too
+    let clear =
+        |x: usize, y: usize| x >= width || y >= height || rgba[(y * width + x) * 4 + 3] < 128;
+    let tile = relative_luminance(if dark { TILE_DARK } else { TILE_LIGHT });
+    let (mut see_through, mut hidden, mut outline, mut hidden_outline) = (0, 0, 0, 0);
+    for y in 0..height {
+        for x in 0..width {
+            if clear(x, y) {
+                see_through += 1;
+                continue;
+            }
+            let px = &rgba[(y * width + x) * 4..];
+            let lum = relative_luminance([px[0], px[1], px[2]]);
+            let (hi, lo) = if lum > tile { (lum, tile) } else { (tile, lum) };
+            let is_hidden = (hi + 0.05) / (lo + 0.05) < MIN_CONTRAST;
+            let on_outline = x == 0
+                || y == 0
+                || clear(x - 1, y)
+                || clear(x + 1, y)
+                || clear(x, y - 1)
+                || clear(x, y + 1);
+            hidden += is_hidden as usize;
+            outline += on_outline as usize;
+            hidden_outline += (is_hidden && on_outline) as usize;
+        }
+    }
+    let visible = width * height - see_through;
+    let share = |part: usize, whole: usize| part as f32 / whole.max(1) as f32;
+    if visible == 0
+        || share(see_through, width * height) < MIN_TRANSPARENT
+        || share(hidden, visible) < MIN_HIDDEN
+        || share(hidden_outline, outline) < MIN_HIDDEN_OUTLINE
+    {
+        return None;
+    }
+
+    // Colourful palette entries only; the near-white or near-black fallback
+    // for black-and-white logos is grey, which gets the grey fog instead
+    let colors: Vec<[u8; 3]> = logo_palette(rgba, true)
+        .into_iter()
+        .filter(|&[r, g, b]| rgb_to_hsv(r, g, b).1 >= MIN_SATURATION)
+        .collect();
+    let grey = if dark { FOG_GREY_DARK } else { FOG_GREY_LIGHT };
+    let first = colors.first().copied().unwrap_or(grey);
+    let second = colors.get(1).copied().unwrap_or(first);
+    Some(if dark {
+        let white = [255; 3];
+        Backdrop {
+            first: mix(first, white, 0.58),
+            second: mix(second, white, 0.70),
+            ground: mix(first, white, 0.80),
+        }
+    } else {
+        let black = [0; 3];
+        Backdrop {
+            first: mix(first, black, 0.50),
+            second: mix(second, black, 0.62),
+            ground: mix(first, black, 0.72),
+        }
+    })
+}
+
+/// Relative luminance of an sRGB colour (0 black to 1 white), as WCAG
+/// defines it for contrast ratios
+fn relative_luminance(rgb: [u8; 3]) -> f32 {
+    let [r, g, b] = rgb.map(|c| {
+        let c = c as f32 / 255.0;
+        if c <= 0.039_28 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    0.2126 * r + 0.7152 * g + 0.0722 * b
+}
+
+/// `a` moved towards `b` by `t` (0 keeps `a`, 1 gives `b`)
+fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
+    [0, 1, 2].map(|i| (a[i] as f32 * (1.0 - t) + b[i] as f32 * t).round() as u8)
+}
+
 /// Hue (0-360), saturation and value (0-1)
 fn rgb_to_hsv(r: u8, g: u8, b: u8) -> (f32, f32, f32) {
     let (r, g, b) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
@@ -400,6 +533,121 @@ mod tests {
     #[test]
     fn empty_image() {
         assert!(logo_palette(&[], true).is_empty());
+    }
+
+    /// Width of the test logos below
+    const W: usize = 10;
+
+    /// A see-through logo, `W` pixels wide: `n` transparent pixels, then
+    /// the given pixels
+    fn see_through(n: usize, pixels: &[([u8; 3], usize)]) -> Vec<u8> {
+        let mut img = vec![0u8; n * 4];
+        img.extend(image(pixels));
+        img
+    }
+
+    /// Rows of `W` pixels: ' ' transparent, 'k' near-black, 'w' white,
+    /// 'g' green
+    fn drawn(rows: &[&str]) -> Vec<u8> {
+        rows.iter()
+            .flat_map(|row| row.chars())
+            .flat_map(|c| match c {
+                'k' => [17, 17, 17, 255],
+                'w' => [255, 255, 255, 255],
+                'g' => [47, 191, 90, 255],
+                _ => [0, 0, 0, 0],
+            })
+            .collect()
+    }
+
+    #[test]
+    fn backdrop_for_black_lettering_on_dark_only() {
+        // Black text under a green mark, on a transparent background
+        let img = drawn(&[
+            "          ",
+            "   gggg   ",
+            "   gggg   ",
+            "   gggg   ",
+            "          ",
+            " k k kk k ",
+            " k k k  k ",
+            "          ",
+        ]);
+        let fog = logo_backdrop(&img, W, true).expect("black text needs a fog on dark");
+        // Pale, and tinted by the green mark
+        assert!(fog.ground.iter().all(|&c| c > 180), "{fog:?}");
+        assert!(fog.first[1] > fog.first[0] && fog.first[1] > fog.first[2]);
+        let on_light = logo_backdrop(&img, W, false);
+        assert_eq!(on_light, None, "black text shows on light");
+    }
+
+    #[test]
+    fn backdrop_for_white_lettering_on_light_only() {
+        let img = see_through(60, &[([255, 255, 255], 25), ([255, 122, 26], 15)]);
+        let fog = logo_backdrop(&img, W, false).expect("white text needs a fog on light");
+        // Deep, and tinted by the orange mark
+        assert!(fog.ground.iter().all(|&c| c < 80), "{fog:?}");
+        assert!(fog.first[0] > fog.first[2]);
+        let on_dark = logo_backdrop(&img, W, true);
+        assert_eq!(on_dark, None, "white text shows on dark");
+    }
+
+    #[test]
+    fn backdrop_grey_for_logos_without_colour() {
+        let img = see_through(60, &[([20, 20, 20], 40)]);
+        let fog = logo_backdrop(&img, W, true).unwrap();
+        assert_eq!(fog.first, mix(FOG_GREY_DARK, [255; 3], 0.58));
+        assert_eq!(fog.second, mix(FOG_GREY_DARK, [255; 3], 0.70));
+        let img = see_through(60, &[([240, 240, 240], 40)]);
+        let fog = logo_backdrop(&img, W, false).unwrap();
+        assert_eq!(fog.ground, mix(FOG_GREY_LIGHT, [0; 3], 0.72));
+    }
+
+    #[test]
+    fn no_backdrop_for_opaque_or_enclosed_parts() {
+        // Opaque: the logo has its own background
+        let opaque = image(&[([17, 17, 17], 100)]);
+        assert_eq!(logo_backdrop(&opaque, W, true), None);
+        // A white mark inside a green shape never touches the light tile
+        let inside = drawn(&[
+            "          ",
+            " gggggggg ",
+            " ggwwwwgg ",
+            " ggwwwwgg ",
+            " ggwwwwgg ",
+            " gggggggg ",
+            "          ",
+        ]);
+        assert_eq!(logo_backdrop(&inside, W, false), None);
+        // A thin dark ring around a large green shape is fine (60x60,
+        // clear edge, 1px ring)
+        let ring: Vec<u8> = (0..60 * 60)
+            .flat_map(|i| {
+                let d = [i % 60, i / 60, 59 - i % 60, 59 - i / 60].into_iter().min();
+                match d {
+                    Some(0) => [0, 0, 0, 0],
+                    Some(1) => [17, 17, 17, 255],
+                    _ => [47, 191, 90, 255],
+                }
+            })
+            .collect();
+        assert_eq!(logo_backdrop(&ring, 60, true), None);
+        // Fully transparent, or nothing at all
+        assert_eq!(logo_backdrop(&see_through(10, &[]), W, true), None);
+        assert_eq!(logo_backdrop(&[], W, true), None);
+        assert_eq!(logo_backdrop(&opaque, 0, true), None);
+    }
+
+    #[test]
+    fn contrast_measure() {
+        let ratio = |a: [u8; 3], b: [u8; 3]| {
+            let (a, b) = (relative_luminance(a), relative_luminance(b));
+            (a.max(b) + 0.05) / (a.min(b) + 0.05)
+        };
+        assert!((ratio([0; 3], [255; 3]) - 21.0).abs() < 0.01);
+        assert!(ratio([17; 3], TILE_DARK) < MIN_CONTRAST);
+        assert!(ratio([255; 3], TILE_LIGHT) < MIN_CONTRAST);
+        assert!(ratio([255; 3], TILE_DARK) > MIN_CONTRAST);
     }
 
     #[test]

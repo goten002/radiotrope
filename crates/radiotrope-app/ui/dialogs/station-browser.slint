@@ -1,5 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, NowPlayingBars, Icon } from "../components.slint";
+import { LogoFog, LogoFogLayer } from "../logo-fog.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -24,6 +25,7 @@ component StationRow inherits Rectangle {
     in property <int> bitrate;
     in property <image> logo-image;
     in property <bool> has-logo;
+    in property <LogoFog> logo-fog;
     // Playback state of this station: "", "loading", "playing" or "error"
     in property <string> state;
     // Status line shown instead of the country while loading or failed
@@ -63,6 +65,10 @@ component StationRow inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.hairline;
                 clip: true;
+
+                if root.has-logo: LogoFogLayer {
+                    fog: root.logo-fog;
+                }
 
                 if root.has-logo: Image {
                     source: root.logo-image;
@@ -227,6 +233,8 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <int> retry-in: 0;
     in-out property <[BrowseStation]> search-results: [];
     in-out property <[image]> browse-logos: [];
+    // Colour fog of each logo, same order as browse-logos
+    in-out property <[LogoFog]> browse-logo-fogs: [];
     in-out property <bool> has-more: false;
     in-out property <string> country-name: "";
     // ISO 3166-1 code of the country, empty if unknown
@@ -488,6 +496,7 @@ export component StationBrowserDialog inherits Rectangle {
                             has-logo: self.idx < root.browse-logos.length
                                 ? root.browse-logos[self.idx].width > 0
                                 : false;
+                            logo-fog: root.browse-logo-fogs[self.idx];
                             // The row clicked here; before any click, the row
                             // whose URL is playing
                             property <bool> active: root.picked != ""

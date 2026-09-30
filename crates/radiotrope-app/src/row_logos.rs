@@ -103,17 +103,29 @@ impl RowLogos {
                 .busy
                 .remove(&(gen, row));
             let Some((rgba, w, h)) = logo else { continue };
+            let fog = crate::logo_fog(&rgba, w);
             let ui = ui.clone();
             let this = self.clone();
             let _ = slint::invoke_from_event_loop(move || {
                 let Some(ui) = ui.upgrade() else { return };
-                this.set_logo(&ui, gen, row, &rgba, w, h);
+                this.set_logo(&ui, gen, row, &rgba, w, h, fog);
             });
         }
     }
 
-    /// Put a loaded logo on its row, if the row is still near the screen
-    fn set_logo(&self, ui: &App, gen: u64, row: usize, rgba: &[u8], w: u32, h: u32) {
+    /// Put a loaded logo and its colour fog on its row, if the row is still
+    /// near the screen
+    #[allow(clippy::too_many_arguments)]
+    fn set_logo(
+        &self,
+        ui: &App,
+        gen: u64,
+        row: usize,
+        rgba: &[u8],
+        w: u32,
+        h: u32,
+        fog: crate::LogoFog,
+    ) {
         if self.gen.load(Ordering::Relaxed) != gen || !keep_range(ui).contains(&row) {
             return;
         }
@@ -123,6 +135,11 @@ impl RowLogos {
         }
         let pixels = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba, w, h);
         model.set_row_data(row, slint::Image::from_rgba8(pixels));
+        // Rows whose logo is let go keep their fog: it only shows with a logo
+        let fogs = ui.get_browse_logo_fogs();
+        if row < fogs.row_count() {
+            fogs.set_row_data(row, fog);
+        }
         SHOWN.with(|shown| {
             let mut shown = shown.borrow_mut();
             if shown.0 != gen {

@@ -1,0 +1,46 @@
+import { Theme } from "defaults.slint";
+
+// Fog colours for one theme; `on` is false when the logo shows well as it is
+export struct FogColors {
+    on: bool,
+    first: color,
+    second: color,
+    ground: color,
+}
+
+// The fog a logo gets behind it, per theme (worked out in Rust from the
+// logo's pixels, see visual::logo_backdrop)
+export struct LogoFog {
+    dark: FogColors,
+    light: FogColors,
+}
+
+// Soft colour fog behind a see-through logo whose lettering would vanish on
+// its tile: black text on the dark theme, white text on the light one. Two
+// glows in the logo's own colours over a flat ground. Put it first inside a
+// clipping tile, under the logo.
+export component LogoFogLayer inherits Rectangle {
+    in property <LogoFog> fog;
+    property <FogColors> colors: Theme.dark-mode ? root.fog.dark : root.fog.light;
+
+    visible: root.colors.on;
+    background: root.colors.ground;
+
+    // Plain centred gradients on oversized squares (the software renderer
+    // on the Pi has no gradient centre), clipped by the tile
+    Rectangle {
+        width: parent.width * 1.5;
+        height: self.width;
+        x: parent.width * 0.28 - self.width / 2;
+        y: parent.height * 0.22 - self.height / 2;
+        background: @radial-gradient(circle, root.colors.first 0%, root.colors.first.with-alpha(0) 70%);
+    }
+
+    Rectangle {
+        width: parent.width * 1.5;
+        height: self.width;
+        x: parent.width * 0.78 - self.width / 2;
+        y: parent.height * 0.82 - self.height / 2;
+        background: @radial-gradient(circle, root.colors.second 0%, root.colors.second.with-alpha(0) 65%);
+    }
+}

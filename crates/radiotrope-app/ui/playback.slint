@@ -1,6 +1,7 @@
 import { Theme } from "defaults.slint";
 import { Visualization } from "visualization.slint";
 import { Chip, IconButton, Icon } from "components.slint";
+import { LogoFog, LogoFogLayer } from "logo-fog.slint";
 
 export component Playback inherits Rectangle {
     in property <string> station-name;
@@ -11,6 +12,8 @@ export component Playback inherits Rectangle {
     in property <bool> is-loading;
     in property <bool> is-error;
     in property <image> station-logo;
+    // Colour fog behind a logo that would vanish on the tile
+    in property <LogoFog> station-logo-fog;
     in property <bool> is-station-favorited;
     in property <bool> has-station;
     // Recording: "12:34 · 11.8 MB" while recording, and a short message
@@ -60,6 +63,10 @@ export component Playback inherits Rectangle {
                 drop-shadow-offset-y: 3px;
                 drop-shadow-color: Theme.shadow-soft;
                 clip: true;
+
+                if root.station-logo.width > 0: LogoFogLayer {
+                    fog: root.station-logo-fog;
+                }
 
                 if root.station-logo.width > 0: Image {
                     source: root.station-logo;

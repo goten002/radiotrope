@@ -17,7 +17,8 @@ import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.s
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
-export { AboutInfo, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
+import { LogoFog, FogColors } from "logo-fog.slint";
+export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -119,16 +120,20 @@ export component App inherits Window {
     // The station logo changed (the visualizer samples its colours)
     callback logo-changed();
     changed current-logo => { root.logo-changed(); }
+    // Colour fog behind the logo when it would vanish on its tile
+    in-out property <LogoFog> current-logo-fog;
     in-out property <bool> is-station-favorited;
     in-out property <string> station-logo-url;
     in-out property <string> station-country;
     in-out property <[FavoriteStation]> favorites-list;
     in-out property <[image]> favorite-logos;
+    in-out property <[LogoFog]> favorite-logo-fogs;
     out property <bool> volume-dragging: controls.volume-dragging;
 
     // Station browser proxy properties (for Rust access)
     in-out property <[BrowseStation]> search-results <=> browser-dialog.search-results;
     in-out property <[image]> browse-logos <=> browser-dialog.browse-logos;
+    in-out property <[LogoFog]> browse-logo-fogs <=> browser-dialog.browse-logo-fogs;
     in-out property <bool> search-loading <=> browser-dialog.search-loading;
     in-out property <bool> search-loading-more <=> browser-dialog.search-loading-more;
     in-out property <string> search-error <=> browser-dialog.search-error;
@@ -292,6 +297,7 @@ export component App inherits Window {
                 is-loading: root.is-loading;
                 is-error: root.is-error;
                 station-logo: root.current-logo;
+                station-logo-fog: root.current-logo-fog;
                 is-station-favorited: root.is-station-favorited;
                 has-station: root.station-url != "";
                 is-recording: root.is-recording;
@@ -309,6 +315,7 @@ export component App inherits Window {
             vertical-stretch: 1;
             favorites: root.favorites-list;
             favorite-logos: root.favorite-logos;
+            favorite-logo-fogs: root.favorite-logo-fogs;
             current-station-url: root.station-url;
             is-playing: root.is-playing;
             play-loading: root.is-loading;
@@ -376,6 +383,7 @@ export component App inherits Window {
                 browser-dialog.reset-query();
                 browser-dialog.search-results = [];
                 browser-dialog.browse-logos = [];
+                browser-dialog.browse-logo-fogs = [];
                 browser-dialog.search-error = "";
                 browser-dialog.has-more = false;
                 browser-dialog.search-loading = true;
