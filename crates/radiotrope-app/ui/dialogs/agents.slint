@@ -96,7 +96,6 @@ export component AgentsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // False in a --mcp --standalone player: agents reach the main one
     in property <bool> available: true;
-    in-out property <bool> local-on: true;
     in-out property <bool> network-on: false;
     // Saved address, token, and what the server says
     in property <string> address;
@@ -108,7 +107,6 @@ export component AgentsDialog inherits Rectangle {
     // Fields being edited; reset from the saved values when the dialog opens
     in-out property <string> edit-address;
 
-    callback local-toggled(bool);
     callback network-toggled(bool);
     callback apply-address(string);
     callback regenerate-token();
@@ -142,18 +140,13 @@ export component AgentsDialog inherits Rectangle {
             wrap: word-wrap;
         }
 
-        VerticalLayout {
-            spacing: 2px;
-
-            Toggle {
-                label: "Allow agents on this computer";
-                enabled: root.available;
-                checked <=> root.local-on;
-                toggled(on) => { root.local-toggled(on); }
-            }
-            ToggleNote {
-                text: "Agents started with radiotrope --mcp, e.g. Claude Code or Claude Desktop.";
-            }
+        // Agents on this computer need no setting: whoever runs them can
+        // use the player anyway
+        Text {
+            text: "Agents on this computer connect with radiotrope --mcp, e.g. Claude Code or Claude Desktop.";
+            color: Theme.text-secondary;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
         }
 
         Rectangle {

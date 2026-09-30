@@ -132,10 +132,6 @@ pub struct Settings {
     pub recording_bitrate: Option<u32>,
 
     // === Agents (MCP) ===
-    /// Agents on this computer (`radiotrope --mcp`) may use the player
-    #[serde(default = "default_true")]
-    pub mcp_local: bool,
-
     /// Agents over the network may use the player (with the token)
     #[serde(default)]
     pub mcp_network: bool,
@@ -209,7 +205,6 @@ impl Default for Settings {
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,
             recording_bitrate: None,
-            mcp_local: true,
             mcp_network: false,
             mcp_address: default_mcp_address(),
         }

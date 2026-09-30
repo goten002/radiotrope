@@ -1,11 +1,10 @@
 //! The agent settings, applied while the player runs
 //!
-//! Local agents (`radiotrope --mcp`) can be turned off; network agents are
+//! Local agents (`radiotrope --mcp`) are always welcome; network agents are
 //! off until turned on. Both share one set of tools, so `get_status` shows
 //! the last change whichever way the agent came in.
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use radiotrope_app::data::agent_token;
 use radiotrope_app::data::settings::Settings;
@@ -15,7 +14,6 @@ use super::tools::RadioTools;
 
 pub struct Agents {
     tools: RadioTools,
-    local: Arc<AtomicBool>,
     network: Mutex<Option<network::Server>>,
 }
 
@@ -32,25 +30,15 @@ pub struct NetworkStatus {
 }
 
 impl Agents {
-    pub fn new(tools: RadioTools, settings: &Settings) -> Self {
+    pub fn new(tools: RadioTools) -> Self {
         Self {
             tools,
-            local: Arc::new(AtomicBool::new(settings.mcp_local)),
             network: Mutex::new(None),
         }
     }
 
     pub fn tools(&self) -> RadioTools {
         self.tools.clone()
-    }
-
-    /// Read by the local server as each agent connects
-    pub fn local_allowed(&self) -> Arc<AtomicBool> {
-        self.local.clone()
-    }
-
-    pub fn set_local(&self, on: bool) {
-        self.local.store(on, Ordering::Relaxed);
     }
 
     /// Start, restart or stop the network server to match the settings
@@ -121,6 +109,7 @@ fn claude_command(url: &str, token: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn agents() -> Agents {
         let (tx, _rx) = crossbeam_channel::bounded(8);
@@ -131,7 +120,7 @@ mod tests {
                 radiotrope_app::data::favorites::FavoritesManager::new(),
             )),
         );
-        Agents::new(tools, &Settings::default())
+        Agents::new(tools)
     }
 
     #[test]
@@ -142,6 +131,5 @@ mod tests {
         assert!(status
             .command
             .starts_with("claude mcp add --transport http radiotrope http://127.0.0.1:8765/mcp"));
-        assert!(agents.local_allowed().load(Ordering::Relaxed));
     }
 }

@@ -166,13 +166,13 @@ fn main() {
     // Agents (`radiotrope --mcp`) and later launches reach us over a local
     // socket
     let agents = instance.as_ref().map(|instance| {
-        let agents = Arc::new(mcp::agents::Agents::new(
-            mcp::tools::RadioTools::new(cmd_tx.clone(), shared_state.clone(), favorites.clone()),
-            &settings,
-        ));
+        let agents = Arc::new(mcp::agents::Agents::new(mcp::tools::RadioTools::new(
+            cmd_tx.clone(),
+            shared_state.clone(),
+            favorites.clone(),
+        )));
         let instance = Arc::clone(instance);
         let tools = agents.tools();
-        let allowed = agents.local_allowed();
         let window = ui.as_weak();
         let show_window: mcp::local::ShowWindow = Arc::new(move || {
             let _ = window.upgrade_in_event_loop(|ui| bring_to_front(ui.window()));
@@ -180,7 +180,7 @@ fn main() {
         std::thread::Builder::new()
             .name("mcp-local".into())
             .spawn(move || {
-                mcp::local::serve(&instance, tools, allowed, show_window);
+                mcp::local::serve(&instance, tools, show_window);
             })
             .expect("Failed to spawn MCP thread");
         agents
@@ -2219,19 +2219,10 @@ fn setup_agents(
     settings: &radiotrope_app::data::settings::Settings,
 ) {
     ui.set_agents_available(agents.is_some());
-    ui.set_agents_local(settings.mcp_local);
     ui.set_agents_network(settings.mcp_network);
     ui.set_agents_address(settings.mcp_address.as_str().into());
     let Some(agents) = agents else { return };
     show_agents_network(ui, &agents.apply_network(settings));
-
-    ui.on_agents_local_toggled({
-        let agents = agents.clone();
-        move |on| {
-            agents.set_local(on);
-            save_agent_settings(|s| s.mcp_local = on);
-        }
-    });
 
     // Every change saves and restarts the network server with it
     let apply = {
@@ -2286,14 +2277,6 @@ fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
     ui.set_agents_status_error(status.is_error);
     ui.set_agents_token(status.token.as_str().into());
     ui.set_agents_command(status.command.as_str().into());
-}
-
-fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
-    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-    change(&mut settings);
-    if let Err(e) = settings.save() {
-        eprintln!("Failed to save agent settings: {e}");
-    }
 }
 
 /// Wire the Tools menu recording items and the Recording Settings
