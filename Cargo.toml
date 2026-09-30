@@ -50,6 +50,9 @@ sys-locale = "0.3"
 
 # Testing
 proptest = { version = "1.11", default-features = false, features = ["std"] }
+# FDK's AAC encoder, to make AAC and AAC+ test streams (the decoder already
+# comes with symphonia-adapter-fdk-aac)
+fdk-aac = "0.8"
 
 [profile.release]
 strip = true
