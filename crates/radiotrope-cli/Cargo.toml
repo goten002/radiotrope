@@ -21,4 +21,6 @@ crossbeam-channel = { workspace = true }
 clap = { workspace = true }
 ratatui = "0.30"
 crossterm = "0.29"
+
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"

@@ -1,7 +1,6 @@
 //! Radiotrope CLI — terminal internet radio player
 
 use std::io;
-use std::os::unix::io::AsRawFd;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -123,11 +122,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Suppress stderr during TUI — ALSA/PulseAudio and other libs write
     // diagnostic messages to stderr which corrupt the ratatui display.
-    let saved_stderr = unsafe { libc::dup(2) };
-    {
-        let devnull = std::fs::File::open("/dev/null")?;
-        unsafe { libc::dup2(devnull.as_raw_fd(), 2) };
-    }
+    // Windows audio (WASAPI) doesn't, so there stderr is left alone.
+    #[cfg(unix)]
+    let saved_stderr = quiet_stderr()?;
 
     // Enter TUI
     terminal::enable_raw_mode()?;
@@ -259,15 +256,32 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     terminal::disable_raw_mode()?;
     io::stdout().execute(LeaveAlternateScreen)?;
 
-    // Restore stderr
+    #[cfg(unix)]
+    restore_stderr(saved_stderr);
+
+    Ok(())
+}
+
+/// Send stderr to /dev/null, returning a copy of the old stderr (or -1)
+#[cfg(unix)]
+fn quiet_stderr() -> io::Result<libc::c_int> {
+    use std::os::unix::io::AsRawFd;
+
+    let saved_stderr = unsafe { libc::dup(2) };
+    let devnull = std::fs::File::open("/dev/null")?;
+    unsafe { libc::dup2(devnull.as_raw_fd(), 2) };
+    Ok(saved_stderr)
+}
+
+/// Put back the stderr [`quiet_stderr`] saved
+#[cfg(unix)]
+fn restore_stderr(saved_stderr: libc::c_int) {
     if saved_stderr >= 0 {
         unsafe {
             libc::dup2(saved_stderr, 2);
             libc::close(saved_stderr);
         }
     }
-
-    Ok(())
 }
 
 fn update_analysis(analysis: &Arc<Mutex<AudioAnalysis>>, app: &mut App) {

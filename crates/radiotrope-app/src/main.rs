@@ -1,3 +1,7 @@
+// On Windows the release build is a GUI program, so no console window opens
+// next to it. Debug builds keep the console for their logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod app;
 mod mcp;
 mod row_logos;
@@ -44,7 +48,29 @@ struct Args {
     mcp: bool,
 }
 
+/// When started from a terminal, write there: `--help`, `--version` and the
+/// logs. A GUI program (the Windows release build) gets no console of its own.
+///
+/// Handles the parent passed in, such as the pipes an MCP client gives
+/// `radiotrope --mcp`, are kept: Windows only replaces the standard handles
+/// when the process was started without them.
+#[cfg(windows)]
+fn attach_parent_console() {
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn AttachConsole(process_id: u32) -> i32;
+    }
+    const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
+
+    // Fails when there is no parent console (started from Explorer) or the
+    // program already has one (a debug build), and both are fine
+    unsafe { AttachConsole(ATTACH_PARENT_PROCESS) };
+}
+
 fn main() {
+    #[cfg(windows)]
+    attach_parent_console();
+
     let args = Args::parse();
 
     // Shared command channel + state
