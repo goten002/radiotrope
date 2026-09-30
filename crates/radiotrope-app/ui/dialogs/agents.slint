@@ -25,8 +25,8 @@ component CopyLine inherits Rectangle {
         spacing: 8px;
 
         // Read-only but selectable, so part of a line can be copied too;
-        // a long line scrolls with the cursor
-        Rectangle {
+        // a long line scrolls with the cursor, as in StyledLineEdit
+        view := Rectangle {
             min-width: 0px;
             horizontal-stretch: 1;
             clip: true;
@@ -40,7 +40,18 @@ component CopyLine inherits Rectangle {
                 vertical-alignment: center;
             }
             if root.text != "": TextInput {
-                width: 100%;
+                property <length> scroll;
+
+                x: min(0px, max(view.width - self.width - self.text-cursor-width, self.scroll));
+                width: max(view.width, self.preferred-width);
+                height: view.height;
+                cursor-position-changed(cursor) => {
+                    if cursor.x + self.scroll < 0px {
+                        self.scroll = -cursor.x;
+                    } else if cursor.x + self.scroll > view.width - self.text-cursor-width {
+                        self.scroll = view.width - cursor.x - self.text-cursor-width;
+                    }
+                }
                 text: root.text;
                 read-only: true;
                 single-line: true;
@@ -246,6 +257,8 @@ export component AgentsDialog inherits Rectangle {
     in property <string> local-command;
     in property <string> local-note;
     in property <string> network-note;
+    // In place of the network line when there is none yet, or none at all
+    in property <string> network-placeholder: "Ready once there is a token";
     in property <[string]> apps;
     in-out property <int> app;
     callback app-changed(int);
@@ -379,7 +392,7 @@ export component AgentsDialog inherits Rectangle {
                 RowLabel { text: "Command"; }
                 CopyLine {
                     text: root.token != "" ? root.command : "";
-                    placeholder: "Ready once there is a token";
+                    placeholder: root.network-placeholder;
                     enabled: root.network-fields;
                 }
                 if root.network-note != "": VerticalLayout {
