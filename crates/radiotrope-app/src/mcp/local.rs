@@ -150,7 +150,14 @@ async fn connect_or_start() -> std::io::Result<interprocess::local_socket::tokio
         tokio::time::sleep(Duration::from_millis(100)).await;
         match instance::connect().await {
             Ok(conn) => return Ok(conn),
-            Err(e) if Instant::now() >= deadline => return Err(e),
+            // Most likely it could not open its window
+            Err(e) if Instant::now() >= deadline => {
+                return Err(std::io::Error::other(format!(
+                    "the player did not start within {} s ({e}); start Radiotrope \
+                     from the desktop and try again",
+                    START_WAIT.as_secs()
+                )))
+            }
             Err(_) => {}
         }
     }

@@ -7,8 +7,11 @@
 //! when the player exits or crashes, so a stale lock never blocks a restart.
 //!
 //! - Linux: `$XDG_RUNTIME_DIR/radiotrope/mcp.sock`, in a folder only the user
-//!   can open (0700). Without `XDG_RUNTIME_DIR`, a 0700 folder in the temp
-//!   directory. Abstract socket names are avoided: they have no permissions.
+//!   can open (0700). Without `XDG_RUNTIME_DIR` (some agents, Claude Desktop
+//!   among them, start `--mcp` with a trimmed environment), systemd's
+//!   `/run/user/<uid>`, which is where it points anyway; failing that, a 0700
+//!   folder in the temp directory. Abstract socket names are avoided: they
+//!   have no permissions.
 //! - Windows: the named pipe `\\.\pipe\radiotrope-<user>`, which refuses
 //!   remote clients and is open to its owner only. The lock file lives in the
 //!   local app data folder.
@@ -132,6 +135,11 @@ pub fn spawn_player() -> io::Result<()> {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
 
+    #[cfg(all(unix, not(target_os = "macos")))]
+    for (var, value) in desktop_session_env() {
+        cmd.env(var, value);
+    }
+
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -156,6 +164,100 @@ pub fn spawn_player() -> io::Result<()> {
     }
 
     cmd.spawn().map(drop)
+}
+
+/// The desktop session's variables that our environment lacks, for the
+/// player we start. Agents may start `--mcp` with only HOME, PATH and a few
+/// others (Claude Desktop does), and the player needs the display to open
+/// its window on, and the runtime folder for sound and the session bus.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn desktop_session_env() -> Vec<(&'static str, std::ffi::OsString)> {
+    use std::process::{Command, Stdio};
+
+    let ours = |var: &str| std::env::var_os(var).filter(|v| !v.is_empty());
+    if DISPLAY_VARS.iter().any(|v| ours(v).is_some()) && ours("XDG_RUNTIME_DIR").is_some() {
+        return Vec::new();
+    }
+    let runtime = session_runtime_dir();
+    // systemd keeps the session's variables; it needs the runtime folder to
+    // be reached
+    let mut systemctl = Command::new("systemctl");
+    systemctl
+        .args(["--user", "show-environment"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(dir) = &runtime {
+        systemctl.env("XDG_RUNTIME_DIR", dir);
+    }
+    let listed = systemctl
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+        .unwrap_or_default();
+    let mut session: Vec<(String, String)> = parse_environment(&listed);
+    // Without systemd's list: the usual places
+    let has = |session: &[(String, String)], var: &str| session.iter().any(|(k, _)| k == var);
+    if let Some(dir) = &runtime {
+        if !has(&session, "XDG_RUNTIME_DIR") {
+            session.push(("XDG_RUNTIME_DIR".into(), dir.display().to_string()));
+        }
+        if !DISPLAY_VARS.iter().any(|v| has(&session, v)) {
+            if dir.join("wayland-0").exists() {
+                session.push(("WAYLAND_DISPLAY".into(), "wayland-0".into()));
+            } else if Path::new("/tmp/.X11-unix/X0").exists() {
+                session.push(("DISPLAY".into(), ":0".into()));
+            }
+        }
+    }
+    missing_session_vars(ours, &session)
+}
+
+/// Any one of these says where to open a window
+#[cfg(all(unix, not(target_os = "macos")))]
+const DISPLAY_VARS: [&str; 3] = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET", "DISPLAY"];
+
+/// The session variables worth passing on, and whether each belongs to the
+/// display (those come as a set, or not at all)
+#[cfg(all(unix, not(target_os = "macos")))]
+const SESSION_VARS: [(&str, bool); 8] = [
+    ("XDG_RUNTIME_DIR", false),
+    ("DBUS_SESSION_BUS_ADDRESS", false),
+    ("XDG_SESSION_TYPE", false),
+    ("XDG_CURRENT_DESKTOP", false),
+    ("WAYLAND_DISPLAY", true),
+    ("WAYLAND_SOCKET", true),
+    ("DISPLAY", true),
+    ("XAUTHORITY", true),
+];
+
+/// `NAME=value` lines, as `systemctl --user show-environment` prints them
+#[cfg(all(unix, not(target_os = "macos")))]
+fn parse_environment(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(name, _)| !name.is_empty())
+        .map(|(name, value)| (name.to_string(), value.to_string()))
+        .collect()
+}
+
+/// Which of the session's variables to add: those we lack, and the display
+/// ones only when we have no display at all, so an agent that picked X11 or
+/// Wayland keeps its pick
+#[cfg(all(unix, not(target_os = "macos")))]
+fn missing_session_vars(
+    ours: impl Fn(&str) -> Option<std::ffi::OsString>,
+    session: &[(String, String)],
+) -> Vec<(&'static str, std::ffi::OsString)> {
+    let have_display = DISPLAY_VARS.iter().any(|v| ours(v).is_some());
+    SESSION_VARS
+        .iter()
+        .filter(|(var, display)| !(*display && have_display) && ours(var).is_none())
+        .filter_map(|(var, _)| {
+            let value = session.iter().find(|(k, _)| k == var)?.1.clone();
+            (!value.is_empty()).then(|| (*var, value.into()))
+        })
+        .collect()
 }
 
 /// The pipes the agent gave us must not leak into the player: the agent
@@ -244,8 +346,8 @@ fn runtime_dir() -> io::Result<PathBuf> {
 
     // SAFETY: getuid has no preconditions and cannot fail
     let uid = unsafe { libc::getuid() };
-    let dir = match std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
-        Some(base) => PathBuf::from(base).join("radiotrope"),
+    let dir = match session_runtime_dir() {
+        Some(base) => base.join("radiotrope"),
         None => std::env::temp_dir().join(format!("radiotrope-{uid}")),
     };
     match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
@@ -264,6 +366,22 @@ fn runtime_dir() -> io::Result<PathBuf> {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(dir)
+}
+
+/// `$XDG_RUNTIME_DIR`, or systemd's `/run/user/<uid>` when an agent started
+/// us without it: the player (started from the desktop) uses that folder
+#[cfg(unix)]
+fn session_runtime_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::MetadataExt;
+
+    if let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    // SAFETY: getuid has no preconditions and cannot fail
+    let uid = unsafe { libc::getuid() };
+    let dir = PathBuf::from(format!("/run/user/{uid}"));
+    let meta = std::fs::metadata(&dir).ok()?;
+    (meta.is_dir() && meta.uid() == uid).then_some(dir)
 }
 
 #[cfg(not(unix))]
@@ -285,6 +403,37 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    #[test]
+    fn a_trimmed_environment_gets_the_desktop_session() {
+        let session = parse_environment(
+            "LANG=en_US.UTF-8\nXDG_RUNTIME_DIR=/run/user/1000\nWAYLAND_DISPLAY=wayland-0\n\
+             DISPLAY=:0\nXAUTHORITY=/run/user/1000/xauth\nDBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus\n",
+        );
+        fn names(vars: Vec<(&'static str, std::ffi::OsString)>) -> Vec<&'static str> {
+            vars.into_iter().map(|(k, _)| k).collect()
+        }
+        // Claude Desktop: HOME, PATH and the like only
+        assert_eq!(
+            names(missing_session_vars(|_| None, &session)),
+            [
+                "XDG_RUNTIME_DIR",
+                "DBUS_SESSION_BUS_ADDRESS",
+                "WAYLAND_DISPLAY",
+                "DISPLAY",
+                "XAUTHORITY"
+            ]
+        );
+        // An agent on X11 keeps X11, and gets what else it lacks
+        let on_x11 = |var: &str| (var == "DISPLAY").then(|| ":1".into());
+        assert_eq!(
+            names(missing_session_vars(on_x11, &session)),
+            ["XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"]
+        );
+        // Nothing to add when nothing is known
+        assert!(missing_session_vars(|_| None, &[]).is_empty());
     }
 
     #[test]
