@@ -77,6 +77,9 @@ pub struct AppSnapshot {
     pub last_error: Option<String>,
     /// True while a stream is being resolved (not yet playing or failed)
     pub is_resolving: bool,
+    /// Counts the stations started, so a caller can tell when its own Play
+    /// has been taken up
+    pub play_seq: u64,
 
     // Codec / stream info for the playback display
     pub codec_name: String,
@@ -133,6 +136,7 @@ impl Default for AppSnapshot {
             is_muted: false,
             last_error: None,
             is_resolving: false,
+            play_seq: 0,
             codec_name: String::new(),
             stream_type: String::new(),
             sample_rate: 0,

@@ -14,7 +14,9 @@ use tokio::io::{
 
 use radiotrope_app::data::favorites::FavoritesManager;
 use radiotrope_app::data::types::{url_to_id, Favorite, Station};
-use radiotrope_app::providers::{Category, ProviderRegistry, SearchResults, StationProvider};
+use radiotrope_app::providers::{
+    Category, CategoryType, ProviderRegistry, SearchResults, StationProvider,
+};
 
 use super::tools::RadioTools;
 use crate::app::state::{AppCommand, AppSnapshot};
@@ -55,7 +57,13 @@ impl StationProvider for FakeDirectory {
         })
     }
     fn browse_categories(&self) -> radiotrope_app::error::Result<Vec<Category>> {
-        Ok(vec![])
+        Ok(vec![
+            Category::new("jazz", "jazz", CategoryType::Genre).with_station_count(900),
+            Category::new("pop", "pop", CategoryType::Genre).with_station_count(5000),
+            Category::new("Greece", "Greece", CategoryType::Country)
+                .with_station_count(700)
+                .with_code(Some("GR".into())),
+        ])
     }
     fn browse_category(
         &self,
@@ -68,8 +76,8 @@ impl StationProvider for FakeDirectory {
     fn get_popular(&self, _: usize) -> radiotrope_app::error::Result<Vec<Station>> {
         Ok(vec![])
     }
-    fn get_station(&self, _: &str) -> radiotrope_app::error::Result<Option<Station>> {
-        Ok(None)
+    fn get_station(&self, id: &str) -> radiotrope_app::error::Result<Option<Station>> {
+        Ok((id == "jazz-id").then(|| Station::new("Jazz FM", "http://jazz.test/stream")))
     }
 }
 
@@ -249,7 +257,7 @@ async fn every_tool_has_a_title_and_behaviour_hints() {
     s.legacy_handshake("2025-11-25").await;
     let list = s.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 9);
+    assert_eq!(tools.len(), 14);
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert!(tool["title"].is_string(), "{name} has no title");
@@ -333,8 +341,59 @@ async fn search_returns_details_and_marks_favorites() {
     assert_eq!(jazz["genres"], json!(["jazz", "smooth"]));
     assert_eq!(jazz["favorite_id"], url_to_id("http://jazz.test/stream"));
 
+    // Nothing given lists the most popular stations
     let result = s.call("search_stations", json!({"query": " "})).await;
-    assert_eq!(result["isError"], true);
+    assert_eq!(result["structuredContent"]["count"], 2);
+}
+
+#[tokio::test]
+async fn search_filters_combine() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let count = |r: &Value| r["structuredContent"]["count"].as_u64().unwrap();
+
+    let r = s.call("search_stations", json!({"genre": "jazz"})).await;
+    assert_eq!(count(&r), 1);
+    let r = s
+        .call(
+            "search_stations",
+            json!({"codec": "mp3", "min_bitrate": "128"}),
+        )
+        .await;
+    assert_eq!(count(&r), 1);
+    let r = s
+        .call(
+            "search_stations",
+            json!({"genre": "jazz", "min_bitrate": 192}),
+        )
+        .await;
+    assert_eq!(count(&r), 0);
+    let r = s
+        .call("search_stations", json!({"order": "sideways"}))
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+}
+
+#[tokio::test]
+async fn categories_are_listed_largest_first() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let r = s.call("list_categories", json!({"kind": "genre"})).await;
+    let names: Vec<&str> = r["structuredContent"]["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["pop", "jazz"]);
+
+    let r = s
+        .call(
+            "list_categories",
+            json!({"kind": "country", "filter": "gr"}),
+        )
+        .await;
+    assert_eq!(r["structuredContent"]["categories"][0]["code"], "GR");
 }
 
 #[tokio::test]
@@ -378,7 +437,8 @@ async fn favorites_can_be_added_listed_played_and_removed() {
     assert!(names.contains(&"News 24"));
 
     let id = url_to_id("http://news.test/stream");
-    s.call("play_favorite", json!({"id": id})).await;
+    s.call("play_favorite", json!({"id": id, "wait_seconds": 0}))
+        .await;
     assert!(matches!(
         s.commands.try_recv(),
         Ok(AppCommand::Play { url, .. }) if url == "http://news.test/stream"
@@ -398,4 +458,107 @@ async fn favorites_can_be_added_listed_played_and_removed() {
         .await;
     assert_eq!(text(&by_url), "Removed \"Jazz FM\" from favorites");
     assert!(s.favorites.lock().unwrap().is_empty());
+}
+
+/// Plays like the controller: resolving, then playing a moment later, or
+/// failing for a URL with "broken" in it
+fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>>) {
+    std::thread::spawn(move || {
+        while let Ok(cmd) = commands.recv() {
+            let AppCommand::Play { url, name } = cmd else {
+                continue;
+            };
+            {
+                let mut st = state.lock().unwrap();
+                st.play_seq += 1;
+                st.station_url = Some(url.clone());
+                st.station_name = name;
+                st.is_resolving = true;
+                st.last_error = None;
+                st.playback = radiotrope::audio::PlaybackState::Stopped;
+            }
+            std::thread::sleep(Duration::from_millis(150));
+            let mut st = state.lock().unwrap();
+            st.is_resolving = false;
+            if url.contains("broken") {
+                st.last_error = Some("HTTP 404".into());
+            } else {
+                st.playback = radiotrope::audio::PlaybackState::Playing;
+                st.codec_name = "MP3".into();
+                st.bitrate = Some(128);
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn play_waits_for_the_outcome() {
+    let mut s = Session::start(Duration::ZERO).await;
+    fake_controller(s.commands.clone(), s.state.clone());
+    s.legacy_handshake("2025-11-25").await;
+
+    let played = s
+        .call(
+            "play_url",
+            json!({"url": "http://jazz.test/stream", "name": "Jazz FM"}),
+        )
+        .await;
+    assert_eq!(text(&played), "Playing Jazz FM (MP3, 128 kbps)");
+
+    let failed = s
+        .call("play_url", json!({"url": "http://broken.test/stream"}))
+        .await;
+    assert_eq!(failed["isError"], true);
+    assert!(text(&failed).contains("HTTP 404"), "{failed}");
+
+    let by_id = s.call("play_station", json!({"id": "jazz-id"})).await;
+    assert!(text(&by_id).starts_with("Playing Jazz FM"), "{by_id}");
+    let unknown = s.call("play_station", json!({"id": "nope"})).await;
+    assert_eq!(unknown["isError"], true);
+}
+
+#[tokio::test]
+async fn status_names_the_agent_that_changed_the_player() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let status = s.call("get_status", json!({})).await;
+    assert!(status["structuredContent"]["last_agent_change"].is_null());
+
+    s.call("set_muted", json!({"muted": true})).await;
+    assert!(matches!(s.commands.try_recv(), Ok(AppCommand::Mute)));
+    let status = s.call("get_status", json!({})).await;
+    let change = &status["structuredContent"]["last_agent_change"];
+    assert_eq!(change["by"], "test");
+    assert_eq!(change["action"], "mute");
+
+    // A 2026-07-28 client names itself on the request
+    let mut meta = modern_meta();
+    meta["io.modelcontextprotocol/clientInfo"]["name"] = json!("other-agent");
+    let mut m = Session::start(Duration::ZERO).await;
+    m.request(
+        "tools/call",
+        json!({"name": "stop", "arguments": {}, "_meta": meta.clone()}),
+    )
+    .await;
+    let status = m
+        .request(
+            "tools/call",
+            json!({"name": "get_status", "arguments": {}, "_meta": meta}),
+        )
+        .await;
+    assert_eq!(
+        status["result"]["structuredContent"]["last_agent_change"]["by"],
+        "other-agent"
+    );
+}
+
+#[tokio::test]
+async fn recording_needs_a_station_playing() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let r = s.call("start_recording", json!({})).await;
+    assert_eq!(r["isError"], true);
+    let r = s.call("stop_recording", json!({})).await;
+    assert_eq!(text(&r), "Not recording");
+    assert!(s.commands.try_recv().is_err());
 }
