@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Toggle } from "../components.slint";
+import { DialogShell, Icon, Toggle } from "../components.slint";
 
 component EqFader inherits Rectangle {
     in property <string> label;
@@ -183,26 +183,28 @@ component PresetItem inherits Rectangle {
 
     HorizontalLayout {
         padding-left: 10px;
-        padding-right: 10px;
-
-        Rectangle {
-            width: 12px;
-
-            if root.is-selected: Rectangle {
-                width: 6px;
-                height: 6px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 3px;
-                background: item-touch.has-hover ? Theme.text-primary : Theme.menu-text;
-                animate background { duration: Theme.fast; }
-            }
-        }
+        padding-right: 12px;
+        spacing: 10px;
 
         Text {
+            horizontal-stretch: 1;
             text: root.name;
             color: item-touch.has-hover ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-md;
             vertical-alignment: center;
+        }
+
+        // Tick on the right, as on the menus
+        Rectangle {
+            width: 12px;
+
+            if root.is-selected: Icon {
+                width: 12px;
+                height: 12px;
+                y: (parent.height - self.height) / 2;
+                source: @image-url("../icons/tick.svg");
+                colorize: Theme.accent;
+            }
         }
     }
 }
@@ -213,7 +215,7 @@ component PresetGroupLabel inherits Rectangle {
 
     Text {
         // In line with the preset names under it
-        x: 22px;
+        x: 10px;
         height: parent.height;
         text: root.text;
         color: Theme.text-secondary;
