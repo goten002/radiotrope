@@ -80,10 +80,11 @@ impl AgentApp {
         }
     }
 
-    /// Help shown next to the network line, if any
-    pub fn network_note(self) -> &'static str {
+    /// Help shown next to the network line, if any; `token` says whether
+    /// the line carries one
+    pub fn network_note(self, token: bool) -> &'static str {
         match self {
-            AgentApp::Codex => {
+            AgentApp::Codex if token => {
                 "Codex reads the token from the RADIOTROPE_TOKEN environment variable: \
                  set it to the token above."
             }
@@ -122,9 +123,10 @@ pub fn local_line(app: AgentApp, exe: &str) -> String {
     local_line_for(app, exe, SHELL)
 }
 
-/// The line that adds Radiotrope over the network; `token` may be empty
-/// until one is made. `None` for an agent that can't use the network.
-pub fn network_line(app: AgentApp, url: &str, token: &str) -> Option<String> {
+/// The line that adds Radiotrope over the network; `token` is `None` when
+/// the player wants none, and may be empty until one is made. `None` for an
+/// agent that can't use the network.
+pub fn network_line(app: AgentApp, url: &str, token: Option<&str>) -> Option<String> {
     network_line_for(app, url, token, SHELL)
 }
 
@@ -154,35 +156,45 @@ fn local_line_for(app: AgentApp, exe: &str, shell: Shell) -> String {
     }
 }
 
-fn network_line_for(app: AgentApp, url: &str, token: &str, shell: Shell) -> Option<String> {
-    let token = if token.is_empty() { "<token>" } else { token };
-    let bearer = format!("Bearer {token}");
+fn network_line_for(app: AgentApp, url: &str, token: Option<&str>, shell: Shell) -> Option<String> {
+    let bearer = token.map(|t| format!("Bearer {}", if t.is_empty() { "<token>" } else { t }));
     Some(match app {
-        AgentApp::ClaudeCode => format!(
-            "claude mcp add --transport http radiotrope {url} --header \"Authorization: {bearer}\""
-        ),
+        AgentApp::ClaudeCode => {
+            let mut line = format!("claude mcp add --transport http radiotrope {url}");
+            if let Some(bearer) = &bearer {
+                line += &format!(" --header \"Authorization: {bearer}\"");
+            }
+            line
+        }
         // Codex takes a token only from an environment variable
         AgentApp::Codex => {
-            format!("codex mcp add radiotrope --url {url} --bearer-token-env-var RADIOTROPE_TOKEN")
-        }
-        AgentApp::Gemini => format!(
-            "gemini mcp add -s user --transport http --header \"Authorization: {bearer}\" radiotrope {url}"
-        ),
-        AgentApp::VsCode => vscode_line(
-            json!({
-                "name": "radiotrope",
-                "type": "http",
-                "url": url,
-                "headers": { "Authorization": bearer },
-            }),
-            shell,
-        ),
-        AgentApp::Cursor => json!({
-            "mcpServers": {
-                "radiotrope": { "url": url, "headers": { "Authorization": bearer } }
+            let mut line = format!("codex mcp add radiotrope --url {url}");
+            if bearer.is_some() {
+                line += " --bearer-token-env-var RADIOTROPE_TOKEN";
             }
-        })
-        .to_string(),
+            line
+        }
+        AgentApp::Gemini => {
+            let mut line = "gemini mcp add -s user --transport http".to_string();
+            if let Some(bearer) = &bearer {
+                line += &format!(" --header \"Authorization: {bearer}\"");
+            }
+            line + &format!(" radiotrope {url}")
+        }
+        AgentApp::VsCode => {
+            let mut server = json!({ "name": "radiotrope", "type": "http", "url": url });
+            if let Some(bearer) = &bearer {
+                server["headers"] = json!({ "Authorization": bearer });
+            }
+            vscode_line(server, shell)
+        }
+        AgentApp::Cursor => {
+            let mut server = json!({ "url": url });
+            if let Some(bearer) = &bearer {
+                server["headers"] = json!({ "Authorization": bearer });
+            }
+            json!({ "mcpServers": { "radiotrope": server } }).to_string()
+        }
         // Its settings file takes programs only; remote servers are added
         // as connectors, which connect from Anthropic's cloud
         AgentApp::ClaudeDesktop => return None,
@@ -221,7 +233,7 @@ mod tests {
             let local = local_line_for(app, "/usr/bin/radiotrope", Shell::Unix);
             assert!(local.contains("/usr/bin/radiotrope"), "{local}");
             assert!(local.contains("--mcp"), "{local}");
-            match network_line_for(app, URL, "abc", Shell::Unix) {
+            match network_line_for(app, URL, Some("abc"), Shell::Unix) {
                 Some(network) => assert!(network.contains(URL), "{network}"),
                 None => assert_eq!(app, AgentApp::ClaudeDesktop),
             }
@@ -246,7 +258,7 @@ mod tests {
             r#"claude mcp add radiotrope -- "C:\Program Files\Radiotrope\radiotrope.exe" --mcp"#
         );
         assert_eq!(
-            network_line_for(AgentApp::ClaudeCode, URL, "", Shell::Unix).unwrap(),
+            network_line_for(AgentApp::ClaudeCode, URL, Some(""), Shell::Unix).unwrap(),
             format!(
                 "claude mcp add --transport http radiotrope {URL} --header \"Authorization: Bearer <token>\""
             )
@@ -264,12 +276,32 @@ mod tests {
         .unwrap();
         assert_eq!(local["mcpServers"]["radiotrope"]["command"], exe);
         let network: serde_json::Value = serde_json::from_str(
-            &network_line_for(AgentApp::Cursor, URL, "abc", Shell::Unix).unwrap(),
+            &network_line_for(AgentApp::Cursor, URL, Some("abc"), Shell::Unix).unwrap(),
         )
         .unwrap();
         assert_eq!(
             network["mcpServers"]["radiotrope"]["headers"]["Authorization"],
             "Bearer abc"
+        );
+    }
+
+    #[test]
+    fn without_a_token_the_lines_carry_none() {
+        for app in AgentApp::ALL {
+            if let Some(line) = network_line_for(app, URL, None, Shell::Unix) {
+                assert!(line.contains(URL), "{line}");
+                assert!(!line.contains("Bearer"), "{line}");
+                assert!(!line.contains("TOKEN"), "{line}");
+            }
+        }
+        assert_eq!(AgentApp::Codex.network_note(false), "");
+        assert_eq!(
+            network_line_for(AgentApp::ClaudeCode, URL, None, Shell::Unix).unwrap(),
+            format!("claude mcp add --transport http radiotrope {URL}")
+        );
+        assert_eq!(
+            network_line_for(AgentApp::Gemini, URL, None, Shell::Unix).unwrap(),
+            format!("gemini mcp add -s user --transport http radiotrope {URL}")
         );
     }
 

@@ -132,9 +132,13 @@ pub struct Settings {
     pub recording_bitrate: Option<u32>,
 
     // === Agents (MCP) ===
-    /// Agents over the network may use the player (with the token)
+    /// Agents over the network may use the player
     #[serde(default)]
     pub mcp_network: bool,
+
+    /// What network agents must show to use the player
+    #[serde(default)]
+    pub mcp_auth: McpAuth,
 
     /// Address and port the network server listens on
     #[serde(default = "default_mcp_address")]
@@ -211,6 +215,7 @@ impl Default for Settings {
             recording_format: RecordingFormat::Mp3,
             recording_bitrate: None,
             mcp_network: false,
+            mcp_auth: McpAuth::None,
             mcp_address: default_mcp_address(),
             mcp_client: None,
         }
@@ -279,6 +284,30 @@ impl Settings {
         let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
         let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
         Some((r, g, b))
+    }
+}
+
+/// What network agents must show to use the player
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum McpAuth {
+    /// Anyone who reaches the address may use the player
+    #[default]
+    None,
+    /// Requests carry `Authorization: Bearer <token>`
+    Token,
+}
+
+impl McpAuth {
+    /// In the order the Agents dialog lists them
+    pub const ALL: [McpAuth; 2] = [McpAuth::None, McpAuth::Token];
+
+    /// Name shown in the Agents dialog
+    pub fn label(self) -> &'static str {
+        match self {
+            McpAuth::None => "None",
+            McpAuth::Token => "Token",
+        }
     }
 }
 

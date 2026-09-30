@@ -7,7 +7,7 @@
 use std::sync::Mutex;
 
 use radiotrope_app::data::agent_token;
-use radiotrope_app::data::settings::Settings;
+use radiotrope_app::data::settings::{McpAuth, Settings};
 
 use super::network;
 use super::tools::RadioTools;
@@ -23,7 +23,7 @@ pub struct NetworkStatus {
     /// "Listening on ...", "Off", or what went wrong
     pub text: String,
     pub is_error: bool,
-    /// Empty until network agents are first turned on
+    /// Empty until network agents first need a token
     pub token: String,
     /// The URL network agents connect to; empty for an address that
     /// doesn't work
@@ -58,21 +58,26 @@ impl Agents {
             };
         }
 
-        let token = match agent_token::load_or_create() {
-            Ok(t) => t,
-            Err(e) => {
-                return NetworkStatus {
-                    text: format!("Can't make a token: {e}"),
-                    is_error: true,
-                    ..Default::default()
+        // A token is made the first time one is needed; with none needed,
+        // the old one still shows (greyed) for switching back
+        let token = match settings.mcp_auth {
+            McpAuth::None => agent_token::load_existing().unwrap_or_default(),
+            McpAuth::Token => match agent_token::load_or_create() {
+                Ok(t) => t,
+                Err(e) => {
+                    return NetworkStatus {
+                        text: format!("Can't make a token: {e}"),
+                        is_error: true,
+                        ..Default::default()
+                    }
                 }
-            }
+            },
         };
         let url = network::url_for(&settings.mcp_address).unwrap_or_default();
         let started = network::start(
             &network::Options {
                 address: settings.mcp_address.clone(),
-                token: token.clone(),
+                token: (settings.mcp_auth == McpAuth::Token).then(|| token.clone()),
             },
             self.tools.clone(),
         );

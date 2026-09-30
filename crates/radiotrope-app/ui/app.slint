@@ -121,6 +121,9 @@ export component App inherits Window {
     // Where network agents connect, for the setup lines (Rust side)
     in-out property <string> agents-url;
     callback agents-app-changed(int);
+    in-out property <[string]> agents-auths <=> agents-dialog.auths;
+    in-out property <int> agents-auth <=> agents-dialog.auth;
+    callback agents-auth-changed(int);
     // Agents using the player now, for the chip in the menu bar
     in property <int> agent-count;
     in property <string> agent-list;
@@ -490,6 +493,7 @@ export component App inherits Window {
         apply-address(text) => { root.agents-apply-address(text); }
         regenerate-token() => { root.agents-regenerate-token(); }
         app-changed(index) => { root.agents-app-changed(index); }
+        auth-changed(index) => { root.agents-auth-changed(index); }
     }
 
     about-dialog := AboutDialog {

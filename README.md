@@ -41,18 +41,19 @@ Every agent shares the one player running on your computer. `radiotrope --mcp` c
 Radiotrope can also take agents over the network (MCP Streamable HTTP). It is off until you turn it on in **Tools > Agents (MCP)**, where you also find:
 
 - **Address**: `127.0.0.1:8765` (this computer only) by default. Enter this computer's network address, or `0.0.0.0` for all networks, to let other computers in.
-- **Token**: every request must carry it as `Authorization: Bearer <token>`. It is made the first time you turn network agents on, kept in `mcp-token` in the config folder (readable by you only), and can be regenerated.
+- **Authentication**: **None** (the default) lets in anyone who can reach the address. **Token** makes every request carry the token as `Authorization: Bearer <token>`.
+- **Token**: made the first time Token is picked with network agents on, kept in `mcp-token` in the config folder (readable by you only). **New token** replaces it; agents with the old one stop working.
 - **A ready line for the picked agent** with a Copy button, for example for Claude Code:
 
   ```bash
   claude mcp add --transport http radiotrope http://192.168.1.20:8765/mcp --header "Authorization: Bearer <token>"
   ```
 
-  Codex CLI takes the token from the `RADIOTROPE_TOKEN` environment variable instead. Claude Desktop only takes agents on this computer.
+  With Authentication set to None, the line has no header. Codex CLI takes the token from the `RADIOTROPE_TOKEN` environment variable instead. Claude Desktop only takes agents on this computer.
 
 Requests from web pages (with an `Origin` header) are refused. While the server listens on this computer only, other host names are refused too (DNS rebinding).
 
-The server speaks plain http, meant for your own network: the token keeps other people out, but it travels unencrypted. To reach the radio from anywhere without opening ports, run it over a private network such as [Tailscale](https://tailscale.com): put the computer's Tailscale address (100.x.y.z) in the address field. The traffic is then encrypted end to end. The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's cloud, so they can't reach a radio on your home network; use Claude Code, or `radiotrope --mcp` on the same computer.
+The server speaks plain http, meant for your own network. With Authentication set to None, anyone who can reach the address can use the player; the token keeps other people out, but it travels unencrypted. To reach the radio from anywhere without opening ports, run it over a private network such as [Tailscale](https://tailscale.com): put the computer's Tailscale address (100.x.y.z) in the address field. The traffic is then encrypted end to end. The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's cloud, so they can't reach a radio on your home network; use Claude Code, or `radiotrope --mcp` on the same computer.
 
 ### Available Tools
 
