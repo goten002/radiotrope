@@ -224,11 +224,13 @@ const MIN_CONTRAST: f32 = 1.8;
 /// Share of the logo's outline (visible pixels next to transparent ones,
 /// where the logo meets the tile) that must be hard to see before the logo
 /// gets a fog. A white mark inside a coloured shape never touches the tile,
-/// so it does not count.
-const MIN_HIDDEN_OUTLINE: f32 = 0.4;
-/// Share of all visible pixels that must be hard to see as well, so a thin
-/// dark ring around a coloured shape is left alone
-const MIN_HIDDEN: f32 = 0.10;
+/// so it does not count. Low enough for thin lettering under a big coloured
+/// mark (Fly 104: about a quarter of the outline at list size).
+const MIN_HIDDEN_OUTLINE: f32 = 0.2;
+/// Those hard-to-see outline pixels must also make up this share of the
+/// whole visible logo, so a stray dark speck or a tiny tagline is left
+/// alone (Fly 104's lettering: about 3.5%)
+const MIN_HIDDEN_EDGE: f32 = 0.02;
 /// Fog colour of logos with no colours of their own, per theme
 const FOG_GREY_DARK: [u8; 3] = [0xc8, 0xc9, 0xcc];
 const FOG_GREY_LIGHT: [u8; 3] = [0x3a, 0x3c, 0x41];
@@ -266,7 +268,7 @@ pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> 
     let clear =
         |x: usize, y: usize| x >= width || y >= height || rgba[(y * width + x) * 4 + 3] < 128;
     let tile = relative_luminance(if dark { TILE_DARK } else { TILE_LIGHT });
-    let (mut see_through, mut hidden, mut outline, mut hidden_outline) = (0, 0, 0, 0);
+    let (mut see_through, mut outline, mut hidden_outline) = (0, 0, 0);
     for y in 0..height {
         for x in 0..width {
             if clear(x, y) {
@@ -283,7 +285,6 @@ pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> 
                 || clear(x + 1, y)
                 || clear(x, y - 1)
                 || clear(x, y + 1);
-            hidden += is_hidden as usize;
             outline += on_outline as usize;
             hidden_outline += (is_hidden && on_outline) as usize;
         }
@@ -292,8 +293,8 @@ pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> 
     let share = |part: usize, whole: usize| part as f32 / whole.max(1) as f32;
     if visible == 0
         || share(see_through, width * height) < MIN_TRANSPARENT
-        || share(hidden, visible) < MIN_HIDDEN
         || share(hidden_outline, outline) < MIN_HIDDEN_OUTLINE
+        || share(hidden_outline, visible) < MIN_HIDDEN_EDGE
     {
         return None;
     }
@@ -603,6 +604,31 @@ mod tests {
         assert_eq!(fog.ground, mix(FOG_GREY_LIGHT, [0; 3], 0.72));
     }
 
+    /// A 60x60 logo: a large green square above a strip where `dark(x, y)`
+    /// picks the near-black pixels, on a transparent background
+    fn square_with(dark: impl Fn(usize, usize) -> bool) -> Vec<u8> {
+        (0..60 * 60)
+            .flat_map(|i| {
+                let (x, y) = (i % 60, i / 60);
+                if (2..58).contains(&x) && (2..40).contains(&y) {
+                    [47, 191, 90, 255]
+                } else if (2..58).contains(&x) && dark(x, y) {
+                    [17, 17, 17, 255]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn backdrop_for_thin_lettering_under_a_big_mark() {
+        // Like Fly 104: a big green mark, thin dark lettering below it
+        let img = square_with(|x, y| (44..47).contains(&y) && x % 4 != 0);
+        assert!(logo_backdrop(&img, 60, true).is_some());
+        assert_eq!(logo_backdrop(&img, 60, false), None);
+    }
+
     #[test]
     fn no_backdrop_for_opaque_or_enclosed_parts() {
         // Opaque: the logo has its own background
@@ -619,19 +645,9 @@ mod tests {
             "          ",
         ]);
         assert_eq!(logo_backdrop(&inside, W, false), None);
-        // A thin dark ring around a large green shape is fine (60x60,
-        // clear edge, 1px ring)
-        let ring: Vec<u8> = (0..60 * 60)
-            .flat_map(|i| {
-                let d = [i % 60, i / 60, 59 - i % 60, 59 - i / 60].into_iter().min();
-                match d {
-                    Some(0) => [0, 0, 0, 0],
-                    Some(1) => [17, 17, 17, 255],
-                    _ => [47, 191, 90, 255],
-                }
-            })
-            .collect();
-        assert_eq!(logo_backdrop(&ring, 60, true), None);
+        // A dark speck on the edge of a large green shape is left alone
+        let speck = square_with(|x, y| x < 5 && (44..47).contains(&y));
+        assert_eq!(logo_backdrop(&speck, 60, true), None);
         // Fully transparent, or nothing at all
         assert_eq!(logo_backdrop(&see_through(10, &[]), W, true), None);
         assert_eq!(logo_backdrop(&[], W, true), None);
