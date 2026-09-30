@@ -47,6 +47,17 @@ impl AgentInfo {
     }
 }
 
+/// The name to show for an agent's own name. Claude Desktop's agent mode
+/// calls itself "local-agent-mode-<server>" beside its chat's "claude-ai";
+/// it shows as the chat, so the app reads once.
+fn app_name(name: &str) -> &str {
+    if name.starts_with("local-agent-mode-") {
+        "claude-ai"
+    } else {
+        name
+    }
+}
+
 #[derive(Default)]
 struct Inner {
     next_local: u64,
@@ -117,7 +128,7 @@ impl Presence {
             Place::Network(ip) => inner.network.get_mut(&ip).map(|(name, _)| name),
         };
         if let Some(slot) = slot {
-            *slot = Some(name.to_string());
+            *slot = Some(app_name(name).to_string());
         }
     }
 
@@ -216,6 +227,9 @@ mod tests {
         presence.set_name(chat.place(), "claude-ai");
         presence.set_name(agent_mode.place(), "local-agent-mode-radiotrope");
         presence.set_name(other.place(), "claude-code");
+        // Names we don't know pass as they are
+        let codex = presence.local_connected(Some(300));
+        presence.set_name(codex.place(), "codex-mcp-client");
         let describe = |p: &Presence| {
             p.agents()
                 .iter()
@@ -225,8 +239,9 @@ mod tests {
         assert_eq!(
             describe(&presence),
             [
-                "claude-ai + local-agent-mode-radiotrope, this computer",
-                "claude-code, this computer"
+                "claude-ai, this computer",
+                "claude-code, this computer",
+                "codex-mcp-client, this computer"
             ]
         );
         // Still there while one of its sessions is
@@ -234,12 +249,14 @@ mod tests {
         assert_eq!(
             describe(&presence),
             [
-                "local-agent-mode-radiotrope, this computer",
-                "claude-code, this computer"
+                "claude-ai, this computer",
+                "claude-code, this computer",
+                "codex-mcp-client, this computer"
             ]
         );
         drop(agent_mode);
         drop(other);
+        drop(codex);
         assert!(presence.agents().is_empty());
     }
 
