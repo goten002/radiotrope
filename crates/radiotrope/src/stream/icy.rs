@@ -1689,6 +1689,33 @@ mod tests {
         }
 
         #[test]
+        fn an_old_shoutcast_server_behind_a_redirect_plays() {
+            // The HTTP client follows the redirect, then fails on "ICY 200
+            // OK". Asked again the SHOUTcast way, the station's address
+            // used to answer only "HTTP 302 Found".
+            let server = TestServer::start();
+            let audio = frame(600);
+            server.route("/station", Route::redirect("/;stream.mp3"));
+            server.route(
+                "/;stream.mp3",
+                Route::new(icy_body(&audio, 256, "Old Song")).raw_head(
+                    "ICY 200 OK\r\nicy-name:Old FM\r\nicy-metaint:256\r\n\
+                     content-type:audio/mpeg\r\n\r\n",
+                ),
+            );
+            let (reader, titles) = IcyReader::open(
+                &server.url("/station"),
+                None,
+                Duration::from_secs(30),
+                StreamCancel::new(),
+            )
+            .expect("the redirected ICY reply plays");
+            assert_eq!(reader.headers.station_name.as_deref(), Some("Old FM"));
+            assert!(read_audio_from(reader, audio.len()) == audio);
+            assert_eq!(next_title(&titles).as_deref(), Some("Old Song"));
+        }
+
+        #[test]
         fn a_greek_station_shows_its_name_and_titles() {
             // Windows-1253, as older Greek stations send: the name used to
             // be dropped and the titles shown as rows of U+FFFD

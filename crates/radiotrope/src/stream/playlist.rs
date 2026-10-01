@@ -39,7 +39,8 @@ pub fn check_playlist_type(url: &str) -> PlaylistCheck {
 ///
 /// The body decides when it starts like a playlist (`#EXTM3U`,
 /// `[playlist]`); otherwise a playlist `Content-Type` does, if the body is
-/// text. An M3U with `#EXT-X-` tags is HLS.
+/// text. An M3U with `#EXT-X-` tags is HLS, and only one with them: an HLS
+/// `Content-Type` or a `.m3u8` name is also given to plain M3U lists.
 pub fn sniff_playlist(content_type: Option<&str>, head: &[u8]) -> PlaylistCheck {
     let text = head.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(head);
     let text = text.trim_ascii_start();
@@ -71,8 +72,12 @@ pub fn sniff_playlist(content_type: Option<&str>, head: &[u8]) -> PlaylistCheck 
         .and_then(|ct| ct.split(';').next())
         .map(|ct| ct.trim().to_ascii_lowercase());
     match mime.as_deref() {
-        Some("application/vnd.apple.mpegurl" | "application/x-mpegurl") => PlaylistCheck::Hls,
-        Some("audio/x-mpegurl" | "audio/mpegurl") => m3u,
+        Some(
+            "application/vnd.apple.mpegurl"
+            | "application/x-mpegurl"
+            | "audio/x-mpegurl"
+            | "audio/mpegurl",
+        ) => m3u,
         Some("audio/x-scpls" | "audio/scpls" | "application/pls+xml") => PlaylistCheck::Pls,
         // Just a stream's address, as some station pages hand out
         _ if starts_with(b"http://") || starts_with(b"https://") => PlaylistCheck::M3u,
@@ -169,7 +174,8 @@ pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
 
 /// Resolve a playlist URL to its final stream URL, following chains recursively.
 ///
-/// M3U8 (HLS) URLs pass through unchanged. PLS and M3U playlists are fetched
+/// M3U8 (HLS) URLs pass through unchanged: the HLS resolve fetches them, and
+/// hands back a plain M3U list named so. PLS and M3U playlists are fetched
 /// and parsed, recursing up to `MAX_PLAYLIST_DEPTH` levels.
 pub fn resolve_playlist_url(url: &str) -> Result<String> {
     Ok(resolve_playlist(url, &StreamCancel::new(), Deadline::NONE)?.url)
@@ -873,8 +879,14 @@ mod tests {
             let entry = b"http://radio.example/live\n";
             assert_eq!(sniff_playlist(Some("audio/x-mpegurl"), entry), M3u);
             assert_eq!(sniff_playlist(Some("audio/x-scpls"), b"File1=/live\n"), Pls);
+            // An HLS type is also given to plain lists: the tags decide
             assert_eq!(
                 sniff_playlist(Some("application/x-mpegURL; charset=utf-8"), b"low.m3u8\n"),
+                M3u
+            );
+            let media = b"#EXTINF:6,\nseg1.aac\n#EXT-X-ENDLIST\n";
+            assert_eq!(
+                sniff_playlist(Some("application/vnd.apple.mpegurl"), media),
                 Hls
             );
             // A bare stream address, as some station pages hand out

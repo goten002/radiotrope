@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::config::network::MAX_PLAYLIST_DEPTH;
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
-use crate::stream::hls::{HlsReader, HlsSegmentFormat};
+use crate::stream::hls::{resolve_hls, HlsFound, HlsReader, HlsSegmentFormat};
 use crate::stream::icy::{IcyReader, Opened};
 use crate::stream::playlist::{resolve_playlist, resolve_playlist_as};
 use crate::stream::types::{ResolvedStream, StreamInfo, StreamType};
@@ -52,7 +52,17 @@ impl StreamResolver {
         for _ in 0..MAX_PLAYLIST_DEPTH {
             still_wanted()?;
             if target.hls {
-                return Self::open_hls(url, &target.url, cancel, deadline);
+                match resolve_hls(&target.url, cancel, deadline)? {
+                    HlsFound::Media(media_url) => {
+                        return Self::open_hls(url, &target.url, &media_url, cancel, deadline)
+                    }
+                    // A plain list named like HLS (`.m3u8`)
+                    HlsFound::Playlist(kind) => {
+                        still_wanted()?;
+                        target = resolve_playlist_as(&target.url, kind, cancel, deadline)?;
+                        continue;
+                    }
+                }
             }
             let playback_position = Arc::new(AtomicU64::new(0));
             let opened = IcyReader::open_detecting(
@@ -97,20 +107,21 @@ impl StreamResolver {
         Err(RadioError::Stream("Playlist nesting too deep".to_string()))
     }
 
-    /// Open the HLS stream at `playlist_url` (found from `url`)
+    /// Open the HLS stream whose media playlist `playlist_url` (found from
+    /// `url`) led to
     fn open_hls(
         url: &str,
         playlist_url: &str,
+        media_url: &str,
         cancel: &StreamCancel,
         deadline: Deadline,
     ) -> Result<ResolvedStream> {
-        let media_url = crate::stream::hls::resolve_hls(playlist_url, cancel, deadline)?;
         if cancel.is_cancelled() {
             return Err(RadioError::Cancelled);
         }
         let playback_position = Arc::new(AtomicU64::new(0));
         let (hls_reader, metadata_rx) = HlsReader::open_resolved(
-            &media_url,
+            media_url,
             playlist_url,
             Some(playback_position.clone()),
             cancel.clone(),
@@ -130,7 +141,7 @@ impl StreamResolver {
             metadata_rx: Some(metadata_rx),
             info: StreamInfo {
                 original_url: url.to_string(),
-                resolved_url: media_url,
+                resolved_url: media_url.to_string(),
                 stream_type: StreamType::Hls,
                 format_hint,
                 content_type: None,
@@ -653,6 +664,32 @@ mod tests {
             server.route("/live", station(frame(4096)));
             let resolved = StreamResolver::resolve(&server.url("/radio")).unwrap();
             assert_eq!(resolved.info.resolved_url, server.url("/live"));
+        }
+
+        #[test]
+        fn a_plain_m3u_named_m3u8_leads_to_its_station() {
+            // `.m3u8` is also the name of M3U lists in UTF-8. Taken for HLS,
+            // the station was downloaded as a segment, until "Timeout
+            // waiting for first HLS segment".
+            let server = TestServer::start();
+            server.route(
+                "/station.m3u8",
+                Route::new(format!(
+                    "#EXTM3U\n#EXTINF:-1,Test FM\n{}\n",
+                    server.url("/live")
+                ))
+                .header("Content-Type", "application/vnd.apple.mpegurl"),
+            );
+            let audio = frame(4096);
+            server.route("/live", station(audio.clone()));
+
+            let resolved = StreamResolver::resolve(&server.url("/station.m3u8")).unwrap();
+            assert_eq!(resolved.info.stream_type, StreamType::Direct);
+            assert_eq!(resolved.info.resolved_url, server.url("/live"));
+            let mut start = vec![0u8; 64];
+            let mut reader = resolved.reader;
+            reader.read_exact(&mut start).unwrap();
+            assert_eq!(start, audio[..64]);
         }
 
         #[test]
