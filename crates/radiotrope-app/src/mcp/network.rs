@@ -315,6 +315,9 @@ pub struct Interface {
     /// "eth0", "wlan0"; on Windows the adapter's name, e.g. "Wi-Fi"
     pub name: String,
     pub ip: IpAddr,
+    /// A network other computers are on (Ethernet, Wi-Fi, a VPN), not one
+    /// made for containers or virtual machines on this computer
+    pub usable: bool,
 }
 
 /// This computer's IPv4 addresses on its networks, loopback left out
@@ -327,6 +330,7 @@ pub fn interfaces() -> Vec<Interface> {
         .filter(|i| !i.is_loopback() && i.ip().is_ipv4())
         .filter(|i| i.oper_status != if_addrs::IfOperStatus::Down)
         .map(|i| Interface {
+            usable: is_usable(&i.name, i.ip(), i.is_p2p()),
             ip: i.ip(),
             name: i.name,
         })
@@ -334,6 +338,64 @@ pub fn interfaces() -> Vec<Interface> {
     found.sort_by(|a, b| a.name.cmp(&b.name).then(a.ip.cmp(&b.ip)));
     found.dedup();
     found
+}
+
+/// Whether other computers can reach us on this interface. Left out:
+/// self-assigned addresses (169.254.x.x, no network found) and the bridges
+/// and adapters that containers and virtual machines add.
+fn is_usable(name: &str, ip: IpAddr, point_to_point: bool) -> bool {
+    if let IpAddr::V4(v4) = ip {
+        if v4.is_link_local() {
+            return false;
+        }
+    }
+    // VPNs (WireGuard, OpenVPN tun, Tailscale) reach other computers
+    if point_to_point || is_vpn_name(name) {
+        return true;
+    }
+    if cfg!(target_os = "linux") {
+        // A real network card (Ethernet, Wi-Fi, USB) has a device behind it;
+        // docker0, br-*, veth*, virbr0 and the like are software only
+        return std::path::Path::new("/sys/class/net")
+            .join(name)
+            .join("device")
+            .exists();
+    }
+    !is_virtual_name(name)
+}
+
+fn is_vpn_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "tailscale",
+        "wg",
+        "tun",
+        "zt",
+        "zerotier",
+        "nordlynx",
+        "proton",
+    ]
+    .iter()
+    .any(|p| name.starts_with(p))
+}
+
+/// Default Windows names of the adapters that virtual machines, WSL,
+/// Docker and Bluetooth add (Linux checks for a device instead)
+fn is_virtual_name(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    [
+        "vethernet",
+        "virtualbox",
+        "vmware",
+        "hyper-v",
+        "bluetooth",
+        "docker",
+    ]
+    .iter()
+    .any(|p| name.starts_with(p))
+        || ["virtual", "host-only", "loopback", "wsl"]
+            .iter()
+            .any(|p| name.contains(p))
 }
 
 /// The address and port of a saved "host:port", for showing them apart
@@ -494,5 +556,38 @@ mod tests {
         drop(server);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
+    #[test]
+    fn container_and_vm_networks_are_left_out() {
+        let lan = "192.168.1.20".parse().unwrap();
+        // No network found: Windows and Linux make up a 169.254 address
+        assert!(!is_usable("Wi-Fi", "169.254.10.2".parse().unwrap(), false));
+        // VPNs stay, by kind or by name
+        assert!(is_usable("ppp0", lan, true));
+        assert!(is_usable(
+            "tailscale0",
+            "100.64.1.2".parse().unwrap(),
+            false
+        ));
+        assert!(is_usable("Tailscale", "100.64.1.2".parse().unwrap(), false));
+        // Windows names
+        for name in [
+            "vEthernet (WSL)",
+            "vEthernet (Default Switch)",
+            "VirtualBox Host-Only Network",
+            "VMware Network Adapter VMnet8",
+            "Bluetooth Network Connection",
+        ] {
+            assert!(is_virtual_name(name), "{name}");
+        }
+        for name in ["Wi-Fi", "Ethernet", "Ethernet 2", "WLAN"] {
+            assert!(!is_virtual_name(name), "{name}");
+        }
+        // Linux: software-only interfaces have no device behind them
+        if cfg!(target_os = "linux") {
+            assert!(!is_usable("docker0", "172.17.0.1".parse().unwrap(), false));
+            assert!(!is_usable("no-such-if0", lan, false));
+        }
     }
 }

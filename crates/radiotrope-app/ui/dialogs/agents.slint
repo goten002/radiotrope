@@ -284,7 +284,6 @@ export component AgentsDialog inherits Rectangle {
 
     property <bool> network-fields: root.available && root.network-on;
     property <bool> token-on: root.auth == 1;
-    property <bool> token-fields: root.network-fields && root.token-on;
 
     public function open() {
         root.refresh-listen();
@@ -399,14 +398,37 @@ export component AgentsDialog inherits Rectangle {
                 }
             }
 
+            // The token sits beside its choice; with None there is none
             HorizontalLayout {
                 spacing: 8px;
                 RowLabel { text: "Authentication"; }
                 Picker {
+                    width: 96px;
+                    horizontal-stretch: 0;
                     items: root.auths;
                     selected <=> root.auth;
                     enabled: root.network-fields;
                     changed(index) => { root.auth-changed(index); }
+                }
+                if root.token-on: CopyLine {
+                    text: root.token;
+                    placeholder: "Made when network agents first need one";
+                    enabled: root.network-fields;
+                }
+                if root.token-on: SecondaryButton {
+                    label: "New token";
+                    enabled: root.network-fields && root.token != "";
+                    clicked => { root.regenerate-token(); }
+                }
+                if !root.token-on: Text {
+                    horizontal-stretch: 1;
+                    // The first choice is "This computer only"
+                    text: root.listen == 0 ? "Only programs on this computer can connect"
+                        : "Anyone who can reach the address can use the player";
+                    color: root.network-fields ? Theme.text-secondary : Theme.disabled-text;
+                    font-size: Theme.font-md;
+                    vertical-alignment: center;
+                    overflow: elide;
                 }
             }
         }
@@ -414,20 +436,6 @@ export component AgentsDialog inherits Rectangle {
         VerticalLayout {
             spacing: 8px;
 
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Token"; }
-                CopyLine {
-                    text: root.token;
-                    placeholder: "Made when network agents first need one";
-                    enabled: root.token-fields;
-                }
-                SecondaryButton {
-                    label: "New token";
-                    enabled: root.token-fields && root.token != "";
-                    clicked => { root.regenerate-token(); }
-                }
-            }
             HorizontalLayout {
                 spacing: 8px;
                 RowLabel { text: "Command"; }
