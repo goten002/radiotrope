@@ -55,9 +55,12 @@ export global Theme {
     // or black (light) only as far as it takes to reach 4.5:1 there
     out property <color> accent-text: readable(dark-mode ? accent-base : accent-base.darker(0.5),
         dark-mode ? #ffffff : #000000);
-    // Text and icons on an accent fill (buttons, the play button): black or
-    // white, whichever reads better on the accent
+    // Text and icons on an accent fill (buttons): black or white, whichever
+    // reads better on the accent
     out property <color> on-accent: text-on(accent-base);
+    // The play/stop icon: black on every accent and in both themes, so the
+    // button looks the same everywhere
+    out property <color> play-icon: #000000;
     // Tints for badges, selected rows and header glows
     out property <color> accent-soft: accent-base.with-alpha(dark-mode ? 0.16 : 0.12);
     out property <color> accent-glow: accent-base.with-alpha(dark-mode ? 0.18 : 0.14);
@@ -204,7 +207,7 @@ export global Defaults {
     // first is ignored (touchpad double taps); also read by the Rust side
     out property <duration> repeat-click-guard: 500ms;
     // The small status animations (bouncing bars, pulsing dots, spinners)
-    // move this often, so a playing station doesn't redraw the window on
-    // every frame
-    out property <duration> motion-step: 100ms;
+    // move this often (25 times a second): smooth to the eye, and a
+    // playing station doesn't redraw the window on every frame
+    out property <duration> motion-step: 40ms;
 }
