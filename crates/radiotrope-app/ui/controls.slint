@@ -202,6 +202,11 @@ export component Controls inherits Rectangle {
     property <bool> copied: false;
     // Hovered long enough to show the full title bubble
     property <bool> title-hover-ready: false;
+    // Touch screens have no hover: a tap shows the bubble until the next
+    // tap or the next title
+    property <bool> title-pinned: false;
+    // The press on the title came from a touch screen
+    property <bool> title-touch-press: false;
     property <bool> title-cut: title-measure.preferred-width > np-area.width;
 
     // Play, or stop while playing or connecting (the button, or Space)
@@ -235,6 +240,10 @@ export component Controls inherits Rectangle {
             self.running = false;
             root.copied = false;
         }
+    }
+
+    changed now-playing-title => {
+        root.title-pinned = false;
     }
 
     // Hidden: copies the title and measures its full width
@@ -332,7 +341,7 @@ export component Controls inherits Rectangle {
 
         // ── Now Playing (fills available space, left-aligned, collapses first) ──
         // Clicking the title copies it; a cut-off title shows in full in a
-        // bubble on hover
+        // bubble on hover, or after a tap on a touch screen
         np-area := Rectangle {
             horizontal-stretch: 1;
             clip: true;
@@ -364,7 +373,15 @@ export component Controls inherits Rectangle {
 
                     title-touch := TouchArea {
                         mouse-cursor: Platform.has-clipboard ? pointer : default;
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                root.title-touch-press = e.touch-finger-id != 0;
+                            }
+                        }
                         clicked => {
+                            if root.title-touch-press && root.title-cut {
+                                root.title-pinned = !root.title-pinned;
+                            }
                             if Platform.has-clipboard {
                                 root.copy-title();
                             }
@@ -435,7 +452,8 @@ export component Controls inherits Rectangle {
     }
     // Full title above a cut-off one, styled like the favorites stats bubble
     title-bubble := Rectangle {
-        property <bool> shown: root.title-cut && root.title-hover-ready && root.now-playing-title != "";
+        property <bool> shown: root.title-cut && (root.title-hover-ready || root.title-pinned)
+            && root.now-playing-title != "";
         visible: self.opacity > 0;
         opacity: self.shown ? 1 : 0;
         animate opacity { duration: Theme.fast; }

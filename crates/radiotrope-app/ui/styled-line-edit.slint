@@ -26,8 +26,8 @@ export component StyledLineEdit inherits Rectangle {
     animate border-color { duration: Theme.fast; }
     clip: true;
 
-    // Placeholder
-    if input.text == "" && !input.has-focus: Text {
+    // Placeholder, until something is typed (also while the field has focus)
+    if input.text == "": Text {
         text: root.placeholder-text;
         color: Theme.text-tertiary;
         font-size: Theme.font-base;

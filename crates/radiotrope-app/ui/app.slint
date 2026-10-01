@@ -16,7 +16,7 @@ import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
-import { TextUtil, AgentsBubble, AgentRow } from "components.slint";
+import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
 export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow }
@@ -59,7 +59,8 @@ export component App inherits Window {
     callback toggle-favorite();
     callback play-favorite(FavoriteStation);
     callback delete-favorite(FavoriteStation);
-    callback edit-favorite(FavoriteStation);
+    // Saves an edited favorite; returns why it couldn't, or "" when saved
+    callback edit-favorite(FavoriteStation) -> string;
     callback reset-favorite-stats(string);
     callback reorder-favorites(/* from */ int, /* to */ int);
     callback move-favorite(FavoriteStation, /* to-top */ bool);
@@ -489,7 +490,7 @@ export component App inherits Window {
 
     edit-dialog := EditFavoriteDialog {
         accepted(station) => {
-            root.edit-favorite(station);
+            return root.edit-favorite(station);
         }
         deleted(station) => {
             root.delete-favorite(station);
@@ -542,6 +543,13 @@ export component App inherits Window {
         disconnect-requested() => { root.wifi-disconnect-requested(); }
         close-requested() => { root.show-wifi-settings = false; }
         wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+    }
+
+    // Steps the status animations (Motion), only while there is one to show
+    Timer {
+        interval: Defaults.motion-step;
+        running: root.is-playing || root.is-loading || root.is-recording;
+        triggered => { Motion.tick += self.interval; }
     }
 
     // The menu bar's agents bubble, over the header below it
