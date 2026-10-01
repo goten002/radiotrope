@@ -569,11 +569,16 @@ fn main() {
         let ui_weak = ui.as_weak();
         ui.on_reset_favorite_stats(move |id| {
             let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            // What another player saved since is taken in first, and then
+            // the poll redraws the whole list
+            let took_in = f.reload_if_changed();
             if f.reset_stats(&id).is_err() {
                 return;
             }
-            // The row is updated in place below
-            note_favorites_shown(&f);
+            // Otherwise the row is updated in place below
+            if !took_in {
+                note_favorites_shown(&f);
+            }
             let _ = f.save();
             if let Some(map) = SESSION_LISTEN
                 .lock()
@@ -750,6 +755,9 @@ fn main() {
                     .map(|fav| fav.id())
                     .collect();
 
+                // The order on screen, which the drag's rows refer to, is
+                // read before taking in what another player saved since
+                let took_in = f.reload_if_changed();
                 if from < sorted.len() && to < sorted.len() {
                     let id = sorted.remove(from);
                     sorted.insert(to, id);
@@ -757,8 +765,11 @@ fn main() {
                     let _ = f.reorder(&id_refs);
                 }
                 // The rows are moved in place below; a rebuild would break
-                // the next drag
-                note_favorites_shown(&f);
+                // the next drag. After taking something in, the poll
+                // redraws the list instead.
+                if !took_in {
+                    note_favorites_shown(&f);
+                }
             }
 
             // Shuffle existing UI model data (no disk I/O or image decoding)
