@@ -105,7 +105,7 @@ Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*,
 | Format | Status | Description |
 |--------|--------|-------------|
 | ICY (Icecast/Shoutcast) | Supported | Artist/title extraction from in-band ICY metadata blocks |
-| ID3v1/ID3v2 | Planned | Embedded tags in MP3 streams (artist, title, album, genre, etc.) |
+| ID3v1/ID3v2 | Supported | Tags inside MP3 and AAC streams and HLS segments; used when ICY gives no title |
 
 ## Architecture
 
@@ -147,18 +147,37 @@ Binaries will be at:
 
 ### Dependencies (Linux)
 
-Radiotrope uses rodio for audio output, which requires ALSA on Linux:
+Audio output needs ALSA, the GUI needs fontconfig, and the bundled libopus
+and fdk-aac are built with CMake and a C/C++ compiler:
 
 ```bash
 # Debian/Ubuntu
-sudo apt install libasound2-dev
+sudo apt install libasound2-dev libfontconfig1-dev cmake g++ pkg-config
 
 # Arch/Manjaro
-sudo pacman -S alsa-lib
+sudo pacman -S alsa-lib fontconfig cmake gcc pkgconf
 
 # Fedora
-sudo dnf install alsa-lib-devel
+sudo dnf install alsa-lib-devel fontconfig-devel cmake gcc-c++ pkgconf-pkg-config
 ```
+
+### Building on Windows
+
+1. Install Rust with [rustup](https://rustup.rs) (the default MSVC toolchain, Rust 1.92 or newer).
+2. Install the Visual Studio 2022 Build Tools with the "Desktop development with C++" workload (the MSVC compiler and the Windows SDK).
+3. Install [CMake](https://cmake.org/download/) and make sure it is on `PATH` (the bundled libopus is built with it).
+4. Optionally install Git, so About shows the commit the build came from.
+
+Then, in a Developer PowerShell or a normal terminal:
+
+```powershell
+git clone https://github.com/goten002/radiotrope.git
+cd radiotrope
+cargo build --release
+```
+
+The binaries are `target\release\radiotrope.exe` and `target\release\radiotrope-cli.exe`.
+The release GUI opens without a console window. Started from a terminal it prints `--help` and its log there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`.
 
 ### Desktop integration (Linux)
 
@@ -201,12 +220,12 @@ radiotrope-cli <URL>
 - [x] Station search and browsing (Radio Browser API)
 - [x] Favorites management
 - [x] Equalizer and audio effects (DSP chain)
-- [x] User-selectable accent color (9 palette presets + custom hex)
+- [x] User-selectable accent color (10 palette presets + custom hex)
 - [x] Persistent settings (window state, theme, EQ, preferences)
 - [ ] Export/import favorites
 - [ ] System tray integration
-- [ ] ID3 tag metadata extraction (MP3 streams)
-- [ ] Audio recording to file
+- [x] ID3 tag metadata extraction (MP3 and AAC streams, HLS)
+- [x] Audio recording to file (MP3, Opus, WAV)
 
 
 ## License

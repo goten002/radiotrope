@@ -25,12 +25,6 @@ PKGBUILD
 docs/
 pkg/
 
-# Embedded (Yocto / Raspberry Pi) work — parked, not tracked for now
-yocto/
+# Embedded (Yocto / Raspberry Pi) build output; the layer, the kas file and
+# the WiFi and keyboard sources are tracked
 build/
-kas-radiotrope-pi3.yml
-.config-seed/
-.cargo/
-crates/radiotrope-app/src/wifi/
-crates/radiotrope-app/ui/dialogs/wifi-settings.slint
-crates/radiotrope-app/ui/virtual-keyboard.slint
