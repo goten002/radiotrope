@@ -54,6 +54,10 @@ pub mod ui {
     /// How often the menu bar's agents chip checks who uses the player
     pub const AGENTS_REFRESH: Duration = Duration::from_secs(1);
 
+    /// How often the favorites file is checked for a save by another
+    /// player (one an agent started with `--mcp --standalone`)
+    pub const FAVORITES_FOLLOW: Duration = Duration::from_secs(1);
+
     /// How long "Saved ..." and recording errors stay on screen
     pub const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
 

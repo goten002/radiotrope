@@ -1,13 +1,16 @@
 //! Favorites management
 //!
-//! In-memory management of favorite stations.
+//! In-memory management of favorite stations. Another radiotrope process
+//! (an agent's own player) may save the same file: what it saved is taken
+//! in before each change and save here (see
+//! [`FavoritesManager::reload_if_changed`]).
 
-use crate::data::storage;
+use crate::data::storage::{self, FileStamp};
 use crate::data::types::{url_to_id, Favorite, FavoriteFilter, FavoriteSort, FavoriteUpdate};
 use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Favorites data file name
 const FAVORITES_FILE: &str = "favorites.json";
@@ -59,6 +62,13 @@ pub struct FavoritesManager {
     dirty: bool,
     /// Monotonically increasing generation counter, bumped on every mutation
     generation: u64,
+    /// The file the favorites were loaded from or last saved to
+    path: Option<PathBuf>,
+    /// That file's stamp when this manager last read or wrote it
+    seen: Option<FileStamp>,
+    /// The favorites as that read or write left them: what differs from
+    /// them now are the changes made here
+    base: HashMap<String, Favorite>,
 }
 
 impl FavoritesManager {
@@ -68,6 +78,9 @@ impl FavoritesManager {
             favorites: HashMap::new(),
             dirty: false,
             generation: 0,
+            path: None,
+            seen: None,
+            base: HashMap::new(),
         }
     }
 
@@ -85,30 +98,64 @@ impl FavoritesManager {
     /// Load favorites from a specific path
     pub fn load_from(path: &Path) -> Result<Self> {
         let mut manager = Self::new();
+        // Taken before the read, so a save in between shows as a change
+        let seen = storage::stamp(path);
 
         if let Some(file) = storage::load_from::<StoredFavoritesFile>(path)? {
-            // TODO: Handle version migrations when FAVORITES_VERSION increases
-            let mut skipped = 0;
-            for entry in file.favorites {
-                match serde_json::from_value::<Favorite>(entry) {
-                    Ok(favorite) => {
-                        manager.favorites.insert(favorite.id(), favorite);
-                    }
-                    Err(e) => {
-                        eprintln!("Favorites: skipping an entry that can't be read: {e}");
-                        skipped += 1;
-                    }
-                }
-            }
-            // The next save drops the entries skipped here, so keep the
-            // file as it was for recovery by hand
-            if skipped > 0 {
-                storage::keep_copy(path);
-            }
+            manager.favorites = read_entries(file, path);
         }
 
+        manager.path = Some(path.to_path_buf());
+        manager.seen = seen;
+        manager.base = manager.favorites.clone();
         manager.dirty = false;
         Ok(manager)
+    }
+
+    /// Take in what another radiotrope process saved to the file since this
+    /// manager last read or wrote it. A favorite changed here since then
+    /// keeps the change made here (it is saved next); every other favorite
+    /// becomes the other process's, removals included. Returns whether the
+    /// favorites changed.
+    ///
+    /// A missing or damaged file is no news: the next save writes it anew.
+    pub fn reload_if_changed(&mut self) -> bool {
+        let Some(path) = self.path.clone() else {
+            return false;
+        };
+        let stamp = storage::stamp(&path);
+        if stamp.is_none() || stamp == self.seen {
+            return false;
+        }
+        // Before the read, as at load
+        self.seen = stamp;
+        let theirs = match storage::parse_file::<StoredFavoritesFile>(&path) {
+            Ok(Some(file)) => read_entries(file, &path),
+            Ok(None) => return false,
+            Err(e) => {
+                eprintln!("Favorites: {e}");
+                return false;
+            }
+        };
+
+        // The changes made here, on top of what the other process saved
+        let mut merged = theirs.clone();
+        for id in self.favorites.keys().chain(self.base.keys()) {
+            let ours = self.favorites.get(id);
+            if ours != self.base.get(id) {
+                match ours {
+                    Some(favorite) => merged.insert(id.clone(), favorite.clone()),
+                    None => merged.remove(id),
+                };
+            }
+        }
+        self.base = theirs;
+        if merged == self.favorites {
+            return false;
+        }
+        self.favorites = merged;
+        self.generation += 1;
+        true
     }
 
     /// Save favorites to default storage location
@@ -118,17 +165,29 @@ impl FavoritesManager {
     }
 
     /// Save favorites to a specific path
+    ///
+    /// What another process saved there since is kept too (see
+    /// [`reload_if_changed`](Self::reload_if_changed)).
     pub fn save_to(&mut self, path: &Path) -> Result<()> {
         if !self.dirty {
             return Ok(());
         }
+        if self.path.as_deref() != Some(path) {
+            // A file this manager hasn't read: the favorites already in it
+            // stay, next to the ones here
+            self.path = Some(path.to_path_buf());
+            self.seen = None;
+            self.base.clear();
+        }
+        self.reload_if_changed();
 
         let file = FavoritesFile {
             version: FAVORITES_VERSION,
             favorites: self.favorites.values().cloned().collect(),
         };
 
-        storage::save_to(path, &file)?;
+        self.seen = Some(storage::save_to_stamped(path, &file)?);
+        self.base = self.favorites.clone();
         self.dirty = false;
         Ok(())
     }
@@ -152,6 +211,7 @@ impl FavoritesManager {
 
     /// Add a new favorite
     pub fn add(&mut self, favorite: Favorite) -> Result<()> {
+        self.reload_if_changed();
         let id = favorite.id();
         // Check for duplicate (ID is derived from URL, so same URL = same ID)
         if self.favorites.contains_key(&id) {
@@ -179,6 +239,7 @@ impl FavoritesManager {
 
     /// Remove a favorite by ID
     pub fn remove(&mut self, id: &str) -> Result<Favorite> {
+        self.reload_if_changed();
         let favorite = self
             .favorites
             .remove(id)
@@ -202,6 +263,7 @@ impl FavoritesManager {
 
     /// Get a mutable favorite by ID
     pub fn get_mut(&mut self, id: &str) -> Option<&mut Favorite> {
+        self.reload_if_changed();
         self.dirty = true; // Assume modification
         self.generation += 1;
         self.favorites.get_mut(id)
@@ -261,6 +323,7 @@ impl FavoritesManager {
     /// Note: Changing the URL will change the ID, effectively creating
     /// a new favorite. Use with caution.
     pub fn update(&mut self, id: &str, update: FavoriteUpdate) -> Result<()> {
+        self.reload_if_changed();
         // If URL is changing, we need to re-key the favorite
         if let Some(ref new_url) = update.url {
             let new_id = url_to_id(new_url);
@@ -305,6 +368,7 @@ impl FavoritesManager {
         url: &str,
         logo_url: Option<&str>,
     ) -> Result<Option<String>> {
+        self.reload_if_changed();
         let id = url_to_id(url);
 
         if self.favorites.contains_key(&id) {
@@ -446,6 +510,7 @@ impl FavoritesManager {
 
     /// Record a play session for a favorite
     pub fn record_play(&mut self, id: &str, duration_secs: u64) -> Result<()> {
+        self.reload_if_changed();
         let favorite = self
             .favorites
             .get_mut(id)
@@ -458,6 +523,7 @@ impl FavoritesManager {
 
     /// Record a play session by URL
     pub fn record_play_by_url(&mut self, url: &str, duration_secs: u64) -> Result<()> {
+        self.reload_if_changed();
         let id = url_to_id(url);
         if self.favorites.contains_key(&id) {
             self.record_play(&id, duration_secs)
@@ -474,6 +540,7 @@ impl FavoritesManager {
     /// favorites refresh would interrupt a drag in progress. Returns the
     /// updated favorite so the caller can refresh its row.
     pub fn add_listening(&mut self, url: &str, secs: u64, new_play: bool) -> Option<&Favorite> {
+        self.reload_if_changed();
         let id = self.find_match(url, None)?.id();
         let favorite = self.favorites.get_mut(&id)?;
         favorite.add_listening(secs, new_play);
@@ -483,6 +550,7 @@ impl FavoritesManager {
 
     /// Clear the stats of a favorite
     pub fn reset_stats(&mut self, id: &str) -> Result<()> {
+        self.reload_if_changed();
         let favorite = self
             .favorites
             .get_mut(id)
@@ -495,6 +563,7 @@ impl FavoritesManager {
 
     /// Move a favorite to the start or the end of the manual order
     pub fn move_to_edge(&mut self, id: &str, to_top: bool) -> Result<()> {
+        self.reload_if_changed();
         let mut ids: Vec<String> = self
             .sorted(FavoriteSort::Manual)
             .iter()
@@ -518,6 +587,7 @@ impl FavoritesManager {
 
     /// Reorder favorites (set sort_order based on provided ID order)
     pub fn reorder(&mut self, ids: &[&str]) -> Result<()> {
+        self.reload_if_changed();
         for (i, id) in ids.iter().enumerate() {
             if let Some(favorite) = self.favorites.get_mut(*id) {
                 favorite.sort_order = i as i32;
@@ -530,6 +600,7 @@ impl FavoritesManager {
 
     /// Import favorites from another manager (merge)
     pub fn import(&mut self, other: &FavoritesManager) -> (usize, usize) {
+        self.reload_if_changed();
         let mut added = 0;
         let mut skipped = 0;
 
@@ -561,6 +632,30 @@ impl Default for FavoritesManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The favorites in a file read from `path`, by ID
+fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favorite> {
+    // TODO: Handle version migrations when FAVORITES_VERSION increases
+    let mut favorites = HashMap::new();
+    let mut skipped = 0;
+    for entry in file.favorites {
+        match serde_json::from_value::<Favorite>(entry) {
+            Ok(favorite) => {
+                favorites.insert(favorite.id(), favorite);
+            }
+            Err(e) => {
+                eprintln!("Favorites: skipping an entry that can't be read: {e}");
+                skipped += 1;
+            }
+        }
+    }
+    // The next save drops the entries skipped here, so keep the
+    // file as it was for recovery by hand
+    if skipped > 0 {
+        storage::keep_copy(path);
+    }
+    favorites
 }
 
 #[cfg(test)]
@@ -1111,5 +1206,172 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(manager.resolve_play(request.clone()), request);
+    }
+
+    // =========================================================================
+    // Two players on one file (`--mcp --standalone`)
+    // =========================================================================
+
+    /// A file holding `urls`, and two managers that loaded it
+    fn two_players(urls: &[&str]) -> (std::path::PathBuf, FavoritesManager, FavoritesManager) {
+        let path = temp_path();
+        let mut first = FavoritesManager::new();
+        for url in urls {
+            first.add(Favorite::new(*url, *url)).unwrap();
+        }
+        first.force_save_to(&path).unwrap();
+        let gui = FavoritesManager::load_from(&path).unwrap();
+        let agent = FavoritesManager::load_from(&path).unwrap();
+        (path, gui, agent)
+    }
+
+    fn urls(manager: &FavoritesManager) -> Vec<String> {
+        let mut urls: Vec<_> = manager.all().iter().map(|f| f.url().to_string()).collect();
+        urls.sort();
+        urls
+    }
+
+    fn saved_urls(path: &Path) -> Vec<String> {
+        urls(&FavoritesManager::load_from(path).unwrap())
+    }
+
+    fn remove_files(path: &Path) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(storage::backup_path(path));
+    }
+
+    #[test]
+    fn a_save_keeps_a_favorite_another_player_added_meanwhile() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test"]);
+        // Both add one before either saves
+        gui.add(Favorite::new("B", "http://b.test")).unwrap();
+        agent.add(Favorite::new("C", "http://c.test")).unwrap();
+        agent.save_to(&path).unwrap();
+        gui.save_to(&path).unwrap();
+
+        assert_eq!(
+            saved_urls(&path),
+            ["http://a.test", "http://b.test", "http://c.test"]
+        );
+        // The agent's player sees the GUI's at its next look
+        assert!(agent.reload_if_changed());
+        assert_eq!(urls(&agent), saved_urls(&path));
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_removal_by_another_player_is_not_undone() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test", "http://b.test"]);
+        // Unsaved listening time here while the agent removes the other one
+        gui.add_listening("http://a.test", 60, true).unwrap();
+        agent.remove_by_url("http://b.test").unwrap();
+        agent.save_to(&path).unwrap();
+        gui.save_to(&path).unwrap();
+
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(urls(&saved), ["http://a.test"]);
+        let a = saved.get_by_url("http://a.test").unwrap();
+        assert_eq!(a.total_listen_time_secs, 60);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn listening_time_from_both_players_is_kept() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test", "http://b.test"]);
+        gui.add_listening("http://a.test", 60, true).unwrap();
+        agent.add_listening("http://b.test", 120, true).unwrap();
+        agent.save_to(&path).unwrap();
+        gui.save_to(&path).unwrap();
+
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        let secs = |url| saved.get_by_url(url).unwrap().total_listen_time_secs;
+        assert_eq!((secs("http://a.test"), secs("http://b.test")), (60, 120));
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_change_made_here_wins_over_the_other_players_change_to_that_favorite() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test"]);
+        let id = url_to_id("http://a.test");
+        gui.update(&id, FavoriteUpdate::new().name("Renamed here"))
+            .unwrap();
+        agent
+            .update(&id, FavoriteUpdate::new().name("Renamed by the agent"))
+            .unwrap();
+        agent.save_to(&path).unwrap();
+        gui.save_to(&path).unwrap();
+
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(saved.get(&id).unwrap().name(), "Renamed here");
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_change_starts_from_what_another_player_saved() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test"]);
+        agent.add(Favorite::new("B", "http://b.test")).unwrap();
+        agent.save_to(&path).unwrap();
+        // The GUI's next favorite goes after the agent's, and a star on
+        // the agent's favorite removes it rather than adding it twice
+        gui.add(Favorite::new("C", "http://c.test")).unwrap();
+        let order = |url| gui.get_by_url(url).unwrap().sort_order;
+        assert!(order("http://c.test") > order("http://b.test"));
+        assert_eq!(gui.toggle("B", "http://b.test", None).unwrap(), None);
+        gui.save_to(&path).unwrap();
+
+        assert_eq!(saved_urls(&path), ["http://a.test", "http://c.test"]);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn only_another_players_save_is_news() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test"]);
+        let generation = gui.generation();
+        assert!(!gui.reload_if_changed());
+
+        agent.add(Favorite::new("B", "http://b.test")).unwrap();
+        agent.save_to(&path).unwrap();
+        assert!(gui.reload_if_changed());
+        assert!(gui.generation() > generation);
+        // What it holds now is what is saved
+        assert!(!gui.is_dirty());
+
+        // Its own save isn't news to it
+        gui.add(Favorite::new("C", "http://c.test")).unwrap();
+        gui.save_to(&path).unwrap();
+        let generation = gui.generation();
+        assert!(!gui.reload_if_changed());
+        assert_eq!(gui.generation(), generation);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_missing_or_damaged_file_is_no_news() {
+        let (path, mut gui, _agent) = two_players(&["http://a.test"]);
+        remove_files(&path);
+        assert!(!gui.reload_if_changed());
+        assert_eq!(urls(&gui), ["http://a.test"]);
+
+        fs::write(&path, r#"{"version": 1, "favorites": ["#).unwrap();
+        assert!(!gui.reload_if_changed());
+        assert_eq!(urls(&gui), ["http://a.test"]);
+
+        // The next save writes the file anew
+        gui.add(Favorite::new("B", "http://b.test")).unwrap();
+        gui.save_to(&path).unwrap();
+        assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_first_save_to_a_file_keeps_what_is_in_it() {
+        let (path, _gui, _agent) = two_players(&["http://a.test"]);
+        // A list that started empty (the file couldn't be read at startup)
+        let mut fresh = FavoritesManager::new();
+        fresh.add(Favorite::new("B", "http://b.test")).unwrap();
+        fresh.save_to(&path).unwrap();
+
+        assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
+        remove_files(&path);
     }
 }

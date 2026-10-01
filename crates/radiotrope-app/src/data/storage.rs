@@ -8,6 +8,7 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 /// Get the application config directory path
 pub fn config_dir() -> Result<PathBuf> {
@@ -120,22 +121,53 @@ pub fn backup_path(path: &Path) -> PathBuf {
     sibling(path, ".bak")
 }
 
+/// A file as it was at one moment: when it last changed, its size and, on
+/// Unix, its inode. Every save puts a new file in place (see
+/// [`write_file`]), so a save by any process changes the stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FileStamp {
+    modified: Option<SystemTime>,
+    len: u64,
+    #[cfg(unix)]
+    ino: u64,
+}
+
+impl FileStamp {
+    fn of(meta: &fs::Metadata) -> Self {
+        Self {
+            modified: meta.modified().ok(),
+            len: meta.len(),
+            #[cfg(unix)]
+            ino: std::os::unix::fs::MetadataExt::ino(meta),
+        }
+    }
+}
+
+/// The stamp of `path` now, or `None` when it is missing or can't be read
+pub fn stamp(path: &Path) -> Option<FileStamp> {
+    fs::metadata(path).ok().map(|meta| FileStamp::of(&meta))
+}
+
 /// Write `content` to a new file next to `path`, flush it to the disk, then
 /// move it over `path` in one step. A crash or power cut leaves either the
 /// old file or the new one, never a half-written one. The file being
-/// replaced is kept as `<path>.bak` first.
-fn write_file(path: &Path, content: &str) -> Result<()> {
+/// replaced is kept as `<path>.bak` first. Returns the new file's stamp.
+fn write_file(path: &Path, content: &str) -> Result<FileStamp> {
     static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = sibling(path, &format!(".{}-{n}.tmp", std::process::id()));
 
     let result = write_new(&tmp, content).and_then(|()| {
+        // Taken before the move, which keeps it: taken after, it could
+        // already be another process's save
+        let stamp = FileStamp::of(&with_retries(|| fs::metadata(&tmp))?);
         // Keep the last good save. Only a file that still reads as JSON is
         // worth keeping, so a damaged file never replaces a good backup.
         if is_json_file(path) {
             let _ = with_retries(|| fs::copy(path, backup_path(path)));
         }
-        with_retries(|| fs::rename(&tmp, path))
+        with_retries(|| fs::rename(&tmp, path))?;
+        Ok(stamp)
     });
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
@@ -206,8 +238,9 @@ pub fn keep_copy(path: &Path) {
     }
 }
 
-/// Parse `path`: `Ok(None)` when it is missing or empty
-fn parse_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
+/// Parse `path`: `Ok(None)` when it is missing or empty. Unlike
+/// [`load_from`], a damaged file is only an error: no backup, nothing moved.
+pub fn parse_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     let content = match read_file(path)? {
         Some(c) => c,
         None => return Ok(None),
@@ -267,6 +300,11 @@ pub fn load_from<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
 /// Creates parent directories if they don't exist. The write is atomic and
 /// the previous file is kept as a backup (see [`write_file`]).
 pub fn save_to<T: Serialize>(path: &Path, data: &T) -> Result<()> {
+    save_to_stamped(path, data).map(|_| ())
+}
+
+/// [`save_to`], returning the saved file's stamp
+pub fn save_to_stamped<T: Serialize>(path: &Path, data: &T) -> Result<FileStamp> {
     // Ensure parent directory exists
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -510,6 +548,19 @@ mod tests {
         let backup: Option<TestData> = parse_file(&backup_path(&path)).unwrap();
         assert_eq!(backup, Some(data(1)));
         assert_eq!(load_from::<TestData>(&path).unwrap(), Some(data(2)));
+        cleanup(&path);
+    }
+
+    #[test]
+    fn a_save_returns_the_stamp_of_the_file_it_left() {
+        let path = temp_path("stamp");
+        assert_eq!(stamp(&path), None);
+        let first = save_to_stamped(&path, &data(1)).unwrap();
+        assert_eq!(stamp(&path), Some(first));
+        // Another save, which also copies the first to the backup
+        let second = save_to_stamped(&path, &data(1000)).unwrap();
+        assert_eq!(stamp(&path), Some(second));
+        assert_ne!(first, second);
         cleanup(&path);
     }
 
