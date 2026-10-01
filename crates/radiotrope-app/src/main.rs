@@ -190,6 +190,7 @@ fn main() {
     let _agents_timer = watch_agents(&ui, agents.as_ref().map(|a| a.tools().presence()));
 
     // Initial load of favorites into UI model
+    migrate_logo_ids(&favorites, settings.last_station.as_ref(), &logo_service);
     refresh_favorites(&ui, &favorites, &logo_service);
 
     // Background: prefetch uncached logos for favorites
@@ -1647,6 +1648,37 @@ fn main() {
     let deadline = Instant::now() + SHUTDOWN_GRACE;
     while !controller.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Logos cached by builds before the stable favorite ids (FNV-1a) are named
+/// by the old id. Give them the current name before anything looks them up,
+/// and before the startup cleanup takes them for orphans and deletes them.
+/// A rename per logo, once; later starts find nothing to move.
+fn migrate_logo_ids(
+    favorites: &Mutex<FavoritesManager>,
+    last_station: Option<&Station>,
+    logo_service: &LogoService,
+) {
+    use radiotrope_app::data::types::{legacy_url_to_id, url_to_id};
+    let urls: Vec<String> = {
+        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+        favs.sorted(FavoriteSort::Manual)
+            .into_iter()
+            .map(|f| f.url().to_string())
+            .chain(last_station.map(|s| s.url.clone()))
+            .collect()
+    };
+    let renamed = urls
+        .iter()
+        .filter(|url| {
+            logo_service
+                .cache()
+                .rename_id(&legacy_url_to_id(url), &url_to_id(url))
+        })
+        .count();
+    if renamed > 0 {
+        eprintln!("Logo cache: renamed {renamed} logo(s) to the current favorite ids");
     }
 }
 
