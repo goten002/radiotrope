@@ -37,6 +37,16 @@ pub fn url_to_id(url: &str) -> String {
     format!("{:016x}", fnv1a(url.as_bytes()))
 }
 
+/// The id builds before FNV-1a gave a URL (`DefaultHasher`, which the
+/// standard library may change). Only for moving files that older builds
+/// named by it, such as cached logos; never for new data.
+pub fn legacy_url_to_id(url: &str) -> String {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
 /// 64-bit FNV-1a, stable across Rust versions (unlike `DefaultHasher`)
 pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
@@ -669,6 +679,21 @@ mod tests {
 
         let station = Station::new("Test", "http://test.com").with_homepage_opt(None);
         assert_eq!(station.homepage, None);
+    }
+
+    #[test]
+    fn legacy_ids_match_what_older_builds_wrote() {
+        // Pinned from the `DefaultHasher` ids older builds used. If this
+        // fails, the standard library changed its hasher, and logos cached
+        // by those builds can no longer be renamed at startup.
+        assert_eq!(
+            legacy_url_to_id("http://stream.example/live.mp3"),
+            "28acedf85b0b8994"
+        );
+        assert_ne!(
+            legacy_url_to_id("http://stream.example/live.mp3"),
+            url_to_id("http://stream.example/live.mp3")
+        );
     }
 
     #[test]

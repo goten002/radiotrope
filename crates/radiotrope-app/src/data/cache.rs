@@ -238,6 +238,22 @@ impl ImageCache {
         removed
     }
 
+    /// Rename the cached image `<from>.<ext>` to `<to>.<ext>`, unless `<to>`
+    /// is already cached. Returns whether a file was moved.
+    pub fn rename_id(&self, from: &str, to: &str) -> bool {
+        if from == to || self.has(to) {
+            return false;
+        }
+        let Some(path) = self.find_cached_path(from) else {
+            return false;
+        };
+        let Some(ext) = path.extension() else {
+            return false;
+        };
+        let target = self.cache_dir.join(to).with_extension(ext);
+        fs::rename(&path, target).is_ok()
+    }
+
     /// Get all cached image IDs
     pub fn list_ids(&self) -> Vec<String> {
         let entries = match fs::read_dir(&self.cache_dir) {
@@ -651,6 +667,54 @@ mod tests {
             .put("url_test", &data, Some("https://example.com/logo.webp"))
             .unwrap();
         assert!(path.to_string_lossy().ends_with(".webp"));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rename_id_moves_a_logo_and_keeps_its_extension() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        cache.put("old", b"<svg/>", Some("logo.svg")).unwrap();
+
+        assert!(cache.rename_id("old", "new"));
+        assert!(!cache.has("old"));
+        assert_eq!(cache.get_path("new").unwrap(), dir.join("new.svg"));
+        // Nothing left to move
+        assert!(!cache.rename_id("old", "new"));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn rename_id_never_replaces_a_logo_already_there() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        cache.put_thumbnail("old", &png(8)).unwrap();
+        let current = cache.put_thumbnail("new", &png(16)).unwrap();
+
+        assert!(!cache.rename_id("old", "new"));
+        assert_eq!(cache.get("new").unwrap(), current);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn logos_under_the_legacy_id_survive_the_startup_cleanup() {
+        use crate::data::types::{legacy_url_to_id, url_to_id};
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        let url = "http://stream.example/live.mp3";
+        // What an older build left in the cache
+        cache
+            .put_thumbnail(&legacy_url_to_id(url), &png(8))
+            .unwrap();
+
+        // Startup: rename, then clean up
+        assert!(cache.rename_id(&legacy_url_to_id(url), &url_to_id(url)));
+        let valid: HashSet<String> = [url_to_id(url)].into_iter().collect();
+        assert_eq!(cache.cleanup_orphaned(&valid), 0);
+        assert!(cache.has(&url_to_id(url)));
 
         cleanup_dir(&dir);
     }
