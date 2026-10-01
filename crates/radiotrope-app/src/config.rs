@@ -77,4 +77,11 @@ pub mod mcp {
     /// A network agent has no lasting connection: it counts as connected
     /// (the menu bar's agents chip) until this long after its last request
     pub const AGENT_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+    /// How long a network agent's session lasts without a request. rmcp
+    /// ends it after 5 minutes by default, open event stream or not, and
+    /// the agent's next call then fails with "session not found"; agents
+    /// often sit idle much longer than that between uses. Agents that quit
+    /// cleanly end their session themselves.
+    pub const SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 }
