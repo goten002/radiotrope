@@ -120,17 +120,78 @@ where
 /// relay where we know it. One app can open several sessions (Claude
 /// Desktop's chat and its agent mode each start one), and they share it.
 fn mcp_hello() -> String {
-    #[cfg(unix)]
-    {
-        // SAFETY: getppid has no preconditions and cannot fail
-        let parent = unsafe { libc::getppid() };
-        format!("{HELLO_MCP} from={parent}\n")
+    match parent_pid() {
+        Some(parent) => format!("{HELLO_MCP} from={parent}\n"),
+        // Each session counts alone
+        None => format!("{HELLO_MCP}\n"),
     }
-    // Windows has no cheap way to the parent; each session counts alone
-    #[cfg(not(unix))]
-    {
-        format!("{HELLO_MCP}\n")
+}
+
+/// The process that started this one
+#[cfg(unix)]
+fn parent_pid() -> Option<u32> {
+    // SAFETY: getppid has no preconditions and cannot fail
+    let parent = unsafe { libc::getppid() };
+    u32::try_from(parent).ok()
+}
+
+/// The process that started this one, from the system's list of processes
+/// (Windows has no direct call for it)
+#[cfg(windows)]
+fn parent_pid() -> Option<u32> {
+    use std::ffi::c_void;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
+    /// PROCESSENTRY32W
+    #[repr(C)]
+    struct ProcessEntry {
+        size: u32,
+        usage: u32,
+        process_id: u32,
+        default_heap_id: usize,
+        module_id: u32,
+        threads: u32,
+        parent_process_id: u32,
+        priority_class_base: i32,
+        flags: u32,
+        exe_file: [u16; 260],
     }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn CreateToolhelp32Snapshot(flags: u32, process_id: u32) -> *mut c_void;
+        fn Process32FirstW(snapshot: *mut c_void, entry: *mut ProcessEntry) -> i32;
+        fn Process32NextW(snapshot: *mut c_void, entry: *mut ProcessEntry) -> i32;
+    }
+    const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
+
+    // SAFETY: plain Win32 call; INVALID_HANDLE_VALUE (-1) means it failed
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
+    if snapshot.is_null() || snapshot as isize == -1 {
+        return None;
+    }
+    // SAFETY: a handle we just opened, closed when this drops
+    let snapshot = unsafe { OwnedHandle::from_raw_handle(snapshot) };
+    let handle = std::os::windows::io::AsRawHandle::as_raw_handle(&snapshot);
+    let ours = std::process::id();
+    // SAFETY: all-zero is a valid PROCESSENTRY32W; the calls need its size
+    // set and write nothing past it
+    let mut entry: ProcessEntry = unsafe { std::mem::zeroed() };
+    entry.size = std::mem::size_of::<ProcessEntry>() as u32;
+    // SAFETY: a snapshot handle and an entry with its size set
+    let mut more = unsafe { Process32FirstW(handle, &mut entry) } != 0;
+    while more {
+        if entry.process_id == ours {
+            return Some(entry.parent_process_id).filter(|&pid| pid != 0);
+        }
+        // SAFETY: as above
+        more = unsafe { Process32NextW(handle, &mut entry) } != 0;
+    }
+    None
+}
+
+#[cfg(not(any(unix, windows)))]
+fn parent_pid() -> Option<u32> {
+    None
 }
 
 /// `radiotrope --mcp`: relay stdin and stdout to the running player. Returns
@@ -259,7 +320,14 @@ where
             if input.read_line(&mut line).await? == 0 {
                 return Ok::<_, std::io::Error>(());
             }
-            open.borrow_mut().extend(request_ids(&line));
+            {
+                let mut waiting = open.borrow_mut();
+                waiting.extend(request_ids(&line));
+                // A request the agent gave up on may never be answered
+                for id in cancelled_ids(&line) {
+                    waiting.remove(&id);
+                }
+            }
             to_player.write_all(line.as_bytes()).await?;
         }
     };
@@ -304,6 +372,28 @@ fn request_ids(line: &str) -> Vec<String> {
     message_ids(line, |msg| msg.get("method").is_some())
 }
 
+/// The JSON-RPC messages of one line (a batch holds several); none for a
+/// line that isn't JSON
+fn messages(line: &str) -> Vec<serde_json::Value> {
+    match serde_json::from_str::<serde_json::Value>(line) {
+        Ok(serde_json::Value::Array(batch)) => batch,
+        Ok(single) => vec![single],
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Ids of the requests one line from the agent cancels
+/// (`notifications/cancelled`, whose `requestId` names the request)
+fn cancelled_ids(line: &str) -> Vec<String> {
+    messages(line)
+        .iter()
+        .filter(|msg| msg.get("method").and_then(|m| m.as_str()) == Some("notifications/cancelled"))
+        .filter_map(|msg| msg.get("params")?.get("requestId"))
+        .filter(|id| !id.is_null())
+        .map(|id| id.to_string())
+        .collect()
+}
+
 /// Ids answered by one line from the player
 fn response_ids(line: &str) -> Vec<String> {
     message_ids(line, |msg| {
@@ -312,14 +402,7 @@ fn response_ids(line: &str) -> Vec<String> {
 }
 
 fn message_ids(line: &str, wanted: impl Fn(&serde_json::Value) -> bool) -> Vec<String> {
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-        return Vec::new();
-    };
-    let messages = match value {
-        serde_json::Value::Array(batch) => batch,
-        single => vec![single],
-    };
-    messages
+    messages(line)
         .iter()
         .filter(|msg| wanted(msg))
         .filter_map(|msg| msg.get("id"))
@@ -361,6 +444,42 @@ mod tests {
         // A request from the player is not an answer
         assert!(response_ids(r#"{"id":7,"method":"roots/list"}"#).is_empty());
         assert!(response_ids("not json").is_empty());
+        assert_eq!(
+            cancelled_ids(
+                r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":7}}"#
+            ),
+            vec!["7"]
+        );
+        assert_eq!(
+            cancelled_ids(r#"[{"method":"notifications/cancelled","params":{"requestId":"a"}}]"#),
+            vec![r#""a""#]
+        );
+        assert!(cancelled_ids(r#"{"id":7,"method":"tools/call"}"#).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_request_is_not_waited_for() {
+        let (relay_side, player_side) = duplex(4096);
+        // A player that would answer only after a minute
+        let _player = tokio::spawn(fake_player(player_side, Duration::from_secs(60)));
+        let (mut agent_in, relay_in) = duplex(4096);
+        let (relay_out, _agent_out) = duplex(4096);
+        agent_in
+            .write_all(
+                b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\"}\n\
+                  {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\
+                  \"params\":{\"requestId\":1}}\n",
+            )
+            .await
+            .unwrap();
+        drop(agent_in);
+        tokio::time::timeout(
+            Duration::from_millis(500),
+            relay(relay_in, relay_out, relay_side),
+        )
+        .await
+        .expect("the relay waited for a cancelled request")
+        .unwrap();
     }
 
     /// A fake player: checks the hello line, then answers each request

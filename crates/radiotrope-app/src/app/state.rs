@@ -19,6 +19,10 @@ pub enum AppCommand {
         logo_url: Option<String>,
         /// The station's country, shown with it and kept if it is starred
         country: Option<String>,
+        /// Told the `play_seq` the station gets once the controller takes
+        /// the command up, so an agent's play follows its own station and
+        /// not one started just before or after it
+        taken: Option<tokio::sync::oneshot::Sender<u64>>,
     },
     Stop,
     #[allow(dead_code)] // planned: pause/resume from MCP
@@ -114,6 +118,34 @@ pub struct AppSnapshot {
     pub recording: Option<RecordingProgress>,
     /// Last "saved" or error message about a recording
     pub recording_notice: Option<RecordingNotice>,
+    /// The recording settings as the window has them, for an agent's
+    /// start_recording
+    pub recording_setup: RecordingSetup,
+}
+
+/// The choices of the Recording Settings dialog. Kept in memory, so an
+/// agent's recording uses what the window shows without reading the
+/// settings file while the window may be saving it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecordingSetup {
+    /// `None` is the default folder
+    pub dir: Option<PathBuf>,
+    pub format: RecordingFormat,
+    /// MP3/Opus bitrate in kbps; `None` uses the station's bitrate
+    pub bitrate: Option<u32>,
+    /// Record after the equalizer (only counts while the EQ is on)
+    pub with_eq: bool,
+}
+
+impl RecordingSetup {
+    pub fn from_settings(settings: &radiotrope_app::data::settings::Settings) -> Self {
+        Self {
+            dir: settings.recording_dir.clone(),
+            format: settings.recording_format.into(),
+            bitrate: settings.recording_bitrate,
+            with_eq: settings.record_with_eq,
+        }
+    }
 }
 
 /// Progress of the running recording
@@ -162,6 +194,7 @@ impl Default for AppSnapshot {
             eq_preset_name: Some("Flat".to_string()),
             recording: None,
             recording_notice: None,
+            recording_setup: RecordingSetup::default(),
         }
     }
 }

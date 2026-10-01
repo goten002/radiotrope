@@ -149,6 +149,7 @@ fn main() {
         state.eq_enabled = settings.eq_enabled;
         state.eq_preset_name = settings.eq_preset_name.clone();
         state.accent_color = settings.accent_color.clone();
+        state.recording_setup = app::state::RecordingSetup::from_settings(&settings);
     }
 
     // Create Slint UI
@@ -1791,6 +1792,7 @@ fn setup_rotary_encoder(
                             name: station_name,
                             logo_url: station_logo,
                             country: station_country,
+                            taken: None,
                         });
                     }
 
@@ -2651,27 +2653,27 @@ fn setup_recording(
 
     ui.on_toggle_recording({
         let ui_weak = ui.as_weak();
+        let shared_state = shared_state.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let recording = shared_state
-                .lock()
-                .map(|s| s.recording.is_some())
-                .unwrap_or(false);
+            let (recording, setup) = {
+                let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                (s.recording.is_some(), s.recording_setup.clone())
+            };
             if recording {
                 cmd_tx.send(app::state::AppCommand::StopRecording);
                 return;
             }
-            let settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
             let station = Station::new(
                 ui.get_station_name().as_str(),
                 ui.get_station_url().as_str(),
             );
             cmd_tx.send(app::state::AppCommand::StartRecording {
-                folder: recordings::folder(settings.recording_dir.as_deref()),
-                format: settings.recording_format.into(),
-                bitrate: settings.recording_bitrate,
+                folder: recordings::folder(setup.dir.as_deref()),
+                format: setup.format,
+                bitrate: setup.bitrate,
                 // The switch keeps its state but only counts with the EQ on
-                with_eq: settings.record_with_eq && ui.get_eq_enabled(),
+                with_eq: setup.with_eq && ui.get_eq_enabled(),
                 cover: station_cover_png(&logo_service, &station),
             });
         }
@@ -2679,33 +2681,44 @@ fn setup_recording(
 
     ui.on_apply_recording_folder({
         let ui_weak = ui.as_weak();
+        let state = shared_state.clone();
         move |path| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            apply_recording_folder(&ui, &path);
+            apply_recording_folder(&ui, &state, &path);
         }
     });
 
     ui.on_restore_recording_folder({
         let ui_weak = ui.as_weak();
+        let state = shared_state.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            save_recording_settings(|s| s.recording_dir = None);
+            save_recording_settings(&state, |s| s.recording_dir = None);
             show_recording_folder(&ui, None);
         }
     });
 
-    ui.on_record_with_eq_toggled(|on| {
-        save_recording_settings(|s| s.record_with_eq = on);
+    ui.on_record_with_eq_toggled({
+        let state = shared_state.clone();
+        move |on| save_recording_settings(&state, |s| s.record_with_eq = on)
     });
 
-    ui.on_recording_format_changed(|id| {
-        let format = radiotrope_app::data::settings::RecordingFormat::from_id(id.as_str());
-        save_recording_settings(|s| s.recording_format = format);
+    ui.on_recording_format_changed({
+        let state = shared_state.clone();
+        move |id| {
+            let format = radiotrope_app::data::settings::RecordingFormat::from_id(id.as_str());
+            save_recording_settings(&state, |s| s.recording_format = format);
+        }
     });
 
     // 0 is Auto
-    ui.on_recording_bitrate_changed(|kbps| {
-        save_recording_settings(|s| s.recording_bitrate = (kbps > 0).then_some(kbps as u32));
+    ui.on_recording_bitrate_changed({
+        let state = shared_state.clone();
+        move |kbps| {
+            save_recording_settings(&state, |s| {
+                s.recording_bitrate = (kbps > 0).then_some(kbps as u32)
+            });
+        }
     });
 
     ui.on_open_recordings_folder({
@@ -2724,13 +2737,13 @@ fn setup_recording(
 
     ui.on_browse_recording_folder({
         let ui_weak = ui.as_weak();
-        move || browse_recording_folder(ui_weak.clone())
+        move || browse_recording_folder(ui_weak.clone(), shared_state.clone())
     });
 }
 
 /// Save a folder typed or picked in the Recording Settings dialog, or show
 /// why it can't be used (the folder in use stays as it was).
-fn apply_recording_folder(ui: &App, path: &str) {
+fn apply_recording_folder(ui: &App, state: &Mutex<AppSnapshot>, path: &str) {
     let path = std::path::PathBuf::from(path.trim());
     if path.as_os_str().is_empty() {
         ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
@@ -2746,7 +2759,7 @@ fn apply_recording_folder(ui: &App, path: &str) {
     }
     // Choosing the default folder by hand keeps following the default
     let custom = (path != recordings::default_dir()).then_some(path);
-    save_recording_settings(|s| s.recording_dir = custom.clone());
+    save_recording_settings(state, |s| s.recording_dir = custom.clone());
     show_recording_folder(ui, custom.as_deref());
 }
 
@@ -2760,10 +2773,18 @@ fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
     ui.set_recording_folder_error(Default::default());
 }
 
-/// Change recording settings on disk right away.
-fn save_recording_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
+/// Change recording settings on disk right away, and in the shared state,
+/// where an agent's recording takes them from.
+fn save_recording_settings(
+    state: &Mutex<AppSnapshot>,
+    change: impl FnOnce(&mut radiotrope_app::data::settings::Settings),
+) {
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
     change(&mut settings);
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .recording_setup = app::state::RecordingSetup::from_settings(&settings);
     if let Err(e) = settings.save() {
         eprintln!("Failed to save recording settings: {e}");
     }
@@ -2817,7 +2838,7 @@ fn show_recording_state(
 /// Let the user pick the recording folder with the system's folder dialog.
 /// The choice is saved straight away.
 #[cfg(feature = "desktop")]
-fn browse_recording_folder(ui_weak: slint::Weak<App>) {
+fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapshot>>) {
     let Some(ui) = ui_weak.upgrade() else { return };
     let start = std::path::PathBuf::from(ui.get_recording_folder_edit().as_str());
     let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Recording Folder");
@@ -2832,7 +2853,7 @@ fn browse_recording_folder(ui_weak: slint::Weak<App>) {
         let Some(ui) = ui_weak.upgrade() else { return };
         // A picked folder saves straight away, like the other settings
         if let Some(folder) = picked {
-            apply_recording_folder(&ui, &folder.path().display().to_string());
+            apply_recording_folder(&ui, &state, &folder.path().display().to_string());
         }
     });
     if let Err(e) = spawned {
@@ -2842,7 +2863,7 @@ fn browse_recording_folder(ui_weak: slint::Weak<App>) {
 
 /// The kiosk build has no folder dialog; the path is typed instead.
 #[cfg(not(feature = "desktop"))]
-fn browse_recording_folder(_ui_weak: slint::Weak<App>) {}
+fn browse_recording_folder(_ui_weak: slint::Weak<App>, _state: Arc<Mutex<AppSnapshot>>) {}
 
 /// Open a folder in the system file manager.
 fn open_folder(dir: &std::path::Path) {
@@ -3001,6 +3022,7 @@ fn play_station_with_metadata(
         name: name.clone(),
         logo_url: logo_url.clone(),
         country: country.clone(),
+        taken: None,
     });
     // Show it as connecting right away (the Play button turns into Stop),
     // not only at the next state poll
