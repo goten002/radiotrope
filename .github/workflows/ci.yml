@@ -33,7 +33,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
-      - run: cargo test --workspace
+      - name: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee test.log; then
+            grep -E "^test .* FAILED$|panicked at|^error" test.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
 
   clippy:
     name: Clippy
@@ -45,7 +52,15 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
-      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            # Show the first problems as annotations on the run and the PR
+            grep -E '(error|warning)(\[[^]]*\])?:' clippy.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
 
   fmt:
     name: Format
@@ -68,5 +83,20 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            # Show the first problems as annotations on the run and the PR
+            grep -E '(error|warning)(\[[^]]*\])?:' clippy.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
+      - name: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee test.log; then
+            grep -E "^test .* FAILED$|panicked at|^error" test.log | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
