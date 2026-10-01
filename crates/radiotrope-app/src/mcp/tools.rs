@@ -869,7 +869,7 @@ impl RadioTools {
                 stations: c.station_count,
             })
             .collect();
-        categories.sort_by(|a, b| b.stations.cmp(&a.stations));
+        categories.sort_by_key(|c| std::cmp::Reverse(c.stations));
         categories.truncate(limit);
         Ok(Json(CategoryList { kind, categories }))
     }

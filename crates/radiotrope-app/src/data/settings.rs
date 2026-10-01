@@ -638,7 +638,12 @@ mod tests {
         let result = Settings::load_from(&path);
         assert!(result.is_err());
 
-        let _ = fs::remove_file(&path);
+        let prefix = format!("{}.bad-", path.file_name().unwrap().to_string_lossy());
+        for entry in fs::read_dir(path.parent().unwrap()).unwrap().flatten() {
+            if entry.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
     }
 
     #[test]

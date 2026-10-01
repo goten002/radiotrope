@@ -33,6 +33,13 @@ struct FavoritesFile {
     favorites: Vec<Favorite>,
 }
 
+/// [`FavoritesFile`] as read back: each favorite is parsed on its own, so
+/// one damaged entry doesn't cost all the others
+#[derive(Deserialize)]
+struct StoredFavoritesFile {
+    favorites: Vec<serde_json::Value>,
+}
+
 impl Default for FavoritesFile {
     fn default() -> Self {
         Self {
@@ -79,10 +86,24 @@ impl FavoritesManager {
     pub fn load_from(path: &Path) -> Result<Self> {
         let mut manager = Self::new();
 
-        if let Some(file) = storage::load_from::<FavoritesFile>(path)? {
+        if let Some(file) = storage::load_from::<StoredFavoritesFile>(path)? {
             // TODO: Handle version migrations when FAVORITES_VERSION increases
-            for favorite in file.favorites {
-                manager.favorites.insert(favorite.id(), favorite);
+            let mut skipped = 0;
+            for entry in file.favorites {
+                match serde_json::from_value::<Favorite>(entry) {
+                    Ok(favorite) => {
+                        manager.favorites.insert(favorite.id(), favorite);
+                    }
+                    Err(e) => {
+                        eprintln!("Favorites: skipping an entry that can't be read: {e}");
+                        skipped += 1;
+                    }
+                }
+            }
+            // The next save drops the entries skipped here, so keep the
+            // file as it was for recovery by hand
+            if skipped > 0 {
+                storage::keep_copy(path);
             }
         }
 
@@ -317,7 +338,7 @@ impl FavoritesManager {
                 favorites.sort_by_key(|f| f.name().to_lowercase());
             }
             FavoriteSort::RecentlyAdded => {
-                favorites.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+                favorites.sort_by_key(|f| std::cmp::Reverse(f.added_at));
             }
             FavoriteSort::RecentlyPlayed => {
                 favorites.sort_by(|a, b| {
@@ -327,10 +348,10 @@ impl FavoritesManager {
                 });
             }
             FavoriteSort::MostPlayed => {
-                favorites.sort_by(|a, b| b.play_count.cmp(&a.play_count));
+                favorites.sort_by_key(|f| std::cmp::Reverse(f.play_count));
             }
             FavoriteSort::MostListened => {
-                favorites.sort_by(|a, b| b.total_listen_time_secs.cmp(&a.total_listen_time_secs));
+                favorites.sort_by_key(|f| std::cmp::Reverse(f.total_listen_time_secs));
             }
         }
 
@@ -357,7 +378,7 @@ impl FavoritesManager {
                 favorites.sort_by_key(|f| f.name().to_lowercase());
             }
             FavoriteSort::RecentlyAdded => {
-                favorites.sort_by(|a, b| b.added_at.cmp(&a.added_at));
+                favorites.sort_by_key(|f| std::cmp::Reverse(f.added_at));
             }
             FavoriteSort::RecentlyPlayed => {
                 favorites.sort_by(|a, b| {
@@ -367,10 +388,10 @@ impl FavoritesManager {
                 });
             }
             FavoriteSort::MostPlayed => {
-                favorites.sort_by(|a, b| b.play_count.cmp(&a.play_count));
+                favorites.sort_by_key(|f| std::cmp::Reverse(f.play_count));
             }
             FavoriteSort::MostListened => {
-                favorites.sort_by(|a, b| b.total_listen_time_secs.cmp(&a.total_listen_time_secs));
+                favorites.sort_by_key(|f| std::cmp::Reverse(f.total_listen_time_secs));
             }
         }
 
@@ -792,6 +813,43 @@ mod tests {
         }
 
         // Cleanup
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn one_damaged_favorite_does_not_cost_the_others() {
+        let path = temp_path();
+        // The second entry lacks `added_at`
+        fs::write(
+            &path,
+            r#"{"version": 1, "favorites": [
+                {"name": "Good", "url": "http://good.test", "added_at": 1},
+                {"name": "Bad", "url": "http://bad.test"}
+            ]}"#,
+        )
+        .unwrap();
+
+        let manager = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(manager.count(), 1);
+        assert!(manager.is_favorite("http://good.test"));
+
+        // The file as it was is kept, since the next save drops the bad entry
+        let dir = path.parent().unwrap();
+        let prefix = format!("{}.bad-", path.file_name().unwrap().to_string_lossy());
+        let copies: Vec<_> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+            .map(|e| e.path())
+            .collect();
+        assert_eq!(copies.len(), 1);
+        assert!(fs::read_to_string(&copies[0])
+            .unwrap()
+            .contains("http://bad.test"));
+
+        for copy in copies {
+            let _ = fs::remove_file(copy);
+        }
         let _ = fs::remove_file(&path);
     }
 
