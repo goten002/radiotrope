@@ -5179,6 +5179,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "signal-hook",
  "slint",
  "slint-build",
  "thiserror 2.0.21",

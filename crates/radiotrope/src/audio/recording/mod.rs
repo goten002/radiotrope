@@ -48,7 +48,7 @@ const STATE_CHECK_INTERVAL: u32 = 1024;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// How long `stop()` waits for the writer to finish the file.
-const STOP_TIMEOUT: Duration = Duration::from_secs(5);
+pub const STOP_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Where in the playback chain a recording takes its audio from
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

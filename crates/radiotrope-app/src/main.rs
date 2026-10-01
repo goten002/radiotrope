@@ -27,7 +27,8 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::{
-    LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE,
+    LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SHUTDOWN_GRACE,
+    SHUTDOWN_SEND_TIMEOUT,
 };
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
@@ -40,7 +41,9 @@ use radiotrope_app::providers::ProviderRegistry;
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
 use app::controller::AppController;
+use app::listening::ListenSession;
 use app::state::AppSnapshot;
+use app::ui_sender::UiSender;
 
 /// Radiotrope — Internet radio player
 #[derive(Parser)]
@@ -89,6 +92,9 @@ fn main() {
 
     // Shared command channel + state
     let (cmd_tx, cmd_rx) = bounded(64);
+    // What the UI thread sends never blocks it, even when the controller
+    // is stuck
+    let ui_tx = UiSender::new(cmd_tx.clone());
     let shared_state = Arc::new(Mutex::new(AppSnapshot::default()));
 
     // Channel for the engine's analysis Arc (one-shot handshake)
@@ -370,25 +376,25 @@ fn main() {
 
     // Send initial volume/mute to controller so engine starts at the correct level
     {
-        let _ = cmd_tx.send(app::state::AppCommand::SetVolume(settings.volume));
+        ui_tx.send(app::state::AppCommand::SetVolume(settings.volume));
         if settings.muted {
-            let _ = cmd_tx.send(app::state::AppCommand::Mute);
+            ui_tx.send(app::state::AppCommand::Mute);
         }
     }
 
     // Send initial EQ state to controller (which will forward to engine once started)
     {
-        let _ = cmd_tx.send(app::state::AppCommand::SetEqEnabled(settings.eq_enabled));
+        ui_tx.send(app::state::AppCommand::SetEqEnabled(settings.eq_enabled));
         if let Some(ref preset_name) = settings.eq_preset_name {
-            let _ = cmd_tx.send(app::state::AppCommand::SetEqPreset(preset_name.clone()));
+            ui_tx.send(app::state::AppCommand::SetEqPreset(preset_name.clone()));
         } else {
-            let _ = cmd_tx.send(app::state::AppCommand::SetEqGains(settings.eq_gains));
+            ui_tx.send(app::state::AppCommand::SetEqGains(settings.eq_gains));
         }
-        let _ = cmd_tx.send(app::state::AppCommand::SetEqPreamp(settings.eq_preamp));
+        ui_tx.send(app::state::AppCommand::SetEqPreamp(settings.eq_preamp));
     }
 
-    // Wire Slint callbacks → cmd_tx
-    let play_tx = cmd_tx.clone();
+    // Wire Slint callbacks → ui_tx
+    let play_tx = ui_tx.clone();
     let play_url_weak = ui.as_weak();
     let play_url_favs = favorites.clone();
     let play_url_logo_svc = logo_service.clone();
@@ -421,7 +427,7 @@ fn main() {
 
     // Open Network Stream, with the station details typed in the dialog
     {
-        let play_tx = cmd_tx.clone();
+        let play_tx = ui_tx.clone();
         let favs = favorites.clone();
         let logo_svc = logo_service.clone();
         let state = shared_state.clone();
@@ -450,17 +456,17 @@ fn main() {
         });
     }
 
-    let stop_tx = cmd_tx.clone();
+    let stop_tx = ui_tx.clone();
     ui.on_stop_clicked(move || {
-        let _ = stop_tx.send(app::state::AppCommand::Stop);
+        stop_tx.send(app::state::AppCommand::Stop);
     });
 
-    let vol_tx = cmd_tx.clone();
+    let vol_tx = ui_tx.clone();
     ui.on_volume_changed(move |vol| {
-        let _ = vol_tx.send(app::state::AppCommand::SetVolume(vol));
+        vol_tx.send(app::state::AppCommand::SetVolume(vol));
     });
 
-    let mute_tx = cmd_tx.clone();
+    let mute_tx = ui_tx.clone();
     let mute_state = shared_state.clone();
     ui.on_mute_clicked(move || {
         let is_muted = mute_state
@@ -468,9 +474,9 @@ fn main() {
             .unwrap_or_else(|e| e.into_inner())
             .is_muted;
         if is_muted {
-            let _ = mute_tx.send(app::state::AppCommand::Unmute);
+            mute_tx.send(app::state::AppCommand::Unmute);
         } else {
-            let _ = mute_tx.send(app::state::AppCommand::Mute);
+            mute_tx.send(app::state::AppCommand::Mute);
         }
     });
 
@@ -518,7 +524,7 @@ fn main() {
 
     // play-favorite callback
     {
-        let play_tx = cmd_tx.clone();
+        let play_tx = ui_tx.clone();
         let logo_svc = logo_service.clone();
         let favs = favorites.clone();
         let play_state = shared_state.clone();
@@ -783,30 +789,30 @@ fn main() {
 
     // EQ callbacks
     {
-        let tx = cmd_tx.clone();
+        let tx = ui_tx.clone();
         ui.on_eq_band_changed(move |band, gain| {
-            let _ = tx.send(app::state::AppCommand::SetEqBand {
+            tx.send(app::state::AppCommand::SetEqBand {
                 band: band as usize,
                 gain_db: gain,
             });
         });
     }
     {
-        let tx = cmd_tx.clone();
+        let tx = ui_tx.clone();
         ui.on_eq_preamp_changed(move |val| {
-            let _ = tx.send(app::state::AppCommand::SetEqPreamp(val));
+            tx.send(app::state::AppCommand::SetEqPreamp(val));
         });
     }
     {
-        let tx = cmd_tx.clone();
+        let tx = ui_tx.clone();
         ui.on_eq_preset_selected(move |name| {
-            let _ = tx.send(app::state::AppCommand::SetEqPreset(name.to_string()));
+            tx.send(app::state::AppCommand::SetEqPreset(name.to_string()));
         });
     }
     {
-        let tx = cmd_tx.clone();
+        let tx = ui_tx.clone();
         ui.on_eq_enabled_toggled(move |val| {
-            let _ = tx.send(app::state::AppCommand::SetEqEnabled(val));
+            tx.send(app::state::AppCommand::SetEqEnabled(val));
         });
     }
 
@@ -849,7 +855,7 @@ fn main() {
     setup_recording(
         &ui,
         &settings,
-        cmd_tx.clone(),
+        ui_tx.clone(),
         shared_state.clone(),
         logo_service.clone(),
     );
@@ -1198,7 +1204,7 @@ fn main() {
 
     // play-station callback
     {
-        let play_tx = cmd_tx.clone();
+        let play_tx = ui_tx.clone();
         let logo_svc = logo_service.clone();
         let favs = favorites.clone();
         let play_state = shared_state.clone();
@@ -1247,13 +1253,15 @@ fn main() {
         })
         .expect("Failed to spawn controller thread");
 
-    // Wait for engine to initialize and send us the analysis Arc + SharedStats
-    let analysis = analysis_rx.recv_timeout(Duration::from_secs(5)).ok();
-    let shared_stats = stats_rx.recv_timeout(Duration::from_secs(5)).ok();
+    // The engine sends its analysis Arc and SharedStats once its audio
+    // device is open, which can take a while (a Bluetooth device waking
+    // up). The window doesn't wait for them: the timers below pick them up
+    // when they come.
 
     // Visualization timer, about 30 frames a second
     let _viz_timer = slint::Timer::default();
-    if let Some(analysis) = analysis {
+    {
+        let mut analysis: Option<Arc<Mutex<AudioAnalysis>>> = None;
         let ui_weak = ui.as_weak();
         let bands = radiotrope::config::audio::SPECTRUM_BANDS;
         // Pre-allocate the model once; update in place each tick
@@ -1299,6 +1307,10 @@ fn main() {
                     }
                     return;
                 }
+                if analysis.is_none() {
+                    analysis = analysis_rx.try_recv().ok();
+                }
+                let Some(analysis) = &analysis else { return };
                 if idle {
                     idle = false;
                     viz.set_active(true);
@@ -1332,7 +1344,8 @@ fn main() {
 
     // Poll SharedStats → statistics dialog properties (200ms)
     let _stats_timer = slint::Timer::default();
-    if let Some(shared_stats) = shared_stats {
+    {
+        let mut shared_stats: Option<SharedStats> = None;
         let ui_weak = ui.as_weak();
         _stats_timer.start(
             slint::TimerMode::Repeated,
@@ -1346,6 +1359,12 @@ fn main() {
                     clear_stats_ui(&ui);
                     return;
                 }
+                if shared_stats.is_none() {
+                    shared_stats = stats_rx.try_recv().ok();
+                }
+                let Some(shared_stats) = &shared_stats else {
+                    return;
+                };
                 // try_lock: skip this tick if engine holds shared_stats
                 let Ok(s) = shared_stats.try_lock() else {
                     return;
@@ -1362,6 +1381,7 @@ fn main() {
     let poll_state = shared_state.clone();
     let poll_favs = favorites.clone();
     let poll_logo_svc = logo_service.clone();
+    let poll_tx = ui_tx.clone();
     // Logo of the station restored at startup, which may not be a favorite
     let restored_logo: Option<(String, String)> = settings
         .last_station
@@ -1403,6 +1423,9 @@ fn main() {
         Duration::from_millis(200),
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+
+            // Commands that found the controller's queue full go out now
+            poll_tx.flush();
 
             // Check for external favorites changes (e.g. from MCP)
             if let Ok(f) = poll_favs.try_lock() {
@@ -1592,28 +1615,23 @@ fn main() {
         },
     );
 
-    // Handle SIGTERM/SIGINT gracefully so settings are saved on shutdown.
-    // systemd sends SIGTERM on stop/reboot — without this, the process is
-    // killed before the save-on-exit code below can run.
+    // Quit like a closed window on SIGTERM (systemd on stop or reboot),
+    // SIGINT (Ctrl+C) and SIGHUP (the terminal closed), so the exit below
+    // saves and finishes a recording
     #[cfg(unix)]
-    {
-        use std::sync::atomic::AtomicBool;
-        static QUIT_FLAG: AtomicBool = AtomicBool::new(false);
+    quit_on_signals();
 
-        unsafe {
-            for sig in [libc::SIGTERM, libc::SIGINT] {
-                libc::signal(sig, handle_quit_signal as *const () as libc::sighandler_t);
-            }
-        }
-
-        extern "C" fn handle_quit_signal(_sig: libc::c_int) {
-            QUIT_FLAG.store(true, Ordering::SeqCst);
-            let _ = slint::quit_event_loop();
-        }
+    // Run Slint event loop (blocks main thread). An error (the display
+    // went away, e.g. at logout) ends it like closing the window does.
+    if let Err(e) = ui.run() {
+        eprintln!("Event loop ended: {e}");
     }
 
-    // Run Slint event loop (blocks main thread)
-    ui.run().unwrap();
+    // Tell the controller first, so a recording starts finishing while the
+    // rest is saved. A controller stuck on its audio device doesn't take
+    // it, and isn't waited for.
+    let shutdown_sent = ui_tx.shutdown(SHUTDOWN_SEND_TIMEOUT);
+    let deadline = Instant::now() + SHUTDOWN_GRACE;
 
     // Credit the session still playing at exit
     if let Some(session) = listen_session.borrow_mut().take() {
@@ -1623,14 +1641,51 @@ fn main() {
     // Final save before shutdown
     save_settings(&shared_state, &ui);
 
-    // UI closed — tell controller to shut down
-    let _ = cmd_tx.send(app::state::AppCommand::Shutdown);
-
-    // Give the controller a moment to finish a recording in progress, so
-    // the end of the file is written before the process exits
-    let deadline = Instant::now() + SHUTDOWN_GRACE;
-    while !controller.is_finished() && Instant::now() < deadline {
+    // Give the controller time to finish a recording in progress, so the
+    // end of the file is written before the process exits
+    while shutdown_sent && !controller.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+/// Quit the event loop on SIGTERM, SIGINT or SIGHUP. The signals are
+/// taken on a thread of their own (a signal handler may not touch the
+/// event loop). A second one while the first is being handled ends the
+/// process at once, so a stuck exit can still be interrupted. A signal
+/// ignored by whoever started us (`nohup`, a script's background job)
+/// stays ignored.
+#[cfg(unix)]
+fn quit_on_signals() {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+    use std::sync::atomic::AtomicBool;
+
+    let ignored = |sig: libc::c_int| {
+        // Safety: with no new action, sigaction only reads the current one
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        let read = unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) } == 0;
+        read && old.sa_sigaction == libc::SIG_IGN
+    };
+    let signals: Vec<_> = [SIGTERM, SIGINT, SIGHUP]
+        .into_iter()
+        .filter(|&sig| !ignored(sig))
+        .collect();
+    let quitting = Arc::new(AtomicBool::new(false));
+    for &sig in &signals {
+        // Checked before it is set: only the second signal ends us
+        let _ = signal_hook::flag::register_conditional_shutdown(sig, 1, quitting.clone());
+        let _ = signal_hook::flag::register(sig, quitting.clone());
+    }
+    match signal_hook::iterator::Signals::new(signals) {
+        Ok(mut signals) => {
+            let _ = std::thread::Builder::new()
+                .name("signals".into())
+                .spawn(move || {
+                    for _ in signals.forever() {
+                        let _ = slint::quit_event_loop();
+                    }
+                });
+        }
+        Err(e) => eprintln!("Signal handling unavailable: {e}"),
     }
 }
 
@@ -1671,9 +1726,6 @@ fn bring_to_front(window: &slint::Window) {
     #[cfg(feature = "desktop")]
     window_frame::bring_to_front(window);
 }
-
-/// Longest wait at exit for the controller to finish (e.g. a recording)
-const SHUTDOWN_GRACE: Duration = Duration::from_secs(3);
 
 /// Rotary encoder for volume control (KY-040 on GPIO 5/6/13)
 /// Uses the kernel `rotary-encoder` driver via /dev/input/eventN for reliable
@@ -2521,7 +2573,7 @@ fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::
 fn setup_recording(
     ui: &App,
     settings: &radiotrope_app::data::settings::Settings,
-    cmd_tx: crossbeam_channel::Sender<app::state::AppCommand>,
+    cmd_tx: UiSender,
     shared_state: Arc<Mutex<AppSnapshot>>,
     logo_service: Arc<LogoService>,
 ) {
@@ -2539,7 +2591,7 @@ fn setup_recording(
                 .map(|s| s.recording.is_some())
                 .unwrap_or(false);
             if recording {
-                let _ = cmd_tx.send(app::state::AppCommand::StopRecording);
+                cmd_tx.send(app::state::AppCommand::StopRecording);
                 return;
             }
             let settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
@@ -2547,7 +2599,7 @@ fn setup_recording(
                 ui.get_station_name().as_str(),
                 ui.get_station_url().as_str(),
             );
-            let _ = cmd_tx.send(app::state::AppCommand::StartRecording {
+            cmd_tx.send(app::state::AppCommand::StartRecording {
                 folder: recordings::folder(settings.recording_dir.as_deref()),
                 format: settings.recording_format.into(),
                 bitrate: settings.recording_bitrate,
@@ -2816,7 +2868,7 @@ fn is_current_station(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App, url: &st
 
 fn play_station_with_metadata(
     ui: &App,
-    cmd_tx: &crossbeam_channel::Sender<app::state::AppCommand>,
+    cmd_tx: &UiSender,
     shared_state: &Arc<Mutex<AppSnapshot>>,
     favorites: &Arc<Mutex<FavoritesManager>>,
     logo_service: &Arc<LogoService>,
@@ -2872,7 +2924,7 @@ fn play_station_with_metadata(
     }
 
     // Send play command
-    let _ = cmd_tx.send(app::state::AppCommand::Play {
+    cmd_tx.send(app::state::AppCommand::Play {
         url: url.clone(),
         name: name.clone(),
         logo_url: logo_url.clone(),
@@ -3278,14 +3330,6 @@ fn session_listen_secs(id: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// A station playing without interruption since `started`
-struct ListenSession {
-    url: String,
-    started: Instant,
-    /// Seconds of this session already added to the favorite
-    credited: u64,
-}
-
 /// Follow what is playing and add listening time to favorites: once a
 /// minute while a station plays, and when it stops or changes
 fn track_listening(
@@ -3304,25 +3348,27 @@ fn track_listening(
     }
     match (session.as_mut(), playing_url) {
         (None, Some(url)) => {
-            *session = Some(ListenSession {
-                url: url.to_string(),
-                started: Instant::now(),
-                credited: 0,
-            });
+            *session = Some(ListenSession::new(url, Instant::now()));
         }
-        (Some(s), _) if s.started.elapsed().as_secs() >= s.credited + LISTEN_CREDIT_SECS => {
-            let elapsed = s.started.elapsed().as_secs();
-            let (url, credited) = (s.url.clone(), s.credited);
-            s.credited = elapsed;
-            add_listening(ui, favorites, &url, elapsed - credited, credited == 0);
+        (Some(s), _) => {
+            let listened = s.tick(Instant::now());
+            if listened >= s.credited + LISTEN_CREDIT_SECS {
+                let (url, credited) = (s.url.clone(), s.credited);
+                s.credited = listened;
+                add_listening(ui, favorites, &url, listened - credited, credited == 0);
+            }
         }
         _ => {}
     }
 }
 
 /// Add what is left of a finished session
-fn credit_listening(ui: &App, favorites: &Arc<Mutex<FavoritesManager>>, session: ListenSession) {
-    let elapsed = session.started.elapsed().as_secs();
+fn credit_listening(
+    ui: &App,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+    mut session: ListenSession,
+) {
+    let elapsed = session.tick(Instant::now());
     if elapsed < MIN_LISTEN_SECS || elapsed <= session.credited {
         return;
     }

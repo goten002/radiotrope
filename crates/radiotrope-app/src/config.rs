@@ -62,6 +62,22 @@ pub mod ui {
 
     /// Listening time is saved in steps of this long while a station plays
     pub const LISTEN_CREDIT_SECS: u64 = 60;
+
+    /// The most listening time one tick of the UI's poll can add. The poll
+    /// runs every 200 ms; a longer gap is the computer asleep (on Windows
+    /// the clock keeps counting through sleep) or a stalled UI.
+    pub const LISTEN_TICK_MAX: Duration = Duration::from_secs(5);
+
+    /// How long closing the window waits for room to tell the controller
+    /// to shut down. A controller that doesn't take it in time is stuck
+    /// (e.g. on an audio device that doesn't answer).
+    pub const SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
+
+    /// The longest wait at exit for the controller to finish: the recorder
+    /// may take its whole stop timeout to finish a file on a slow drive,
+    /// and the engine then shuts down
+    pub const SHUTDOWN_GRACE: Duration =
+        radiotrope::audio::recording::STOP_TIMEOUT.saturating_add(Duration::from_secs(2));
 }
 
 /// Agents over MCP
