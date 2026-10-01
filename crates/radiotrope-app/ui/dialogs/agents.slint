@@ -441,7 +441,7 @@ export component AgentsDialog inherits Rectangle {
             if !root.token-on: Text {
                 horizontal-stretch: 1;
                 // The first choice is "This computer only"
-                text: root.listen == 0 ? "Only programs on this computer can connect"
+                text: root.listen == 0 ? "Only agents on this computer can connect"
                     : "Anyone who can reach the address can use the player";
                 color: root.network-fields ? Theme.text-secondary : Theme.disabled-text;
                 font-size: Theme.font-md;
