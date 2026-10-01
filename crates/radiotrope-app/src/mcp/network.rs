@@ -27,6 +27,7 @@ use rmcp::transport::streamable_http_server::{
 use tokio_util::sync::CancellationToken;
 use tower_service::Service;
 
+use radiotrope_app::config::mcp::SESSION_IDLE;
 use radiotrope_app::data::agent_token;
 
 use super::presence::{Presence, RemoteIp};
@@ -142,11 +143,14 @@ fn mcp_service(tools: RadioTools, bind: IpAddr, cancel: CancellationToken) -> Mc
     if !bind.is_loopback() {
         config = config.disable_allowed_hosts();
     }
-    StreamableHttpService::new(
-        move || Ok(tools.clone()),
-        Arc::new(LocalSessionManager::default()),
-        config,
-    )
+    StreamableHttpService::new(move || Ok(tools.clone()), Arc::new(sessions()), config)
+}
+
+/// Sessions for older clients, kept while their agent sits idle
+fn sessions() -> LocalSessionManager {
+    let mut sessions = LocalSessionManager::default();
+    sessions.session_config.keep_alive = Some(SESSION_IDLE);
+    sessions
 }
 
 async fn serve(
@@ -414,6 +418,12 @@ fn lan_address() -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_agents_keep_their_session() {
+        let keep_alive = sessions().session_config.keep_alive;
+        assert!(keep_alive.is_some_and(|d| d >= std::time::Duration::from_secs(60 * 60)));
+    }
 
     #[test]
     fn addresses_get_the_default_port() {
