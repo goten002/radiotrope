@@ -2374,7 +2374,7 @@ fn setup_agents(
 
     let timer = slint::Timer::default();
     let Some(agents) = agents else { return timer };
-    show_agents_network(ui, &agents.apply_network(settings));
+    agents.apply_network_later(settings, show_agents_network_later(ui));
 
     // Every change saves and restarts the network server with it
     let apply = {
@@ -2389,7 +2389,7 @@ fn setup_agents(
                 eprintln!("Failed to save agent settings: {e}");
             }
             show_listen_choices(&ui, &settings, &listen_for_apply);
-            show_agents_network(&ui, &agents.apply_network(&settings));
+            agents.apply_network_later(&settings, show_agents_network_later(&ui));
         }
     };
     let apply = std::rc::Rc::new(apply);
@@ -2472,8 +2472,8 @@ fn setup_agents(
         radiotrope_app::config::mcp::NETWORK_RECHECK,
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            if let Some(status) = agents.recheck_network() {
-                show_agents_network(&ui, &status);
+            if let Some(settings) = agents.network_to_recheck() {
+                agents.apply_network_later(&settings, show_agents_network_later(&ui));
             }
         },
     );
@@ -2514,6 +2514,14 @@ fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::T
         },
     );
     timer
+}
+
+/// Show the network status once the server is set up, on its own thread
+fn show_agents_network_later(ui: &App) -> mcp::agents::ShowStatus {
+    let ui_weak = ui.as_weak();
+    Box::new(move |status| {
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| show_agents_network(&ui, &status));
+    })
 }
 
 fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
