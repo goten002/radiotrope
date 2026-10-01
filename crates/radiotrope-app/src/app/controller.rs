@@ -462,6 +462,25 @@ impl AppController {
             self.stop_recording();
         }
 
+        // The output was gone so long that the station would play minutes
+        // behind live: start it again, to catch up
+        if matches!(event, AudioEvent::FellBehind) {
+            let station = {
+                let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                state.station_url.clone().map(|url| {
+                    (
+                        url,
+                        state.station_name.clone(),
+                        state.station_logo_url.clone(),
+                    )
+                })
+            };
+            if let Some((url, name, logo_url)) = station {
+                self.start_stream(&url, name, logo_url);
+            }
+            return;
+        }
+
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         // While a new station resolves, news of the device waits: the
         // engine repeats a lost device once the station plays
@@ -548,6 +567,8 @@ impl AppController {
                 state.is_error = true;
                 self.stream_failed = true;
             }
+            // Handled above
+            AudioEvent::FellBehind => {}
         }
     }
 
@@ -1060,6 +1081,43 @@ mod tests {
         let state = state.lock().unwrap();
         assert!(!state.is_error);
         assert_eq!(state.status_text, "Stopped");
+    }
+
+    #[test]
+    fn a_station_far_behind_live_after_a_long_output_loss_starts_again() {
+        let (mut controller, state) = controller_playing();
+        {
+            let mut state = state.lock().unwrap();
+            // Nothing answers there: the new resolve fails in the background
+            state.station_url = Some("http://127.0.0.1:9/live".into());
+            state.station_name = Some("Late FM".into());
+            state.station_logo_url = Some("http://127.0.0.1:9/logo.png".into());
+        }
+        let play_seq = state.lock().unwrap().play_seq;
+        controller.handle_engine_event(on(1, AudioEvent::OutputLost));
+        controller.handle_engine_event(on(1, AudioEvent::OutputRestored));
+        controller.handle_engine_event(on(1, AudioEvent::FellBehind));
+        // The engine ended the old station
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
+
+        {
+            let state = state.lock().unwrap();
+            assert!(state.is_resolving);
+            assert_eq!(state.status_text, "Resolving...");
+            assert!(!state.is_error);
+            assert_eq!(state.play_seq, play_seq + 1);
+            assert_eq!(
+                state.station_url.as_deref(),
+                Some("http://127.0.0.1:9/live")
+            );
+            assert_eq!(state.station_name.as_deref(), Some("Late FM"));
+            assert_eq!(
+                state.station_logo_url.as_deref(),
+                Some("http://127.0.0.1:9/logo.png")
+            );
+        }
+        assert_eq!(controller.stream_id, None);
+        controller.handle_command(AppCommand::Stop);
     }
 
     #[test]

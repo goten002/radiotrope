@@ -4,7 +4,9 @@
 //! device goes away (unplugged USB or Bluetooth headphones, a disabled
 //! device). The engine then opens another and gives it a new output of the
 //! playing station's queue ([`super::pcm::PcmFeed::output`]), so the
-//! station carries on without restarting.
+//! station carries on without restarting. On Linux only the default
+//! device, the sound server's or the one it was on will do
+//! ([`Devices::Reopen`]).
 //!
 //! On Windows the engine also moves playback when the default device
 //! changes ([`DefaultWatch`]).
@@ -19,9 +21,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rodio::cpal::traits::HostTrait;
-use rodio::cpal::{BufferSize, StreamError};
+use rodio::cpal::{BufferSize, DeviceId, StreamError};
 use rodio::mixer::{self, Mixer};
-use rodio::{DeviceSinkBuilder, DeviceTrait, MixerDeviceSink};
+use rodio::{DeviceSinkBuilder, DeviceSinkError, DeviceTrait, MixerDeviceSink};
 
 /// How often a [`SilentOutput`] takes its next buffer of audio
 const SILENT_PULL_INTERVAL: Duration = Duration::from_millis(10);
@@ -167,43 +169,109 @@ impl OutputErrors {
     }
 }
 
-/// Open the default output device, or failing that any other real one (as
-/// rodio's `open_default_sink` does), reporting its loss through `lost`.
-/// Each device opened starts a new generation: errors from earlier devices
-/// no longer count. If none opens, the current device still reports.
-pub(crate) fn open_output(
-    lost: &Arc<AtomicBool>,
-    generation: &Arc<AtomicU64>,
-) -> Result<MixerDeviceSink, String> {
-    let mine = generation.load(Ordering::SeqCst) + 1;
-    let errors = OutputErrors::new(lost.clone(), generation.clone(), mine);
-    let open = |builder: DeviceSinkBuilder| {
-        let mut errors = errors.clone();
-        builder
-            .with_error_callback(move |err| errors.report(err))
-            .open_sink_or_fallback()
-    };
+/// Which devices an open may try when the default device doesn't open
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Devices {
+    /// Any other real one (as rodio's `open_default_sink` does)
+    Any,
+    /// The output went away, or was closed while nothing played. On Linux
+    /// only the sound server's own devices and the one played on last:
+    /// ALSA's others include raw hardware (`hw:`), which a stream opens
+    /// exclusively, taking the sound from the rest of the desktop while
+    /// PipeWire or PulseAudio restarts. Elsewhere like `Any`.
+    Reopen,
+    /// None: the default device changed, and only it will do
+    DefaultOnly,
+}
 
-    let mut sink = DeviceSinkBuilder::from_default_device()
-        .and_then(open)
-        .or_else(|original| {
-            let Ok(devices) = rodio::cpal::default_host().output_devices() else {
-                return Err(original);
-            };
-            devices
-                .filter(|device| {
-                    device
-                        .description()
-                        .is_ok_and(|d| d.driver().is_some_and(|driver| driver != "null"))
+/// ALSA's devices that play through a sound server, sharing the card
+const SOUND_SERVER_PCMS: [&str; 2] = ["pipewire", "pulse"];
+
+/// Whether an open of `devices` may try `device` after the default, given
+/// the device played on `last`
+fn worth_trying(devices: Devices, device: &DeviceId, last: Option<&DeviceId>) -> bool {
+    match devices {
+        Devices::Any => true,
+        Devices::Reopen if cfg!(target_os = "linux") => {
+            SOUND_SERVER_PCMS.contains(&device.1.as_str()) || last == Some(device)
+        }
+        Devices::Reopen => true,
+        Devices::DefaultOnly => false,
+    }
+}
+
+/// Opens the engine's output devices
+pub(crate) struct DeviceOutputs {
+    /// Raised by each device's errors only while it is the current one
+    generation: Arc<AtomicU64>,
+    /// The device opened last
+    last: Option<DeviceId>,
+}
+
+impl DeviceOutputs {
+    pub(crate) fn new() -> Self {
+        Self {
+            generation: Arc::new(AtomicU64::new(0)),
+            last: None,
+        }
+    }
+
+    /// Open the default output device, or failing that another of
+    /// `devices`, reporting its loss through `lost`. Returns the device's
+    /// id too, as [`DefaultWatch`] tells devices apart. Each device opened
+    /// starts a new generation: errors from earlier devices no longer
+    /// count. If none opens, the current device still reports.
+    pub(crate) fn open(
+        &mut self,
+        lost: &Arc<AtomicBool>,
+        devices: Devices,
+    ) -> Result<(MixerDeviceSink, Option<String>), String> {
+        let mine = self.generation.load(Ordering::SeqCst) + 1;
+        let errors = OutputErrors::new(lost.clone(), self.generation.clone(), mine);
+        let open = |device: rodio::cpal::Device| {
+            let id = device.id().ok();
+            let mut errors = errors.clone();
+            DeviceSinkBuilder::from_device(device)
+                .and_then(|builder| {
+                    builder
+                        .with_error_callback(move |err| errors.report(err))
+                        .open_sink_or_fallback()
                 })
-                .find_map(|device| DeviceSinkBuilder::from_device(device).and_then(open).ok())
-                .ok_or(original)
-        })
-        .map_err(|e| e.to_string())?;
-    generation.store(mine, Ordering::SeqCst);
-    lost.store(false, Ordering::SeqCst);
-    sink.log_on_drop(false);
-    Ok(sink)
+                .map(|sink| (sink, id))
+        };
+
+        let host = rodio::cpal::default_host();
+        let (mut sink, id) = host
+            .default_output_device()
+            .ok_or(DeviceSinkError::NoDevice)
+            .and_then(open)
+            .or_else(|original| {
+                if devices == Devices::DefaultOnly {
+                    return Err(original);
+                }
+                let Ok(others) = host.output_devices() else {
+                    return Err(original);
+                };
+                others
+                    .filter(|device| {
+                        device
+                            .description()
+                            .is_ok_and(|d| d.driver().is_some_and(|driver| driver != "null"))
+                            && device
+                                .id()
+                                .is_ok_and(|id| worth_trying(devices, &id, self.last.as_ref()))
+                    })
+                    .find_map(|device| open(device).ok())
+                    .ok_or(original)
+            })
+            .map_err(|e| e.to_string())?;
+        self.generation.store(mine, Ordering::SeqCst);
+        lost.store(false, Ordering::SeqCst);
+        sink.log_on_drop(false);
+        let device = id.as_ref().map(ToString::to_string);
+        self.last = id;
+        Ok((sink, device))
+    }
 }
 
 /// How often [`DefaultWatch::system`] asks which device is the default
@@ -214,6 +282,12 @@ fn system_default_id() -> Option<String> {
     let device = rodio::cpal::default_host().default_output_device()?;
     device.id().ok().map(|id| id.to_string())
 }
+
+/// A new default that didn't open is asked for again after this many
+/// checks, then twice as many each time it fails again, up to
+/// `RETRY_CHECKS_MAX`
+const RETRY_CHECKS_FIRST: u32 = 2;
+const RETRY_CHECKS_MAX: u32 = 32;
 
 /// Notices when the system's default output device changes.
 ///
@@ -226,10 +300,23 @@ fn system_default_id() -> Option<String> {
 pub(crate) struct DefaultWatch {
     /// Reads which device is the default now
     current: Box<dyn Fn() -> Option<String> + Send>,
-    /// The default when the output was last opened
+    /// The device the output is on
     followed: Option<String>,
     every: Duration,
     next_check: Instant,
+    /// The default the last move was for
+    seen: Option<String>,
+    /// A default that didn't open, and when to try it again
+    failed: Option<FailedDefault>,
+}
+
+/// A new default device that didn't open (a Bluetooth headset still
+/// connecting)
+struct FailedDefault {
+    device: String,
+    retry_at: Instant,
+    /// How long it waited this time
+    wait: Duration,
 }
 
 impl DefaultWatch {
@@ -242,6 +329,8 @@ impl DefaultWatch {
             followed: None,
             every,
             next_check: Instant::now(),
+            seen: None,
+            failed: None,
         }
     }
 
@@ -250,20 +339,57 @@ impl DefaultWatch {
         Self::new(system_default_id, DEFAULT_CHECK_INTERVAL)
     }
 
-    /// The default device is about to be opened: remember which one it is
-    pub(crate) fn follow(&mut self) {
-        self.followed = (self.current)();
+    /// An output was opened on `device`. It may not be the default: one
+    /// that doesn't open gives way to another device, and the default is
+    /// then asked for again.
+    pub(crate) fn follow(&mut self, device: Option<String>) {
+        self.followed = device;
+        self.failed = None;
     }
 
-    /// Whether another device became the default since the output was
-    /// opened. Asks at most once every `every`. With no default at all the
-    /// output isn't moved: if its device is gone, the loss is noticed.
+    /// The default [`moved`](Self::moved) found didn't open: it is tried
+    /// again later, waiting longer each time, unless another device
+    /// becomes the default first
+    pub(crate) fn not_opened(&mut self, now: Instant) {
+        let Some(device) = self.seen.take() else {
+            return;
+        };
+        let wait = match &self.failed {
+            Some(failed) if failed.device == device => {
+                (failed.wait * 2).min(self.every * RETRY_CHECKS_MAX)
+            }
+            _ => self.every * RETRY_CHECKS_FIRST,
+        };
+        self.failed = Some(FailedDefault {
+            device,
+            retry_at: now + wait,
+            wait,
+        });
+    }
+
+    /// Whether the default is a device other than the output's, and worth
+    /// opening now. Asks at most once every `every`. With no default at all
+    /// the output isn't moved: if its device is gone, the loss is noticed.
     pub(crate) fn moved(&mut self, now: Instant) -> bool {
         if now < self.next_check {
             return false;
         }
         self.next_check = now + self.every;
-        (self.current)().is_some_and(|id| self.followed.as_ref() != Some(&id))
+        let Some(default) = (self.current)() else {
+            return false;
+        };
+        if self.followed.as_ref() == Some(&default) {
+            return false;
+        }
+        let waiting = self
+            .failed
+            .as_ref()
+            .is_some_and(|failed| failed.device == default && now < failed.retry_at);
+        if waiting {
+            return false;
+        }
+        self.seen = Some(default);
+        true
     }
 }
 
@@ -332,17 +458,21 @@ mod tests {
         (watch, default)
     }
 
+    fn follow(watch: &mut DefaultWatch, device: &str) {
+        watch.follow(Some(device.to_string()));
+    }
+
     #[test]
     fn a_new_default_device_is_noticed_once() {
         let (mut watch, default) = watch();
         let start = Instant::now();
-        watch.follow();
+        follow(&mut watch, "speakers");
         assert!(!watch.moved(start));
 
         *default.lock().unwrap() = Some("headphones".to_string());
         assert!(watch.moved(start + Duration::from_secs(1)));
         // Once opened, the new default is the one followed
-        watch.follow();
+        follow(&mut watch, "headphones");
         assert!(!watch.moved(start + Duration::from_secs(2)));
     }
 
@@ -350,7 +480,7 @@ mod tests {
     fn the_default_is_asked_at_most_once_a_second() {
         let (mut watch, default) = watch();
         let start = Instant::now();
-        watch.follow();
+        follow(&mut watch, "speakers");
         assert!(!watch.moved(start));
         *default.lock().unwrap() = Some("headphones".to_string());
         assert!(!watch.moved(start + Duration::from_millis(500)));
@@ -361,14 +491,95 @@ mod tests {
     fn no_default_device_is_not_a_move() {
         let (mut watch, default) = watch();
         let start = Instant::now();
-        watch.follow();
+        follow(&mut watch, "speakers");
         *default.lock().unwrap() = None;
         assert!(!watch.moved(start));
 
         // A device that appears after the output was opened without one is
-        watch.follow();
+        watch.follow(None);
         *default.lock().unwrap() = Some("headphones".to_string());
         assert!(watch.moved(start + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn an_output_opened_on_another_device_moves_to_the_default() {
+        // The default didn't open at start, and another device did
+        let (mut watch, _) = watch();
+        follow(&mut watch, "hdmi");
+        assert!(watch.moved(Instant::now()));
+    }
+
+    #[test]
+    fn a_default_that_did_not_open_is_tried_again_later() {
+        let (mut watch, default) = watch();
+        let start = Instant::now();
+        let at = |secs| start + Duration::from_secs(secs);
+        follow(&mut watch, "speakers");
+        *default.lock().unwrap() = Some("headphones".to_string());
+
+        // Waiting 2, then 4 seconds after each failure, not trying it at
+        // every check
+        assert!(watch.moved(at(0)));
+        watch.not_opened(at(0));
+        assert!(!watch.moved(at(1)));
+        assert!(watch.moved(at(2)));
+        watch.not_opened(at(2));
+        assert!(!watch.moved(at(3)));
+        assert!(!watch.moved(at(5)));
+        assert!(watch.moved(at(6)));
+
+        // Until it opens
+        follow(&mut watch, "headphones");
+        assert!(!watch.moved(at(7)));
+    }
+
+    #[test]
+    fn the_wait_for_a_default_that_does_not_open_is_capped() {
+        let (mut watch, default) = watch();
+        let start = Instant::now();
+        follow(&mut watch, "speakers");
+        *default.lock().unwrap() = Some("broken".to_string());
+        let mut now = start;
+        let mut tries = Vec::new();
+        while now < start + Duration::from_secs(200) {
+            if watch.moved(now) {
+                tries.push(now.duration_since(start).as_secs());
+                watch.not_opened(now);
+            }
+            now += Duration::from_secs(1);
+        }
+        assert_eq!(tries, [0, 2, 6, 14, 30, 62, 94, 126, 158, 190]);
+    }
+
+    #[test]
+    fn another_new_default_is_tried_at_once() {
+        let (mut watch, default) = watch();
+        let start = Instant::now();
+        follow(&mut watch, "speakers");
+        *default.lock().unwrap() = Some("headphones".to_string());
+        assert!(watch.moved(start));
+        watch.not_opened(start);
+
+        *default.lock().unwrap() = Some("usb headset".to_string());
+        assert!(watch.moved(start + Duration::from_secs(1)));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_reopens_only_shared_devices_or_the_one_it_was_on() {
+        let alsa = |pcm: &str| DeviceId(rodio::cpal::HostId::Alsa, pcm.to_string());
+        let hw = alsa("hw:CARD=0,DEV=0");
+        let usb = alsa("front:CARD=USB,DEV=0");
+        for pcm in SOUND_SERVER_PCMS {
+            assert!(worth_trying(Devices::Reopen, &alsa(pcm), None));
+        }
+        // Raw hardware would take the card from the rest of the desktop
+        assert!(!worth_trying(Devices::Reopen, &hw, None));
+        assert!(!worth_trying(Devices::Reopen, &hw, Some(&usb)));
+        assert!(worth_trying(Devices::Reopen, &usb, Some(&usb)));
+        // At start, any device will do
+        assert!(worth_trying(Devices::Any, &hw, None));
+        assert!(!worth_trying(Devices::DefaultOnly, &alsa("pipewire"), None));
     }
 
     #[test]

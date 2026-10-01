@@ -22,7 +22,7 @@ struct Cli {
 
 use radiotrope::audio::health::HealthState;
 use radiotrope::audio::types::{AudioAnalysis, AudioEvent, CodecInfo};
-use radiotrope::audio::{AudioEngine, SharedStats};
+use radiotrope::audio::{AudioEngine, EngineConfig, SharedStats};
 use radiotrope::stream::types::StreamType;
 use radiotrope::stream::StreamResolver;
 
@@ -96,7 +96,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let engine = match AudioEngine::new() {
+    // One station, resolved once: after a long output loss it carries on
+    // behind live, as it can't be started again
+    let config = EngineConfig {
+        behind_live_limit: None,
+        ..EngineConfig::default()
+    };
+    let engine = match AudioEngine::with_config(config) {
         Ok(e) => e,
         Err(e) => {
             eprintln!("Audio error: {}", e);
