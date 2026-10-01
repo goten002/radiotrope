@@ -21,6 +21,29 @@ fn main() {
 
     generate_flags();
     emit_git_info();
+    embed_windows_resources();
+}
+
+/// Give the Windows exe its icon and version details (name, version,
+/// description, copyright), as shown by Explorer and Task Manager. Uses the
+/// Windows SDK's `rc.exe` for MSVC builds, `windres` for GNU builds.
+fn embed_windows_resources() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let icon = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/icons/radiotrope.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(&icon.to_string_lossy())
+        .set("ProductName", "Radiotrope")
+        .set("FileDescription", "Radiotrope internet radio player")
+        .set("LegalCopyright", "George Alexiou, GPL-3.0-or-later")
+        .set("OriginalFilename", "radiotrope.exe");
+    if let Err(e) = res.compile() {
+        // A missing resource compiler costs the icon, not the build
+        println!("cargo:warning=no Windows icon or version details: {e}");
+    }
 }
 
 /// Set `RADIOTROPE_GIT_HASH` and `RADIOTROPE_GIT_DATE` for the About dialog.

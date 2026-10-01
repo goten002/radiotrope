@@ -59,3 +59,5 @@ embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus"]
 
 [build-dependencies]
 slint-build = "1.18"
+# The Windows exe's icon and version details (Explorer, Task Manager)
+winresource = "0.1"
