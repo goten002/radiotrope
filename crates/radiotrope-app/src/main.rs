@@ -844,18 +844,7 @@ fn main() {
         let state = shared_state.clone();
         let ui_weak = ui.as_weak();
         ui.on_apply_custom_hex(move |hex_str| {
-            let hex = hex_str.trim().to_string();
-            let hex_clean = hex.strip_prefix('#').unwrap_or(&hex);
-            if hex_clean.len() != 6 {
-                return;
-            }
-            let Ok(r) = u8::from_str_radix(&hex_clean[0..2], 16) else {
-                return;
-            };
-            let Ok(g) = u8::from_str_radix(&hex_clean[2..4], 16) else {
-                return;
-            };
-            let Ok(b) = u8::from_str_radix(&hex_clean[4..6], 16) else {
+            let Some((r, g, b)) = radiotrope_app::data::settings::parse_hex_rgb(&hex_str) else {
                 return;
             };
             if let Some(ui) = ui_weak.upgrade() {

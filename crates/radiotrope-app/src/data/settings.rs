@@ -281,16 +281,22 @@ impl Settings {
 
     /// Parse accent color hex string to RGB components
     pub fn accent_color_rgb(&self) -> Option<(u8, u8, u8)> {
-        let hex = self.accent_color.as_ref()?;
-        let hex = hex.strip_prefix('#').unwrap_or(hex);
-        if hex.len() != 6 {
-            return None;
-        }
-        let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
-        let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
-        let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
-        Some((r, g, b))
+        parse_hex_rgb(self.accent_color.as_ref()?)
     }
+}
+
+/// Parse `#rrggbb` or `rrggbb` (surrounding spaces allowed) to RGB
+///
+/// Anything else is `None`, including non-ASCII text, which must not be
+/// sliced by byte offsets.
+pub fn parse_hex_rgb(text: &str) -> Option<(u8, u8, u8)> {
+    let text = text.trim();
+    let hex = text.strip_prefix('#').unwrap_or(text);
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let rgb = u32::from_str_radix(hex, 16).ok()?;
+    Some(((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8))
 }
 
 /// What network agents must show to use the player
@@ -396,6 +402,35 @@ mod tests {
     fn temp_path() -> std::path::PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         temp_dir().join(format!("radiotrope_settings_test_{}.json", id))
+    }
+
+    #[test]
+    fn hex_colours_parse() {
+        assert_eq!(parse_hex_rgb("#ff8000"), Some((255, 128, 0)));
+        assert_eq!(parse_hex_rgb("FF8000"), Some((255, 128, 0)));
+        assert_eq!(parse_hex_rgb(" #0a0B0c "), Some((10, 11, 12)));
+    }
+
+    #[test]
+    fn bad_hex_colours_are_refused_without_panicking() {
+        // Six bytes, but cut through a two-byte character by a byte slice
+        assert_eq!(parse_hex_rgb("#aé123"), None);
+        assert_eq!(parse_hex_rgb("#aé123 "), None);
+        assert_eq!(parse_hex_rgb("αβγ"), None);
+        assert_eq!(parse_hex_rgb("#12345"), None);
+        assert_eq!(parse_hex_rgb("#1234567"), None);
+        assert_eq!(parse_hex_rgb("#+f+f+f"), None);
+        assert_eq!(parse_hex_rgb("#gg0000"), None);
+        assert_eq!(parse_hex_rgb(""), None);
+    }
+
+    #[test]
+    fn a_saved_non_ascii_accent_is_ignored() {
+        let settings = Settings {
+            accent_color: Some("#aé123".into()),
+            ..Settings::default()
+        };
+        assert_eq!(settings.accent_color_rgb(), None);
     }
 
     #[test]
