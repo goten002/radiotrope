@@ -54,7 +54,7 @@ impl Agents {
                 text: "Off".into(),
                 is_error: false,
                 token,
-                url: network::url_for(&settings.mcp_address).unwrap_or_default(),
+                url: network::url_for(&listen_address(settings)).unwrap_or_default(),
             };
         }
 
@@ -73,17 +73,22 @@ impl Agents {
                 }
             },
         };
-        let url = network::url_for(&settings.mcp_address).unwrap_or_default();
+        let address = listen_address(settings);
+        let url = network::url_for(&address).unwrap_or_default();
         let started = network::start(
             &network::Options {
-                address: settings.mcp_address.clone(),
+                address: address.clone(),
                 token: (settings.mcp_auth == McpAuth::Token).then(|| token.clone()),
             },
             self.tools.clone(),
         );
         match started {
             Ok(server) => {
-                let text = format!("Listening on {}", server.url());
+                let text = if server.on_all_networks() {
+                    "Listening on all networks".to_string()
+                } else {
+                    format!("Listening on {}", server.url())
+                };
                 *running = Some(server);
                 NetworkStatus {
                     text,
@@ -100,6 +105,20 @@ impl Agents {
             },
         }
     }
+}
+
+/// The "host:port" to listen on. A picked interface listens on the address
+/// it has now, which may differ from the saved one after a new lease.
+pub fn listen_address(settings: &Settings) -> String {
+    let saved = &settings.mcp_address;
+    let (Some(name), Some(addr)) = (&settings.mcp_interface, network::split_address(saved)) else {
+        return saved.clone();
+    };
+    network::interfaces()
+        .into_iter()
+        .find(|i| &i.name == name)
+        .map(|i| std::net::SocketAddr::new(i.ip, addr.port()).to_string())
+        .unwrap_or_else(|| saved.clone())
 }
 
 #[cfg(test)]
@@ -125,5 +144,26 @@ mod tests {
         let status = agents.apply_network(&Settings::default());
         assert_eq!(status.text, "Off");
         assert_eq!(status.url, "http://127.0.0.1:8765/mcp");
+    }
+
+    #[test]
+    fn a_picked_interface_listens_on_its_address_today() {
+        let mut settings = Settings {
+            mcp_address: "10.9.9.9:9000".into(),
+            ..Settings::default()
+        };
+        assert_eq!(listen_address(&settings), "10.9.9.9:9000");
+
+        // Gone interfaces keep the saved address
+        settings.mcp_interface = Some("no-such-interface".into());
+        assert_eq!(listen_address(&settings), "10.9.9.9:9000");
+
+        if let Some(found) = network::interfaces().into_iter().next() {
+            settings.mcp_interface = Some(found.name.clone());
+            assert_eq!(
+                listen_address(&settings),
+                std::net::SocketAddr::new(found.ip, 9000).to_string()
+            );
+        }
     }
 }

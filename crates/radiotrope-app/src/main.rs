@@ -2222,7 +2222,8 @@ fn setup_agents(
     use radiotrope_app::data::settings::McpAuth;
     ui.set_agents_available(agents.is_some());
     ui.set_agents_network(settings.mcp_network);
-    ui.set_agents_address(settings.mcp_address.as_str().into());
+    let listen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    show_listen_choices(ui, settings, &listen);
     let auths: Vec<slint::SharedString> = McpAuth::ALL.iter().map(|a| a.label().into()).collect();
     ui.set_agents_auths(std::rc::Rc::new(slint::VecModel::from(auths)).into());
     let auth = McpAuth::ALL
@@ -2261,6 +2262,7 @@ fn setup_agents(
     let apply = {
         let ui_weak = ui.as_weak();
         let agents = agents.clone();
+        let listen_for_apply = listen.clone();
         move |change: &dyn Fn(&mut radiotrope_app::data::settings::Settings)| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
@@ -2268,7 +2270,7 @@ fn setup_agents(
             if let Err(e) = settings.save() {
                 eprintln!("Failed to save agent settings: {e}");
             }
-            ui.set_agents_address(settings.mcp_address.as_str().into());
+            show_listen_choices(&ui, &settings, &listen_for_apply);
             show_agents_network(&ui, &agents.apply_network(&settings));
         }
     };
@@ -2287,20 +2289,51 @@ fn setup_agents(
             apply(&|s| s.mcp_auth = auth)
         }
     });
-    ui.on_agents_apply_address({
+    ui.on_agents_listen_changed({
+        let apply = apply.clone();
+        let listen = listen.clone();
+        move |index| {
+            let Some(choice) = listen.borrow().get(index as usize).cloned() else {
+                return;
+            };
+            apply(&|s| {
+                s.mcp_address = std::net::SocketAddr::new(choice.ip, saved_port(s)).to_string();
+                s.mcp_interface = choice.interface.clone();
+            })
+        }
+    });
+    ui.on_agents_apply_port({
         let apply = apply.clone();
         let ui_weak = ui.as_weak();
         move |text| {
             let text = text.trim();
-            let address = if text.is_empty() {
-                radiotrope_app::config::mcp::DEFAULT_ADDRESS.to_string()
+            let port = if text.is_empty() {
+                Some(default_port())
             } else {
-                text.to_string()
+                text.parse::<u16>().ok().filter(|p| *p != 0)
             };
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_agents_edit_address(address.as_str().into());
-            }
-            apply(&|s| s.mcp_address = address.clone())
+            let Some(port) = port else {
+                // Not a port: show the saved one again
+                if let Some(ui) = ui_weak.upgrade() {
+                    ui.set_agents_edit_port(ui.get_agents_port());
+                }
+                return;
+            };
+            apply(&|s| {
+                let ip = mcp::network::split_address(&s.mcp_address)
+                    .map(|a| a.ip())
+                    .unwrap_or(std::net::Ipv4Addr::LOCALHOST.into());
+                s.mcp_address = std::net::SocketAddr::new(ip, port).to_string();
+            })
+        }
+    });
+    ui.on_agents_refresh_listen({
+        let ui_weak = ui.as_weak();
+        let listen = listen.clone();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+            show_listen_choices(&ui, &settings, &listen);
         }
     });
     ui.on_agents_regenerate_token({
@@ -2368,6 +2401,82 @@ fn show_agent_lines(ui: &App) {
     ui.set_agents_network_placeholder(setup::no_network_line(app).into());
     ui.set_agents_local_note(app.local_note().into());
     ui.set_agents_network_note(app.network_note(wants_token).into());
+}
+
+/// One entry of the Agents dialog's "Listen on" list
+#[derive(Clone)]
+struct ListenChoice {
+    ip: std::net::IpAddr,
+    /// The interface it belongs to, saved so its next address is used too
+    interface: Option<String>,
+}
+
+/// Fill the "Listen on" list: this computer only, each network interface,
+/// then all networks; and pick the saved one (added if it's not there)
+fn show_listen_choices(
+    ui: &App,
+    settings: &radiotrope_app::data::settings::Settings,
+    listen: &std::cell::RefCell<Vec<ListenChoice>>,
+) {
+    use std::net::{IpAddr, Ipv4Addr};
+    let mut labels: Vec<slint::SharedString> = vec!["This computer only".into()];
+    let mut choices = vec![ListenChoice {
+        ip: Ipv4Addr::LOCALHOST.into(),
+        interface: None,
+    }];
+    for i in mcp::network::interfaces() {
+        labels.push(format!("{} ({})", i.name, i.ip).into());
+        choices.push(ListenChoice {
+            ip: i.ip,
+            interface: Some(i.name),
+        });
+    }
+    labels.push("All networks".into());
+    choices.push(ListenChoice {
+        ip: Ipv4Addr::UNSPECIFIED.into(),
+        interface: None,
+    });
+
+    let address = mcp::agents::listen_address(settings);
+    let saved: Option<IpAddr> = mcp::network::split_address(&address).map(|a| a.ip());
+    let picked = choices
+        .iter()
+        .position(|c| settings.mcp_interface.is_some() && c.interface == settings.mcp_interface);
+    let picked = picked.or_else(|| choices.iter().position(|c| Some(c.ip) == saved));
+    let picked = picked.unwrap_or_else(|| {
+        // An address no interface has now, e.g. from an unplugged network
+        let ip = saved
+            .map(|ip| ip.to_string())
+            .unwrap_or_else(|| address.clone());
+        labels.push(format!("{ip} (not found)").into());
+        choices.push(ListenChoice {
+            ip: saved.unwrap_or(Ipv4Addr::LOCALHOST.into()),
+            interface: settings.mcp_interface.clone(),
+        });
+        choices.len() - 1
+    });
+
+    ui.set_agents_listen_options(std::rc::Rc::new(slint::VecModel::from(labels)).into());
+    ui.set_agents_listen(picked as i32);
+    let port: slint::SharedString = saved_port(settings).to_string().into();
+    ui.set_agents_port(port.clone());
+    ui.set_agents_edit_port(port);
+    *listen.borrow_mut() = choices;
+}
+
+/// The port of the saved network address
+fn saved_port(settings: &radiotrope_app::data::settings::Settings) -> u16 {
+    mcp::network::split_address(&settings.mcp_address)
+        .map(|a| a.port())
+        .unwrap_or_else(default_port)
+}
+
+fn default_port() -> u16 {
+    radiotrope_app::config::mcp::DEFAULT_ADDRESS
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(8765)
 }
 
 fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {

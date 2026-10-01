@@ -247,8 +247,12 @@ export component AgentsDialog inherits Rectangle {
     // False in a --mcp --standalone player: agents reach the main one
     in property <bool> available: true;
     in-out property <bool> network-on: false;
-    // Saved address, token, and what the server says
-    in property <string> address;
+    // Where the server listens: the choices ("This computer only", each
+    // interface, "All networks"), the picked one, and the saved port
+    in property <[string]> listen-options;
+    in-out property <int> listen;
+    in property <string> port;
+    // Token, and what the server says
     in property <string> token;
     in property <string> status;
     in property <bool> status-error;
@@ -269,10 +273,13 @@ export component AgentsDialog inherits Rectangle {
     callback auth-changed(int);
 
     // Fields being edited; reset from the saved values when the dialog opens
-    in-out property <string> edit-address;
+    in-out property <string> edit-port;
 
     callback network-toggled(bool);
-    callback apply-address(string);
+    callback listen-changed(int);
+    callback apply-port(string);
+    // Look for network interfaces again (they come and go)
+    callback refresh-listen();
     callback regenerate-token();
 
     property <bool> network-fields: root.available && root.network-on;
@@ -280,14 +287,15 @@ export component AgentsDialog inherits Rectangle {
     property <bool> token-fields: root.network-fields && root.token-on;
 
     public function open() {
-        root.edit-address = root.address;
+        root.refresh-listen();
+        root.edit-port = root.port;
         root.show-dialog = true;
     }
 
-    // The address saves on Enter, when it loses focus, or here
+    // The port saves on Enter, when it loses focus, or here
     function close() {
-        if root.edit-address != root.address {
-            root.apply-address(root.edit-address);
+        if root.edit-port != root.port {
+            root.apply-port(root.edit-port);
         }
         root.show-dialog = false;
     }
@@ -364,15 +372,28 @@ export component AgentsDialog inherits Rectangle {
 
             HorizontalLayout {
                 spacing: 8px;
-                RowLabel { text: "Address"; }
-                StyledLineEdit {
+                RowLabel { text: "Listen on"; }
+                Picker {
+                    items: root.listen-options;
+                    selected <=> root.listen;
                     enabled: root.network-fields;
-                    text <=> root.edit-address;
-                    placeholder-text: "127.0.0.1:8765";
-                    accepted(text) => { root.apply-address(text); }
+                    changed(index) => { root.listen-changed(index); }
+                }
+                Text {
+                    text: "Port";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-md;
+                    vertical-alignment: center;
+                }
+                StyledLineEdit {
+                    width: 72px;
+                    enabled: root.network-fields;
+                    text <=> root.edit-port;
+                    placeholder-text: "8765";
+                    accepted(text) => { root.apply-port(text); }
                     changed has-focus => {
-                        if !self.has-focus && root.edit-address != root.address {
-                            root.apply-address(root.edit-address);
+                        if !self.has-focus && root.edit-port != root.port {
+                            root.apply-port(root.edit-port);
                         }
                     }
                 }

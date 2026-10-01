@@ -144,6 +144,11 @@ pub struct Settings {
     #[serde(default = "default_mcp_address")]
     pub mcp_address: String,
 
+    /// The network interface picked for the address, e.g. "eth0" or "Wi-Fi":
+    /// its address today is used, so a new one from the router still works
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_interface: Option<String>,
+
     /// The agent the Agents dialog shows setup lines for, e.g. "codex";
     /// `None` is Claude Code
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,6 +222,7 @@ impl Default for Settings {
             mcp_network: false,
             mcp_auth: McpAuth::None,
             mcp_address: default_mcp_address(),
+            mcp_interface: None,
             mcp_client: None,
         }
     }
