@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, test/all-upgrades]
+    branches: [main, test/all-upgrades, "ci/**"]
   pull_request:
     branches: [main, test/all-upgrades]
 
