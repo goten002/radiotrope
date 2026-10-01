@@ -442,23 +442,18 @@ export component AgentsDialog inherits Rectangle {
                 enabled: root.network-fields && root.token != "";
                 clicked => { root.regenerate-token(); }
             }
+            // Listening on a network with no token: said in red
             if !root.token-on: Text {
                 horizontal-stretch: 1;
                 text: root.listen-local ? "Only agents on this computer can connect"
-                    : root.open-to-network ? "Agents need no token"
+                    : root.open-to-network ? "Anyone on this network can control the player"
                     : "Anyone who can reach the address can use the player";
-                color: root.network-fields ? Theme.text-secondary : Theme.disabled-text;
+                color: !root.network-fields ? Theme.disabled-text
+                    : root.open-to-network ? Theme.danger : Theme.text-secondary;
                 font-size: Theme.font-md;
                 vertical-alignment: center;
                 overflow: elide;
             }
-        }
-
-        if root.open-to-network: Text {
-            text: "Anyone on this network can control the player. Choose Token to keep others out.";
-            color: Theme.danger;
-            font-size: Theme.font-md;
-            wrap: word-wrap;
         }
 
         HorizontalLayout {

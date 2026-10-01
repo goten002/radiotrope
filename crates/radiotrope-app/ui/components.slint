@@ -14,7 +14,8 @@ export global Motion {
 // Colorized icon. Draws the image 1px larger on every side and clips that
 // edge off: the femtovg renderer builds colorized textures without clearing
 // them, so their outermost pixels can hold leftover garbage that shows as a
-// thin bar beside the icon.
+// thin bar beside the icon. So a drawing that reaches the edge of its SVG
+// loses that 1px: keep icons at least 1px clear of the edge (spinner.svg).
 export component Icon inherits Rectangle {
     in property <image> source;
     in property <brush> colorize;
