@@ -38,7 +38,7 @@ jobs:
         run: |
           set -o pipefail
           if ! cargo test --workspace 2>&1 | tee test.log; then
-            grep -E "^test .* FAILED$|panicked at|^error" test.log | head -20 | sed 's/^/::error::/'
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
             exit 1
           fi
 
@@ -58,7 +58,7 @@ jobs:
           set -o pipefail
           if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
             # Show the first problems as annotations on the run and the PR
-            grep -E '(error|warning)(\[[^]]*\])?:' clippy.log | head -20 | sed 's/^/::error::/'
+            sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
             exit 1
           fi
 
@@ -89,7 +89,7 @@ jobs:
           set -o pipefail
           if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
             # Show the first problems as annotations on the run and the PR
-            grep -E '(error|warning)(\[[^]]*\])?:' clippy.log | head -20 | sed 's/^/::error::/'
+            sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
             exit 1
           fi
       - name: cargo test
@@ -97,6 +97,6 @@ jobs:
         run: |
           set -o pipefail
           if ! cargo test --workspace 2>&1 | tee test.log; then
-            grep -E "^test .* FAILED$|panicked at|^error" test.log | head -20 | sed 's/^/::error::/'
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
             exit 1
           fi
