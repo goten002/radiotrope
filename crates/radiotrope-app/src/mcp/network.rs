@@ -30,7 +30,7 @@ use tower_service::Service;
 use radiotrope_app::config::mcp::SESSION_IDLE;
 use radiotrope_app::data::agent_token;
 
-use super::presence::{Presence, RemoteIp};
+use super::presence::{NetworkAgent, NetworkId, Presence, StreamGuard};
 use super::tools::RadioTools;
 
 /// What the network server needs from the settings
@@ -241,12 +241,84 @@ async fn handle(
         );
         return response;
     }
-    // Counts on the menu bar's agents chip; the tools learn its name
-    from.presence.network_seen(from.ip);
-    request.extensions_mut().insert(RemoteIp(from.ip));
-    match service.call(request).await {
+    // Which agent this is, for the menu bar's agents chip: its session, or
+    // without one the computer it calls from. The tools learn its name.
+    let session = session_id(request.headers());
+    let id = match &session {
+        Some(session) => NetworkId::Session(session.clone()),
+        None => NetworkId::Address(from.ip),
+    };
+    let method = request.method().clone();
+    request.extensions_mut().insert(NetworkAgent(id.clone()));
+    let response = match service.call(request).await {
         Ok(response) => response,
         Err(never) => match never {},
+    };
+    if !response.status().is_success() {
+        return response;
+    }
+    let presence = &from.presence;
+    match method {
+        http::Method::POST => {
+            // An initialize answer starts a session
+            let id = match session_id(response.headers()) {
+                Some(new) if session.is_none() => NetworkId::Session(new),
+                _ => id,
+            };
+            presence.network_seen(id, from.ip);
+            response
+        }
+        // The agent's event stream: connected while it stays open
+        http::Method::GET if session.is_some() => match presence.stream_opened(&id) {
+            Some(guard) => response.map(|body| {
+                Watched {
+                    body,
+                    _guard: guard,
+                }
+                .boxed()
+            }),
+            None => response,
+        },
+        http::Method::DELETE if session.is_some() => {
+            presence.network_left(&id);
+            response
+        }
+        _ => response,
+    }
+}
+
+fn session_id(headers: &http::HeaderMap) -> Option<Arc<str>> {
+    headers
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .map(Arc::from)
+}
+
+/// A response body that keeps its agent counted as connected until hyper
+/// drops it, which it does when the agent hangs up
+struct Watched {
+    body: BoxBody<Bytes, Infallible>,
+    _guard: StreamGuard,
+}
+
+impl hyper::body::Body for Watched {
+    type Data = Bytes;
+    type Error = Infallible;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<hyper::body::Frame<Bytes>, Infallible>>> {
+        std::pin::Pin::new(&mut self.get_mut().body).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+
+    fn size_hint(&self) -> hyper::body::SizeHint {
+        self.body.size_hint()
     }
 }
 
@@ -444,8 +516,8 @@ mod tests {
         assert!(!connect_authority(any).starts_with("0.0.0.0"));
     }
 
-    /// One HTTP/1.1 request by hand; returns the status line and body
-    fn http(url_port: u16, head: &str, body: &str) -> (String, String) {
+    /// One HTTP/1.1 request by hand; returns the whole response
+    fn http_raw(url_port: u16, head: &str, body: &str) -> String {
         use std::io::{Read, Write};
         let mut stream = std::net::TcpStream::connect(("127.0.0.1", url_port)).unwrap();
         stream
@@ -458,6 +530,12 @@ mod tests {
         stream.write_all(request.as_bytes()).unwrap();
         let mut response = String::new();
         let _ = stream.read_to_string(&mut response);
+        response
+    }
+
+    /// One HTTP/1.1 request by hand; returns the status line and body
+    fn http(url_port: u16, head: &str, body: &str) -> (String, String) {
+        let response = http_raw(url_port, head, body);
         let status = response.lines().next().unwrap_or_default().to_string();
         let body = response
             .split("\r\n\r\n")
@@ -518,6 +596,73 @@ mod tests {
         let web_page = post_request(port, "\r\nOrigin: https://evil.example");
         let (status, _) = http(port, &web_page, INIT);
         assert!(status.contains(" 403 "), "{status}");
+    }
+
+    /// Waits up to 5 s for `check` to hold
+    fn eventually(check: impl Fn() -> bool) -> bool {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < until {
+            if check() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    #[test]
+    fn an_agent_is_connected_while_its_event_stream_is_open() {
+        use std::io::{Read, Write};
+        let tools = test_tools();
+        let presence = tools.presence();
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: None,
+            },
+            tools,
+        )
+        .unwrap();
+        let port = port_of(&server);
+
+        let response = http_raw(port, &post_request(port, ""), INIT);
+        let session = response
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("mcp-session-id")
+                    .then(|| value.trim().to_string())
+            })
+            .expect("a session");
+        let in_session =
+            format!("\r\nMcp-Session-Id: {session}\r\nMCP-Protocol-Version: 2025-11-25");
+        let initialized = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        let (status, _) = http(port, &post_request(port, &in_session), initialized);
+        assert!(status.contains(" 202 "), "{status}");
+        // The session handles the notification on its own time
+        assert!(eventually(|| presence.agents()[0].name() == "t"));
+        assert_eq!(presence.agents().len(), 1);
+        assert!(!presence.agents()[0].is_connected());
+
+        // The agent opens its event stream...
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let get = format!(
+            "GET /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAccept: text/event-stream{in_session}\r\n\r\n"
+        );
+        stream.write_all(get.as_bytes()).unwrap();
+        let mut head = [0u8; 12];
+        stream.read_exact(&mut head).unwrap();
+        assert_eq!(&head, b"HTTP/1.1 200");
+        assert!(eventually(|| presence.agents()[0].is_connected()));
+        // ...and hangs up
+        drop(stream);
+        assert!(eventually(|| !presence.agents()[0].is_connected()));
+
+        // Ending the session takes it off the list at once
+        let delete = format!("DELETE /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}{in_session}");
+        let (status, _) = http(port, &delete, "");
+        assert!(status.starts_with("HTTP/1.1 2"), "{status}");
+        assert!(presence.agents().is_empty());
     }
 
     #[test]

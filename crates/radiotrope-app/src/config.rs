@@ -74,9 +74,14 @@ pub mod mcp {
     /// user only
     pub const TOKEN_FILE: &str = "mcp-token";
 
-    /// A network agent has no lasting connection: it counts as connected
-    /// (the menu bar's agents chip) until this long after its last request
-    pub const AGENT_IDLE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+    /// A network agent without an open event stream counts as there (the
+    /// menu bar's agents chip) until this long after its last request
+    pub const AGENT_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+    /// A network agent whose event stream closed is gone unless it opens
+    /// another or makes a request within this long (a reconnect after a
+    /// network hiccup takes a few seconds)
+    pub const STREAM_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
 
     /// How long a network agent's session lasts without a request. rmcp
     /// ends it after 5 minutes by default, open event stream or not, and
