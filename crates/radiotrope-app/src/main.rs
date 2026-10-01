@@ -182,7 +182,7 @@ fn main() {
         agents
     });
     // Network agents, when turned on, and the Agents dialog
-    setup_agents(&ui, agents.clone(), &settings);
+    let _network_timer = setup_agents(&ui, agents.clone(), &settings);
     let _agents_timer = watch_agents(&ui, agents.as_ref().map(|a| a.tools().presence()));
 
     // Initial load of favorites into UI model
@@ -2279,12 +2279,14 @@ const MAX_COVER_BYTES: usize = 512 * 1024;
 
 /// Wire the Agents (MCP) dialog, and start network agents when they are on.
 /// `agents` is `None` in a `--mcp --standalone` player, which serves one
-/// agent on stdio only: the dialog shows the settings greyed out.
+/// agent on stdio only: the dialog shows the settings greyed out. Keep the
+/// returned timer: it starts the network server again when the network
+/// changes.
 fn setup_agents(
     ui: &App,
     agents: Option<Arc<mcp::agents::Agents>>,
     settings: &radiotrope_app::data::settings::Settings,
-) {
+) -> slint::Timer {
     use mcp::setup::AgentApp;
     use radiotrope_app::data::settings::McpAuth;
     ui.set_agents_available(agents.is_some());
@@ -2322,7 +2324,8 @@ fn setup_agents(
     });
     show_agent_lines(ui);
 
-    let Some(agents) = agents else { return };
+    let timer = slint::Timer::default();
+    let Some(agents) = agents else { return timer };
     show_agents_network(ui, &agents.apply_network(settings));
 
     // Every change saves and restarts the network server with it
@@ -2412,6 +2415,21 @@ fn setup_agents(
             apply(&|_| {})
         }
     });
+
+    // A picked interface gets a new address with a new lease, and at login
+    // the network may come up after the player: listen again then
+    let ui_weak = ui.as_weak();
+    timer.start(
+        slint::TimerMode::Repeated,
+        radiotrope_app::config::mcp::NETWORK_RECHECK,
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if let Some(status) = agents.recheck_network() {
+                show_agents_network(&ui, &status);
+            }
+        },
+    );
+    timer
 }
 
 /// Keep the menu bar's agents chip up to date: who uses the player now
@@ -2539,6 +2557,7 @@ fn show_listen_choices(
 
     ui.set_agents_listen_options(std::rc::Rc::new(slint::VecModel::from(labels)).into());
     ui.set_agents_listen(picked as i32);
+    ui.set_agents_listen_local(choices[picked].ip.is_loopback());
     let port: slint::SharedString = saved_port(settings).to_string().into();
     ui.set_agents_port(port.clone());
     ui.set_agents_edit_port(port);

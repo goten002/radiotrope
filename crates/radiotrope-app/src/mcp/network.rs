@@ -11,23 +11,38 @@
 //!
 //! Serves both kinds of client: stateless 2026-07-28 ones, and older ones
 //! with an `initialize` handshake and an `Mcp-Session-Id`.
+//!
+//! Limits keep a client from wearing the player down, token or not: so many
+//! connections and sessions at once, and a connection that sends no request
+//! is closed after a few seconds.
 
+use std::cell::Cell;
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr, TcpListener as StdListener, ToSocketAddrs};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use futures_core::Stream;
 use http_body_util::{combinators::BoxBody, BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
+use rmcp::model::{ClientJsonRpcMessage, ClientRequest, ServerJsonRpcMessage};
+use rmcp::transport::streamable_http_server::session::local::{
+    LocalSessionManager, LocalSessionManagerError,
+};
+use rmcp::transport::streamable_http_server::session::{EventStore, ServerSseMessage};
 use rmcp::transport::streamable_http_server::{
-    session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    SessionId, SessionManager, StreamableHttpServerConfig, StreamableHttpService,
 };
 use tokio_util::sync::CancellationToken;
 use tower_service::Service;
 
-use radiotrope_app::config::mcp::SESSION_IDLE;
+use radiotrope_app::config::mcp::{
+    HEADER_READ_TIMEOUT, MAX_CONNECTIONS, MAX_SESSIONS, SESSION_IDLE, UNUSED_SESSION_IDLE,
+};
 use radiotrope_app::data::agent_token;
 
 use super::presence::{NetworkAgent, NetworkId, Presence, StreamGuard};
@@ -127,7 +142,7 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
     })
 }
 
-type McpService = StreamableHttpService<RadioTools, LocalSessionManager>;
+type McpService = StreamableHttpService<RadioTools, Sessions>;
 
 fn mcp_service(tools: RadioTools, bind: IpAddr, cancel: CancellationToken) -> McpService {
     let mut config = StreamableHttpServerConfig::default()
@@ -143,14 +158,165 @@ fn mcp_service(tools: RadioTools, bind: IpAddr, cancel: CancellationToken) -> Mc
     if !bind.is_loopback() {
         config = config.disable_allowed_hosts();
     }
-    StreamableHttpService::new(move || Ok(tools.clone()), Arc::new(sessions()), config)
+    StreamableHttpService::new(move || Ok(tools.clone()), Arc::new(Sessions::new()), config)
 }
 
-/// Sessions for older clients, kept while their agent sits idle
-fn sessions() -> LocalSessionManager {
-    let mut sessions = LocalSessionManager::default();
-    sessions.session_config.keep_alive = Some(SESSION_IDLE);
-    sessions
+/// Sessions for older clients: rmcp's own, kept while their agent sits idle
+/// ([`SESSION_IDLE`]), and at most [`MAX_SESSIONS`] of them. One that has
+/// neither opened its event stream nor called a tool makes way
+/// [`UNUSED_SESSION_IDLE`] after its last request, as a new one starts.
+struct Sessions {
+    local: LocalSessionManager,
+    uses: Mutex<HashMap<SessionId, Use>>,
+}
+
+/// How a session has been used
+struct Use {
+    last_request: Instant,
+    /// It opened its event stream or called a tool
+    used: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum SessionsError {
+    #[error("too many sessions")]
+    Full,
+    #[error(transparent)]
+    Local(#[from] LocalSessionManagerError),
+}
+
+tokio::task_local! {
+    /// Set while serving a request that was refused a session because there
+    /// are [`MAX_SESSIONS`] already: rmcp answers that with a plain 500
+    static SESSIONS_FULL: Cell<bool>;
+}
+
+impl Sessions {
+    fn new() -> Self {
+        let mut local = LocalSessionManager::default();
+        local.session_config.keep_alive = Some(SESSION_IDLE);
+        Self {
+            local,
+            uses: Mutex::default(),
+        }
+    }
+
+    fn uses(&self) -> MutexGuard<'_, HashMap<SessionId, Use>> {
+        self.uses.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A request in session `id`; `used` when it opens a stream or calls a
+    /// tool
+    fn note(&self, id: &SessionId, used: bool) {
+        if let Some(entry) = self.uses().get_mut(id) {
+            entry.last_request = Instant::now();
+            entry.used |= used;
+        }
+    }
+
+    /// End the sessions that have sat unused too long by `now`
+    async fn end_unused(&self, now: Instant) {
+        let unused: Vec<SessionId> = self
+            .uses()
+            .iter()
+            .filter(|(_, u)| {
+                !u.used && now.saturating_duration_since(u.last_request) >= UNUSED_SESSION_IDLE
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in unused {
+            let _ = self.close_session(&id).await;
+        }
+    }
+}
+
+impl SessionManager for Sessions {
+    type Error = SessionsError;
+    type Transport = <LocalSessionManager as SessionManager>::Transport;
+
+    async fn create_session(&self) -> Result<(SessionId, Self::Transport), Self::Error> {
+        self.end_unused(Instant::now()).await;
+        let (id, transport) = self.local.create_session().await?;
+        let full = {
+            let mut uses = self.uses();
+            let full = uses.len() >= MAX_SESSIONS;
+            if !full {
+                let used = Use {
+                    last_request: Instant::now(),
+                    used: false,
+                };
+                uses.insert(id.clone(), used);
+            }
+            full
+        };
+        if full {
+            let _ = self.local.close_session(&id).await;
+            let _ = SESSIONS_FULL.try_with(|full| full.set(true));
+            return Err(SessionsError::Full);
+        }
+        Ok((id, transport))
+    }
+
+    async fn initialize_session(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<ServerJsonRpcMessage, Self::Error> {
+        Ok(self.local.initialize_session(id, message).await?)
+    }
+
+    async fn has_session(&self, id: &SessionId) -> Result<bool, Self::Error> {
+        Ok(self.local.has_session(id).await?)
+    }
+
+    async fn close_session(&self, id: &SessionId) -> Result<(), Self::Error> {
+        self.uses().remove(id);
+        Ok(self.local.close_session(id).await?)
+    }
+
+    async fn create_stream(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
+        let calls_a_tool = matches!(
+            &message,
+            ClientJsonRpcMessage::Request(request)
+                if matches!(request.request, ClientRequest::CallToolRequest(_))
+        );
+        self.note(id, calls_a_tool);
+        Ok(self.local.create_stream(id, message).await?)
+    }
+
+    async fn accept_message(
+        &self,
+        id: &SessionId,
+        message: ClientJsonRpcMessage,
+    ) -> Result<(), Self::Error> {
+        self.note(id, false);
+        Ok(self.local.accept_message(id, message).await?)
+    }
+
+    async fn create_standalone_stream(
+        &self,
+        id: &SessionId,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
+        self.note(id, true);
+        Ok(self.local.create_standalone_stream(id).await?)
+    }
+
+    async fn resume(
+        &self,
+        id: &SessionId,
+        last_event_id: String,
+    ) -> Result<impl Stream<Item = ServerSseMessage> + Send + Sync + 'static, Self::Error> {
+        self.note(id, true);
+        Ok(self.local.resume(id, last_event_id).await?)
+    }
+
+    fn event_store(&self) -> Option<Arc<dyn EventStore>> {
+        self.local.event_store()
+    }
 }
 
 async fn serve(
@@ -167,13 +333,26 @@ async fn serve(
             return;
         }
     };
+    // A connection holds a place while open; with none free, the next one
+    // waits in the system's queue
+    let places = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
+        let place = tokio::select! {
+            _ = cancel.cancelled() => return,
+            place = places.clone().acquire_owned() => match place {
+                Ok(place) => place,
+                Err(_) => return,
+            },
+        };
         let (stream, peer) = tokio::select! {
             _ = cancel.cancelled() => return,
             accepted = listener.accept() => match accepted {
                 Ok(conn) => conn,
                 Err(e) => {
+                    // Out of file descriptors, most likely: wait a little
+                    // rather than spin
                     eprintln!("MCP network: accept failed: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
             },
@@ -185,7 +364,10 @@ async fn serve(
             ip: peer.ip().to_canonical(),
             presence: presence.clone(),
         };
-        tokio::spawn(serve_connection(stream, service, token, from, cancel));
+        tokio::spawn(async move {
+            serve_connection(stream, service, token, from, cancel).await;
+            drop(place);
+        });
     }
 }
 
@@ -209,8 +391,11 @@ async fn serve_connection(
         let from = from.clone();
         async move { Ok::<_, Infallible>(handle(&mut service, token.as_deref(), &from, request).await) }
     });
-    let connection =
-        hyper::server::conn::http1::Builder::new().serve_connection(TokioIo::new(stream), handler);
+    // Also closes a connection left idle between requests
+    let connection = hyper::server::conn::http1::Builder::new()
+        .timer(TokioTimer::new())
+        .header_read_timeout(HEADER_READ_TIMEOUT)
+        .serve_connection(TokioIo::new(stream), handler);
     tokio::pin!(connection);
     tokio::select! {
         _ = connection.as_mut() => {}
@@ -231,9 +416,9 @@ async fn handle(
         .headers()
         .get(http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
+        .and_then(bearer_token)
         .unwrap_or("");
-    if token.is_some_and(|token| !agent_token::matches(token, presented.trim())) {
+    if token.is_some_and(|token| !agent_token::matches(token, presented)) {
         let mut response = plain(StatusCode::UNAUTHORIZED, "Missing or wrong token");
         response.headers_mut().insert(
             http::header::WWW_AUTHENTICATE,
@@ -250,10 +435,21 @@ async fn handle(
     };
     let method = request.method().clone();
     request.extensions_mut().insert(NetworkAgent(id.clone()));
-    let response = match service.call(request).await {
-        Ok(response) => response,
-        Err(never) => match never {},
-    };
+    let (response, full) = SESSIONS_FULL
+        .scope(Cell::new(false), async {
+            let response = match service.call(request).await {
+                Ok(response) => response,
+                Err(never) => match never {},
+            };
+            (response, SESSIONS_FULL.with(Cell::get))
+        })
+        .await;
+    if full {
+        return plain(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many agents are connected; try again later",
+        );
+    }
     if !response.status().is_success() {
         return response;
     }
@@ -285,6 +481,15 @@ async fn handle(
         }
         _ => response,
     }
+}
+
+/// The token of an `Authorization: Bearer <token>` header, whatever the
+/// case of "Bearer" (RFC 7235)
+fn bearer_token(header: &str) -> Option<&str> {
+    let (scheme, token) = header.trim().split_once(' ')?;
+    scheme
+        .eq_ignore_ascii_case("Bearer")
+        .then_some(token.trim())
 }
 
 fn session_id(headers: &http::HeaderMap) -> Option<Arc<str>> {
@@ -493,8 +698,43 @@ mod tests {
 
     #[test]
     fn idle_agents_keep_their_session() {
-        let keep_alive = sessions().session_config.keep_alive;
+        let keep_alive = Sessions::new().local.session_config.keep_alive;
         assert!(keep_alive.is_some_and(|d| d >= std::time::Duration::from_secs(60 * 60)));
+    }
+
+    #[tokio::test]
+    async fn sessions_are_limited_and_unused_ones_make_way() {
+        let sessions = Sessions::new();
+        let mut ids = Vec::new();
+        for _ in 0..MAX_SESSIONS {
+            ids.push(sessions.create_session().await.unwrap().0);
+        }
+        assert!(matches!(
+            sessions.create_session().await,
+            Err(SessionsError::Full)
+        ));
+        assert_eq!(sessions.local.sessions.read().await.len(), MAX_SESSIONS);
+
+        // Opening its event stream or calling a tool keeps a session; the
+        // others end once idle long enough, as a new one starts
+        sessions.note(&ids[0], true);
+        sessions.note(&ids[1], false);
+        sessions
+            .end_unused(Instant::now() + UNUSED_SESSION_IDLE)
+            .await;
+        assert!(sessions.has_session(&ids[0]).await.unwrap());
+        assert!(!sessions.has_session(&ids[1]).await.unwrap());
+        assert!(sessions.create_session().await.is_ok());
+    }
+
+    #[test]
+    fn the_bearer_scheme_is_read_in_any_case() {
+        assert_eq!(bearer_token("Bearer abc"), Some("abc"));
+        assert_eq!(bearer_token("bearer abc"), Some("abc"));
+        assert_eq!(bearer_token(" BEARER   abc "), Some("abc"));
+        assert_eq!(bearer_token("Basic abc"), None);
+        assert_eq!(bearer_token("Bearerabc"), None);
+        assert_eq!(bearer_token(""), None);
     }
 
     #[test]
@@ -688,6 +928,9 @@ mod tests {
         let (status, body) = http(port, &post(&auth), INIT);
         assert!(status.contains(" 200 "), "{status}");
         assert!(body.contains("\"radiotrope\""), "{body}");
+        let lower_case = format!("\r\nAuthorization: bearer {token}");
+        let (status, _) = http(port, &post(&lower_case), INIT);
+        assert!(status.contains(" 200 "), "{status}");
 
         let (status, _) = http(
             port,
@@ -711,6 +954,59 @@ mod tests {
         drop(server);
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err());
+    }
+
+    #[test]
+    fn a_session_too_many_is_refused_for_now() {
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: None,
+            },
+            test_tools(),
+        )
+        .unwrap();
+        let port = port_of(&server);
+        for _ in 0..MAX_SESSIONS {
+            let (status, _) = http(port, &post_request(port, ""), INIT);
+            assert!(status.contains(" 200 "), "{status}");
+        }
+        let (status, body) = http(port, &post_request(port, ""), INIT);
+        assert!(status.contains(" 503 "), "{status}");
+        assert!(body.contains("try again later"), "{body}");
+    }
+
+    #[test]
+    fn connections_past_the_limit_wait_their_turn() {
+        use std::io::{Read, Write};
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: None,
+            },
+            test_tools(),
+        )
+        .unwrap();
+        let port = port_of(&server);
+        let connect = || std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        // Connections that send nothing
+        let idle: Vec<_> = (0..MAX_CONNECTIONS).map(|_| connect()).collect();
+
+        let mut next = connect();
+        next.write_all(
+            format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+                .as_bytes(),
+        )
+        .unwrap();
+        next.set_read_timeout(Some(Duration::from_millis(300)))
+            .unwrap();
+        let mut head = [0u8; 12];
+        assert!(next.read(&mut head).is_err(), "served past the limit");
+
+        drop(idle);
+        next.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        next.read_exact(&mut head).unwrap();
+        assert_eq!(&head, b"HTTP/1.1 404");
     }
 
     #[test]

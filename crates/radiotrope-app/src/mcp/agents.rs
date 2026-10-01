@@ -15,6 +15,25 @@ use super::tools::RadioTools;
 pub struct Agents {
     tools: RadioTools,
     network: Mutex<Option<network::Server>>,
+    /// What the network server was last set up with
+    applied: Mutex<Option<Applied>>,
+}
+
+/// The settings the network server was last set up with, and how that went
+struct Applied {
+    settings: Settings,
+    /// The "host:port" it was to listen on
+    address: String,
+    /// It could not
+    failed: bool,
+}
+
+impl Applied {
+    /// Set up again: the picked interface has another address now, or
+    /// listening failed last time (the network may be up now)
+    fn is_stale(&self, address_now: &str) -> bool {
+        self.settings.mcp_network && (self.failed || self.address != address_now)
+    }
 }
 
 /// What the settings show about network agents
@@ -35,6 +54,7 @@ impl Agents {
         Self {
             tools,
             network: Mutex::new(None),
+            applied: Mutex::new(None),
         }
     }
 
@@ -44,6 +64,32 @@ impl Agents {
 
     /// Start, restart or stop the network server to match the settings
     pub fn apply_network(&self, settings: &Settings) -> NetworkStatus {
+        let address = listen_address(settings);
+        let status = self.start_network(settings, &address);
+        *self.applied.lock().unwrap_or_else(|e| e.into_inner()) = Some(Applied {
+            settings: settings.clone(),
+            address,
+            failed: status.is_error,
+        });
+        status
+    }
+
+    /// Set the network server up again when the picked interface's address
+    /// has changed, or when it could not listen last time. `None` when
+    /// nothing needed doing.
+    pub fn recheck_network(&self) -> Option<NetworkStatus> {
+        let settings = {
+            let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
+            let applied = applied.as_ref()?;
+            if !applied.is_stale(&listen_address(&applied.settings)) {
+                return None;
+            }
+            applied.settings.clone()
+        };
+        Some(self.apply_network(&settings))
+    }
+
+    fn start_network(&self, settings: &Settings, address: &str) -> NetworkStatus {
         let mut running = self.network.lock().unwrap_or_else(|e| e.into_inner());
         // The old server lets go of its port before a new one binds it
         running.take();
@@ -54,7 +100,7 @@ impl Agents {
                 text: "Off".into(),
                 is_error: false,
                 token,
-                url: network::url_for(&listen_address(settings)).unwrap_or_default(),
+                url: network::url_for(address).unwrap_or_default(),
             };
         }
 
@@ -73,11 +119,10 @@ impl Agents {
                 }
             },
         };
-        let address = listen_address(settings);
-        let url = network::url_for(&address).unwrap_or_default();
+        let url = network::url_for(address).unwrap_or_default();
         let started = network::start(
             &network::Options {
-                address: address.clone(),
+                address: address.to_string(),
                 token: (settings.mcp_auth == McpAuth::Token).then(|| token.clone()),
             },
             self.tools.clone(),
@@ -144,6 +189,45 @@ mod tests {
         let status = agents.apply_network(&Settings::default());
         assert_eq!(status.text, "Off");
         assert_eq!(status.url, "http://127.0.0.1:8765/mcp");
+    }
+
+    #[test]
+    fn the_server_is_set_up_again_when_its_address_changes_or_failed() {
+        let applied = |network: bool, address: &str, failed: bool| Applied {
+            settings: Settings {
+                mcp_network: network,
+                ..Settings::default()
+            },
+            address: address.into(),
+            failed,
+        };
+        let now = "192.168.1.20:8765";
+        assert!(!applied(true, now, false).is_stale(now));
+        // A new lease
+        assert!(applied(true, "192.168.1.9:8765", false).is_stale(now));
+        // Listening failed, e.g. before the network was up
+        assert!(applied(true, now, true).is_stale(now));
+        // Off stays off
+        assert!(!applied(false, "192.168.1.9:8765", true).is_stale(now));
+    }
+
+    #[test]
+    fn a_failed_start_is_tried_again() {
+        let agents = agents();
+        assert!(agents.recheck_network().is_none());
+        let mut settings = Settings {
+            mcp_network: true,
+            mcp_address: "127.0.0.1:0".into(),
+            ..Settings::default()
+        };
+        assert!(!agents.apply_network(&settings).is_error);
+        assert!(agents.recheck_network().is_none());
+
+        // An address this computer doesn't have (TEST-NET-1)
+        settings.mcp_address = "192.0.2.1:0".into();
+        assert!(agents.apply_network(&settings).is_error);
+        let again = agents.recheck_network().expect("tried again");
+        assert!(again.is_error);
     }
 
     #[test]

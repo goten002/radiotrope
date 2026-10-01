@@ -257,6 +257,8 @@ export component AgentsDialog inherits Rectangle {
     in property <[string]> listen-options;
     in-out property <int> listen;
     in property <string> port;
+    // The picked address is this computer's own (loopback)
+    in property <bool> listen-local: true;
     // Token, and what the server says
     in property <string> token;
     in property <string> status;
@@ -289,6 +291,8 @@ export component AgentsDialog inherits Rectangle {
 
     property <bool> network-fields: root.available && root.network-on;
     property <bool> token-on: root.auth == 1;
+    // Listening on a network with no token: anyone there gets in
+    property <bool> open-to-network: root.network-fields && !root.token-on && !root.listen-local;
 
     public function open() {
         root.refresh-listen();
@@ -440,14 +444,21 @@ export component AgentsDialog inherits Rectangle {
             }
             if !root.token-on: Text {
                 horizontal-stretch: 1;
-                // The first choice is "This computer only"
-                text: root.listen == 0 ? "Only agents on this computer can connect"
+                text: root.listen-local ? "Only agents on this computer can connect"
+                    : root.open-to-network ? "Agents need no token"
                     : "Anyone who can reach the address can use the player";
                 color: root.network-fields ? Theme.text-secondary : Theme.disabled-text;
                 font-size: Theme.font-md;
                 vertical-alignment: center;
                 overflow: elide;
             }
+        }
+
+        if root.open-to-network: Text {
+            text: "Anyone on this network can control the player. Choose Token to keep others out.";
+            color: Theme.danger;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
         }
 
         HorizontalLayout {

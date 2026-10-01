@@ -105,4 +105,29 @@ pub mod mcp {
     /// often sit idle much longer than that between uses. Agents that quit
     /// cleanly end their session themselves.
     pub const SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+    /// A session that has neither opened its event stream nor called a tool
+    /// ends this long after its last request, so clients that only say
+    /// hello don't hold a place for [`SESSION_IDLE`]
+    pub const UNUSED_SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+    /// Most network sessions at once; one more is refused until one ends
+    pub const MAX_SESSIONS: usize = 32;
+
+    /// Most network agents the agents chip lists; the one seen longest ago
+    /// makes way for a new one
+    pub const MAX_NETWORK_AGENTS: usize = 32;
+
+    /// Most connections the network server serves at once; more wait until
+    /// one closes. An agent's event stream holds one.
+    pub const MAX_CONNECTIONS: usize = 64;
+
+    /// How long a connection has to send a request's headers, which is
+    /// also how long an idle one stays open between requests
+    pub const HEADER_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// How often the network server checks that it still listens on the
+    /// picked interface's address, or tries again after it could not
+    /// listen (the network may not have been up yet)
+    pub const NETWORK_RECHECK: std::time::Duration = std::time::Duration::from_secs(20);
 }
