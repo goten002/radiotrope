@@ -149,6 +149,13 @@ pub enum AudioEvent {
     OutputLost,
     /// Playback moved to a newly opened output device after `OutputLost`
     OutputRestored,
+    /// The output came back after a live station had played into nothing
+    /// for longer than [`EngineConfig::behind_live_limit`]: rather than
+    /// carry on that far behind live, the station ends, and `Stopped`
+    /// follows. Play it again to catch up.
+    ///
+    /// [`EngineConfig::behind_live_limit`]: super::EngineConfig::behind_live_limit
+    FellBehind,
 }
 
 /// An engine event, and the station it is about
