@@ -115,9 +115,16 @@ fn main() {
     let (stats_tx, stats_rx) = bounded::<SharedStats>(1);
 
     // Favorites manager + shared logo service (created early so MCP can use them)
-    let favorites = Arc::new(Mutex::new(
-        FavoritesManager::load().unwrap_or_else(|_| FavoritesManager::new()),
-    ));
+    // A favorites file that can't be read starts an empty list (the file
+    // itself is kept aside by the loader), and the logo cache is left alone
+    let (favorites, favorites_loaded) = match FavoritesManager::load() {
+        Ok(f) => (f, true),
+        Err(e) => {
+            eprintln!("Favorites: {e}");
+            (FavoritesManager::new(), false)
+        }
+    };
+    let favorites = Arc::new(Mutex::new(favorites));
     let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
 
     // Generation counter for browse logo fetches (to cancel stale requests)
@@ -211,12 +218,16 @@ fn main() {
                     .collect();
                 drop(favs);
 
-                // Clean up cached logos not belonging to any current favorite
-                let valid_ids: std::collections::HashSet<String> =
-                    all.iter().map(|f| f.id()).chain(last_station_id).collect();
-                let removed = logo_svc.cache().cleanup_orphaned(&valid_ids);
-                if removed > 0 {
-                    eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
+                // Clean up cached logos not belonging to any current favorite,
+                // unless the favorites couldn't be read: their logos may still
+                // be needed once the file is recovered
+                if favorites_loaded {
+                    let valid_ids: std::collections::HashSet<String> =
+                        all.iter().map(|f| f.id()).chain(last_station_id).collect();
+                    let removed = logo_svc.cache().cleanup_orphaned(&valid_ids);
+                    if removed > 0 {
+                        eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
+                    }
                 }
 
                 let fetched = logo_svc.prefetch(&all);
