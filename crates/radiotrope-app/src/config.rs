@@ -43,6 +43,27 @@ pub mod providers {
     pub const API_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 }
 
+/// Station logos
+pub mod logos {
+    use std::time::Duration;
+
+    /// Largest logo download. Logo URLs are user-submitted, and some point
+    /// at streams, web pages or huge images.
+    pub const MAX_BYTES: u64 = 2 * 1024 * 1024;
+
+    /// Largest width or height of an image decoded as a logo
+    pub const MAX_DIMENSION: u32 = 4096;
+
+    /// Most memory one logo's decoding may take (a 4096 x 4096 RGBA image)
+    pub const MAX_DECODE_BYTES: u64 = 64 * 1024 * 1024;
+
+    /// A logo that failed for a passing reason (no network, a timeout, a
+    /// server error) is tried again after this long. One the server
+    /// refused, or that isn't a usable image, isn't tried again this
+    /// session.
+    pub const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+}
+
 /// UI-related configuration. Sizes, colours and delays the UI draws with
 /// are in `ui/defaults.slint`.
 pub mod ui {

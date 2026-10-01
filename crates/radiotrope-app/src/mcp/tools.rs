@@ -515,6 +515,7 @@ impl RadioTools {
             url.to_string(),
             known.name,
             known.logo_url,
+            known.country,
             play_wait(args.wait_seconds),
         )
         .await
@@ -558,6 +559,7 @@ impl RadioTools {
             station.url.clone(),
             Some(station.name.clone()),
             station.logo_url.clone(),
+            station.country.clone(),
             play_wait(args.wait_seconds),
         )
         .await
@@ -579,7 +581,7 @@ impl RadioTools {
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let id = args.id.trim();
-        let (url, name, logo) = {
+        let (url, name, logo, country) = {
             let favorites = self.favorites();
             let fav = favorites
                 .get(id)
@@ -588,10 +590,18 @@ impl RadioTools {
                 fav.url().to_string(),
                 fav.name().to_string(),
                 fav.station.logo_url.clone(),
+                fav.station.country.clone(),
             )
         };
-        self.play(&ctx, url, Some(name), logo, play_wait(args.wait_seconds))
-            .await
+        self.play(
+            &ctx,
+            url,
+            Some(name),
+            logo,
+            country,
+            play_wait(args.wait_seconds),
+        )
+        .await
     }
 
     #[tool(
@@ -1154,16 +1164,18 @@ impl RadioTools {
         url: String,
         name: Option<String>,
         logo_url: Option<String>,
+        country: Option<String>,
         wait: Duration,
     ) -> Result<String, String> {
         let label = name.clone().unwrap_or_else(|| url.clone());
         let before = self.snapshot().play_seq;
-        // The logo goes with it, so the header shows it as it does for a
-        // station picked in the UI
+        // The logo and country go with it, so the header shows them as it
+        // does for a station picked in the UI
         self.send(AppCommand::Play {
             url: url.clone(),
             name,
             logo_url,
+            country,
         });
         self.note_change(ctx, format!("play {label}"));
         if wait.is_zero() {

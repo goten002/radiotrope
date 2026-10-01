@@ -17,6 +17,8 @@ pub enum AppCommand {
         name: Option<String>,
         /// The station's logo, for the header while it plays
         logo_url: Option<String>,
+        /// The station's country, shown with it and kept if it is starred
+        country: Option<String>,
     },
     Stop,
     #[allow(dead_code)] // planned: pause/resume from MCP
@@ -74,6 +76,8 @@ pub struct AppSnapshot {
     /// Logo of the station being played, as given with its Play: the GUI
     /// shows it whoever started the station (the UI or an agent)
     pub station_logo_url: Option<String>,
+    /// Country of the station being played, as given with its Play
+    pub station_country: Option<String>,
     pub title: String,
     pub artist: String,
     pub volume: f32,
@@ -136,6 +140,7 @@ impl Default for AppSnapshot {
             station_name: None,
             station_url: None,
             station_logo_url: None,
+            station_country: None,
             title: String::new(),
             artist: String::new(),
             volume: 1.0,

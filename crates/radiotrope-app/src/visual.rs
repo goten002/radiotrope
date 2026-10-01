@@ -234,6 +234,11 @@ const MIN_HIDDEN_EDGE: f32 = 0.02;
 /// Fog colour of logos with no colours of their own, per theme
 const FOG_GREY_DARK: [u8; 3] = [0xc8, 0xc9, 0xcc];
 const FOG_GREY_LIGHT: [u8; 3] = [0x3a, 0x3c, 0x41];
+/// Logos are judged for a fog at this size at most: the browser's row
+/// size, which the shares above were tuned at. The outline grows with a
+/// logo's size and its area with the square, so a larger copy of the same
+/// logo would otherwise be judged differently in the header or favorites.
+const FOG_JUDGE_SIZE: u32 = crate::network::browse_logos::ROW_LOGO_SIZE;
 
 /// The colour fog behind a logo: a soft glow in each of two corners over a
 /// flat ground colour
@@ -248,67 +253,116 @@ pub struct Backdrop {
 
 /// The fog a see-through logo needs behind it so it does not vanish on the
 /// tile, on the dark theme (`dark`) or the light one. `None` when the logo
+/// shows well as it is. See [`logo_backdrops`].
+pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> {
+    let (on_dark, on_light) = logo_backdrops(rgba, width);
+    if dark {
+        on_dark
+    } else {
+        on_light
+    }
+}
+
+/// The fog a see-through logo needs behind it so it does not vanish on the
+/// tile: on the dark theme, then on the light one. `None` when the logo
 /// shows well as it is.
 ///
 /// `rgba` is the image's pixels in RGBA order, `width` pixels to a row.
 /// A logo gets one when it is partly transparent and much of it, above all
 /// where it meets the tile, is too close to the tile colour: black
 /// lettering on the dark theme, white lettering on the light one. The fog
-/// uses the
-/// logo's own colours (as the visualizer does), made pale on the dark theme
-/// and deep on the light one so the lettering stands out; logos with no
-/// colours get a grey fog.
-pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> {
-    let pixels = rgba.len() / 4;
-    if width == 0 || pixels == 0 {
-        return None;
+/// uses the logo's own colours (as the visualizer does), made pale on the
+/// dark theme and deep on the light one so the lettering stands out; logos
+/// with no colours get a grey fog. Larger logos are judged on a copy of
+/// [`FOG_JUDGE_SIZE`], so every size of a logo gets the same answer.
+pub fn logo_backdrops(rgba: &[u8], width: usize) -> (Option<Backdrop>, Option<Backdrop>) {
+    let Some((rgba, width)) = fog_judge_copy(rgba, width) else {
+        return (None, None);
+    };
+    let height = rgba.len() / 4 / width;
+    let share = |part: usize, whole: usize| part as f32 / whole.max(1) as f32;
+    // Logos with their own background stop here, before the costly part
+    let see_through = rgba.chunks_exact(4).filter(|px| px[3] < 128).count();
+    if share(see_through, width * height) < MIN_TRANSPARENT {
+        return (None, None);
     }
-    let height = pixels / width;
     // Beyond the image's edge is the tile too
     let clear =
         |x: usize, y: usize| x >= width || y >= height || rgba[(y * width + x) * 4 + 3] < 128;
-    let tile = relative_luminance(if dark { TILE_DARK } else { TILE_LIGHT });
-    let (mut see_through, mut outline, mut hidden_outline) = (0, 0, 0);
+    let tiles = [TILE_DARK, TILE_LIGHT].map(relative_luminance);
+    // Outline pixels, and those of them hard to see on each theme's tile
+    let (mut outline, mut hidden) = (0, [0usize; 2]);
     for y in 0..height {
         for x in 0..width {
-            if clear(x, y) {
-                see_through += 1;
+            let on_outline = !clear(x, y)
+                && (x == 0
+                    || y == 0
+                    || clear(x - 1, y)
+                    || clear(x + 1, y)
+                    || clear(x, y - 1)
+                    || clear(x, y + 1));
+            if !on_outline {
                 continue;
             }
+            outline += 1;
             let px = &rgba[(y * width + x) * 4..];
             let lum = relative_luminance([px[0], px[1], px[2]]);
-            let (hi, lo) = if lum > tile { (lum, tile) } else { (tile, lum) };
-            let is_hidden = (hi + 0.05) / (lo + 0.05) < MIN_CONTRAST;
-            let on_outline = x == 0
-                || y == 0
-                || clear(x - 1, y)
-                || clear(x + 1, y)
-                || clear(x, y - 1)
-                || clear(x, y + 1);
-            outline += on_outline as usize;
-            hidden_outline += (is_hidden && on_outline) as usize;
+            for (hidden, &tile) in hidden.iter_mut().zip(&tiles) {
+                let (hi, lo) = if lum > tile { (lum, tile) } else { (tile, lum) };
+                *hidden += ((hi + 0.05) / (lo + 0.05) < MIN_CONTRAST) as usize;
+            }
         }
     }
     let visible = width * height - see_through;
-    let share = |part: usize, whole: usize| part as f32 / whole.max(1) as f32;
-    if visible == 0
-        || share(see_through, width * height) < MIN_TRANSPARENT
-        || share(hidden_outline, outline) < MIN_HIDDEN_OUTLINE
-        || share(hidden_outline, visible) < MIN_HIDDEN_EDGE
-    {
-        return None;
+    let needs = hidden.map(|hidden| {
+        visible > 0
+            && share(hidden, outline) >= MIN_HIDDEN_OUTLINE
+            && share(hidden, visible) >= MIN_HIDDEN_EDGE
+    });
+    if needs == [false; 2] {
+        return (None, None);
     }
 
     // Colourful palette entries only; the near-white or near-black fallback
     // for black-and-white logos is grey, which gets the grey fog instead
-    let colors: Vec<[u8; 3]> = logo_palette(rgba, true)
+    let colors: Vec<[u8; 3]> = logo_palette(&rgba, true)
         .into_iter()
         .filter(|&[r, g, b]| rgb_to_hsv(r, g, b).1 >= MIN_SATURATION)
         .collect();
+    let fog = |dark: bool| needs[!dark as usize].then(|| backdrop(&colors, dark));
+    (fog(true), fog(false))
+}
+
+/// `rgba` shrunk to fit [`FOG_JUDGE_SIZE`] (as the browser shrinks its row
+/// logos), or as it is when it already does, with its width. `None` for
+/// an empty image.
+fn fog_judge_copy(rgba: &[u8], width: usize) -> Option<(std::borrow::Cow<'_, [u8]>, usize)> {
+    let height = rgba.len() / 4 / width.max(1);
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let rgba = &rgba[..width * height * 4];
+    let (w, h) = (width as u32, height as u32);
+    if w <= FOG_JUDGE_SIZE && h <= FOG_JUDGE_SIZE {
+        return Some((rgba.into(), width));
+    }
+    let image = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(w, h, rgba)?;
+    // The size `DynamicImage::thumbnail` picks
+    let ratio = f64::min(
+        FOG_JUDGE_SIZE as f64 / w as f64,
+        FOG_JUDGE_SIZE as f64 / h as f64,
+    );
+    let fit = |side: u32| ((side as f64 * ratio).round() as u32).max(1);
+    let small = image::imageops::thumbnail(&image, fit(w), fit(h));
+    Some((small.into_raw().into(), fit(w) as usize))
+}
+
+/// The fog for a logo whose colourful palette is `colors`
+fn backdrop(colors: &[[u8; 3]], dark: bool) -> Backdrop {
     let grey = if dark { FOG_GREY_DARK } else { FOG_GREY_LIGHT };
     let first = colors.first().copied().unwrap_or(grey);
     let second = colors.get(1).copied().unwrap_or(first);
-    Some(if dark {
+    if dark {
         let white = [255; 3];
         Backdrop {
             first: mix(first, white, 0.58),
@@ -322,20 +376,26 @@ pub fn logo_backdrop(rgba: &[u8], width: usize, dark: bool) -> Option<Backdrop> 
             second: mix(second, black, 0.62),
             ground: mix(first, black, 0.72),
         }
-    })
+    }
 }
 
-/// Relative luminance of an sRGB colour (0 black to 1 white), as WCAG
-/// defines it for contrast ratios
-fn relative_luminance(rgb: [u8; 3]) -> f32 {
-    let [r, g, b] = rgb.map(|c| {
-        let c = c as f32 / 255.0;
+/// Each sRGB channel value (0-255) as linear light (0-1), as WCAG defines
+/// it for contrast ratios
+static SRGB_TO_LINEAR: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
+    std::array::from_fn(|i| {
+        let c = i as f32 / 255.0;
         if c <= 0.039_28 {
             c / 12.92
         } else {
             ((c + 0.055) / 1.055).powf(2.4)
         }
-    });
+    })
+});
+
+/// Relative luminance of an sRGB colour (0 black to 1 white), as WCAG
+/// defines it for contrast ratios
+fn relative_luminance(rgb: [u8; 3]) -> f32 {
+    let [r, g, b] = rgb.map(|c| SRGB_TO_LINEAR[c as usize]);
     0.2126 * r + 0.7152 * g + 0.0722 * b
 }
 
@@ -627,6 +687,50 @@ mod tests {
         let img = square_with(|x, y| (44..47).contains(&y) && x % 4 != 0);
         assert!(logo_backdrop(&img, 60, true).is_some());
         assert_eq!(logo_backdrop(&img, 60, false), None);
+    }
+
+    /// `rgba` (`width` wide) blown up `k` times, pixel by pixel
+    fn scaled(rgba: &[u8], width: usize, k: usize) -> Vec<u8> {
+        let height = rgba.len() / 4 / width;
+        (0..width * k * height * k)
+            .flat_map(|i| {
+                let (x, y) = (i % (width * k) / k, i / (width * k) / k);
+                let at = (y * width + x) * 4;
+                [rgba[at], rgba[at + 1], rgba[at + 2], rgba[at + 3]]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_logo_gets_the_same_fog_at_any_size() {
+        // At 240px the lettering is a smaller share of the outline than at
+        // list size; it was judged without a fog there
+        let img = square_with(|x, y| (44..47).contains(&y) && x % 4 != 0);
+        let small = logo_backdrops(&img, 60);
+        assert!(small.0.is_some() && small.1.is_none());
+        let big = scaled(&img, 60, 4);
+        let (on_dark, on_light) = logo_backdrops(&big, 240);
+        assert!(on_dark.is_some(), "the 240px copy needs a fog on dark too");
+        assert_eq!(on_light, None);
+    }
+
+    #[test]
+    fn a_large_opaque_logo_gets_no_fog() {
+        let img = image(&[([17, 17, 17], 600 * 400)]);
+        assert_eq!(logo_backdrops(&img, 600), (None, None));
+    }
+
+    #[test]
+    fn the_linear_light_table_matches_the_formula() {
+        for c in 0..=255u8 {
+            let v = c as f32 / 255.0;
+            let exact = if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            };
+            assert_eq!(SRGB_TO_LINEAR[c as usize], exact);
+        }
     }
 
     #[test]
