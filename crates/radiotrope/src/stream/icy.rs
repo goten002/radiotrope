@@ -11,13 +11,15 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use crossbeam_channel::{bounded, Receiver, Sender};
+use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender};
 use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 
-use crate::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use crate::config::network::{
+    CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, SLEEP_JUMP_SECS, USER_AGENT,
+};
 use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::id3::Id3Scanner;
@@ -426,7 +428,7 @@ impl Connection {
             Ok(response) => Ok(Self {
                 status: response.status(),
                 headers: response.headers().clone(),
-                body: Box::new(response),
+                body: watch_for_sleep(Box::new(response)),
             }),
             // A reply that isn't HTTP. Not a timeout or a refused
             // connection, which another try wouldn't change.
@@ -435,7 +437,7 @@ impl Connection {
                     Ok(reply) => Ok(Self {
                         status: reply.status,
                         headers: reply.headers,
-                        body: Box::new(reply.body),
+                        body: watch_for_sleep(Box::new(reply.body)),
                     }),
                     Err(_) => Err(e),
                 }
@@ -458,6 +460,149 @@ impl Connection {
 impl Read for Connection {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.body.read(buf)
+    }
+}
+
+/// How often a wait for the station's data looks at the clocks
+const SLEEP_CHECK: Duration = Duration::from_secs(1);
+
+/// `body`, watched for the computer going to sleep (Linux only).
+///
+/// Linux's monotonic clock, which the read timeout runs on, stops while
+/// the computer sleeps. After waking, a stream would wait out the whole
+/// [`READ_TIMEOUT_SECS`] on a connection the server dropped long ago. So
+/// the body is read on a thread of its own, and a wait for its data looks
+/// at the clocks every [`SLEEP_CHECK`]: when the wall clock has jumped
+/// ahead of the monotonic one, the computer slept, and the read fails at
+/// once, so the stream reconnects. Elsewhere the read timeout already
+/// counts the sleep (Windows), and the body is read as it is.
+fn watch_for_sleep(body: Box<dyn Read + Send>) -> Box<dyn Read + Send> {
+    if !cfg!(target_os = "linux") {
+        return body;
+    }
+    let mut clocks = SleepWatch::new();
+    match WatchedBody::start(body, move || clocks.slept()) {
+        Ok(watched) => Box::new(watched),
+        Err(body) => body,
+    }
+}
+
+/// Tells from the wall clock and the monotonic one whether the computer
+/// slept since the last look
+struct SleepWatch {
+    monotonic: Instant,
+    wall: SystemTime,
+}
+
+impl SleepWatch {
+    fn new() -> Self {
+        Self {
+            monotonic: Instant::now(),
+            wall: SystemTime::now(),
+        }
+    }
+
+    fn slept(&mut self) -> bool {
+        let (monotonic, wall) = (Instant::now(), SystemTime::now());
+        let slept = clocks_jumped(
+            monotonic.duration_since(self.monotonic),
+            wall.duration_since(self.wall).ok(),
+        );
+        self.monotonic = monotonic;
+        self.wall = wall;
+        slept
+    }
+}
+
+/// Whether the wall clock moved by more than the monotonic clock plus
+/// [`SLEEP_JUMP_SECS`]: time the monotonic clock didn't count, as while
+/// the computer slept. A wall clock set back counts as no sleep.
+fn clocks_jumped(monotonic: Duration, wall: Option<Duration>) -> bool {
+    wall.is_some_and(|wall| wall > monotonic + Duration::from_secs(SLEEP_JUMP_SECS))
+}
+
+/// A connection's body read on a thread of its own (see [`watch_for_sleep`])
+struct WatchedBody<F> {
+    data: Receiver<io::Result<Vec<u8>>>,
+    chunk: Vec<u8>,
+    pos: usize,
+    /// Whether the computer slept since the last call
+    slept: F,
+}
+
+impl<F: FnMut() -> bool> WatchedBody<F> {
+    /// Start reading `body`, or hand it back if no thread could be started
+    fn start(
+        body: Box<dyn Read + Send>,
+        slept: F,
+    ) -> std::result::Result<Self, Box<dyn Read + Send>> {
+        let (tx, data) = bounded::<io::Result<Vec<u8>>>(4);
+        // The body moves to the thread only once it has started
+        let (start_tx, start_rx) = bounded::<Box<dyn Read + Send>>(1);
+        let spawned = thread::Builder::new()
+            .name("icy-connection".to_string())
+            .spawn(move || {
+                let Ok(mut body) = start_rx.recv() else {
+                    return;
+                };
+                let mut buf = vec![0u8; 8192];
+                loop {
+                    let read = match body.read(&mut buf) {
+                        // The end: dropping the sender says so
+                        Ok(0) => return,
+                        Ok(n) => Ok(buf[..n].to_vec()),
+                        Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(e) => Err(e),
+                    };
+                    let failed = read.is_err();
+                    // Nobody reads any more (the stream moved on): stop,
+                    // and drop the connection
+                    if tx.send(read).is_err() || failed {
+                        return;
+                    }
+                }
+            });
+        if spawned.is_err() {
+            return Err(body);
+        }
+        start_tx.send(body).map_err(|e| e.into_inner())?;
+        Ok(Self {
+            data,
+            chunk: Vec::new(),
+            pos: 0,
+            slept,
+        })
+    }
+}
+
+impl<F: FnMut() -> bool> Read for WatchedBody<F> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.pos < self.chunk.len() {
+                let n = buf.len().min(self.chunk.len() - self.pos);
+                buf[..n].copy_from_slice(&self.chunk[self.pos..self.pos + n]);
+                self.pos += n;
+                return Ok(n);
+            }
+            if (self.slept)() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the computer was asleep",
+                ));
+            }
+            match self.data.recv_timeout(SLEEP_CHECK) {
+                Ok(Ok(chunk)) => {
+                    self.chunk = chunk;
+                    self.pos = 0;
+                }
+                Ok(Err(e)) => return Err(e),
+                Err(RecvTimeoutError::Disconnected) => return Ok(0),
+                Err(RecvTimeoutError::Timeout) => {}
+            }
+        }
     }
 }
 
@@ -909,6 +1054,77 @@ mod tests {
             assert!(got_audio == audio, "audio changed (metaint {metaint})");
             assert_eq!(got_titles, titles, "metaint {metaint}");
         }
+    }
+
+    // --- Waking from sleep ---
+
+    #[test]
+    fn a_wall_clock_far_ahead_of_the_monotonic_one_is_a_sleep() {
+        let secs = Duration::from_secs;
+        assert!(!clocks_jumped(secs(1), Some(secs(1))));
+        // A small step of the wall clock (NTP) is not
+        assert!(!clocks_jumped(secs(1), Some(secs(1 + SLEEP_JUMP_SECS))));
+        assert!(clocks_jumped(secs(1), Some(secs(600))));
+        // A wall clock set back is no sleep
+        assert!(!clocks_jumped(secs(1), None));
+        // Both counted a long pause the same: no sleep
+        assert!(!clocks_jumped(secs(3600), Some(secs(3600))));
+    }
+
+    /// A body that sends `first`, then nothing ever again (a connection
+    /// the server dropped while the computer slept)
+    struct Silent(Option<Vec<u8>>, Receiver<()>);
+
+    impl Read for Silent {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            if let Some(first) = self.0.take() {
+                buf[..first.len()].copy_from_slice(&first);
+                return Ok(first.len());
+            }
+            // Until the test ends
+            let _ = self.1.recv();
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_wait_for_data_ends_soon_after_a_sleep() {
+        let (_hold, never) = bounded::<()>(0);
+        let asleep = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let check = asleep.clone();
+        let mut body =
+            WatchedBody::start(Box::new(Silent(Some(b"abc".to_vec()), never)), move || {
+                check.load(Ordering::SeqCst)
+            })
+            .unwrap_or_else(|_| panic!("the reader thread starts"));
+        let mut buf = [0u8; 16];
+        assert_eq!(body.read(&mut buf).unwrap(), 3);
+        assert_eq!(&buf[..3], b"abc");
+
+        // The computer sleeps while the read waits: within a check, the
+        // read fails instead of waiting out the read timeout
+        let woke = Instant::now();
+        let sleeper = {
+            let asleep = asleep.clone();
+            thread::spawn(move || {
+                thread::sleep(Duration::from_millis(300));
+                asleep.store(true, Ordering::SeqCst);
+            })
+        };
+        let err = body.read(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+        assert!(woke.elapsed() < SLEEP_CHECK * 2 + Duration::from_millis(300));
+        sleeper.join().unwrap();
+    }
+
+    #[test]
+    fn a_watched_body_passes_everything_through() {
+        let data: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut body = WatchedBody::start(Box::new(std::io::Cursor::new(data.clone())), || false)
+            .unwrap_or_else(|_| panic!("the reader thread starts"));
+        let mut read = Vec::new();
+        body.read_to_end(&mut read).unwrap();
+        assert_eq!(read, data);
     }
 
     // --- IcyHeaders ---

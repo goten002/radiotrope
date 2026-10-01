@@ -45,7 +45,8 @@ pub struct EngineConfig {
     /// Where the audio goes
     pub output: EngineOutput,
     /// How often the engine checks on playback: end of stream, stats,
-    /// buffering, health, probe timeout
+    /// buffering, health, probe timeout. At least [`MIN_TICK`]: a shorter
+    /// one is taken as that.
     pub tick: Duration,
     /// How long the engine waits to try again when no output device
     /// opens, and at most how often it replaces one that keeps failing
@@ -88,6 +89,10 @@ impl Default for EngineConfig {
         }
     }
 }
+
+/// The shortest [`EngineConfig::tick`]. A zero tick would leave no time to
+/// wait for commands: the loop would spin, and never see `Shutdown`.
+pub const MIN_TICK: Duration = Duration::from_millis(1);
 
 /// Where an [`AudioEngine`] plays
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -485,7 +490,8 @@ impl AudioEngine {
         self.send(AudioCommand::Stop);
     }
 
-    /// Pause playback
+    /// Pause playback. A station still connecting starts paused: `Playing`
+    /// then `Paused` follow once it is ready.
     pub fn pause(&self) {
         self.send(AudioCommand::Pause);
     }
@@ -566,6 +572,9 @@ impl AudioEngine {
         let _ = self.cmd_tx.send(AudioCommand::Shutdown);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
+            // Nothing more can reach a recording: finish its file now,
+            // even while a clone of the recorder is still held elsewhere
+            let _ = self.recorder.stop();
         }
     }
 
@@ -638,7 +647,13 @@ impl AudioEngine {
         let mut playing_since = Instant::now();
         let mut playing_live = false;
 
-        let mut next_tick = Instant::now() + config.tick;
+        // Paused while still connecting: the station starts paused
+        let mut start_paused = false;
+        // The playing station's codec name, which can change as it plays
+        let mut codec_label: Option<Arc<Mutex<String>>> = None;
+
+        let tick = config.tick.max(MIN_TICK);
+        let mut next_tick = Instant::now() + tick;
 
         loop {
             let probe_rx = pending_probe.as_ref().map(|p| &p.probe_rx);
@@ -672,6 +687,7 @@ impl AudioEngine {
                         health_monitor = None;
                         stream_error_slot = None;
                         current_decoder_stats = None;
+                        codec_label = None;
                         current_bytes_received = None;
                         current_segments_downloaded = None;
                         current_buffer_status = None;
@@ -684,6 +700,7 @@ impl AudioEngine {
                         }
                         // From here on, events are about the new station
                         events.stream = Some(id);
+                        start_paused = false;
                         // Drop old producer resources before creating new ones
                         drop(analysis_active.take());
                         drop(stream_cancel.take());
@@ -772,6 +789,7 @@ impl AudioEngine {
                         health_monitor = None;
                         stream_error_slot = None;
                         current_decoder_stats = None;
+                        codec_label = None;
                         current_bytes_received = None;
                         current_segments_downloaded = None;
                         current_buffer_status = None;
@@ -787,22 +805,32 @@ impl AudioEngine {
                             events.send(AudioEvent::Stopped);
                         }
                         events.stream = None;
+                        start_paused = false;
                     }
                     AudioCommand::Pause => {
                         if state == PlaybackState::Playing {
                             sink.pause();
                             state = PlaybackState::Paused;
                             events.send(AudioEvent::Paused);
+                        } else if pending_probe.is_some() {
+                            // Still connecting: it starts paused
+                            start_paused = true;
                         }
                     }
                     AudioCommand::Resume => {
                         if state == PlaybackState::Paused {
                             sink.play();
                             state = PlaybackState::Playing;
+                            // No samples flowed while paused
+                            if let Some(ref mut monitor) = health_monitor {
+                                monitor.reset_stall_timer();
+                            }
                             events.send(AudioEvent::Resumed);
                             if waiting_for_output {
                                 events.send(AudioEvent::OutputLost);
                             }
+                        } else if pending_probe.is_some() {
+                            start_paused = false;
                         }
                     }
                     // NaN would survive the clamp and silence every later station
@@ -846,7 +874,7 @@ impl AudioEngine {
                     }
                 },
                 Wake::Tick => {
-                    next_tick = Instant::now() + config.tick;
+                    next_tick = Instant::now() + tick;
 
                     // The output device went away (unplugged, disabled, or
                     // the sound server restarted): carry on with whichever
@@ -956,6 +984,7 @@ impl AudioEngine {
 
                                 let mut codec_info = source.codec_info();
                                 codec_info.bitrate = p.bitrate;
+                                let label = source.codec_label();
                                 let error_slot = source.error_slot();
                                 let dec_stats = source.decoder_stats();
                                 let active_flag = Arc::new(AtomicBool::new(true));
@@ -993,12 +1022,19 @@ impl AudioEngine {
                                 };
                                 // A new player for each station: appending to
                                 // a stopped player waits until its queue has
-                                // played out, which a dead device never does
+                                // played out, which a dead device never does.
+                                // Its volume is set before it gets the audio,
+                                // so not a moment plays at full volume.
                                 sink = new_player(stream.as_ref());
+                                sink.set_volume(volume_curve(current_volume));
+                                if start_paused {
+                                    sink.pause();
+                                }
                                 sink.append(feed.output());
                                 playing_source = Some(feed);
-                                sink.set_volume(volume_curve(current_volume));
-                                sink.play();
+                                if !start_paused {
+                                    sink.play();
+                                }
                                 state = PlaybackState::Playing;
                                 playing_since = Instant::now();
                                 playing_live = p.stream_type.is_some();
@@ -1008,6 +1044,7 @@ impl AudioEngine {
                                 ));
                                 stream_error_slot = Some(error_slot);
                                 current_decoder_stats = Some(dec_stats);
+                                codec_label = Some(label);
                                 current_bytes_received = p.bytes_received;
                                 current_segments_downloaded = p.segments_downloaded;
                                 current_buffer_status = Some(p.buf_status);
@@ -1030,6 +1067,11 @@ impl AudioEngine {
                                 }
 
                                 events.send(AudioEvent::Playing(codec_info));
+                                // Paused while it connected
+                                if std::mem::take(&mut start_paused) {
+                                    state = PlaybackState::Paused;
+                                    events.send(AudioEvent::Paused);
+                                }
                                 if waiting_for_output {
                                     events.send(AudioEvent::OutputLost);
                                 }
@@ -1089,6 +1131,7 @@ impl AudioEngine {
                         }
                         stream_error_slot = None;
                         current_decoder_stats = None;
+                        codec_label = None;
                         current_bytes_received = None;
                         current_segments_downloaded = None;
                         current_buffer_status = None;
@@ -1242,6 +1285,24 @@ impl AudioEngine {
                         }
                     }
 
+                    // The codec name can change as the station plays (AAC
+                    // and AAC+, a chained Ogg stream's next song)
+                    if let Some(name) = codec_label
+                        .as_ref()
+                        .and_then(|label| label.lock().ok().map(|name| name.clone()))
+                    {
+                        let changed = shared_stats.lock().ok().and_then(|mut stats| {
+                            let info = stats.codec_info.as_mut()?;
+                            (info.codec_name != name).then(|| {
+                                info.codec_name = name;
+                                info.clone()
+                            })
+                        });
+                        if let Some(info) = changed {
+                            events.send(AudioEvent::CodecChanged(info));
+                        }
+                    }
+
                     // Health monitoring: check sample flow
                     // Skip during active buffering — sample_count is frozen while consumer
                     // blocks symphonia, so stall detection would give false positives.
@@ -1277,6 +1338,7 @@ impl AudioEngine {
                                         health_monitor = None;
                                         stream_error_slot = None;
                                         current_decoder_stats = None;
+                                        codec_label = None;
                                         current_bytes_received = None;
                                         current_segments_downloaded = None;
                                         current_buffer_status = None;
@@ -4656,5 +4718,160 @@ mod tests {
         drop(s);
 
         engine.shutdown();
+    }
+
+    // === Lifecycle edge cases ===
+
+    /// `inner`, with its first read held back `delay` (a station slow to
+    /// answer)
+    struct SlowStart<R> {
+        inner: R,
+        delay: Option<Duration>,
+    }
+
+    impl<R: std::io::Read> std::io::Read for SlowStart<R> {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if let Some(delay) = self.delay.take() {
+                thread::sleep(delay);
+            }
+            self.inner.read(buf)
+        }
+    }
+
+    impl<R: std::io::Seek> std::io::Seek for SlowStart<R> {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn a_pause_while_connecting_starts_the_station_paused() {
+        let engine = test_engine();
+        engine.play(
+            Box::new(SlowStart {
+                inner: EndlessWav::new(),
+                delay: Some(Duration::from_millis(300)),
+            }),
+            None,
+            None,
+        );
+        engine.pause();
+        let mut events = Vec::new();
+        let paused = wait_until(&engine, &mut events, Duration::from_secs(5), |events| {
+            events.iter().any(|e| matches!(e, AudioEvent::Paused))
+        });
+        assert!(paused, "never paused: {events:?}");
+        assert!(
+            matches!(events[..], [AudioEvent::Playing(_), AudioEvent::Paused]),
+            "{events:?}"
+        );
+        // Nothing plays: once the decoder is far enough ahead, the count
+        // stands still
+        thread::sleep(Duration::from_millis(300));
+        let before = sample_count(&engine);
+        thread::sleep(Duration::from_millis(300));
+        assert_eq!(sample_count(&engine), before, "it played while paused");
+
+        engine.resume();
+        let resumed = wait_until(&engine, &mut events, Duration::from_secs(5), |events| {
+            events.iter().any(|e| matches!(e, AudioEvent::Resumed))
+        });
+        assert!(resumed, "{events:?}");
+        thread::sleep(Duration::from_millis(300));
+        assert!(
+            sample_count(&engine) > before,
+            "it didn't play once resumed"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_resume_while_connecting_undoes_the_pause() {
+        let engine = test_engine();
+        engine.play(
+            Box::new(SlowStart {
+                inner: EndlessWav::new(),
+                delay: Some(Duration::from_millis(300)),
+            }),
+            None,
+            None,
+        );
+        engine.pause();
+        engine.resume();
+        let mut events = Vec::new();
+        assert!(wait_until(
+            &engine,
+            &mut events,
+            Duration::from_secs(5),
+            |events| { events.iter().any(|e| matches!(e, AudioEvent::Playing(_))) }
+        ));
+        thread::sleep(Duration::from_millis(200));
+        while let Some(event) = engine.next_event() {
+            events.push(event);
+        }
+        assert!(
+            !events.iter().any(|e| matches!(e, AudioEvent::Paused)),
+            "{events:?}"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_zero_tick_neither_spins_nor_keeps_the_engine_from_shutting_down() {
+        let (done_tx, done_rx) = bounded(1);
+        thread::spawn(move || {
+            let engine = AudioEngine::with_config(EngineConfig {
+                tick: Duration::ZERO,
+                ..test_config()
+            })
+            .unwrap();
+            engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+            let playing = wait_for_event(&engine, 3000);
+            drop(engine);
+            let _ = done_tx.send(playing);
+        });
+        let playing = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("the engine didn't shut down");
+        assert!(
+            matches!(playing, Some(AudioEvent::Playing(_))),
+            "{playing:?}"
+        );
+    }
+
+    #[test]
+    fn dropping_the_engine_finishes_a_recording_held_elsewhere() {
+        use super::super::recording::{RecordingFormat, RecordingOptions, RecordingTags};
+        let dir =
+            std::env::temp_dir().join(format!("radiotrope-engine-rec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("held.wav");
+
+        let engine = test_engine();
+        engine.play(EndlessWav::new(), None, None);
+        assert!(matches!(
+            wait_for_event(&engine, 3000),
+            Some(AudioEvent::Playing(_))
+        ));
+        // The app keeps its own handle to the recorder
+        let recorder = engine.recorder();
+        recorder
+            .start(RecordingOptions {
+                path: path.clone(),
+                format: RecordingFormat::Wav,
+                bitrate_kbps: 0,
+                tap: TapPoint::BeforeEq,
+                tags: RecordingTags::default(),
+            })
+            .unwrap();
+        thread::sleep(Duration::from_millis(300));
+        drop(engine);
+
+        assert!(!recorder.is_recording(), "still recording with no engine");
+        let file = std::fs::read(&path).unwrap();
+        let riff = u32::from_le_bytes(file[4..8].try_into().unwrap()) as usize;
+        assert_eq!(riff, file.len() - 8, "the file wasn't finished");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

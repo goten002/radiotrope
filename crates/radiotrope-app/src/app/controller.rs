@@ -518,6 +518,10 @@ impl AppController {
                 state.is_error = false;
                 self.stream_failed = false;
             }
+            // AAC and AAC+, or a chained Ogg stream's next codec
+            AudioEvent::CodecChanged(codec_info) => {
+                state.codec_name = codec_info.codec_name;
+            }
             AudioEvent::Stopped => {
                 state.playback = PlaybackState::Stopped;
                 // A stream that failed stops with its error still showing
@@ -1040,6 +1044,24 @@ mod tests {
             "{}",
             state.status_text
         );
+    }
+
+    #[test]
+    fn a_codec_change_renames_the_codec_and_keeps_playing() {
+        let (mut controller, state) = controller_playing();
+        let info = radiotrope::audio::CodecInfo {
+            codec_name: "AAC+".into(),
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: None,
+            bitrate: None,
+        };
+        controller.handle_engine_event(on(1, AudioEvent::CodecChanged(info)));
+
+        let state = state.lock().unwrap();
+        assert_eq!(state.codec_name, "AAC+");
+        assert_eq!(state.playback, PlaybackState::Playing);
+        assert_eq!(state.status_text, "Playing");
     }
 
     #[test]

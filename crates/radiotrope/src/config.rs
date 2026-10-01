@@ -7,6 +7,11 @@ pub mod audio {
 
     /// Number of frequency bands in spectrum display
     pub const SPECTRUM_BANDS: usize = 16;
+
+    /// Audio played without anyone showing the meters and spectrum after
+    /// which they are no longer worked out (seconds; see `AudioAnalysis`)
+    pub const UNSHOWN_GRACE_SECS: f32 = 2.0;
+
     /// Highest frequency the spectrum bands cover (Hz)
     pub const SPECTRUM_MAX_HZ: f32 = 16_000.0;
     /// Extra gain for the top band, scaled down linearly to none at the bottom
@@ -60,6 +65,11 @@ pub mod network {
 
     /// Read timeout in seconds
     pub const READ_TIMEOUT_SECS: u64 = 30;
+
+    /// How far the wall clock may run ahead of the monotonic one before a
+    /// playing stream takes it that the computer slept, and reconnects
+    /// (seconds; Linux, see `icy.rs`)
+    pub const SLEEP_JUMP_SECS: u64 = 5;
 
     /// Maximum playlist resolution depth
     pub const MAX_PLAYLIST_DEPTH: usize = 5;

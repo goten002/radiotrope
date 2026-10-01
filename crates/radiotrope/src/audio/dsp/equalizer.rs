@@ -4,6 +4,7 @@
 //! using shared, hot-swappable parameters (`SharedEqParams`).
 
 use std::num::NonZero;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -20,12 +21,18 @@ use crate::config::eq::*;
 pub type SharedEqParams = Arc<Mutex<EqParams>>;
 
 /// Equalizer parameters: per-band gains, preamp, and enable flag.
+///
+/// They change only through the setters, which tell every [`EqSource`]
+/// playing with them: each looks at a change counter beside the lock for
+/// every sample, and takes the lock only when it moved.
 pub struct EqParams {
-    pub gains_db: [f32; NUM_BANDS],
-    pub preamp_db: f32,
-    pub enabled: bool,
-    pub preset_name: Option<String>,
-    dirty: bool,
+    gains_db: [f32; NUM_BANDS],
+    preamp_db: f32,
+    enabled: bool,
+    preset_name: Option<String>,
+    /// Counts the changes; shared with the sources, which read it
+    /// without the lock
+    changes: Arc<AtomicU64>,
 }
 
 impl Default for EqParams {
@@ -35,18 +42,59 @@ impl Default for EqParams {
             preamp_db: 0.0,
             enabled: false,
             preset_name: Some("Flat".to_string()),
-            dirty: true,
+            changes: Arc::new(AtomicU64::new(0)),
         }
     }
 }
 
+/// `db` with a negative zero made positive, so it isn't saved or shown
+/// as "-0 dB"
+fn no_negative_zero(db: f32) -> f32 {
+    if db == 0.0 {
+        0.0
+    } else {
+        db
+    }
+}
+
 impl EqParams {
+    /// The band gains, in dB
+    pub fn gains_db(&self) -> [f32; NUM_BANDS] {
+        self.gains_db
+    }
+
+    /// The preamp gain, in dB
+    pub fn preamp_db(&self) -> f32 {
+        self.preamp_db
+    }
+
+    /// Whether the equalizer is on
+    pub fn enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The preset the gains came from, if they still match one
+    pub fn preset_name(&self) -> Option<&str> {
+        self.preset_name.as_deref()
+    }
+
+    /// How many times the parameters have changed. A reader that saw the
+    /// same number last time has nothing new to read.
+    pub fn generation(&self) -> u64 {
+        self.changes.load(Ordering::Acquire)
+    }
+
+    /// Tell the sources about a change (under the lock, after it is made)
+    fn changed(&mut self) {
+        self.changes.fetch_add(1, Ordering::Release);
+    }
+
     /// Set a single band gain (clamped to MIN/MAX; NaN and infinities are ignored).
     pub fn set_band(&mut self, band: usize, gain_db: f32) {
         if band < NUM_BANDS && gain_db.is_finite() {
-            self.gains_db[band] = gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+            self.gains_db[band] = no_negative_zero(gain_db.clamp(MIN_GAIN_DB, MAX_GAIN_DB));
             self.preset_name = None;
-            self.dirty = true;
+            self.changed();
         }
     }
 
@@ -55,8 +103,8 @@ impl EqParams {
         if !db.is_finite() {
             return;
         }
-        self.preamp_db = db.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
-        self.dirty = true;
+        self.preamp_db = no_negative_zero(db.clamp(MIN_GAIN_DB, MAX_GAIN_DB));
+        self.changed();
     }
 
     /// Set all band gains at once, optionally naming a preset. Ignored as a
@@ -66,10 +114,10 @@ impl EqParams {
             return;
         }
         for (i, &g) in gains.iter().enumerate() {
-            self.gains_db[i] = g.clamp(MIN_GAIN_DB, MAX_GAIN_DB);
+            self.gains_db[i] = no_negative_zero(g.clamp(MIN_GAIN_DB, MAX_GAIN_DB));
         }
         self.preset_name = preset_name;
-        self.dirty = true;
+        self.changed();
     }
 
     /// Apply a named preset, with the preamp that goes with it.
@@ -77,23 +125,13 @@ impl EqParams {
         self.gains_db = preset.gains;
         self.preamp_db = preset.preamp_db();
         self.preset_name = Some(preset.name.to_string());
-        self.dirty = true;
+        self.changed();
     }
 
     /// Enable or disable the equalizer.
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
-        self.dirty = true;
-    }
-
-    /// Whether the parameters have changed since last acknowledged.
-    pub fn is_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    /// Clear the dirty flag.
-    pub fn clear_dirty(&mut self) {
-        self.dirty = false;
+        self.changed();
     }
 
     /// Create a new `SharedEqParams` with default (flat) settings.
@@ -133,7 +171,8 @@ impl EqPreset {
     /// only cuts.
     pub fn preamp_db(&self) -> f32 {
         let boost = peak_boost_db(&self.gains, PREAMP_SAMPLE_RATE);
-        -(boost * 2.0).ceil() / 2.0
+        // A cut-only preset's 0 would come out as -0
+        no_negative_zero(-(boost * 2.0).ceil() / 2.0)
     }
 }
 
@@ -324,6 +363,10 @@ impl Limiter {
 pub struct EqSource<S> {
     inner: S,
     params: SharedEqParams,
+    /// The parameters' change counter, read for every sample
+    changes: Arc<AtomicU64>,
+    /// The count the filters were last worked out at
+    seen: u64,
     /// One set of biquad filters per channel.
     filters: Vec<[DirectForm1<f32>; NUM_BANDS]>,
     preamp_linear: f32,
@@ -349,9 +392,16 @@ where
             filters.push(Self::make_default_filters());
         }
 
+        let changes = params
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .changes
+            .clone();
         let mut s = Self {
             inner: source,
             params,
+            changes,
+            seen: 0,
             filters,
             preamp_linear: 1.0,
             enabled: true,
@@ -393,6 +443,8 @@ where
     /// Re-read shared params and rebuild filter coefficients.
     fn recompute_coefficients(&mut self) {
         let params = self.params.lock().unwrap_or_else(|e| e.into_inner());
+        // Under the lock: a change after this is seen next time
+        self.seen = params.generation();
         self.enabled = params.enabled;
         self.preamp_linear = 10.0_f32.powf(params.preamp_db / 20.0);
 
@@ -432,14 +484,9 @@ where
             }
         }
 
-        // Check dirty flag (~25 ns uncontended lock)
-        {
-            let mut params = self.params.lock().unwrap_or_else(|e| e.into_inner());
-            if params.is_dirty() {
-                params.clear_dirty();
-                drop(params);
-                self.recompute_coefficients();
-            }
+        // The parameters changed: no lock unless they did
+        if self.changes.load(Ordering::Acquire) != self.seen {
+            self.recompute_coefficients();
         }
 
         if !self.enabled {
@@ -526,25 +573,23 @@ mod tests {
         assert_eq!(p.preamp_db, 0.0);
         assert!(!p.enabled);
         assert_eq!(p.preset_name.as_deref(), Some("Flat"));
-        assert!(p.is_dirty());
+        assert_eq!(p.generation(), 0);
     }
 
     #[test]
-    fn set_band_clamps_and_dirties() {
+    fn set_band_clamps_and_counts_a_change() {
         let mut p = EqParams::default();
-        p.clear_dirty();
         p.set_band(0, 20.0);
-        assert_eq!(p.gains_db[0], MAX_GAIN_DB);
-        assert!(p.is_dirty());
-        assert!(p.preset_name.is_none());
+        assert_eq!(p.gains_db()[0], MAX_GAIN_DB);
+        assert_eq!(p.generation(), 1);
+        assert!(p.preset_name().is_none());
     }
 
     #[test]
     fn set_band_out_of_range_is_noop() {
         let mut p = EqParams::default();
-        p.clear_dirty();
         p.set_band(99, 5.0);
-        assert!(!p.is_dirty());
+        assert_eq!(p.generation(), 0);
     }
 
     #[test]
@@ -616,12 +661,11 @@ mod tests {
     }
 
     #[test]
-    fn set_enabled_dirties() {
+    fn set_enabled_counts_a_change() {
         let mut p = EqParams::default();
-        p.clear_dirty();
         p.set_enabled(true);
-        assert!(p.enabled);
-        assert!(p.is_dirty());
+        assert!(p.enabled());
+        assert_eq!(p.generation(), 1);
     }
 
     #[test]
@@ -827,25 +871,68 @@ mod tests {
     }
 
     #[test]
-    fn dirty_flag_lifecycle() {
+    fn every_setter_counts_a_change() {
         let mut p = EqParams::default();
-        assert!(p.is_dirty()); // dirty on creation
-        p.clear_dirty();
-        assert!(!p.is_dirty());
+        let mut seen = p.generation();
+        let mut changed = |p: &EqParams| {
+            let moved = p.generation() != seen;
+            seen = p.generation();
+            moved
+        };
+        assert!(!changed(&p));
         p.set_band(0, 1.0);
-        assert!(p.is_dirty());
-        p.clear_dirty();
+        assert!(changed(&p));
         p.set_preamp(1.0);
-        assert!(p.is_dirty());
-        p.clear_dirty();
+        assert!(changed(&p));
         p.set_enabled(false);
-        assert!(p.is_dirty());
-        p.clear_dirty();
+        assert!(changed(&p));
         p.set_gains([0.0; NUM_BANDS], None);
-        assert!(p.is_dirty());
-        p.clear_dirty();
+        assert!(changed(&p));
         p.apply_preset(&PRESETS[0]);
-        assert!(p.is_dirty());
+        assert!(changed(&p));
+        // Refused values change nothing
+        p.set_preamp(f32::NAN);
+        p.set_band(0, f32::INFINITY);
+        assert!(!changed(&p));
+    }
+
+    #[test]
+    fn no_preamp_or_gain_is_negative_zero() {
+        // A preset that only cuts, and a slider dragged to 0 from below
+        for preset in ["Flat", "Bass Cut", "Soften Highs"] {
+            let preamp = find_preset(preset).unwrap().preamp_db();
+            assert!(preamp.is_sign_positive(), "{preset}: {preamp}");
+        }
+        let mut p = EqParams::default();
+        p.set_preamp(-0.0);
+        p.set_band(3, -0.0);
+        p.set_gains([-0.0; NUM_BANDS], None);
+        assert!(p.preamp_db().is_sign_positive());
+        assert!(p.gains_db().iter().all(|g| g.is_sign_positive()));
+    }
+
+    #[test]
+    fn two_sources_on_the_same_parameters_both_follow_a_change() {
+        let params = EqParams::new_shared();
+        let make = || {
+            let samples = vec![0.5f32; 64];
+            EqSource::new(
+                SamplesBuffer::new(nz16(1), nz32(44100), samples),
+                params.clone(),
+            )
+        };
+        let (mut a, mut b) = (make(), make());
+        assert_eq!(a.next(), Some(0.5), "off: untouched");
+        assert_eq!(b.next(), Some(0.5));
+        {
+            let mut p = params.lock().unwrap();
+            p.set_enabled(true);
+            p.set_preamp(-6.0);
+        }
+        // The first source to see the change must not hide it from the other
+        let quieter = |s: Option<f32>| s.is_some_and(|s| (s - 0.25).abs() < 0.01);
+        assert!(quieter(a.next()));
+        assert!(quieter(b.next()));
     }
 
     #[test]
