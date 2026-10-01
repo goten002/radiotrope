@@ -2354,27 +2354,30 @@ fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::T
         return timer;
     };
     let ui_weak = ui.as_weak();
-    let mut shown: Option<Vec<mcp::presence::AgentInfo>> = None;
+    // Compared as shown, so "4 min ago" redraws once a minute, not every tick
+    let mut shown: Option<Vec<AgentRow>> = None;
     timer.start(
         slint::TimerMode::Repeated,
         radiotrope_app::config::ui::AGENTS_REFRESH,
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let agents = presence.agents();
-            if shown.as_ref() == Some(&agents) {
-                return;
-            }
-            let rows: Vec<AgentRow> = agents
+            let rows: Vec<AgentRow> = presence
+                .agents()
                 .iter()
                 .map(|a| AgentRow {
                     name: a.name().into(),
                     place: a.place_label().into(),
                     network: a.is_network(),
+                    seen: a.seen_label().into(),
+                    connected: a.is_connected(),
                 })
                 .collect();
-            ui.set_agent_count(agents.len() as i32);
-            ui.set_agent_list(std::rc::Rc::new(slint::VecModel::from(rows)).into());
-            shown = Some(agents);
+            if shown.as_ref() == Some(&rows) {
+                return;
+            }
+            ui.set_agent_count(rows.len() as i32);
+            ui.set_agent_list(std::rc::Rc::new(slint::VecModel::from(rows.clone())).into());
+            shown = Some(rows);
         },
     );
     timer

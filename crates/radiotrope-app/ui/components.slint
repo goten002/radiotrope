@@ -721,10 +721,15 @@ export struct AgentRow {
     place: string,
     // Over the network (an agent on this computer may use it too)
     network: bool,
+    // "connected", or when a network agent without an open connection
+    // last called: "just now", "4 min ago"
+    seen: string,
+    connected: bool,
 }
 
 // The agents chip's list, in the same style as the other hover bubbles:
-// a caption, then one row per agent with where it calls from
+// a caption, then one row per agent with where it calls from and whether
+// it is connected or when it last called
 export component AgentsBubble inherits Rectangle {
     in property <[AgentRow]> agents;
 
@@ -764,7 +769,7 @@ export component AgentsBubble inherits Rectangle {
                         width: 13px;
                         height: 13px;
                         source: agent.network ? @image-url("icons/network-wired.svg") : @image-url("icons/desktop.svg");
-                        colorize: Theme.accent-text;
+                        colorize: agent.connected ? Theme.accent-text : Theme.text-tertiary;
                     }
                 }
                 Text {
@@ -778,6 +783,14 @@ export component AgentsBubble inherits Rectangle {
                     min-width: self.preferred-width;
                     text: agent.place;
                     color: Theme.text-secondary;
+                    font-size: Theme.font-sm;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+                Text {
+                    min-width: self.preferred-width;
+                    text: agent.seen;
+                    color: agent.connected ? Theme.accent-text : Theme.text-tertiary;
                     font-size: Theme.font-sm;
                     horizontal-alignment: right;
                     vertical-alignment: center;

@@ -24,7 +24,7 @@ use radiotrope_app::data::settings::Settings;
 use radiotrope_app::data::types::{url_to_id, Favorite, FavoriteSort, Station};
 use radiotrope_app::providers::{CategoryType, ProviderRegistry, SearchOrder, StationFilter};
 
-use super::presence::{Place, Presence, RemoteIp};
+use super::presence::{NetworkAgent, Place, Presence};
 use crate::app::state::{AppCommand, AppSnapshot};
 
 /// Default number of results returned by search_stations
@@ -1117,14 +1117,14 @@ impl RadioTools {
 
     /// Put the agent's name on the agents chip's list
     pub(super) fn note_agent(&self, name: Option<String>, extensions: &rmcp::model::Extensions) {
-        let place = self.place.or_else(|| {
+        let place = self.place.clone().or_else(|| {
             extensions
                 .get::<http::request::Parts>()
-                .and_then(|parts| parts.extensions.get::<RemoteIp>())
-                .map(|ip| Place::Network(ip.0))
+                .and_then(|parts| parts.extensions.get::<NetworkAgent>())
+                .map(|agent| Place::Network(agent.0.clone()))
         });
         if let (Some(place), Some(name)) = (place, name) {
-            self.presence.set_name(place, &name);
+            self.presence.set_name(&place, &name);
         }
     }
 
