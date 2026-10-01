@@ -249,132 +249,160 @@ export component App inherits Window {
     in-out property <string> stat-decode-errors;
     in-out property <string> stat-underruns;
 
-    VerticalLayout {
-        // Header: menu bar and playback panel on one background, with the
-        // soft accent glow from the left running through both
-        Rectangle {
-            background: Theme.panel;
-
-            Rectangle {
-                visible: Theme.panel-gradient;
-                background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
+    // Shortcuts in the main window: Space plays or stops, Ctrl+F searches
+    // stations, M mutes. Keys reach it only when the focused control
+    // doesn't use them (text fields keep theirs), and dialogs sit outside
+    // it, so it is quiet while one is open.
+    forward-focus: shortcuts;
+    shortcuts := FocusScope {
+        // Not a Tab stop itself: Tab goes round the controls only
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                if event.modifiers.control && !event.modifiers.alt && (event.text == "f" || event.text == "F") {
+                    menu-bar.open-station-search();
+                    return accept;
+                }
+                return reject;
             }
+            if event.text == Key.Space {
+                controls.play-or-stop();
+                return accept;
+            }
+            if event.text == "m" || event.text == "M" {
+                root.mute-clicked();
+                return accept;
+            }
+            return reject;
+        }
 
-            VerticalLayout {
-            menu-bar := MenuBar {
-                show-station-stats <=> root.show-station-stats;
-                show-visualizer <=> root.show-visualizer;
-                custom-frame: root.custom-frame;
-                maximized <=> root.maximized;
-                always-on-top <=> root.keep-on-top;
-                minimize => { root.minimize-window(); }
-                show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
-                close-window => { root.close(); }
-                toggle-custom-frame => { root.switch-title-bar(!root.custom-frame); }
-                open-wifi-settings => {
-                    root.show-wifi-settings = true;
-                    root.wifi-scan-requested();
+        VerticalLayout {
+            // Header: menu bar and playback panel on one background, with the
+            // soft accent glow from the left running through both
+            Rectangle {
+                background: Theme.panel;
+
+                Rectangle {
+                    visible: Theme.panel-gradient;
+                    background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
                 }
-                open-network-stream => {
-                    stream-dialog.show-dialog = true;
-                }
-                open-station-search => {
-                    // Keep the last search when reopening; load top stations on
-                    // first open or when coming back from a country list
-                    if browser-dialog.search-mode != "search" || browser-dialog.search-results.length == 0 {
-                        root.stash-browse();
-                        if !root.restore-browse("search", "") {
-                            browser-dialog.search-mode = "search";
-                            browser-dialog.reset-query();
-                            browser-dialog.search-loading = true;
-                            root.load-top-stations();
+
+                VerticalLayout {
+                menu-bar := MenuBar {
+                    show-station-stats <=> root.show-station-stats;
+                    show-visualizer <=> root.show-visualizer;
+                    custom-frame: root.custom-frame;
+                    maximized <=> root.maximized;
+                    always-on-top <=> root.keep-on-top;
+                    minimize => { root.minimize-window(); }
+                    show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
+                    close-window => { root.close(); }
+                    toggle-custom-frame => { root.switch-title-bar(!root.custom-frame); }
+                    open-wifi-settings => {
+                        root.show-wifi-settings = true;
+                        root.wifi-scan-requested();
+                    }
+                    open-network-stream => {
+                        stream-dialog.show-dialog = true;
+                    }
+                    open-station-search => {
+                        // Keep the last search when reopening; load top stations on
+                        // first open or when coming back from a country list
+                        if browser-dialog.search-mode != "search" || browser-dialog.search-results.length == 0 {
+                            root.stash-browse();
+                            if !root.restore-browse("search", "") {
+                                browser-dialog.search-mode = "search";
+                                browser-dialog.reset-query();
+                                browser-dialog.search-loading = true;
+                                root.load-top-stations();
+                            }
+                        }
+                        browser-dialog.show-dialog = true;
+                    }
+                    // Reopen the country picked earlier in this session; the
+                    // browser's "Countries" button goes back to the list
+                    open-country-picker => {
+                        if browser-dialog.country-name != "" {
+                            root.open-country(browser-dialog.country-name, browser-dialog.country-code, browser-dialog.country-flag);
+                        } else {
+                            root.show-country-list();
                         }
                     }
-                    browser-dialog.show-dialog = true;
-                }
-                // Reopen the country picked earlier in this session; the
-                // browser's "Countries" button goes back to the list
-                open-country-picker => {
-                    if browser-dialog.country-name != "" {
-                        root.open-country(browser-dialog.country-name, browser-dialog.country-code, browser-dialog.country-flag);
-                    } else {
-                        root.show-country-list();
+                    open-about => {
+                        about-dialog.show-dialog = true;
                     }
+                    open-statistics => {
+                        stats-dialog.show-dialog = true;
+                    }
+                    open-equalizer => {
+                        eq-dialog.show-dialog = true;
+                    }
+                    open-accent-color => {
+                        accent-dialog.show-dialog = true;
+                    }
+                    is-recording: root.is-recording;
+                    can-record: root.can-record;
+                    toggle-recording => { root.toggle-recording(); }
+                    open-recording-settings => {
+                        root.recording-folder-error = "";
+                        recording-dialog.open();
+                    }
+                    open-recordings-folder => { root.open-recordings-folder(); }
+                    open-agents => { agents-dialog.open(); }
+                    agent-count: root.agent-count;
                 }
-                open-about => {
-                    about-dialog.show-dialog = true;
+                playback := Playback {
+                    station-name: root.station-name;
+                    codec-info: root.codec-info;
+                    status-text: root.status-text;
+                    playtime: root.stat-playtime;
+                    is-loading: root.is-loading;
+                    is-error: root.is-error;
+                    station-logo: root.current-logo;
+                    station-logo-fog: root.current-logo-fog;
+                    is-station-favorited: root.is-station-favorited;
+                    has-station: root.station-url != "";
+                    is-recording: root.is-recording;
+                    recording-text: root.recording-text;
+                    recording-size: root.recording-size;
+                    recording-notice: root.recording-notice;
+                    recording-notice-error: root.recording-notice-error;
+                    can-open-recordings: Platform.has-file-manager;
+                    open-recordings-folder => { root.open-recordings-folder(); }
+                    toggle-favorite => { root.toggle-favorite(); }
                 }
-                open-statistics => {
-                    stats-dialog.show-dialog = true;
                 }
-                open-equalizer => {
-                    eq-dialog.show-dialog = true;
-                }
-                open-accent-color => {
-                    accent-dialog.show-dialog = true;
-                }
-                is-recording: root.is-recording;
-                can-record: root.can-record;
-                toggle-recording => { root.toggle-recording(); }
-                open-recording-settings => {
-                    root.recording-folder-error = "";
-                    recording-dialog.open();
-                }
-                open-recordings-folder => { root.open-recordings-folder(); }
-                open-agents => { agents-dialog.open(); }
-                agent-count: root.agent-count;
             }
-            playback := Playback {
-                station-name: root.station-name;
-                codec-info: root.codec-info;
-                status-text: root.status-text;
-                playtime: root.stat-playtime;
+            Favorites {
+                vertical-stretch: 1;
+                favorites: root.favorites-list;
+                favorite-logos: root.favorite-logos;
+                favorite-logo-fogs: root.favorite-logo-fogs;
+                current-station-url: root.station-url;
+                is-playing: root.is-playing;
+                play-loading: root.is-loading;
+                play-error: root.is-error;
+                touch-scroll: root.touch-scroll;
+                show-stats: root.show-station-stats;
+                favorite-move-requested(station, to-top) => { root.move-favorite(station, to-top); }
+                favorite-remove-requested(station) => { root.delete-favorite(station); }
+                favorite-reset-stats-requested(station) => { root.reset-favorite-stats(station.id); }
+                favorite-clicked(station) => { root.play-favorite(station); }
+                favorite-edit-requested(station) => { edit-dialog.open(station); }
+                favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
+            }
+            controls := Controls {
+                is-playing: root.is-playing;
                 is-loading: root.is-loading;
-                is-error: root.is-error;
-                station-logo: root.current-logo;
-                station-logo-fog: root.current-logo-fog;
-                is-station-favorited: root.is-station-favorited;
                 has-station: root.station-url != "";
-                is-recording: root.is-recording;
-                recording-text: root.recording-text;
-                recording-size: root.recording-size;
-                recording-notice: root.recording-notice;
-                recording-notice-error: root.recording-notice-error;
-                can-open-recordings: Platform.has-file-manager;
-                open-recordings-folder => { root.open-recordings-folder(); }
-                toggle-favorite => { root.toggle-favorite(); }
+                now-playing-title: root.now-playing-title;
+                volume <=> root.volume;
+                is-muted <=> root.is-muted;
+                play-clicked => { root.play-url(root.station-url); }
+                stop-clicked => { root.stop-clicked(); }
+                volume-changed(vol) => { root.volume-changed(vol); }
+                mute-clicked => { root.mute-clicked(); }
             }
-            }
-        }
-        Favorites {
-            vertical-stretch: 1;
-            favorites: root.favorites-list;
-            favorite-logos: root.favorite-logos;
-            favorite-logo-fogs: root.favorite-logo-fogs;
-            current-station-url: root.station-url;
-            is-playing: root.is-playing;
-            play-loading: root.is-loading;
-            play-error: root.is-error;
-            touch-scroll: root.touch-scroll;
-            show-stats: root.show-station-stats;
-            favorite-move-requested(station, to-top) => { root.move-favorite(station, to-top); }
-            favorite-remove-requested(station) => { root.delete-favorite(station); }
-            favorite-reset-stats-requested(station) => { root.reset-favorite-stats(station.id); }
-            favorite-clicked(station) => { root.play-favorite(station); }
-            favorite-edit-requested(station) => { edit-dialog.open(station); }
-            favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
-        }
-        controls := Controls {
-            is-playing: root.is-playing;
-            is-loading: root.is-loading;
-            has-station: root.station-url != "";
-            now-playing-title: root.now-playing-title;
-            volume <=> root.volume;
-            is-muted <=> root.is-muted;
-            play-clicked => { root.play-url(root.station-url); }
-            stop-clicked => { root.stop-clicked(); }
-            volume-changed(vol) => { root.volume-changed(vol); }
-            mute-clicked => { root.mute-clicked(); }
         }
     }
 
@@ -520,6 +548,18 @@ export component App inherits Window {
         x: menu-bar.agents-bubble-right - self.width;
         y: menu-bar.agents-bubble-top;
         agents: root.agent-list;
+    }
+
+    // A dialog is open; when the last one closes, the main window takes
+    // the keyboard back (its shortcuts work again)
+    property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
+        || eq-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
+        || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
+        || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings;
+    changed dialog-open => {
+        if !self.dialog-open {
+            shortcuts.focus();
+        }
     }
 
     // Thin outline so the edge stays visible without the system frame

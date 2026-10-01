@@ -1,10 +1,12 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { DialogShell, SectionHeader, Icon, Toggle } from "../components.slint";
+import { DialogShell, SectionHeader, Icon, Toggle, ButtonKeys, FocusRing } from "../components.slint";
 
 component ColorSwatch inherits Rectangle {
     in property <color> swatch-color;
+    // The colour's name, for screen readers
+    in property <string> name;
     in property <bool> is-selected;
     callback clicked();
 
@@ -15,10 +17,25 @@ component ColorSwatch inherits Rectangle {
     border-width: 2px;
     border-color: root.is-selected ? root.swatch-color : transparent;
     animate border-color { duration: Theme.fast; }
+    forward-focus: keys;
+
+    accessible-role: radio-button;
+    accessible-label: root.name;
+    accessible-checkable: true;
+    accessible-checked: root.is-selected;
+    accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
+    }
+
+    keys := ButtonKeys {
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 
     Rectangle {
@@ -66,6 +83,7 @@ export component AccentColorDialog inherits Rectangle {
 
                 for i in [0, 1, 2, 3, 4]: ColorSwatch {
                     swatch-color: root.swatches[row * 5 + i];
+                    name: Theme.accent-swatch-names[row * 5 + i];
                     is-selected: Theme.accent-base == root.swatches[row * 5 + i];
                     clicked => {
                         Theme.accent-base = root.swatches[row * 5 + i];
