@@ -37,13 +37,22 @@ pub struct AgentInfo {
 }
 
 impl AgentInfo {
-    /// "claude-code, this computer" or "claude-code, 192.168.1.20"
-    pub fn describe(&self) -> String {
-        let name = self.name.as_deref().unwrap_or("Agent");
+    /// The agent's name, e.g. "claude-code"
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or("Agent")
+    }
+
+    /// Where it calls from: "This computer", or the address of the
+    /// computer on the network (one on this computer reads as such)
+    pub fn place_label(&self) -> String {
         match self.place {
-            Place::Local(_) => format!("{name}, this computer"),
-            Place::Network(ip) => format!("{name}, {ip}"),
+            Place::Network(ip) if !ip.is_loopback() => ip.to_string(),
+            _ => "This computer".to_string(),
         }
+    }
+
+    pub fn is_network(&self) -> bool {
+        matches!(self.place, Place::Network(_))
     }
 }
 
@@ -199,6 +208,12 @@ impl Presence {
 mod tests {
     use super::*;
 
+    impl AgentInfo {
+        fn describe(&self) -> String {
+            format!("{}, {}", self.name(), self.place_label())
+        }
+    }
+
     #[test]
     fn local_agents_count_while_connected() {
         let presence = Presence::default();
@@ -211,7 +226,7 @@ mod tests {
                 .iter()
                 .map(AgentInfo::describe)
                 .collect::<Vec<_>>(),
-            ["claude-code, this computer", "Agent, this computer"]
+            ["claude-code, This computer", "Agent, This computer"]
         );
         drop(first);
         drop(second);
@@ -239,9 +254,9 @@ mod tests {
         assert_eq!(
             describe(&presence),
             [
-                "claude-ai, this computer",
-                "claude-code, this computer",
-                "codex-mcp-client, this computer"
+                "claude-ai, This computer",
+                "claude-code, This computer",
+                "codex-mcp-client, This computer"
             ]
         );
         // Still there while one of its sessions is
@@ -249,9 +264,9 @@ mod tests {
         assert_eq!(
             describe(&presence),
             [
-                "claude-ai, this computer",
-                "claude-code, this computer",
-                "codex-mcp-client, this computer"
+                "claude-ai, This computer",
+                "claude-code, This computer",
+                "codex-mcp-client, This computer"
             ]
         );
         drop(agent_mode);
@@ -272,6 +287,17 @@ mod tests {
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].describe(), "claude-code, 192.168.1.20");
         assert!(presence.agents_at(start + AGENT_IDLE).is_empty());
+    }
+
+    #[test]
+    fn a_network_agent_on_this_computer_reads_as_such() {
+        let presence = Presence::default();
+        let ip: IpAddr = "127.0.0.1".parse().unwrap();
+        presence.network_seen(ip);
+        presence.set_name(Place::Network(ip), "codex-mcp-client");
+        let agents = presence.agents();
+        assert_eq!(agents[0].describe(), "codex-mcp-client, This computer");
+        assert!(agents[0].is_network());
     }
 
     #[test]

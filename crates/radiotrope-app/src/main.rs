@@ -2364,9 +2364,16 @@ fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::T
             if shown.as_ref() == Some(&agents) {
                 return;
             }
-            let list: Vec<String> = agents.iter().map(|a| a.describe()).collect();
+            let rows: Vec<AgentRow> = agents
+                .iter()
+                .map(|a| AgentRow {
+                    name: a.name().into(),
+                    place: a.place_label().into(),
+                    network: a.is_network(),
+                })
+                .collect();
             ui.set_agent_count(agents.len() as i32);
-            ui.set_agent_list(list.join("\n").into());
+            ui.set_agent_list(std::rc::Rc::new(slint::VecModel::from(rows)).into());
             shown = Some(agents);
         },
     );

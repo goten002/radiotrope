@@ -16,10 +16,10 @@ import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
-import { TextUtil, AgentsBubble } from "components.slint";
+import { TextUtil, AgentsBubble, AgentRow } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
-export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
+export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -130,7 +130,7 @@ export component App inherits Window {
     callback agents-auth-changed(int);
     // Agents using the player now, for the chip in the menu bar
     in property <int> agent-count;
-    in property <string> agent-list;
+    in property <[AgentRow]> agent-list;
 
     // WiFi (embedded only — connected from Rust when feature = "embedded")
     callback wifi-scan-requested();
@@ -519,8 +519,7 @@ export component App inherits Window {
     if menu-bar.agents-bubble-open: AgentsBubble {
         x: menu-bar.agents-bubble-right - self.width;
         y: menu-bar.agents-bubble-top;
-        count: root.agent-count;
-        list: root.agent-list;
+        agents: root.agent-list;
     }
 
     // Thin outline so the edge stays visible without the system frame

@@ -714,10 +714,19 @@ export component AgentsChip inherits Rectangle {
     }
 }
 
-// The agents chip's list, in the same style as the other hover bubbles
+// One agent in the agents bubble
+export struct AgentRow {
+    name: string,
+    // "This computer" or the address it calls from
+    place: string,
+    // Over the network (an agent on this computer may use it too)
+    network: bool,
+}
+
+// The agents chip's list, in the same style as the other hover bubbles:
+// a caption, then one row per agent with where it calls from
 export component AgentsBubble inherits Rectangle {
-    in property <int> count;
-    in property <string> list;
+    in property <[AgentRow]> agents;
 
     width: max(Defaults.info-tip-width, bubble.preferred-width);
     height: bubble.preferred-height;
@@ -733,19 +742,47 @@ export component AgentsBubble inherits Rectangle {
         padding-left: 12px;
         padding-right: 12px;
         padding-top: 8px;
-        padding-bottom: 8px;
-        spacing: 3px;
+        padding-bottom: 10px;
+        spacing: 6px;
 
         Text {
-            text: root.count == 1 ? "1 agent is using the player" : root.count + " agents are using the player";
-            font-size: Theme.font-md;
-            font-weight: 600;
-            color: Theme.text-primary;
-        }
-        Text {
-            text: root.list;
-            font-size: Theme.font-md;
+            text: root.agents.length == 1 ? "AGENT USING THE PLAYER" : "AGENTS USING THE PLAYER";
             color: Theme.text-secondary;
+            font-size: Theme.font-xs;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        GridLayout {
+            spacing-horizontal: 8px;
+            spacing-vertical: 5px;
+
+            for agent in root.agents: Row {
+                VerticalLayout {
+                    alignment: center;
+                    Icon {
+                        width: 13px;
+                        height: 13px;
+                        source: agent.network ? @image-url("icons/network-wired.svg") : @image-url("icons/desktop.svg");
+                        colorize: Theme.accent-text;
+                    }
+                }
+                Text {
+                    text: agent.name;
+                    color: Theme.text-primary;
+                    font-size: Theme.font-md;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                Text {
+                    min-width: self.preferred-width;
+                    text: agent.place;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-sm;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                }
+            }
         }
     }
 }
