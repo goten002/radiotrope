@@ -39,6 +39,11 @@ export global Theme {
         #f7931e, #ed5b00, #e62d42, #d56199, #9141ac,
         #3584e4, #2190a4, #3a944a, #c88800, #6f8396,
     ];
+    // Their names, in the same order, for screen readers
+    out property <[string]> accent-swatch-names: [
+        "Orange", "Dark orange", "Red", "Pink", "Purple",
+        "Blue", "Teal", "Green", "Gold", "Slate",
+    ];
     // The accent in use (the user's choice, saved in settings)
     in-out property <color> accent-base: accent-default;
     out property <color> accent: accent-base;
@@ -58,6 +63,13 @@ export global Theme {
     out property <color> button-text: #1a1a1a;  // dark text on accent buttons (both themes)
     out property <color> disabled-bg: dark-mode ? #3a3c40 : #e1e2e6;
     out property <color> disabled-text: dark-mode ? #7a7d83 : #a3a6ac;
+
+    // ── Keyboard focus ──
+    // Ring around the control that has keyboard focus
+    out property <color> focus-ring: text-primary;
+    out property <length> focus-ring-width: 2px;
+    // How far the ring sits outside the control's edge
+    out property <length> focus-ring-offset: 3px;
 
     // ── Menus and hover states ──
     out property <color> popup-bg: card;

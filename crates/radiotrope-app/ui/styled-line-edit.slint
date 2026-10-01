@@ -76,6 +76,14 @@ export component StyledLineEdit inherits Rectangle {
         background: clear-touch.has-hover ? Theme.menu-hover : transparent;
         animate background { duration: Theme.fast; }
 
+        accessible-role: button;
+        accessible-label: "Clear";
+        accessible-action-default => {
+            root.text = "";
+            input.focus();
+            root.cleared();
+        }
+
         clear-touch := TouchArea {
             mouse-cursor: pointer;
             clicked => {

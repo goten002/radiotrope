@@ -1,5 +1,5 @@
 import { Theme } from "defaults.slint";
-import { Icon, AgentsChip } from "components.slint";
+import { Icon, AgentsChip, ButtonKeys, FocusRing } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 
@@ -10,15 +10,32 @@ component MenuItem inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
+    // Hovered, or reached with Tab: highlighted the same way
+    property <bool> lit: touch.has-hover || keys.has-focus;
+
     height: 28px;
     min-width: 160px;
     border-radius: 4px;
-    background: touch.has-hover ? Theme.menu-hover : transparent;
+    background: root.lit ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
     }
 
     HorizontalLayout {
@@ -34,16 +51,17 @@ component MenuItem inherits Rectangle {
                 height: 15px;
                 source: root.icon;
                 colorize: !root.enabled ? Theme.disabled-text
-                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    : root.lit ? Theme.text-primary : Theme.text-secondary;
             }
         }
 
         Text {
             text: root.label;
             color: !root.enabled ? Theme.disabled-text
-                : touch.has-hover ? Theme.text-primary : Theme.menu-text;
+                : root.lit ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-base;
             vertical-alignment: center;
+            accessible-role: none;
         }
     }
 }
@@ -56,15 +74,34 @@ component CheckMenuItem inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
+    // Hovered, or reached with Tab: highlighted the same way
+    property <bool> lit: touch.has-hover || keys.has-focus;
+
     height: 28px;
     min-width: 160px;
     border-radius: 4px;
-    background: touch.has-hover ? Theme.menu-hover : transparent;
+    background: root.lit ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
+
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
     }
 
     HorizontalLayout {
@@ -79,7 +116,7 @@ component CheckMenuItem inherits Rectangle {
                 height: 15px;
                 source: root.icon;
                 colorize: !root.enabled ? Theme.disabled-text
-                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    : root.lit ? Theme.text-primary : Theme.text-secondary;
             }
         }
 
@@ -87,9 +124,10 @@ component CheckMenuItem inherits Rectangle {
             horizontal-stretch: 1;
             text: root.label;
             color: !root.enabled ? Theme.disabled-text
-                : touch.has-hover ? Theme.text-primary : Theme.menu-text;
+                : root.lit ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-base;
             vertical-alignment: center;
+            accessible-role: none;
         }
 
         // Tick on the right while the option is on
@@ -107,8 +145,10 @@ component CheckMenuItem inherits Rectangle {
     }
 }
 
-// Window button in our own title bar (minimize, maximize, close)
+// Window button in our own title bar (minimize, maximize, close). Like
+// system title bars, it is left out of the Tab order.
 component CaptionButton inherits Rectangle {
+    in property <string> label;
     callback clicked();
     out property <color> glyph: Theme.menu-text;
 
@@ -118,11 +158,61 @@ component CaptionButton inherits Rectangle {
         : touch.has-hover ? Theme.menu-bar-hover : transparent;
     animate background { duration: Theme.fast; }
 
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
     touch := TouchArea {
         clicked => { root.clicked(); }
     }
 
     @children
+}
+
+// A menu's name in the bar; opens the menu on click, or on Space, Enter
+// or Down once reached with Tab
+component MenuTitle inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+
+    width: title.preferred-width + 20px;
+    height: 32px;
+    background: touch.has-hover || keys.has-focus ? Theme.menu-bar-hover : transparent;
+    animate background { duration: Theme.fast; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    title := Text {
+        text: root.label;
+        color: Theme.menu-text;
+        font-size: Theme.font-base;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // Inside the edge: the bar is at the top of the window
+    if keys.has-focus: FocusRing {
+        offset: -Theme.focus-ring-width;
+        radius: Theme.radius-sm;
+    }
 }
 
 export component MenuBar inherits Rectangle {
@@ -184,99 +274,29 @@ export component MenuBar inherits Rectangle {
         padding-right: root.custom-frame ? 0 : 4px;
         alignment: stretch;
 
-        Rectangle {
-            width: open-label.preferred-width + 20px;
-            height: 32px;
-            background: open-touch.has-hover ? Theme.menu-bar-hover : transparent;
-            animate background { duration: Theme.fast; }
-
-            open-touch := TouchArea {
-                clicked => { open-popup.show(); }
-            }
-
-            open-label := Text {
-                text: "Open";
-                color: Theme.menu-text;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+        open-menu := MenuTitle {
+            label: "Open";
+            clicked => { open-popup.show(); }
         }
 
-        Rectangle {
-            width: stations-label.preferred-width + 20px;
-            height: 32px;
-            background: stations-touch.has-hover ? Theme.menu-bar-hover : transparent;
-            animate background { duration: Theme.fast; }
-
-            stations-touch := TouchArea {
-                clicked => { stations-popup.show(); }
-            }
-
-            stations-label := Text {
-                text: "Stations";
-                color: Theme.menu-text;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+        stations-menu := MenuTitle {
+            label: "Stations";
+            clicked => { stations-popup.show(); }
         }
 
-        Rectangle {
-            width: view-label.preferred-width + 20px;
-            height: 32px;
-            background: view-touch.has-hover ? Theme.menu-bar-hover : transparent;
-            animate background { duration: Theme.fast; }
-
-            view-touch := TouchArea {
-                clicked => { view-popup.show(); }
-            }
-
-            view-label := Text {
-                text: "View";
-                color: Theme.menu-text;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+        view-menu := MenuTitle {
+            label: "View";
+            clicked => { view-popup.show(); }
         }
 
-        Rectangle {
-            width: tools-label.preferred-width + 20px;
-            height: 32px;
-            background: tools-touch.has-hover ? Theme.menu-bar-hover : transparent;
-            animate background { duration: Theme.fast; }
-
-            tools-touch := TouchArea {
-                clicked => { tools-popup.show(); }
-            }
-
-            tools-label := Text {
-                text: "Tools";
-                color: Theme.menu-text;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+        tools-menu := MenuTitle {
+            label: "Tools";
+            clicked => { tools-popup.show(); }
         }
 
-        Rectangle {
-            width: help-label.preferred-width + 20px;
-            height: 32px;
-            background: help-touch.has-hover ? Theme.menu-bar-hover : transparent;
-            animate background { duration: Theme.fast; }
-
-            help-touch := TouchArea {
-                clicked => { help-popup.show(); }
-            }
-
-            help-label := Text {
-                text: "Help";
-                color: Theme.menu-text;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
+        help-menu := MenuTitle {
+            label: "Help";
+            clicked => { help-popup.show(); }
         }
 
         // Empty part of the bar: drag to move, double-click to maximize
@@ -322,6 +342,7 @@ export component MenuBar inherits Rectangle {
             padding-left: 6px;
 
             min := CaptionButton {
+                label: "Minimize";
                 clicked => { root.minimize(); }
 
                 Rectangle {
@@ -332,6 +353,7 @@ export component MenuBar inherits Rectangle {
             }
 
             max := CaptionButton {
+                label: root.maximized ? "Restore" : "Maximize";
                 clicked => { root.maximized = !root.maximized; }
 
                 if !root.maximized: Rectangle {
@@ -369,6 +391,7 @@ export component MenuBar inherits Rectangle {
             }
 
             close := CaptionButton {
+                label: "Close";
                 clicked => { root.close-window(); }
 
                 Path {
@@ -414,7 +437,7 @@ export component MenuBar inherits Rectangle {
     }
 
     stations-popup := PopupWindow {
-        x: root.menu-start + open-label.preferred-width + 20px;
+        x: root.menu-start + open-menu.width;
         y: 32px;
         width: stations-popup-layout.preferred-width;
 
@@ -514,7 +537,7 @@ export component MenuBar inherits Rectangle {
     }
 
     view-popup := PopupWindow {
-        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px;
+        x: root.menu-start + open-menu.width + stations-menu.width;
         y: 32px;
         width: view-popup-layout.preferred-width;
 
@@ -632,7 +655,7 @@ export component MenuBar inherits Rectangle {
     }
 
     help-popup := PopupWindow {
-        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px + tools-label.preferred-width + 20px;
+        x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width + tools-menu.width;
         y: 32px;
         width: help-popup-layout.preferred-width;
 
@@ -661,7 +684,7 @@ export component MenuBar inherits Rectangle {
     }
 
     tools-popup := PopupWindow {
-        x: root.menu-start + open-label.preferred-width + 20px + stations-label.preferred-width + 20px + view-label.preferred-width + 20px;
+        x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width;
         y: 32px;
         width: tools-popup-layout.preferred-width;
 

@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Icon, Toggle } from "../components.slint";
+import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing } from "../components.slint";
 
 component EqFader inherits Rectangle {
     in property <string> label;
@@ -14,8 +14,30 @@ component EqFader inherits Rectangle {
     property <bool> active: track-touch.has-hover || track-touch.pressed;
     property <length> knob: root.active ? 18px : 14px;
     animate knob { duration: Theme.fast; }
-    // Keeps the bubble up briefly after a scroll
+    // Keeps the bubble up briefly after a scroll or key press
     property <bool> nudged;
+    // The focus came from the keyboard (Tab, or keys used after a click),
+    // so the knob shows the focus ring
+    property <bool> key-focus;
+
+    forward-focus: keys;
+    accessible-role: slider;
+    accessible-label: root.label == "Pre" ? "Preamp" : root.label + " Hz";
+    accessible-value: (Math.round(root.value * 10) > 0 ? "+" : "") + Math.round(root.value * 10) / 10 + " dB";
+    accessible-value-minimum: -12;
+    accessible-value-maximum: 12;
+    accessible-value-step: 0.5;
+    accessible-action-increment => { root.set(root.value + 0.5); }
+    accessible-action-decrement => { root.set(root.value - 0.5); }
+    accessible-action-set-value(v) => { root.set(v.to-float()); }
+
+    function set(v: float) {
+        root.value = clamp(v, -12.0, 12.0);
+        root.value-changed(root.value);
+        root.nudged = true;
+        nudge-timer.running = false;
+        nudge-timer.running = true;
+    }
 
     nudge-timer := Timer {
         interval: Defaults.value-hint-time;
@@ -98,11 +120,21 @@ component EqFader inherits Rectangle {
                     border-radius: self.width / 2;
                     background: Theme.surface;
                 }
+
+                if keys.has-focus && root.key-focus: FocusRing {
+                    radius: parent.border-radius;
+                }
             }
 
             // Drag area
             track-touch := TouchArea {
                 mouse-cursor: pointer;
+                pointer-event(e) => {
+                    if e.kind == PointerEventKind.down {
+                        root.key-focus = false;
+                        keys.focus();
+                    }
+                }
                 moved => {
                     if self.pressed {
                         root.value = clamp(12.0 - (self.mouse-y / 1px) / (parent.height / 1px) * 24.0, -12.0, 12.0);
@@ -163,6 +195,46 @@ component EqFader inherits Rectangle {
             color: Theme.text-secondary;
             font-size: Theme.font-xs;
             horizontal-alignment: center;
+            accessible-role: none;
+        }
+    }
+
+    // Up/Down (0.5 dB, 0.1 with Shift), Page Up/Down (3 dB) and Home/End
+    // once the fader has focus
+    keys := FocusScope {
+        focus-on-click: false;
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation {
+                root.key-focus = true;
+            }
+        }
+        key-pressed(e) => {
+            root.key-focus = true;
+            if e.text == Key.UpArrow || e.text == Key.RightArrow {
+                root.set(root.value + (e.modifiers.shift ? 0.1 : 0.5));
+                return accept;
+            }
+            if e.text == Key.DownArrow || e.text == Key.LeftArrow {
+                root.set(root.value - (e.modifiers.shift ? 0.1 : 0.5));
+                return accept;
+            }
+            if e.text == Key.PageUp {
+                root.set(root.value + 3);
+                return accept;
+            }
+            if e.text == Key.PageDown {
+                root.set(root.value - 3);
+                return accept;
+            }
+            if e.text == Key.Home {
+                root.set(-12);
+                return accept;
+            }
+            if e.text == Key.End {
+                root.set(12);
+                return accept;
+            }
+            return reject;
         }
     }
 }
@@ -172,13 +244,26 @@ component PresetItem inherits Rectangle {
     in property <bool> is-selected;
     callback clicked();
 
+    // Hovered, or reached with Tab: highlighted the same way
+    property <bool> lit: item-touch.has-hover || keys.has-focus;
+
     height: 26px;
     border-radius: 4px;
-    background: item-touch.has-hover ? Theme.menu-hover : transparent;
+    background: root.lit ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
+
+    accessible-role: radio-button;
+    accessible-label: root.name;
+    accessible-checkable: true;
+    accessible-checked: root.is-selected;
+    accessible-action-default => { root.clicked(); }
 
     item-touch := TouchArea {
         clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        activated => { root.clicked(); }
     }
 
     HorizontalLayout {
@@ -189,9 +274,10 @@ component PresetItem inherits Rectangle {
         Text {
             horizontal-stretch: 1;
             text: root.name;
-            color: item-touch.has-hover ? Theme.text-primary : Theme.menu-text;
+            color: root.lit ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-md;
             vertical-alignment: center;
+            accessible-role: none;
         }
 
         // Tick on the right, as on the menus
@@ -263,7 +349,8 @@ export component EqualizerDialog inherits Rectangle {
                 toggled(on) => { root.enabled-toggled(on); }
             }
 
-            // Preset dropdown
+            // Preset dropdown; Space, Enter or Down opens it once reached
+            // with Tab
             Rectangle {
                 width: 160px;
                 height: 30px;
@@ -273,8 +360,28 @@ export component EqualizerDialog inherits Rectangle {
                     : Theme.elevated;
                 animate background { duration: Theme.fast; }
 
+                accessible-role: combobox;
+                accessible-label: "Preset";
+                accessible-value: root.preset-name == "" ? "Custom" : root.preset-name;
+                accessible-action-default => { preset-popup.show(); }
+
                 preset-dd-touch := TouchArea {
                     clicked => { preset-popup.show(); }
+                }
+
+                preset-keys := FocusScope {
+                    focus-on-click: false;
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
+                            preset-popup.show();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+
+                if preset-keys.has-focus: FocusRing {
+                    radius: parent.border-radius;
                 }
 
                 HorizontalLayout {

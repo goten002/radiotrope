@@ -1,6 +1,6 @@
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars, Icon } from "components.slint";
+import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing } from "components.slint";
 import { LogoFog, LogoFogLayer } from "logo-fog.slint";
 
 export struct FavoriteStation {
@@ -28,15 +28,32 @@ component RowMenuItem inherits Rectangle {
     in property <bool> confirming: false;
     callback clicked();
 
+    // Hovered, or reached with Tab: highlighted the same way
+    property <bool> lit: (touch.has-hover || keys.has-focus) && root.enabled;
+
     height: 28px;
     min-width: 170px;
     border-radius: 4px;
-    background: touch.has-hover && root.enabled ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
+    background: root.lit ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
     animate background { duration: Theme.fast; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
     }
 
     // Laid out like the menu bar's items: icon, then label
@@ -54,7 +71,7 @@ component RowMenuItem inherits Rectangle {
                 source: root.icon;
                 colorize: !root.enabled ? Theme.disabled-text
                     : root.danger ? Theme.danger
-                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    : root.lit ? Theme.text-primary : Theme.text-secondary;
             }
         }
 
@@ -62,10 +79,11 @@ component RowMenuItem inherits Rectangle {
             text: root.label;
             color: !root.enabled ? Theme.disabled-text
                 : root.danger ? Theme.danger
-                : touch.has-hover ? Theme.text-primary : Theme.menu-text;
+                : root.lit ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-base;
             font-weight: root.confirming ? 700 : 400;
             vertical-alignment: center;
+            accessible-role: none;
         }
     }
 }
@@ -125,6 +143,13 @@ component FavoriteRow inherits Rectangle {
         root.menu-y = y;
         menu.show();
     }
+
+    forward-focus: keys;
+    accessible-role: list-item;
+    accessible-label: root.name;
+    accessible-description: root.is-current && root.state != "" ? root.state : root.country;
+    accessible-item-index: root.row-index;
+    accessible-action-default => { root.clicked(); }
 
     height: 56px;
     background: root.is-drag-source ? Theme.elevated
@@ -315,6 +340,27 @@ component FavoriteRow inherits Rectangle {
                 horizontal-alignment: right;
             }
         }
+    }
+
+    // Enter or Space plays the station; the Menu key or Shift+F10 opens
+    // the row's menu under the name
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
+                root.open-menu(58px, root.height - 8px);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 
     // Hovering the stats explains them in a bubble to their left. Clicks

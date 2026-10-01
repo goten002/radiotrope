@@ -1,5 +1,5 @@
 import { Theme } from "defaults.slint";
-import { Icon } from "components.slint";
+import { Icon, ButtonKeys, FocusRing } from "components.slint";
 
 export component AccentButton inherits Rectangle {
     in property <string> label;
@@ -17,6 +17,16 @@ export component AccentButton inherits Rectangle {
     drop-shadow-blur: root.enabled && touch.has-hover ? 12px : 0px;
     drop-shadow-color: Theme.accent.with-alpha(0.35);
     animate drop-shadow-blur { duration: Theme.fast; }
+    forward-focus: focus;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
@@ -31,6 +41,16 @@ export component AccentButton inherits Rectangle {
         font-weight: 600;
         horizontal-alignment: center;
         vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    focus := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
+    }
+
+    if focus.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 }
 
@@ -48,6 +68,16 @@ export component SecondaryButton inherits Rectangle {
                 : touch.has-hover ? Theme.menu-bar-hover
                 : Theme.elevated;
     animate background { duration: Theme.fast; }
+    forward-focus: focus;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
@@ -63,6 +93,16 @@ export component SecondaryButton inherits Rectangle {
         font-weight: 500;
         horizontal-alignment: center;
         vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    focus := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
+    }
+
+    if focus.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 }
 
@@ -70,19 +110,33 @@ export component SecondaryButton inherits Rectangle {
 export component DangerButton inherits Rectangle {
     in property <string> label;
     in property <image> icon;
+    // Greyed out and not clickable, but keeps its place
+    in property <bool> enabled: true;
     callback clicked();
 
     height: 34px;
     width: row.preferred-width + 28px;
     border-radius: Theme.radius-sm;
-    background: touch.pressed ? Theme.danger.with-alpha(0.3)
+    background: !root.enabled ? Theme.disabled-bg
+                : touch.pressed ? Theme.danger.with-alpha(0.3)
                 : touch.has-hover ? Theme.danger.with-alpha(0.22)
                 : Theme.danger.with-alpha(0.14);
     animate background { duration: Theme.fast; }
+    forward-focus: focus;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
-        mouse-cursor: pointer;
+        mouse-cursor: root.enabled ? pointer : default;
     }
 
     row := HorizontalLayout {
@@ -95,16 +149,26 @@ export component DangerButton inherits Rectangle {
                 source: root.icon;
                 width: 11px;
                 height: 11px;
-                colorize: Theme.danger;
+                colorize: root.enabled ? Theme.danger : Theme.disabled-text;
             }
         }
 
         Text {
             text: root.label;
-            color: Theme.danger;
+            color: root.enabled ? Theme.danger : Theme.disabled-text;
             font-size: Theme.font-base;
             font-weight: 600;
             vertical-alignment: center;
+            accessible-role: none;
         }
+    }
+
+    focus := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
+    }
+
+    if focus.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 }

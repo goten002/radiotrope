@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "defaults.slint";
-import { IconButton, Icon } from "components.slint";
+import { IconButton, Icon, ButtonKeys, FocusRing } from "components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 component VolumeSlider inherits Rectangle {
@@ -19,6 +19,19 @@ component VolumeSlider inherits Rectangle {
     animate knob { duration: Theme.fast; }
     // Keeps the value bubble up briefly after a scroll or key press
     property <bool> nudged;
+    // The focus came from the keyboard (Tab, or keys used after a click),
+    // so the focus ring shows
+    property <bool> key-focus;
+
+    accessible-role: slider;
+    accessible-label: "Volume";
+    accessible-value: Math.round(root.value) + "%";
+    accessible-value-minimum: 0;
+    accessible-value-maximum: 100;
+    accessible-value-step: 5;
+    accessible-action-increment => { root.set(Math.round(root.value) + 5); }
+    accessible-action-decrement => { root.set(Math.round(root.value) - 5); }
+    accessible-action-set-value(v) => { root.set(v.to-float()); }
 
     public function scroll-by(delta: length) {
         root.set(root.value + (delta / 1px / 24));
@@ -101,6 +114,7 @@ component VolumeSlider inherits Rectangle {
 
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
+                root.key-focus = false;
                 keys.focus();
             }
         }
@@ -123,7 +137,13 @@ component VolumeSlider inherits Rectangle {
 
     // Arrow keys, Page Up/Down, Home/End and M once the slider has focus
     keys := FocusScope {
+        focus-gained(reason) => {
+            if reason == FocusReason.tab-navigation {
+                root.key-focus = true;
+            }
+        }
         key-pressed(e) => {
+            root.key-focus = true;
             if (e.text == Key.UpArrow || e.text == Key.RightArrow) {
                 root.set(Math.round(root.value) + (e.modifiers.shift ? 1 : 5));
                 return accept;
@@ -155,6 +175,10 @@ component VolumeSlider inherits Rectangle {
             return reject;
         }
     }
+
+    if keys.has-focus && root.key-focus: FocusRing {
+        radius: root.height / 2;
+    }
 }
 
 export component Controls inherits Rectangle {
@@ -179,6 +203,21 @@ export component Controls inherits Rectangle {
     // Hovered long enough to show the full title bubble
     property <bool> title-hover-ready: false;
     property <bool> title-cut: title-measure.preferred-width > np-area.width;
+
+    // Play, or stop while playing or connecting (the button, or Space)
+    public function play-or-stop() {
+        // A second press right after the first is ignored: a touchpad
+        // double tap would stop and restart the station
+        if repeat-guard.running || !play-button.can-interact {
+            return;
+        }
+        repeat-guard.running = true;
+        if play-button.shows-stop {
+            root.stop-clicked();
+        } else {
+            root.play-clicked();
+        }
+    }
 
     function copy-title() {
         clipboard-text.select-all();
@@ -237,7 +276,7 @@ export component Controls inherits Rectangle {
         // ── Play / Stop button (left) ──
         VerticalLayout {
             alignment: center;
-            Rectangle {
+            play-button := Rectangle {
                 property <bool> shows-stop: root.is-playing || root.is-loading;
                 property <bool> can-interact: self.shows-stop || root.has-station;
 
@@ -254,6 +293,11 @@ export component Controls inherits Rectangle {
                 drop-shadow-color: Theme.accent.with-alpha(0.45);
                 animate drop-shadow-blur { duration: Theme.normal; }
 
+                accessible-role: button;
+                accessible-label: self.shows-stop ? "Stop" : "Play";
+                accessible-enabled: self.can-interact;
+                accessible-action-default => { root.play-or-stop(); }
+
                 Icon {
                     width: 18px;
                     height: 18px;
@@ -264,8 +308,6 @@ export component Controls inherits Rectangle {
                         : Theme.dark-mode ? Theme.button-text : #ffffff;
                 }
 
-                // A second press right after the first is ignored: a
-                // touchpad double tap would stop and restart the station
                 repeat-guard := Timer {
                     interval: Defaults.repeat-click-guard;
                     running: false;
@@ -275,17 +317,16 @@ export component Controls inherits Rectangle {
                 play-touch := TouchArea {
                     enabled: can-interact;
                     mouse-cursor: can-interact ? pointer : default;
-                    clicked => {
-                        if repeat-guard.running {
-                            return;
-                        }
-                        repeat-guard.running = true;
-                        if (parent.shows-stop) {
-                            root.stop-clicked();
-                        } else {
-                            root.play-clicked();
-                        }
-                    }
+                    clicked => { root.play-or-stop(); }
+                }
+
+                play-keys := ButtonKeys {
+                    enabled: parent.can-interact;
+                    activated => { root.play-or-stop(); }
+                }
+
+                if play-keys.has-focus: FocusRing {
+                    radius: parent.border-radius;
                 }
             }
         }
@@ -370,6 +411,7 @@ export component Controls inherits Rectangle {
                         // The volume SVGs carry a margin, so the loudest
                         // wave isn't clipped by Icon's 1px edge trim
                         icon-size: 20px;
+                        label: root.is-muted ? "Unmute" : "Mute";
                         icon-color: root.is-muted ? Theme.danger : Theme.text-secondary;
                         hover-color: root.is-muted ? Theme.danger : Theme.text-primary;
                         clicked => { root.mute-clicked(); }

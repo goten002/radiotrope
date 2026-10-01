@@ -137,14 +137,16 @@ export component Playback inherits Rectangle {
             }
         }
 
-        // Star (favorite) button
-        if root.has-station: VerticalLayout {
+        // Star (favorite) button, greyed out until a station is loaded
+        VerticalLayout {
             alignment: center;
             IconButton {
                 width: 36px;
                 height: 36px;
                 icon: @image-url("icons/star.svg");
+                label: root.is-station-favorited ? "Remove from favorites" : "Add to favorites";
                 icon-size: 20px;
+                enabled: root.has-station;
                 active: root.is-station-favorited;
                 clicked => { root.toggle-favorite(); }
             }

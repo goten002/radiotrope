@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, NowPlayingBars, Icon } from "../components.slint";
+import { DialogShell, NowPlayingBars, Icon, ButtonKeys, FocusRing } from "../components.slint";
 import { LogoFog, LogoFogLayer } from "../logo-fog.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
@@ -40,10 +40,25 @@ component StationRow inherits Rectangle {
         : root.state != "" ? Theme.accent-soft
         : touch.has-hover ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
+    forward-focus: keys;
+
+    accessible-role: list-item;
+    accessible-label: root.name;
+    accessible-description: root.state != "" && root.status != "" ? root.status : root.country;
+    accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
+    }
+
+    // Enter or Space plays the station
+    keys := ButtonKeys {
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 
     HorizontalLayout {
@@ -203,6 +218,10 @@ component StationRow inherits Rectangle {
                 background: star-touch.has-hover ? Theme.menu-hover : transparent;
                 animate background { duration: Theme.fast; }
 
+                accessible-role: button;
+                accessible-label: root.is-favorite ? "Remove from favorites" : "Add to favorites";
+                accessible-action-default => { root.favorite-clicked(); }
+
                 Icon {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
@@ -217,6 +236,14 @@ component StationRow inherits Rectangle {
                 star-touch := TouchArea {
                     mouse-cursor: pointer;
                     clicked => { root.favorite-clicked(); }
+                }
+
+                star-keys := ButtonKeys {
+                    activated => { root.favorite-clicked(); }
+                }
+
+                if star-keys.has-focus: FocusRing {
+                    radius: parent.border-radius;
                 }
             }
         }

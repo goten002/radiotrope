@@ -24,6 +24,42 @@ export component Icon inherits Rectangle {
         source: root.source;
         colorize: root.colorize;
         transform-rotation: root.rotation;
+        // Decoration: the control around it carries the name
+        accessible-role: none;
+    }
+}
+
+// Ring around a control that has keyboard focus. Put it in the control as
+// `if focus.has-focus: FocusRing { radius: root.border-radius; }`; it takes
+// the control's size and draws just outside its edge (a negative offset
+// draws inside, for controls at an edge that clips).
+export component FocusRing inherits Rectangle {
+    in property <length> radius;
+    in property <length> offset: Theme.focus-ring-offset;
+
+    Rectangle {
+        x: -root.offset;
+        y: -root.offset;
+        width: root.width + 2 * root.offset;
+        height: root.height + 2 * root.offset;
+        border-radius: max(0px, root.radius + root.offset);
+        border-width: Theme.focus-ring-width;
+        border-color: Theme.focus-ring;
+    }
+}
+
+// Keyboard side of a button: takes focus by Tab (a click doesn't move the
+// focus) and presses the button on Space or Enter
+export component ButtonKeys inherits FocusScope {
+    callback activated();
+
+    focus-on-click: false;
+    key-pressed(event) => {
+        if event.text == Key.Space || event.text == Key.Return {
+            root.activated();
+            return accept;
+        }
+        return reject;
     }
 }
 
@@ -47,22 +83,39 @@ export component NowPlayingBars inherits HorizontalLayout {
 // Round, borderless button with an icon
 export component IconButton inherits Rectangle {
     in property <image> icon;
+    // What the button does, for screen readers (it shows only the icon)
+    in property <string> label;
     in property <length> icon-size: 16px;
     in property <color> icon-color: Theme.text-secondary;
     in property <color> hover-color: Theme.text-primary;
     in property <bool> active: false;
+    // Greyed out and not clickable, but keeps its place
+    in property <bool> enabled: true;
+    out property <bool> has-focus: focus.has-focus;
     callback clicked();
 
     width: 30px;
     height: 30px;
     border-radius: self.height / 2;
-    background: touch.pressed ? Theme.menu-hover
+    background: !root.enabled ? transparent
+        : touch.pressed ? Theme.menu-hover
         : touch.has-hover ? Theme.menu-bar-hover
         : root.active ? Theme.accent-soft : transparent;
     animate background { duration: Theme.fast; }
+    forward-focus: focus;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
-        mouse-cursor: pointer;
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
         clicked => { root.clicked(); }
     }
 
@@ -70,9 +123,19 @@ export component IconButton inherits Rectangle {
         source: root.icon;
         width: root.icon-size;
         height: root.icon-size;
-        colorize: root.active ? Theme.accent-text
+        colorize: !root.enabled ? Theme.disabled-text
+            : root.active ? Theme.accent-text
             : touch.has-hover ? root.hover-color : root.icon-color;
         animate colorize { duration: Theme.fast; }
+    }
+
+    focus := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
+    }
+
+    if focus.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 }
 
@@ -177,11 +240,18 @@ export component LinkRow inherits Rectangle {
             for link[i] in root.links: HorizontalLayout {
                 Rectangle {
                     width: name.preferred-width;
+
+                    accessible-role: button;
+                    accessible-label: link.name;
+                    accessible-description: link.url;
+                    accessible-action-default => { root.open-url(link.url); }
+
                     name := Text {
                         text: link.name;
                         color: touch.has-hover ? Theme.accent-hover : Theme.accent-text;
                         font-size: Theme.font-sm;
                         vertical-alignment: center;
+                        accessible-role: none;
                     }
                     // Underline on hover (Text can't underline)
                     Rectangle {
@@ -193,6 +263,16 @@ export component LinkRow inherits Rectangle {
                     touch := TouchArea {
                         mouse-cursor: pointer;
                         clicked => { root.open-url(link.url); }
+                    }
+
+                    // Enter or Space opens the link
+                    keys := ButtonKeys {
+                        activated => { root.open-url(link.url); }
+                    }
+
+                    if keys.has-focus: FocusRing {
+                        offset: 1px;
+                        radius: Theme.radius-sm;
                     }
                 }
                 if i < root.links.length - 1: Text {
@@ -412,13 +492,40 @@ export component DialogShell inherits Rectangle {
         }
     }
 
+    // Tab stays inside the dialog: from the close button (the last stop)
+    // it goes round to the first control, Shift+Tab from the first control
+    // goes round to the close button. The dialog itself (focused on open)
+    // is not a stop of its own.
     keys := FocusScope {
+        focus-on-tab-navigation: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
                 root.close-requested();
                 return accept;
             }
+            if event.text == Key.Tab && !event.modifiers.shift
+                && (self.has-focus || close.has-focus) {
+                // Slint's own Tab handling then moves on from the start
+                head.focus();
+                return reject;
+            }
+            if (event.text == Key.Backtab || (event.text == Key.Tab && event.modifiers.shift))
+                && self.has-focus {
+                close.focus();
+                return accept;
+            }
             return reject;
+        }
+
+        // Start of the dialog's Tab order; reached by Tab only going back
+        // from the first control
+        head := FocusScope {
+            focus-on-click: false;
+            focus-gained(reason) => {
+                if reason == FocusReason.tab-navigation {
+                    close.focus();
+                }
+            }
         }
 
         card := Rectangle {
@@ -464,6 +571,7 @@ export component DialogShell inherits Rectangle {
                         alignment: center;
                         IconButton {
                             icon: @image-url("icons/chevron-left.svg");
+                            label: "Back";
                             icon-size: 16px;
                             clicked => { root.back-requested(); }
                         }
@@ -505,10 +613,11 @@ export component DialogShell inherits Rectangle {
             }
 
             // Close button, top right
-            IconButton {
+            close := IconButton {
                 x: parent.width - self.width - 12px;
                 y: 12px;
                 icon: @image-url("icons/xmark.svg");
+                label: "Close";
                 icon-size: 12px;
                 clicked => { root.close-requested(); }
             }
@@ -532,14 +641,31 @@ export component Toggle inherits Rectangle {
     height: 28px;
     opacity: root.enabled ? 1 : 0.45;
     animate opacity { duration: Theme.fast; }
+    forward-focus: focus;
+
+    accessible-role: switch;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.flip(); }
+
+    function flip() {
+        if root.enabled {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
 
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
-        clicked => {
-            root.checked = !root.checked;
-            root.toggled(root.checked);
-        }
+        clicked => { root.flip(); }
+    }
+
+    focus := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.flip(); }
     }
 
     row := HorizontalLayout {
@@ -556,6 +682,10 @@ export component Toggle inherits Rectangle {
                 border-width: root.dark-off ? 1.5px : 0;
                 border-color: Theme.text-tertiary;
                 animate background { duration: Theme.normal; }
+
+                if focus.has-focus: FocusRing {
+                    radius: parent.border-radius;
+                }
 
                 Rectangle {
                     property <length> size: root.dark-off ? 10px : 14px;
@@ -579,6 +709,8 @@ export component Toggle inherits Rectangle {
             color: Theme.text-primary;
             font-size: Theme.font-base;
             vertical-alignment: center;
+            // Read as the switch's name
+            accessible-role: none;
         }
     }
 }
@@ -593,6 +725,12 @@ export component InfoTip inherits Rectangle {
 
     width: 18px;
     height: 18px;
+    border-radius: self.width / 2;
+
+    accessible-role: button;
+    accessible-label: "More information";
+    accessible-description: root.text;
+    accessible-action-default => { root.open = !root.open; }
 
     Icon {
         x: 1px;
@@ -601,6 +739,16 @@ export component InfoTip inherits Rectangle {
         height: 16px;
         source: @image-url("icons/circle-info.svg");
         colorize: touch.has-hover || root.open ? Theme.text-primary : Theme.text-tertiary;
+    }
+
+    // Space or Enter shows or hides the bubble; it hides when the focus moves on
+    keys := ButtonKeys {
+        activated => { root.open = !root.open; }
+        focus-lost => { root.open = false; }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 
     touch := TouchArea {
