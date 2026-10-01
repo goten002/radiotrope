@@ -5,6 +5,12 @@
 
 import { Theme, Defaults } from "defaults.slint";
 
+// Clock for the small status animations: steps by Defaults.motion-step
+// while something plays, connects or records (the window runs the timer)
+export global Motion {
+    in-out property <duration> tick;
+}
+
 // Colorized icon. Draws the image 1px larger on every side and clips that
 // edge off: the femtovg renderer builds colorized textures without clearing
 // them, so their outermost pixels can hold leftover garbage that shows as a
@@ -37,7 +43,7 @@ export component NowPlayingBars inherits HorizontalLayout {
         alignment: end;
         Rectangle {
             width: 3px;
-            height: 3px + 9px * abs(sin(animation-tick() / (520ms + i * 140ms) * 180deg + i * 50deg));
+            height: 3px + 9px * abs(sin(Motion.tick / (520ms + i * 140ms) * 180deg + i * 50deg));
             border-radius: 1.5px;
             background: Theme.accent;
         }
@@ -268,7 +274,7 @@ export component Chip inherits Rectangle {
                 height: 6px;
                 border-radius: 3px;
                 background: root.tone;
-                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(animation-tick() / 1400ms * 180deg)) : 1;
+                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / 1400ms * 180deg)) : 1;
             }
         }
 
@@ -590,6 +596,9 @@ export component InfoTip inherits Rectangle {
     in property <string> text;
 
     property <bool> open: false;
+    // The press came from a touch screen, which leaves hover as the finger
+    // lifts: a tap keeps the bubble open until the next tap
+    property <bool> touch-press: false;
 
     width: 18px;
     height: 18px;
@@ -604,13 +613,18 @@ export component InfoTip inherits Rectangle {
     }
 
     touch := TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.touch-press = e.touch-finger-id != 0;
+            }
+        }
         clicked => {
             delay.running = false;
             root.open = !root.open;
         }
         changed has-hover => {
             delay.running = self.has-hover && !root.open;
-            if !self.has-hover {
+            if !self.has-hover && !root.touch-press {
                 root.open = false;
             }
         }

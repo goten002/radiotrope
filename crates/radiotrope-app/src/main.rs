@@ -589,16 +589,6 @@ fn main() {
             let logo_url = station.logo_url.to_string();
             let country = station.country.to_string();
 
-            // Invalidate old cached logo before updating (cache key = station id = url hash)
-            {
-                let f = favs.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(old_fav) = f.get(&id) {
-                    logo_svc.delete(old_fav);
-                }
-                drop(f);
-            }
-            invalidate_logo_image(&id);
-
             let mut update = radiotrope_app::data::types::FavoriteUpdate::new()
                 .name(name.clone())
                 .url(url.clone());
@@ -613,10 +603,25 @@ fn main() {
                 Some(country.clone())
             });
 
+            // A failed update (another favorite has the new URL) changes
+            // nothing; the dialog stays open and shows why
             let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
-            let _ = f.update(&id, update);
+            let old_fav = f.get(&id).cloned();
+            if let Err(e) = f.update(&id, update) {
+                return if f.get_id_for_url(&url) != id && f.is_favorite(&url) {
+                    "Another favorite already has this stream URL".into()
+                } else {
+                    e.to_string().into()
+                };
+            }
             let _ = f.save();
             drop(f);
+
+            // Drop the old cached logo (cache key = station id = url hash)
+            if let Some(old_fav) = &old_fav {
+                logo_svc.delete(old_fav);
+            }
+            invalidate_logo_image(&id);
 
             // Update playback UI if this is the currently playing station
             if let Some(ui) = ui_weak.upgrade() {
@@ -668,6 +673,7 @@ fn main() {
                     })
                     .ok();
             }
+            slint::SharedString::new()
         });
     }
 

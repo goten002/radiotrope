@@ -1,6 +1,6 @@
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars, Icon } from "components.slint";
+import { IconButton, NowPlayingBars, Icon, Motion } from "components.slint";
 import { LogoFog, LogoFogLayer } from "logo-fog.slint";
 
 export struct FavoriteStation {
@@ -88,6 +88,9 @@ component FavoriteRow inherits Rectangle {
     in property <string> session-time;
     // Show the stats on the right (View > Show Station Stats)
     in property <bool> show-stats: true;
+    // The stats bubble stays open: tapped on a touch screen, which has no
+    // hover (the list keeps one open at a time)
+    in property <bool> stats-pinned: false;
     // Touch screens: pick a station up only after holding the logo
     // briefly, so a swipe that starts on the logo still scrolls the list,
     // and open the menu by holding the rest of the row
@@ -97,6 +100,8 @@ component FavoriteRow inherits Rectangle {
     callback move-requested(/* to-top */ bool);
     callback remove-requested();
     callback reset-stats-requested();
+    // The stats were tapped on a touch screen: show or hide their bubble
+    callback stats-tapped();
     // Pointer y in window coordinates, and where in the row it grabbed
     callback grip-moved(/* pointer-y */ length, /* grab-y */ length);
     callback grip-released();
@@ -116,6 +121,8 @@ component FavoriteRow inherits Rectangle {
     property <bool> menu-held: false;
     // The pointer has rested on the stats long enough to explain them
     property <bool> stats-ready: false;
+    // The press on the stats came from a touch screen
+    property <bool> stats-touch-press: false;
     property <length> menu-width: 186px;
 
     public function open-menu(x: length, y: length) {
@@ -269,7 +276,7 @@ component FavoriteRow inherits Rectangle {
                         width: 12px;
                         height: 12px;
                         colorize: Theme.accent;
-                        rotation: mod(animation-tick() / 900ms, 1) * 360deg;
+                        rotation: mod(Motion.tick / 900ms, 1) * 360deg;
                     }
                 }
 
@@ -324,8 +331,18 @@ component FavoriteRow inherits Rectangle {
         x: root.width - self.width;
         width: 104px;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            // Touch has no hover: a tap shows or hides the bubble instead
+            if root.stats-touch-press {
+                root.stats-tapped();
+            } else {
+                root.clicked();
+            }
+        }
         pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.stats-touch-press = event.touch-finger-id != 0;
+            }
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.open-menu(self.x + self.mouse-x, self.mouse-y);
             }
@@ -346,7 +363,8 @@ component FavoriteRow inherits Rectangle {
     // Styled like the Statistics tiles: a caption over the total, and
     // label and value rows beside it
     stats-bubble := Rectangle {
-        property <bool> shown: stats-touch.has-hover && root.stats-ready
+        property <bool> shown: ((stats-touch.has-hover && root.stats-ready)
+                || (root.stats-pinned && root.show-stats))
             && !stats-touch.pressed && !root.dragging;
         property <bool> played: root.last-played != "";
         visible: self.opacity > 0;
@@ -624,6 +642,8 @@ export component Favorites inherits Rectangle {
     // would eat quick reorder drags
     in property <bool> touch-scroll: false;
     in property <bool> show-stats: true;
+    // The favorite whose stats bubble a tap opened (touch screens), or ""
+    property <string> pinned-stats-id;
 
     callback favorite-clicked(FavoriteStation);
     callback favorite-edit-requested(FavoriteStation);
@@ -769,6 +789,7 @@ export component Favorites inherits Rectangle {
                         dragging: root.drag-from-index >= 0;
                         row-index: idx;
                         clicked => {
+                            root.pinned-stats-id = "";
                             root.favorite-clicked(station);
                         }
                         listen-time: station.listen-time;
@@ -776,6 +797,10 @@ export component Favorites inherits Rectangle {
                         play-count: station.play-count;
                         session-time: station.session-time;
                         show-stats: root.show-stats;
+                        stats-pinned: root.pinned-stats-id == station.id;
+                        stats-tapped => {
+                            root.pinned-stats-id = root.pinned-stats-id == station.id ? "" : station.id;
+                        }
                         hold-to-drag: root.touch-scroll;
                         edit-clicked => {
                             root.favorite-edit-requested(station);

@@ -136,4 +136,8 @@ export global Defaults {
     // A second click on the same station or Play/Stop this soon after the
     // first is ignored (touchpad double taps); also read by the Rust side
     out property <duration> repeat-click-guard: 500ms;
+    // The small status animations (bouncing bars, pulsing dots, spinners)
+    // move this often, so a playing station doesn't redraw the window on
+    // every frame
+    out property <duration> motion-step: 100ms;
 }

@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, NowPlayingBars, Icon } from "../components.slint";
+import { DialogShell, NowPlayingBars, Icon, Motion } from "../components.slint";
 import { LogoFog, LogoFogLayer } from "../logo-fog.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
@@ -120,7 +120,7 @@ component StationRow inherits Rectangle {
                         width: 12px;
                         height: 12px;
                         colorize: Theme.accent;
-                        rotation: mod(animation-tick() / 900ms, 1) * 360deg;
+                        rotation: mod(Motion.tick / 900ms, 1) * 360deg;
                     }
                 }
 

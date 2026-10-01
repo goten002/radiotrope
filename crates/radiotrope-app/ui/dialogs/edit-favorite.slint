@@ -11,8 +11,16 @@ export component EditFavoriteDialog inherits Rectangle {
     in-out property <string> edit-url;
     in-out property <string> edit-logo-url;
     in-out property <string> edit-country;
+    // Why the last Save didn't go through (nothing was changed); cleared
+    // when the URL is edited
+    property <string> error;
+    // Remove was clicked once: the next click removes
+    property <bool> confirm-remove: false;
+    property <bool> can-save: root.edit-name != "" && root.edit-url != "";
 
-    callback accepted(FavoriteStation);
+    // Saves the changes; returns why it couldn't (e.g. another favorite
+    // has the URL), or "" when saved
+    callback accepted(FavoriteStation) -> string;
     callback deleted(FavoriteStation);
 
     public function open(station: FavoriteStation) {
@@ -21,7 +29,20 @@ export component EditFavoriteDialog inherits Rectangle {
         self.edit-url = station.url;
         self.edit-logo-url = station.logo-url;
         self.edit-country = station.country;
+        self.error = "";
+        self.confirm-remove = false;
         self.show-dialog = true;
+    }
+
+    // Save, or Enter in any field; the dialog stays open when it fails
+    function save() {
+        if !root.can-save {
+            return;
+        }
+        root.error = root.accepted(root.station());
+        if root.error == "" {
+            root.show-dialog = false;
+        }
     }
 
     function station() -> FavoriteStation {
@@ -46,6 +67,7 @@ export component EditFavoriteDialog inherits Rectangle {
             StyledLineEdit {
                 placeholder-text: "Station name";
                 text <=> root.edit-name;
+                accepted => { root.save(); }
             }
         }
 
@@ -55,6 +77,15 @@ export component EditFavoriteDialog inherits Rectangle {
             StyledLineEdit {
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.edit-url;
+                accepted => { root.save(); }
+                edited => { root.error = ""; }
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Theme.font-md;
+                wrap: word-wrap;
             }
         }
 
@@ -64,6 +95,7 @@ export component EditFavoriteDialog inherits Rectangle {
                 placeholder-text: "https://example.com/logo.png";
                 text <=> root.edit-logo-url;
                 clearable: true;
+                accepted => { root.save(); }
             }
         }
 
@@ -73,6 +105,7 @@ export component EditFavoriteDialog inherits Rectangle {
                 placeholder-text: "United Kingdom, London";
                 text <=> root.edit-country;
                 clearable: true;
+                accepted => { root.save(); }
             }
         }
 
@@ -80,12 +113,17 @@ export component EditFavoriteDialog inherits Rectangle {
             padding-top: 4px;
             spacing: 8px;
 
+            // Asks once more before removing, like the row's menu
             DangerButton {
-                label: "Remove";
-                icon: @image-url("../icons/xmark.svg");
+                label: root.confirm-remove ? "Click Again to Remove" : "Remove";
+                icon: @image-url("../icons/trash-can.svg");
                 clicked => {
-                    root.deleted(root.station());
-                    root.show-dialog = false;
+                    if root.confirm-remove {
+                        root.deleted(root.station());
+                        root.show-dialog = false;
+                    } else {
+                        root.confirm-remove = true;
+                    }
                 }
             }
 
@@ -98,11 +136,8 @@ export component EditFavoriteDialog inherits Rectangle {
 
             AccentButton {
                 label: "Save";
-                enabled: root.edit-name != "" && root.edit-url != "";
-                clicked => {
-                    root.accepted(root.station());
-                    root.show-dialog = false;
-                }
+                enabled: root.can-save;
+                clicked => { root.save(); }
             }
         }
     }
