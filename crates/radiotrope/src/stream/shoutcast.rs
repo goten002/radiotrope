@@ -4,19 +4,23 @@
 //! and the HTTP client rejects that reply. [`get`] speaks just enough
 //! HTTP/1.0 to play them: one request, a status line of either kind, headers,
 //! then the body until the connection closes. These servers only speak plain
-//! `http://`, and there are no redirects to follow.
+//! `http://`. The station's own address may redirect to one (the HTTP client
+//! followed it before it failed), so redirects are followed too.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
 use reqwest::{StatusCode, Url};
 
 use crate::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
 
 /// Longest status line plus headers we read
 const MAX_HEAD_BYTES: usize = 16 * 1024;
+
+/// Most redirects followed before the old server is reached
+const MAX_REDIRECTS: usize = 5;
 
 /// A reply: its status and headers, and the connection to read its body from
 pub(crate) struct Reply {
@@ -25,9 +29,31 @@ pub(crate) struct Reply {
     pub body: BufReader<TcpStream>,
 }
 
-/// Request `url` (with ICY metadata) and read the reply's status and headers
+/// Request `url` (with ICY metadata) and read the reply's status and
+/// headers, following redirects
 pub(crate) fn get(url: &str) -> io::Result<Reply> {
-    let url = Url::parse(url).map_err(invalid)?;
+    let mut url = Url::parse(url).map_err(invalid)?;
+    for _ in 0..=MAX_REDIRECTS {
+        let reply = get_once(&url)?;
+        match redirect(&reply, &url) {
+            Some(next) => url = next,
+            None => return Ok(reply),
+        }
+    }
+    Err(invalid("too many redirects"))
+}
+
+/// Where a redirect reply sends the request
+fn redirect(reply: &Reply, url: &Url) -> Option<Url> {
+    if !matches!(reply.status.as_u16(), 301 | 302 | 303 | 307 | 308) {
+        return None;
+    }
+    let location = reply.headers.get(LOCATION)?.to_str().ok()?;
+    url.join(location.trim()).ok()
+}
+
+/// One request to `url`, without following a redirect
+fn get_once(url: &Url) -> io::Result<Reply> {
     if url.scheme() != "http" {
         return Err(invalid("only plain http"));
     }
@@ -179,6 +205,39 @@ mod tests {
             reply.headers["icy-name"].as_bytes(),
             [0xD1, 0xDC, 0xE4, 0xE9, 0xEF]
         );
+    }
+
+    #[test]
+    fn follows_redirects_to_the_old_server() {
+        // The station's address redirects to its SHOUTcast v1 server. The
+        // HTTP client follows, then fails on the ICY reply; asking the
+        // station's address again used to stop at the redirect.
+        let server = TestServer::start();
+        server.route("/station", Route::redirect("/relay?id=7"));
+        server.route("/relay?id=7", Route::redirect(&server.url("/;stream.mp3")));
+        server.route(
+            "/;stream.mp3",
+            Route::new("audio bytes").raw_head("ICY 200 OK\r\nicy-name:Old FM\r\n\r\n"),
+        );
+        let mut reply = get(&server.url("/station")).unwrap();
+        assert_eq!(reply.status, StatusCode::OK);
+        assert_eq!(reply.headers["icy-name"], "Old FM");
+        let mut body = String::new();
+        reply.body.read_to_string(&mut body).unwrap();
+        assert_eq!(body, "audio bytes");
+    }
+
+    #[test]
+    fn gives_up_on_redirects_it_cannot_follow() {
+        let server = TestServer::start();
+        server.route("/a", Route::redirect("/b"));
+        server.route("/b", Route::redirect("/a"));
+        assert!(get(&server.url("/a")).is_err(), "a loop");
+        server.route("/tls", Route::redirect("https://radio.example/live"));
+        assert!(get(&server.url("/tls")).is_err(), "no TLS");
+        // A redirect without a Location is the reply
+        server.route("/odd", Route::status(302));
+        assert_eq!(get(&server.url("/odd")).unwrap().status, StatusCode::FOUND);
     }
 
     #[test]

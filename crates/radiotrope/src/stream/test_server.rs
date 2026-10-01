@@ -18,6 +18,8 @@ pub struct Route {
     pub with_length: bool,
     /// Keep the connection open after the body, sending nothing more
     pub stall: bool,
+    /// Send the body again and again until the client hangs up
+    pub endless: bool,
     /// Sent as the status line and headers instead of building them
     pub raw_head: Option<Vec<u8>>,
 }
@@ -30,6 +32,7 @@ impl Route {
             body: body.into(),
             with_length: true,
             stall: false,
+            endless: false,
             raw_head: None,
         }
     }
@@ -72,6 +75,13 @@ impl Route {
         self.stall = true;
         self
     }
+
+    /// Send the body over and over, without a Content-Length, until the
+    /// client hangs up, as a live stream does
+    pub fn endless(mut self) -> Self {
+        self.endless = true;
+        self.without_length()
+    }
 }
 
 /// Serves fixed routes on 127.0.0.1 until the test process exits.
@@ -109,6 +119,10 @@ impl TestServer {
                     *hits.lock().unwrap().entry(path.to_string()).or_default() += 1;
                     let route = routes.lock().unwrap().get(path).cloned();
                     let stall = route.as_ref().is_some_and(|r| r.stall);
+                    let repeat = route
+                        .as_ref()
+                        .filter(|r| r.endless && !r.body.is_empty())
+                        .map(|r| r.body.clone());
                     let response = match route {
                         Some(Route {
                             raw_head: Some(head),
@@ -133,6 +147,11 @@ impl TestServer {
                         }
                     };
                     let _ = stream.write_all(&response);
+                    if let Some(body) = repeat {
+                        while stream.write_all(&body).is_ok() {
+                            thread::sleep(Duration::from_millis(1));
+                        }
+                    }
                     if stall {
                         thread::sleep(Duration::from_secs(60));
                     }

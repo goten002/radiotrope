@@ -90,6 +90,11 @@ pub mod hls {
     /// Largest segment read, media or init segment, in bytes (audio
     /// segments are well under 1 MB). A larger one is a failed download.
     pub const MAX_SEGMENT_BYTES: usize = 32 * 1024 * 1024;
+
+    /// Longest a playlist or segment download may take, however fast its
+    /// bytes come, in seconds. A body that doesn't end (a live stream where
+    /// a segment should be) is a failed download.
+    pub const MAX_DOWNLOAD_SECS: u64 = 2 * SEGMENT_TIMEOUT_SECS;
 }
 
 /// Timeout configuration for resilience
