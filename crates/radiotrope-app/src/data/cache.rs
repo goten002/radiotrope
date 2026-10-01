@@ -9,6 +9,7 @@
 //! SVG) is stored as-is with an extension guessed from its content.
 
 use crate::config::app::NAME;
+use crate::config::logos::{MAX_DECODE_BYTES, MAX_DIMENSION};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use std::collections::HashSet;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use image::imageops::FilterType;
-use image::{ImageFormat, ImageReader};
+use image::{DynamicImage, ImageFormat, ImageReader};
 
 /// Supported image extensions (in order of preference for lookup)
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"];
@@ -68,6 +69,44 @@ impl ImageCache {
             ))
         })?;
         Ok(Self { cache_dir })
+    }
+
+    /// The cache in the `name` folder under the app's cache folder. When
+    /// that folder can't be created (no home folder, a read-only or full
+    /// disk, a file in the way), one in the temp folder is used instead.
+    /// Failing that too, the cache keeps nothing (lookups find nothing,
+    /// saves fail) and the app runs without it.
+    pub fn open(name: &str) -> Self {
+        let preferred = cache_dir().map(|dir| dir.join(name));
+        let problem = match &preferred {
+            Ok(dir) => match fs::create_dir_all(dir) {
+                Ok(()) => {
+                    return Self {
+                        cache_dir: dir.clone(),
+                    }
+                }
+                Err(e) => format!("Failed to create {}: {e}", dir.display()),
+            },
+            Err(e) => e.to_string(),
+        };
+        let fallback = fallback_cache_dir().join(name);
+        if let Err(e) = fallback_dir_ready(&fallback) {
+            eprintln!("{problem}, and {e}; images won't be kept on disk");
+            // A folder that doesn't exist, and that nobody else can have
+            // made in its place
+            let missing = preferred.unwrap_or_else(|_| {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos();
+                std::env::temp_dir().join(format!("{NAME}-{}-{nanos}", std::process::id()))
+            });
+            return Self { cache_dir: missing };
+        }
+        eprintln!("{problem}; caching in {}", fallback.display());
+        Self {
+            cache_dir: fallback,
+        }
     }
 
     /// Create a new image cache with a custom directory (for testing)
@@ -458,11 +497,64 @@ fn needs_thumbnail(data: &[u8]) -> bool {
     }
 }
 
+/// Decode a logo, refusing anything larger than [`MAX_DIMENSION`] a side
+/// or [`MAX_DECODE_BYTES`] of memory: a small file can unpack into a huge
+/// image, and several are decoded at once.
+pub fn decode_logo(data: &[u8]) -> image::ImageResult<DynamicImage> {
+    let mut reader = ImageReader::new(Cursor::new(data)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_DIMENSION);
+    limits.max_image_height = Some(MAX_DIMENSION);
+    limits.max_alloc = Some(MAX_DECODE_BYTES);
+    reader.limits(limits);
+    reader.decode()
+}
+
+/// The folder in the temp folder used when the cache folder can't be
+/// created: the user's own (the temp folder is shared on Linux)
+fn fallback_cache_dir() -> PathBuf {
+    #[cfg(unix)]
+    {
+        // SAFETY: getuid has no preconditions and cannot fail
+        let uid = unsafe { libc::getuid() };
+        std::env::temp_dir().join(format!("{NAME}-cache-{uid}"))
+    }
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir().join(format!("{NAME}-cache"))
+    }
+}
+
+/// Create `dir` in the fallback folder, which must be the user's own
+fn fallback_dir_ready(dir: &Path) -> std::io::Result<()> {
+    let base = dir.parent().unwrap_or(dir);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        match fs::DirBuilder::new().mode(0o700).create(base) {
+            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+            _ => {}
+        }
+        // In a shared temp folder someone else could have made it first
+        let meta = fs::symlink_metadata(base)?;
+        // SAFETY: getuid has no preconditions and cannot fail
+        if !meta.is_dir() || meta.uid() != unsafe { libc::getuid() } {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("{} belongs to another user", base.display()),
+            ));
+        }
+    }
+    #[cfg(not(unix))]
+    fs::create_dir_all(base)?;
+    fs::create_dir_all(dir)
+}
+
 /// Decode an image and re-encode it as a PNG no larger than [`LOGO_MAX_SIZE`]
 ///
 /// Returns `None` if the data is not an image the `image` crate can decode.
 fn make_thumbnail(data: &[u8]) -> Option<Vec<u8>> {
-    let img = image::load_from_memory(data).ok()?;
+    let img = decode_logo(data).ok()?;
     let img = if img.width() > LOGO_MAX_SIZE || img.height() > LOGO_MAX_SIZE {
         img.resize(LOGO_MAX_SIZE, LOGO_MAX_SIZE, FilterType::CatmullRom)
     } else {
@@ -504,6 +596,28 @@ mod tests {
         img.write_to(&mut Cursor::new(&mut out), ImageFormat::Png)
             .unwrap();
         out
+    }
+
+    #[test]
+    fn the_fallback_folder_is_made_private_and_refused_when_not_a_folder() {
+        let dir = temp_cache_dir();
+        fs::create_dir_all(&dir).unwrap();
+        let logos = dir.join("fallback").join("logos");
+        fallback_dir_ready(&logos).unwrap();
+        assert!(logos.is_dir());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.join("fallback"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o700);
+        }
+        // A file where the folder should be
+        fs::write(dir.join("file"), b"x").unwrap();
+        assert!(fallback_dir_ready(&dir.join("file").join("logos")).is_err());
+        cleanup_dir(&dir);
     }
 
     #[test]

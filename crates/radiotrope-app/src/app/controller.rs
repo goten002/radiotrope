@@ -142,8 +142,9 @@ impl AppController {
                 url,
                 name,
                 logo_url,
+                country,
             } => {
-                self.start_stream(&url, name, logo_url);
+                self.start_stream(&url, name, logo_url, country);
             }
             AppCommand::Stop => {
                 self.stop_recording();
@@ -283,7 +284,13 @@ impl AppController {
     ///
     /// Each call increments `resolve_generation`; stale results from earlier
     /// calls are discarded in `handle_stream_resolved`.
-    fn start_stream(&mut self, url: &str, name: Option<String>, logo_url: Option<String>) {
+    fn start_stream(
+        &mut self,
+        url: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    ) {
         // Switching station ends the recording of the old one
         self.stop_recording();
 
@@ -306,6 +313,7 @@ impl AppController {
             state.station_url = Some(url.to_string());
             state.station_name = name;
             state.station_logo_url = logo_url.filter(|logo| !logo.is_empty());
+            state.station_country = country.filter(|country| !country.is_empty());
             state.title.clear();
             state.artist.clear();
             state.last_error = None;
@@ -813,7 +821,7 @@ mod tests {
         #[test]
         fn a_stop_while_resolving_ends_the_resolve_and_stays_stopped() {
             let (mut controller, state) = controller();
-            controller.start_stream(&silent_station(), Some("Silent FM".into()), None);
+            controller.start_stream(&silent_station(), Some("Silent FM".into()), None, None);
             let cancel = controller.stream_cancel.clone().unwrap();
             assert!(state.lock().unwrap().is_resolving);
 
@@ -832,11 +840,43 @@ mod tests {
         }
 
         #[test]
+        fn a_play_carries_its_logo_and_country() {
+            let (mut controller, state) = controller();
+            controller.handle_command(AppCommand::Play {
+                url: silent_station(),
+                name: Some("Silent FM".into()),
+                logo_url: Some("http://silent.test/logo.png".into()),
+                country: Some("Greece".into()),
+            });
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(
+                    state.station_logo_url.as_deref(),
+                    Some("http://silent.test/logo.png")
+                );
+                assert_eq!(state.station_country.as_deref(), Some("Greece"));
+            }
+            // The next station without one doesn't keep it
+            controller.handle_command(AppCommand::Play {
+                url: silent_station(),
+                name: None,
+                logo_url: None,
+                country: Some(String::new()),
+            });
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.station_logo_url, None);
+                assert_eq!(state.station_country, None);
+            }
+            controller.handle_command(AppCommand::Stop);
+        }
+
+        #[test]
         fn switching_station_stops_the_old_one_at_once() {
             let (mut controller, state) = controller();
             controller.stream_id = Some(StreamId(1));
             controller.handle_engine_event(on(1, playing()));
-            controller.start_stream(&silent_station(), Some("Next".into()), None);
+            controller.start_stream(&silent_station(), Some("Next".into()), None, None);
             assert_eq!(controller.stream_id, None);
             {
                 let state = state.lock().unwrap();
@@ -850,9 +890,9 @@ mod tests {
         fn switching_station_cancels_the_one_resolving() {
             let (mut controller, state) = controller();
             let station = silent_station();
-            controller.start_stream(&station, Some("First".into()), None);
+            controller.start_stream(&station, Some("First".into()), None, None);
             let first = controller.stream_cancel.clone().unwrap();
-            controller.start_stream(&station, Some("Second".into()), None);
+            controller.start_stream(&station, Some("Second".into()), None, None);
             let second = controller.stream_cancel.clone().unwrap();
             assert!(first.is_cancelled());
             assert!(!second.is_cancelled());

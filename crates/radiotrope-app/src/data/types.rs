@@ -47,6 +47,15 @@ pub fn legacy_url_to_id(url: &str) -> String {
     format!("{:016x}", hasher.finish())
 }
 
+/// A name for a stream that has none: its host (`stream.example.com`), or
+/// the URL itself when it has no host
+pub fn name_from_url(url: &str) -> String {
+    reqwest::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_else(|| url.to_string())
+}
+
 /// 64-bit FNV-1a, stable across Rust versions (unlike `DefaultHasher`)
 pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| {
@@ -516,6 +525,16 @@ impl FavoriteFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stream_without_a_name_is_named_by_its_host() {
+        assert_eq!(
+            name_from_url("http://stream.example.com:8000/live.mp3"),
+            "stream.example.com"
+        );
+        assert_eq!(name_from_url("https://[::1]/radio"), "[::1]");
+        assert_eq!(name_from_url("not a url"), "not a url");
+    }
 
     #[test]
     fn test_station_creation() {

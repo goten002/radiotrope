@@ -80,6 +80,7 @@ impl StationProvider for FakeDirectory {
         Ok((id == "jazz-id").then(|| {
             Station::new("Jazz FM", "http://jazz.test/stream")
                 .with_logo("http://jazz.test/logo.png")
+                .with_metadata(Some("Greece".into()), None, Default::default())
         }))
     }
 }
@@ -472,6 +473,7 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 url,
                 name,
                 logo_url,
+                country,
             } = cmd
             else {
                 continue;
@@ -482,6 +484,7 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 st.station_url = Some(url.clone());
                 st.station_name = name;
                 st.station_logo_url = logo_url;
+                st.station_country = country;
                 st.is_resolving = true;
                 st.last_error = None;
                 st.playback = radiotrope::audio::PlaybackState::Stopped;
@@ -522,11 +525,13 @@ async fn play_waits_for_the_outcome() {
 
     let by_id = s.call("play_station", json!({"id": "jazz-id"})).await;
     assert!(text(&by_id).starts_with("Playing Jazz FM"), "{by_id}");
-    // The logo goes with it, for the header
+    // The logo and country go with it, for the header
+    let state = s.state.lock().unwrap().clone();
     assert_eq!(
-        s.state.lock().unwrap().station_logo_url.as_deref(),
+        state.station_logo_url.as_deref(),
         Some("http://jazz.test/logo.png")
     );
+    assert_eq!(state.station_country.as_deref(), Some("Greece"));
     let unknown = s.call("play_station", json!({"id": "nope"})).await;
     assert_eq!(unknown["isError"], true);
 }

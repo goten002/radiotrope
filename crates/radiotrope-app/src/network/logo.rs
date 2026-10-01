@@ -3,11 +3,15 @@
 //! Provides a unified interface for retrieving station logos,
 //! handling both cache lookups and network fetching.
 
-use crate::data::cache::ImageCache;
+use crate::config::logos::MAX_BYTES;
+use crate::data::cache::{decode_logo, ImageCache};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
+use crate::network::failed_logos::FailedLogos;
 use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use std::io::Read;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Service for fetching and caching station logos
@@ -18,20 +22,18 @@ use std::time::Duration;
 pub struct LogoService {
     cache: ImageCache,
     client: reqwest::blocking::Client,
+    /// Logo URLs that failed lately, so they aren't fetched on every look
+    failed: FailedLogos,
+    /// A background prefetch is running, and whether another was asked for
+    /// meanwhile
+    prefetching: Mutex<(bool, bool)>,
 }
 
 impl LogoService {
-    /// Create a new logo service with default settings
+    /// Create a new logo service with default settings. A cache folder
+    /// that can't be created doesn't stop it (see [`ImageCache::open`]).
     pub fn new() -> Result<Self> {
-        let cache = ImageCache::new()?;
-        let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
-            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
-            .build()
-            .map_err(AppError::from)?;
-
-        Ok(Self { cache, client })
+        Self::with_cache(ImageCache::open("logos"))
     }
 
     /// Create a logo service with a custom cache directory (for testing)
@@ -43,7 +45,12 @@ impl LogoService {
             .build()
             .map_err(AppError::from)?;
 
-        Ok(Self { cache, client })
+        Ok(Self {
+            cache,
+            client,
+            failed: FailedLogos::new(),
+            prefetching: Mutex::new((false, false)),
+        })
     }
 
     /// Get access to the underlying cache
@@ -73,12 +80,12 @@ impl LogoService {
 
         // Not cached - try to fetch
         let url = item.logo_url()?;
-        let data = self.fetch_raw(url).ok()?;
+        let data = self.download(url).ok()?;
 
-        // Cache it (ignore errors - we still have the data)
+        // Cache it, as the thumbnail every later look gets (a cache that
+        // can't be written still leaves us the data)
         let _ = self.cache.put_logo(item, &data);
-
-        Some(data)
+        self.cache.get_logo(item).or(Some(data))
     }
 
     /// Get logo bytes only if already cached (no network request)
@@ -114,10 +121,58 @@ impl LogoService {
             .ok_or_else(|| AppError::NotFound("Item has no logo URL".to_string()))?;
 
         // Fetch and cache
-        let data = self.fetch_raw(url)?;
-        self.cache.put_logo(item, &data)?;
+        let data = self.download(url)?;
+        // A cache that can't be written would have it downloaded on every
+        // look
+        self.cache
+            .put_logo(item, &data)
+            .inspect_err(|e| self.failed.record(url, e))?;
 
         Ok(true)
+    }
+
+    /// Whether `item` has a logo to fetch: it has a URL, isn't cached, and
+    /// hasn't failed lately
+    pub fn is_missing<T: HasLogo>(&self, item: &T) -> bool {
+        item.logo_url()
+            .is_some_and(|url| !url.is_empty() && !self.failed.has_failed(url))
+            && !self.cache.has_logo(item)
+    }
+
+    /// [`prefetch`](Self::prefetch) `items` on a thread of its own, then
+    /// call `done` if any logo arrived. While one runs, another call only
+    /// notes that it was asked for: the running one then calls its `done`
+    /// as well, so the caller looks again, instead of a second thread
+    /// fetching the same logos.
+    pub fn prefetch_in_background<T, F>(self: &Arc<Self>, items: Vec<T>, done: F)
+    where
+        T: HasLogo + Send + 'static,
+        F: FnOnce() + Send + 'static,
+    {
+        {
+            let mut state = self.prefetching.lock().unwrap_or_else(|e| e.into_inner());
+            if state.0 {
+                state.1 = true;
+                return;
+            }
+            *state = (true, false);
+        }
+        let this = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name("logo-prefetch".into())
+            .spawn(move || {
+                let fetched = this.prefetch(&items);
+                let again = {
+                    let mut state = this.prefetching.lock().unwrap_or_else(|e| e.into_inner());
+                    std::mem::take(&mut *state).1
+                };
+                if fetched > 0 || again {
+                    done();
+                }
+            });
+        if spawned.is_err() {
+            *self.prefetching.lock().unwrap_or_else(|e| e.into_inner()) = (false, false);
+        }
     }
 
     /// Prefetch logos for multiple items
@@ -131,8 +186,8 @@ impl LogoService {
         let mut fetched = 0;
 
         for item in items {
-            // Skip if no URL or already cached
-            if item.logo_url().is_none() || self.cache.has_logo(item) {
+            // Skip if no URL, already cached, or failed lately
+            if !self.is_missing(item) {
                 continue;
             }
 
@@ -194,7 +249,9 @@ impl LogoService {
 
     /// Fetch image bytes from a URL without caching
     ///
-    /// Useful for previews or one-time downloads.
+    /// Useful for previews or one-time downloads. Anything larger than
+    /// [`MAX_BYTES`] is refused: logo URLs can point at streams or huge
+    /// files.
     pub fn fetch_raw(&self, url: &str) -> Result<Vec<u8>> {
         if url.is_empty() {
             return Err(AppError::NotFound("Empty URL".to_string()));
@@ -206,8 +263,28 @@ impl LogoService {
             return Err(response.error_for_status().unwrap_err().into());
         }
 
-        let bytes = response.bytes()?;
-        Ok(bytes.to_vec())
+        let too_large = || AppError::InvalidResponse(format!("Logo larger than {MAX_BYTES} bytes"));
+        if response.content_length().is_some_and(|n| n > MAX_BYTES) {
+            return Err(too_large());
+        }
+        // Content-Length may be missing or wrong: stop reading past the cap
+        let mut data = Vec::new();
+        response.take(MAX_BYTES + 1).read_to_end(&mut data)?;
+        if data.len() as u64 > MAX_BYTES {
+            return Err(too_large());
+        }
+        Ok(data)
+    }
+
+    /// [`fetch_raw`](Self::fetch_raw), unless `url` failed lately; a
+    /// failure is remembered
+    fn download(&self, url: &str) -> Result<Vec<u8>> {
+        if self.failed.has_failed(url) {
+            return Err(AppError::NotFound(format!("{url} failed lately")));
+        }
+        self.fetch_raw(url)
+            .inspect(|_| self.failed.clear(url))
+            .inspect_err(|e| self.failed.record(url, e))
     }
 
     /// Fetch image and decode to RGBA pixels
@@ -218,9 +295,9 @@ impl LogoService {
         self.decode_to_rgba(&data)
     }
 
-    /// Decode image bytes to RGBA pixels
+    /// Decode image bytes to RGBA pixels (see [`decode_logo`] for the limits)
     pub fn decode_to_rgba(&self, data: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
-        let img = image::load_from_memory(data)
+        let img = decode_logo(data)
             .map_err(|e| AppError::Image(format!("Failed to decode image: {}", e)))?;
 
         let rgba = img.to_rgba8();
@@ -505,6 +582,91 @@ mod tests {
 
         // Test cache_mut() accessor
         let _ = service.cache_mut().clear();
+    }
+
+    fn png(width: u32, height: u32) -> Vec<u8> {
+        let img = image::RgbaImage::from_pixel(width, height, image::Rgba([9, 99, 199, 255]));
+        let mut out = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn a_download_past_the_cap_is_refused_and_not_retried() {
+        use crate::network::test_http::{ok, serve};
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let big = vec![0u8; MAX_BYTES as usize + 1];
+
+        // Said up front, and found out while reading
+        for with_length in [true, false] {
+            let url = format!("{}/logo.png", serve(ok(&big, with_length), Duration::ZERO));
+            assert!(matches!(
+                service.fetch_raw(&url),
+                Err(AppError::InvalidResponse(_))
+            ));
+            let station = Station::new("Big", "http://big.test/stream").with_logo(&url);
+            assert!(service.ensure_cached(&station).is_err());
+            // Too large is for good: no second download
+            assert!(service.failed.has_failed(&url));
+            assert!(!service.is_missing(&station));
+        }
+
+        let url = format!("{}/logo.png", serve(ok(&png(4, 4), true), Duration::ZERO));
+        assert_eq!(service.fetch_raw(&url).unwrap(), png(4, 4));
+    }
+
+    #[test]
+    fn a_downloaded_logo_comes_back_as_its_thumbnail() {
+        use crate::data::cache::LOGO_MAX_SIZE;
+        use crate::network::test_http::{ok, serve};
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let url = format!(
+            "{}/logo.png",
+            serve(ok(&png(640, 320), true), Duration::ZERO)
+        );
+        let station = Station::new("Wide", "http://wide.test/stream").with_logo(&url);
+        let (_, w, h) = service.get_rgba(&station).unwrap();
+        assert_eq!((w, h), (LOGO_MAX_SIZE, LOGO_MAX_SIZE / 2));
+    }
+
+    #[test]
+    fn huge_images_are_not_decoded() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        // A few kB of PNG that would unpack to 5000 pixels a row
+        assert!(service.decode_to_rgba(&png(5000, 1)).is_err());
+        assert!(service.decode_to_rgba(&png(100, 100)).is_ok());
+    }
+
+    #[test]
+    fn a_prefetch_asked_for_while_one_runs_is_folded_into_it() {
+        use crate::network::test_http::serve;
+        let service = Arc::new(LogoService::with_cache(temp_cache()).unwrap());
+        let slow = serve(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            Duration::from_millis(500),
+        );
+        let station = Station::new("Slow", "http://slow.test/stream")
+            .with_logo(format!("{slow}/logo.png").as_str());
+        let (tx, rx) = std::sync::mpsc::channel();
+
+        let first = tx.clone();
+        service.prefetch_in_background(vec![station.clone()], move || {
+            let _ = first.send("first");
+        });
+        let second = tx.clone();
+        service.prefetch_in_background(vec![station.clone()], move || {
+            let _ = second.send("second");
+        });
+        // Nothing arrived, but another look was asked for meanwhile
+        assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok("first"));
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+
+        // The refused logo isn't fetched again, and nothing calls back
+        service.prefetch_in_background(vec![station], move || {
+            let _ = tx.send("third");
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
     }
 
     #[test]

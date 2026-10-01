@@ -4,12 +4,10 @@
 //! disk cache, keyed by the logo URL. The browser only decodes the logos
 //! of the rows on screen, so memory stays flat however long the list is.
 
-use crate::data::cache::{cache_dir, ImageCache};
+use crate::data::cache::{decode_logo, ImageCache};
 use crate::data::types::url_to_id;
-use crate::error::Result;
+use crate::network::failed_logos::FailedLogos;
 use crate::network::LogoService;
-use std::collections::HashSet;
-use std::sync::Mutex;
 
 /// Logos not shown for this long are removed from disk at startup
 pub const UNUSED_AFTER: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 60 * 60);
@@ -22,23 +20,23 @@ pub type Rgba = (Vec<u8>, u32, u32);
 
 pub struct BrowseLogos {
     cache: ImageCache,
-    /// Logo URLs that failed to download or decode this session, so
-    /// scrolling past them doesn't retry
-    failed: Mutex<HashSet<String>>,
+    /// Logo URLs that failed lately, so scrolling past them doesn't retry.
+    /// A network drop is forgotten after a while; a refused or broken logo
+    /// is kept for the session.
+    failed: FailedLogos,
 }
 
 impl BrowseLogos {
-    /// The cache under the app's cache folder
-    pub fn open() -> Result<Self> {
-        Ok(Self::with_cache(ImageCache::with_dir(
-            cache_dir()?.join("browse-logos"),
-        )?))
+    /// The cache under the app's cache folder (see [`ImageCache::open`]
+    /// for when that can't be created)
+    pub fn open() -> Self {
+        Self::with_cache(ImageCache::open("browse-logos"))
     }
 
     pub fn with_cache(cache: ImageCache) -> Self {
         Self {
             cache,
-            failed: Mutex::new(HashSet::new()),
+            failed: FailedLogos::new(),
         }
     }
 
@@ -55,39 +53,47 @@ impl BrowseLogos {
     /// A logo shrunk for a browser row: from the disk cache, else
     /// downloaded, shrunk and cached. `None` when it can't be had.
     pub fn row_logo(&self, service: &LogoService, logo_url: &str) -> Option<Rgba> {
-        if logo_url.is_empty() || self.has_failed(logo_url) {
+        if logo_url.is_empty() || self.failed.has_failed(logo_url) {
             return None;
         }
         let key = url_to_id(logo_url);
-        let png = self
-            .cache
-            .get(&key)
-            .inspect(|_| self.cache.touch(&key))
-            .or_else(|| {
-                let data = service.fetch_raw(logo_url).ok()?;
-                self.cache.put_thumbnail(&key, &data)
-            });
-        let logo = png.and_then(|png| row_rgba(&png));
-        if logo.is_none() {
-            self.failed
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(logo_url.to_string());
+        let png = match self.cache.get(&key) {
+            Some(png) => {
+                self.cache.touch(&key);
+                png
+            }
+            None => match service.fetch_raw(logo_url) {
+                Ok(data) => match self.cache.put_thumbnail(&key, &data) {
+                    Some(png) => png,
+                    // Not an image we can show (a web page, an SVG)
+                    None => {
+                        self.failed.record_unusable(logo_url);
+                        return None;
+                    }
+                },
+                Err(e) => {
+                    self.failed.record(logo_url, &e);
+                    return None;
+                }
+            },
+        };
+        let logo = row_rgba(&png);
+        match logo {
+            Some(_) => self.failed.clear(logo_url),
+            None => self.failed.record_unusable(logo_url),
         }
         logo
     }
 
+    #[cfg(test)]
     fn has_failed(&self, logo_url: &str) -> bool {
-        self.failed
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(logo_url)
+        self.failed.has_failed(logo_url)
     }
 }
 
 /// Decode a cached PNG to row size
 fn row_rgba(png: &[u8]) -> Option<Rgba> {
-    let img = image::load_from_memory(png).ok()?;
+    let img = decode_logo(png).ok()?;
     let img = if img.width() > ROW_LOGO_SIZE || img.height() > ROW_LOGO_SIZE {
         img.thumbnail(ROW_LOGO_SIZE, ROW_LOGO_SIZE)
     } else {
@@ -102,6 +108,7 @@ fn row_rgba(png: &[u8]) -> Option<Rgba> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::time::Duration;
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -153,6 +160,18 @@ mod tests {
             .unwrap();
         let (_, w, h) = logos.row_logo(&service, url).unwrap();
         assert_eq!((w, h), (32, 32));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_page_instead_of_a_logo_is_remembered() {
+        use crate::network::test_http::{ok, serve};
+        let (logos, service, dir) = temp();
+        let server = serve(ok(b"<html>Not here</html>", true), Duration::ZERO);
+        let url = format!("{server}/favicon.ico");
+        assert!(logos.row_logo(&service, &url).is_none());
+        assert!(logos.has_failed(&url));
+        assert!(logos.cached_png(&url).is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 
