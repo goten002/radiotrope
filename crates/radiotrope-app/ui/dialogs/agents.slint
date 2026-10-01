@@ -246,20 +246,6 @@ component Picker inherits Rectangle {
     }
 }
 
-// Line of help under a toggle, lined up with its label (36px switch + 8px gap)
-component ToggleNote inherits HorizontalLayout {
-    in property <string> text;
-    in property <bool> error;
-    padding-left: 44px;
-
-    Text {
-        text: root.text;
-        color: root.error ? Theme.danger : Theme.text-secondary;
-        font-size: Theme.font-md;
-        wrap: word-wrap;
-    }
-}
-
 // Which AI agents may use the player: on this computer, and over the network
 export component AgentsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
@@ -369,8 +355,10 @@ export component AgentsDialog inherits Rectangle {
         VerticalLayout {
             spacing: 8px;
 
-            VerticalLayout {
-                spacing: 2px;
+            // While on, what the server says at the right: where it
+            // listens, in the accent colour, or why it can't
+            HorizontalLayout {
+                spacing: 12px;
 
                 Toggle {
                     label: "Allow agents over the network";
@@ -378,13 +366,28 @@ export component AgentsDialog inherits Rectangle {
                     checked <=> root.network-on;
                     toggled(on) => { root.network-toggled(on); }
                 }
-                // While on, what the server says (listening, or why not)
-                ToggleNote {
-                    text: root.network-on && root.available && root.status != ""
-                        ? root.status
-                        : root.token-on ? "Agents on other computers connect with the token."
-                        : "Agents on other computers connect without a token.";
-                    error: root.network-on && root.available && root.status-error;
+                if root.network-on && root.available && root.status != "": HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: end;
+                    spacing: 6px;
+
+                    if !root.status-error: VerticalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 7px;
+                            height: 7px;
+                            border-radius: 3.5px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Text {
+                        text: root.status;
+                        color: root.status-error ? Theme.danger : Theme.accent-text;
+                        font-size: Theme.font-md;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
                 }
             }
 
