@@ -36,7 +36,7 @@ component PickerOption inherits Rectangle {
     Text {
         text: root.label;
         color: !root.enabled ? Theme.disabled-text
-            : root.selected ? Theme.button-text : Theme.text-primary;
+            : root.selected ? Theme.on-accent : Theme.text-primary;
         font-size: Theme.font-base;
         font-weight: root.selected ? 600 : 400;
         horizontal-alignment: center;

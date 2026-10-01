@@ -27,9 +27,11 @@ export global Theme {
     out property <color> shadow-soft: dark-mode ? #00000040 : #1a1b201f;
 
     // ── Text ──
+    // All reach 4.5:1 (WCAG AA) on the surfaces they are used on;
+    // tertiary is the faintest grey that still does on the card and inputs
     out property <color> text-primary: dark-mode ? #f4f4f5 : #16171a;
     out property <color> text-secondary: dark-mode ? #a0a2a8 : #5c5f66;
-    out property <color> text-tertiary: dark-mode ? #6c6f76 : #8d9097;
+    out property <color> text-tertiary: dark-mode ? #8b8e95 : #696c73;
 
     // ── Accent ──
     // Default accent, also what "Reset to default" goes back to
@@ -48,8 +50,14 @@ export global Theme {
     in-out property <color> accent-base: accent-default;
     out property <color> accent: accent-base;
     out property <color> accent-hover: accent-base.darker(0.15);
-    // Accent for text and icons on surfaces; darker in light mode so it stays readable
-    out property <color> accent-text: dark-mode ? accent-base : accent-base.darker(0.5);
+    // Accent for text and icons on surfaces: the accent itself in the dark
+    // theme and a darker one in the light theme, moved toward white (dark)
+    // or black (light) only as far as it takes to reach 4.5:1 there
+    out property <color> accent-text: readable(dark-mode ? accent-base : accent-base.darker(0.5),
+        dark-mode ? #ffffff : #000000);
+    // Text and icons on an accent fill (buttons, the play button): black or
+    // white, whichever reads better on the accent
+    out property <color> on-accent: text-on(accent-base);
     // Tints for badges, selected rows and header glows
     out property <color> accent-soft: accent-base.with-alpha(dark-mode ? 0.16 : 0.12);
     out property <color> accent-glow: accent-base.with-alpha(dark-mode ? 0.18 : 0.14);
@@ -60,7 +68,6 @@ export global Theme {
     out property <color> success: dark-mode ? #4cc38a : #1f9d5a;
 
     // ── Buttons ──
-    out property <color> button-text: #1a1a1a;  // dark text on accent buttons (both themes)
     out property <color> disabled-bg: dark-mode ? #3a3c40 : #e1e2e6;
     out property <color> disabled-text: dark-mode ? #7a7d83 : #a3a6ac;
 
@@ -105,6 +112,54 @@ export global Theme {
     // ── Motion ──
     out property <duration> fast: 120ms;
     out property <duration> normal: 180ms;
+
+    // ── Contrast (WCAG 2) ──
+    // Relative luminance: 0 for black, 1 for white
+    pure function luminance(c: color) -> float {
+        return 0.2126 * linear(c.red) + 0.7152 * linear(c.green) + 0.0722 * linear(c.blue);
+    }
+
+    // An sRGB channel (0-255) in linear light (0-1)
+    pure function linear(channel: int) -> float {
+        let v = channel / 255;
+        return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    // Contrast ratio of two colours: 1 (none) to 21 (black on white)
+    pure function contrast(a: color, b: color) -> float {
+        let la = luminance(a);
+        let lb = luminance(b);
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05);
+    }
+
+    // Black or white, whichever has more contrast on `fill`
+    public pure function text-on(fill: color) -> color {
+        return contrast(#000000, fill) >= contrast(#ffffff, fill) ? #000000 : #ffffff;
+    }
+
+    // Accent text reads at 4.5:1 on the lightest (dark theme) or darkest
+    // (light theme) background it sits on: an accent-tinted card or list
+    // (selected rows, dialog glow), and its own 14% tint on the panel (chips)
+    pure function reads-well(c: color) -> bool {
+        return contrast(c, accent-base.mix(dark-mode ? card : surface, dark-mode ? 0.18 : 0.14)) >= 4.5
+            && contrast(c, c.mix(panel, 0.14)) >= 4.5;
+    }
+
+    // `c` if it reads well, else `c` moved toward `to` just far enough
+    // (to within 1/64 of the way, by halving the step six times)
+    pure function readable(c: color, to: color) -> color {
+        if reads-well(c) {
+            return c;
+        }
+        // `lo`: a share of `to` that is not enough; lo + step is
+        let lo1 = reads-well(c.mix(to, 0.5)) ? 0.0 : 0.5;
+        let lo2 = reads-well(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
+        let lo3 = reads-well(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
+        let lo4 = reads-well(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
+        let lo5 = reads-well(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
+        let lo6 = reads-well(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
+        return c.mix(to, 1 - lo6 - 0.015625);
+    }
 }
 
 export global Defaults {

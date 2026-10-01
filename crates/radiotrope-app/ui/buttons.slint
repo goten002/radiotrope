@@ -36,7 +36,7 @@ export component AccentButton inherits Rectangle {
 
     btn-text := Text {
         text: root.label;
-        color: root.enabled ? Theme.button-text : Theme.disabled-text;
+        color: root.enabled ? Theme.on-accent : Theme.disabled-text;
         font-size: Theme.font-base;
         font-weight: 600;
         horizontal-alignment: center;

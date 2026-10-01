@@ -304,8 +304,7 @@ export component Controls inherits Rectangle {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                     source: parent.shows-stop ? @image-url("icons/stop.svg") : @image-url("icons/play.svg");
-                    colorize: !can-interact ? Theme.disabled-text
-                        : Theme.dark-mode ? Theme.button-text : #ffffff;
+                    colorize: !can-interact ? Theme.disabled-text : Theme.on-accent;
                 }
 
                 repeat-guard := Timer {
