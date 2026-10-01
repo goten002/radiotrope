@@ -13,9 +13,9 @@
 
 use std::io;
 use std::num::NonZero;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self, Thread};
 use std::time::Duration;
 
 use crossbeam_channel::{bounded, Receiver, Sender, TryRecvError, TrySendError};
@@ -34,8 +34,10 @@ use crate::stream::StreamCancel;
 /// chunks of the shortest usual length
 const QUEUE_CHUNKS: usize = 64;
 
-/// How often a decoder that is far enough ahead checks for room
-const ROOM_POLL: Duration = Duration::from_millis(5);
+/// Longest a decoder that is far enough ahead waits without being woken.
+/// The output wakes it when it takes audio; a paused player takes none, so
+/// it looks again this often.
+const ROOM_WAIT: Duration = Duration::from_millis(500);
 
 /// How far ahead to decode for `output`: a few of its buffers, since the
 /// audio callback takes one buffer's worth at a time
@@ -84,6 +86,19 @@ struct Shared {
     underruns: AtomicU64,
     /// Buffers the decoder allocated; the rest are played ones handed back
     new_buffers: AtomicU64,
+    /// The decoder is far enough ahead and waits to be woken: the output
+    /// wakes it once it has taken enough to make room
+    waiting: AtomicBool,
+    /// Times the decoder waited for room
+    #[cfg(test)]
+    waits: AtomicU64,
+}
+
+impl Shared {
+    /// Whether the decoder is far enough ahead of the output
+    fn ahead(&self) -> bool {
+        self.queued_us.load(Ordering::SeqCst) >= self.ahead_us.load(Ordering::SeqCst)
+    }
 }
 
 fn pack(channels: NonZero<u16>, sample_rate: NonZero<u32>) -> u64 {
@@ -101,11 +116,14 @@ fn unpack(format: u64) -> (NonZero<u16>, NonZero<u32>) {
 /// The engine keeps this while the station plays and gives each player an
 /// [`PcmFeed::output`]. When the output device is replaced, a new output
 /// carries on from the queue. The decode thread ends when the stream ends,
-/// when the stream is cancelled, or when the feed and its outputs are gone.
+/// when the stream is cancelled, or soon after the feed and its outputs are
+/// all gone.
 pub(crate) struct PcmFeed {
     chunks: Receiver<Chunk>,
     spent: Sender<Vec<f32>>,
     shared: Arc<Shared>,
+    /// The decode thread, to wake it
+    decoder: Thread,
 }
 
 impl PcmFeed {
@@ -125,21 +143,29 @@ impl PcmFeed {
             format: AtomicU64::new(pack(source.channels(), source.sample_rate())),
             underruns: AtomicU64::new(0),
             new_buffers: AtomicU64::new(0),
+            waiting: AtomicBool::new(false),
+            #[cfg(test)]
+            waits: AtomicU64::new(0),
         });
         let decoder = Decoder {
             chunker: Chunker::new(source),
             chunks: chunk_tx,
             spent: spent_rx,
             shared: shared.clone(),
-            cancel,
+            cancel: cancel.clone(),
         };
-        thread::Builder::new()
+        let handle = thread::Builder::new()
             .name("audio-decode".into())
             .spawn(move || decoder.run())?;
+        let decoder = handle.thread().clone();
+        // A cancel ends a wait for room at once
+        let woken = decoder.clone();
+        cancel.on_cancel(move || woken.unpark());
         Ok(Self {
             chunks,
             spent,
             shared,
+            decoder,
         })
     }
 
@@ -150,6 +176,7 @@ impl PcmFeed {
             chunks: self.chunks.clone(),
             spent: self.spent.clone(),
             shared: self.shared.clone(),
+            decoder: self.decoder.clone(),
             samples: Vec::new(),
             pos: 0,
             silence_left: 0,
@@ -166,12 +193,20 @@ impl PcmFeed {
     pub(crate) fn set_ahead(&self, ahead: Duration) {
         self.shared
             .ahead_us
-            .store(ahead.as_micros() as u64, Ordering::Relaxed);
+            .store(ahead.as_micros() as u64, Ordering::SeqCst);
+        self.decoder.unpark();
     }
 
     /// Times the output ran out of decoded audio and played silence
     pub(crate) fn underruns(&self) -> u64 {
         self.shared.underruns.load(Ordering::Relaxed)
+    }
+}
+
+impl Drop for PcmFeed {
+    fn drop(&mut self) {
+        // With no outputs left, the decoder ends once it sees it is alone
+        self.decoder.unpark();
     }
 }
 
@@ -191,16 +226,26 @@ impl<S: Source> Decoder<S> {
     /// the queue.
     fn run(mut self) {
         loop {
-            // Far enough ahead: wait for the output to take some
-            while self.shared.queued_us.load(Ordering::Relaxed)
-                >= self.shared.ahead_us.load(Ordering::Relaxed)
-            {
-                if !self.cancel.sleep(ROOM_POLL) {
+            // Far enough ahead: wait for the output to take some. It wakes
+            // this thread when it does, and so do a cancel and the feed
+            // going away.
+            loop {
+                // Nobody left to play the queue: only this thread holds it
+                if self.cancel.is_cancelled() || Arc::strong_count(&self.shared) == 1 {
                     return;
                 }
-            }
-            if self.cancel.is_cancelled() {
-                return;
+                if !self.shared.ahead() {
+                    break;
+                }
+                self.shared.waiting.store(true, Ordering::SeqCst);
+                // Room made since the check above wakes it: the output sees
+                // `waiting` after taking audio
+                if self.shared.ahead() {
+                    #[cfg(test)]
+                    self.shared.waits.fetch_add(1, Ordering::Relaxed);
+                    thread::park_timeout(ROOM_WAIT);
+                }
+                self.shared.waiting.store(false, Ordering::SeqCst);
             }
             let buffer = self.spent.try_recv().unwrap_or_else(|_| {
                 self.shared.new_buffers.fetch_add(1, Ordering::Relaxed);
@@ -325,6 +370,8 @@ pub(crate) struct PcmOutput {
     chunks: Receiver<Chunk>,
     spent: Sender<Vec<f32>>,
     shared: Arc<Shared>,
+    /// The decode thread, to wake when there is room for more
+    decoder: Thread,
     /// The chunk playing
     samples: Vec<f32>,
     pos: usize,
@@ -351,7 +398,13 @@ impl PcmOutput {
                 Ok(chunk) => {
                     self.shared
                         .queued_us
-                        .fetch_sub(chunk.micros(), Ordering::Relaxed);
+                        .fetch_sub(chunk.micros(), Ordering::SeqCst);
+                    // Room for more: wake the decoder if it waits for it.
+                    // Lock-free (no allocation either), as the audio
+                    // thread must be.
+                    if !self.shared.ahead() && self.shared.waiting.swap(false, Ordering::SeqCst) {
+                        self.decoder.unpark();
+                    }
                     if chunk.samples.is_empty() {
                         continue;
                     }
@@ -398,6 +451,13 @@ impl Iterator for PcmOutput {
             self.advance();
         }
         Some(sample)
+    }
+}
+
+impl Drop for PcmOutput {
+    fn drop(&mut self) {
+        // The last output gone with the feed: the decoder can end
+        self.decoder.unpark();
     }
 }
 
@@ -710,6 +770,55 @@ mod tests {
         let queued = feed.shared.queued_us.load(Ordering::SeqCst);
         assert!((100_000..=120_000).contains(&queued), "queued {queued} us");
         cancel.cancel();
+        release.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_decoder_far_enough_ahead_waits_without_polling() {
+        let release = Arc::new(AtomicBool::new(false));
+        let source = Stalls {
+            samples: vec![0.5; 100_000].into_iter(),
+            release: release.clone(),
+        };
+        let (feed, cancel) = feed(source);
+        let mut output = feed.output();
+        // Nothing taken for 300 ms (a paused player): one wait, not 60
+        thread::sleep(Duration::from_millis(300));
+        let waits = feed.shared.waits.load(Ordering::SeqCst);
+        assert!(waits <= 2, "woke {waits} times with nothing taken");
+        // Taking a chunk's worth wakes it to decode more, at once
+        let queued = feed.shared.queued_us.load(Ordering::SeqCst);
+        for _ in 0..40 {
+            output.next();
+        }
+        let deadline = Instant::now() + Duration::from_millis(200);
+        while feed.shared.queued_us.load(Ordering::SeqCst) < queued {
+            assert!(Instant::now() < deadline, "the decoder wasn't woken");
+            thread::sleep(Duration::from_millis(1));
+        }
+        cancel.cancel();
+        release.store(true, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn decoding_ends_once_the_feed_and_its_outputs_are_gone() {
+        let release = Arc::new(AtomicBool::new(false));
+        let source = Stalls {
+            samples: vec![0.5; 100_000].into_iter(),
+            release: release.clone(),
+        };
+        let (feed, _cancel) = feed(source);
+        let output = feed.output();
+        let shared = Arc::downgrade(&feed.shared);
+        thread::sleep(Duration::from_millis(50));
+        drop(output);
+        drop(feed);
+        // The decoder holds the last handle until it ends
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while shared.strong_count() > 0 {
+            assert!(Instant::now() < deadline, "the decoder kept waiting");
+            thread::sleep(Duration::from_millis(10));
+        }
         release.store(true, Ordering::SeqCst);
     }
 

@@ -64,6 +64,9 @@ pub fn codec_type_to_name(codec: AudioCodecId) -> String {
 /// Audio object types that name SBR outright: HE-AAC and HE-AAC v2
 const AOT_SBR: u32 = 5;
 const AOT_PS: u32 = 29;
+/// USAC (xHE-AAC). It has an SBR of its own, but it is not HE-AAC: it
+/// shows as plain AAC (only "AAC" and "AAC+" are shown)
+const AOT_USAC: u32 = 42;
 
 /// Sampling rates by `samplingFrequencyIndex` (ISO/IEC 14496-3, 1.6.3.3)
 const AAC_SAMPLE_RATES: [u32; 13] = [
@@ -77,10 +80,11 @@ const AAC_SAMPLE_RATES: [u32; 13] = [
 /// so FDK puts out twice the rate the stream declares. ADTS (ICY, HLS TS)
 /// declares that core rate in its header; MP4 gives it in the
 /// AudioSpecificConfig, or names SBR there outright. The rare single-rate
-/// SBR, which keeps the rate, reads as plain AAC.
+/// SBR, which keeps the rate, reads as plain AAC, and so does USAC.
 fn is_aac_plus(params: &AudioCodecParameters, decoded_rate: u32) -> bool {
     let core_rate = match params.extra_data.as_deref().and_then(audio_specific_config) {
         Some((AOT_SBR | AOT_PS, _)) => return true,
+        Some((AOT_USAC, _)) => return false,
         Some((_, rate)) => Some(rate),
         None => params.sample_rate,
     };
@@ -207,6 +211,14 @@ pub struct SymphoniaSource {
     channels: u16,
     sample_rate: u32,
     codec_name: String,
+    /// The track being decoded, for its codec name
+    codec_params: AudioCodecParameters,
+    /// The output rate `codec_name` was worked out for (0: not yet). AAC
+    /// and AAC+ only tell apart by the rate they decode at, which can
+    /// change in mid-stream (an HLS stream moving between them).
+    named_at_rate: u32,
+    /// `codec_name`, shared with whoever shows it ([`Self::codec_label`])
+    label: Arc<Mutex<String>>,
     bits_per_sample: Option<u32>,
     /// Stores the last non-EOF error for the engine to check after stream ends
     last_error: Arc<Mutex<Option<String>>>,
@@ -226,29 +238,29 @@ impl SymphoniaSource {
 
     /// Create a new source with an optional format hint (e.g., "aac", "mp4")
     ///
-    /// Blocks for up to `PROBE_TIMEOUT_SECS` while probing the format.
-    /// For non-blocking probe, use [`start_probe()`] + [`SymphoniaSource::from_probed()`].
+    /// Blocks for up to `PROBE_TIMEOUT_SECS` while probing the format and
+    /// decoding the first packet, which happen on a thread of their own.
+    /// After a timeout that thread is left behind, still holding `reader`:
+    /// it ends once a read of `reader` returns, so a reader that can block
+    /// for good (a stalled network stream) keeps it waiting for good. Give
+    /// such a reader a way to end, as the engine does with a cancellable
+    /// stream and [`start_open`].
     pub fn new_with_hint<R: Read + Seek + Send + Sync + 'static>(
         reader: R,
         format_hint: Option<&str>,
     ) -> Result<Self, RadioError> {
-        let rx = start_probe(reader, format_hint.map(|s| s.to_string()))?;
+        let rx = start_open(reader, format_hint.map(|s| s.to_string()))?;
 
-        let probed = match rx.recv_timeout(Duration::from_secs(PROBE_TIMEOUT_SECS)) {
-            Ok(Ok(probed)) => probed,
-            Ok(Err(e)) => return Err(e),
-            Err(RecvTimeoutError::Timeout) => {
-                return Err(RadioError::Timeout(format!(
-                    "Format probe timed out after {}s",
-                    PROBE_TIMEOUT_SECS
-                )))
-            }
+        match rx.recv_timeout(Duration::from_secs(PROBE_TIMEOUT_SECS)) {
+            Ok(opened) => opened,
+            Err(RecvTimeoutError::Timeout) => Err(RadioError::Timeout(format!(
+                "Format probe timed out after {}s",
+                PROBE_TIMEOUT_SECS
+            ))),
             Err(RecvTimeoutError::Disconnected) => {
-                return Err(RadioError::Decode("Probe thread panicked".to_string()))
+                Err(RadioError::Decode("Probe thread panicked".to_string()))
             }
-        };
-
-        Self::from_probed(probed)
+        }
     }
 
     /// Create a `SymphoniaSource` from a completed probe.
@@ -280,7 +292,10 @@ impl SymphoniaSource {
             sample_idx: 0,
             channels,
             sample_rate,
+            label: Arc::new(Mutex::new(codec_name.clone())),
             codec_name,
+            codec_params,
+            named_at_rate: 0,
             bits_per_sample,
             last_error: Arc::new(Mutex::new(None)),
             decoder_stats: Arc::new(DecoderStats::new()),
@@ -292,23 +307,43 @@ impl SymphoniaSource {
         // This is critical for HE-AAC where FDK AAC applies SBR, doubling the
         // sample rate (e.g., 24kHz→48kHz). Without this, rodio would configure
         // its resampler using the core rate from the ADTS header before any
-        // frames are decoded, causing low-pitch playback.
-        let decoded = source.decode_next_packet();
-
-        // The same doubled rate tells AAC+ from plain AAC
-        if decoded
-            && codec_params.codec == CODEC_ID_AAC
-            && is_aac_plus(&codec_params, source.sample_rate)
-        {
-            source.codec_name = "AAC+".to_string();
-        }
+        // frames are decoded, causing low-pitch playback. The same doubled
+        // rate tells AAC+ from plain AAC (`name_codec`).
+        source.decode_next_packet();
 
         Ok(source)
+    }
+
+    /// Name the codec for the rate the last packet decoded at: AAC+ is
+    /// AAC that decodes at twice the rate its track declares. Done again
+    /// whenever that rate changes, and after a new track.
+    fn name_codec(&mut self) {
+        if self.named_at_rate == self.sample_rate {
+            return;
+        }
+        self.named_at_rate = self.sample_rate;
+        let mut name = codec_type_to_name(self.codec_params.codec);
+        if self.codec_params.codec == CODEC_ID_AAC
+            && is_aac_plus(&self.codec_params, self.sample_rate)
+        {
+            name = "AAC+".to_string();
+        }
+        if name != self.codec_name {
+            self.codec_name = name;
+            *self.label.lock().unwrap_or_else(|e| e.into_inner()) = self.codec_name.clone();
+        }
     }
 
     /// Get the codec name (e.g., "MP3", "Opus", "AAC")
     pub fn codec_name(&self) -> &str {
         &self.codec_name
+    }
+
+    /// The codec name, kept up to date while the source is decoded on
+    /// another thread: a chained Ogg stream can change codec, and an AAC
+    /// stream can move between AAC and AAC+
+    pub fn codec_label(&self) -> Arc<Mutex<String>> {
+        self.label.clone()
     }
 
     /// Get the bits per sample, if known
@@ -361,8 +396,11 @@ impl SymphoniaSource {
         let (track_id, codec_params, decoder) = open_audio_track(self.format.as_ref())?;
         self.track_id = track_id;
         self.decoder = decoder;
-        self.codec_name = codec_type_to_name(codec_params.codec);
         self.bits_per_sample = codec_params.bits_per_sample;
+        self.codec_params = codec_params;
+        // Named again once its first packet decodes: an AAC track's name
+        // depends on the rate it decodes at
+        self.named_at_rate = 0;
         Ok(())
     }
 
@@ -405,6 +443,7 @@ impl SymphoniaSource {
                             let buf = self.sample_buf.get_or_insert_with(Vec::new);
                             decoded.copy_to_vec_interleaved(buf);
                             self.sample_idx = 0;
+                            self.name_codec();
                             return true;
                         }
                         Err(Error::DecodeError(_)) => {
@@ -1646,8 +1685,45 @@ mod tests {
             let bits: u64 = (31 << 43) | (10 << 37) | (15 << 33) | (24_000 << 9);
             let config = &bits.to_be_bytes()[2..];
             assert_eq!(audio_specific_config(config), Some((42, 24_000)));
+            // USAC (xHE-AAC) shows as plain AAC, whatever rate it plays at
             let track = mp4_track(Some(48_000), Some(Box::from(config)));
-            assert!(is_aac_plus(&track, 48_000));
+            assert!(!is_aac_plus(&track, 48_000));
+        }
+
+        #[test]
+        fn a_new_track_keeps_the_aac_plus_name() {
+            let stream = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
+            let mut source =
+                SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();
+            let label = source.codec_label();
+            assert_eq!(source.codec_name(), "AAC+");
+            // As after the demuxer's ResetRequired: the same stream, a new
+            // decoder, named again from its first packet
+            source.reset_track().unwrap();
+            assert!(source.decode_next_packet());
+            assert_eq!(source.codec_name(), "AAC+");
+            assert_eq!(*label.lock().unwrap(), "AAC+");
+        }
+
+        #[test]
+        fn the_name_follows_the_rate_the_stream_decodes_at() {
+            let stream = adts(AudioObjectType::Mpeg4LowComplexity, 128_000, 44_100, true);
+            let mut source =
+                SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();
+            let label = source.codec_label();
+            assert_eq!(*label.lock().unwrap(), "AAC");
+            // An HLS stream moving to HE-AAC on the same track: the track
+            // still declares 22.05 kHz, and SBR doubles it
+            source.codec_params.sample_rate = Some(22_050);
+            source.sample_rate = 44_100;
+            source.named_at_rate = 22_050;
+            source.name_codec();
+            assert_eq!(*label.lock().unwrap(), "AAC+");
+            // And back to plain AAC at the rate it declares
+            source.sample_rate = 22_050;
+            source.name_codec();
+            assert_eq!(source.codec_name(), "AAC");
+            assert_eq!(*label.lock().unwrap(), "AAC");
         }
 
         #[test]

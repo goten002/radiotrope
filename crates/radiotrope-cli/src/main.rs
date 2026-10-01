@@ -195,6 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.play_started_at = Some(Instant::now());
                         }
                     }
+                    AudioEvent::CodecChanged(info) => app.codec_info = Some(info),
                     AudioEvent::Stopped => {
                         app.status = "Stopped".to_string();
                         app.running = false;

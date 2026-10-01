@@ -12,8 +12,9 @@ use rodio::Source;
 use rustfft::{num_complex::Complex, FftPlanner};
 
 use crate::config::audio::{
-    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, VU_ADAPT_DOWN_SECS,
-    VU_ADAPT_UP_SECS, VU_ATTACK, VU_DECAY, VU_HEADROOM_DB, VU_RANGE_DB, VU_SILENCE_DB, VU_START_DB,
+    FFT_SIZE, SPECTRUM_BANDS, SPECTRUM_MAX_HZ, SPECTRUM_TREBLE_BOOST, UNSHOWN_GRACE_SECS,
+    VU_ADAPT_DOWN_SECS, VU_ADAPT_UP_SECS, VU_ATTACK, VU_DECAY, VU_HEADROOM_DB, VU_RANGE_DB,
+    VU_SILENCE_DB, VU_START_DB,
 };
 
 use super::types::AudioAnalysis;
@@ -70,6 +71,20 @@ impl VuScale {
     }
 }
 
+/// The FFT bins of each spectrum band, as edges: band `b` takes bins
+/// `edges[b]..edges[b + 1]`. Spread quadratically (roughly like pitch) from
+/// bin 1 up to `top_bin`, each band with at least one bin of its own. Bin 0
+/// is left out: it is the signal's offset (DC), not a sound.
+fn band_edges(top_bin: usize, nyquist: usize) -> [usize; SPECTRUM_BANDS + 1] {
+    let mut edges = [1; SPECTRUM_BANDS + 1];
+    for band in 1..=SPECTRUM_BANDS {
+        let share = (band as f32 / SPECTRUM_BANDS as f32).powi(2);
+        let edge = 1 + (share * top_bin.saturating_sub(1) as f32) as usize;
+        edges[band] = edge.max(edges[band - 1] + 1).min(nyquist);
+    }
+    edges
+}
+
 /// Wrapper source that captures samples for visualization
 pub struct AnalyzingSource<S> {
     inner: S,
@@ -85,6 +100,10 @@ pub struct AnalyzingSource<S> {
     vu_scale: VuScale,
     /// Channel of the next sample within its frame
     channel_index: u16,
+    /// `AudioAnalysis::views` when last looked at
+    views_seen: u64,
+    /// Seconds of audio since the analysis was last shown
+    unshown_secs: f32,
 }
 
 impl<S> AnalyzingSource<S>
@@ -111,6 +130,8 @@ where
             local_sample_count: 0,
             vu_scale: VuScale::new(),
             channel_index: 0,
+            views_seen: 0,
+            unshown_secs: 0.0,
         }
     }
 
@@ -119,6 +140,45 @@ where
             return;
         }
 
+        // Nobody has shown the meters for a while: skip the FFT, and only
+        // count the samples (the health monitor's)
+        let levels = (self.unshown_secs < UNSHOWN_GRACE_SECS).then(|| self.levels());
+
+        if let Ok(mut analysis) = self.analysis.lock() {
+            // Checked again under the lock: once the engine has stopped
+            // this station and reset the analysis, nothing may write to it
+            if self.active.load(Ordering::SeqCst) {
+                let block_secs = FFT_SIZE as f32 / self.sample_rate.get() as f32;
+                if analysis.views() != self.views_seen {
+                    self.views_seen = analysis.views();
+                    self.unshown_secs = 0.0;
+                } else {
+                    self.unshown_secs += block_secs;
+                }
+                if let Some((rms_left, rms_right, spectrum)) = levels {
+                    self.vu_scale.track(rms_left.max(rms_right), block_secs);
+                    let (vu_left, vu_right) = (
+                        self.vu_scale.level(rms_left),
+                        self.vu_scale.level(rms_right),
+                    );
+                    analysis.vu_left = smooth_level(analysis.vu_left, vu_left);
+                    analysis.vu_right = smooth_level(analysis.vu_right, vu_right);
+                    for (i, spectrum_val) in spectrum.iter().enumerate() {
+                        analysis.spectrum[i] =
+                            smooth_level(analysis.spectrum[i], spectrum_val.min(1.0));
+                    }
+                }
+                analysis.sample_count = self.local_sample_count;
+            }
+        }
+
+        self.buffer_left.clear();
+        self.buffer_right.clear();
+    }
+
+    /// The RMS levels of the left and right buffers, and the spectrum of
+    /// the left one
+    fn levels(&mut self) -> (f32, f32, [f32; SPECTRUM_BANDS]) {
         // Compute RMS for VU meters
         let rms_left = (self.buffer_left.iter().map(|s| s * s).sum::<f32>()
             / self.buffer_left.len() as f32)
@@ -130,8 +190,10 @@ where
             rms_left
         };
 
-        // Compute FFT for spectrum analyzer
+        // Compute FFT for spectrum analyzer. The block's offset (DC) goes
+        // first: through the window it would leak into the lowest bars.
         let fft = self.fft_planner.plan_fft_forward(FFT_SIZE);
+        let offset = self.buffer_left.iter().take(FFT_SIZE).sum::<f32>() / FFT_SIZE as f32;
         let mut fft_input: Vec<Complex<f32>> = self
             .buffer_left
             .iter()
@@ -141,7 +203,7 @@ where
                 // Hann window
                 let window =
                     0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / FFT_SIZE as f32).cos());
-                Complex::new(s * window, 0.0)
+                Complex::new((s - offset) * window, 0.0)
             })
             .collect();
 
@@ -155,15 +217,9 @@ where
         let hz_per_bin = self.sample_rate.get() as f32 / FFT_SIZE as f32;
         let top_bin = ((SPECTRUM_MAX_HZ / hz_per_bin) as usize).clamp(SPECTRUM_BANDS, nyquist);
 
-        // Quadratic (roughly logarithmic) frequency distribution
+        let edges = band_edges(top_bin, nyquist);
         for (band, spectrum_val) in spectrum.iter_mut().enumerate() {
-            let low_freq = (band as f32 / SPECTRUM_BANDS as f32).powf(2.0);
-            let high_freq = ((band + 1) as f32 / SPECTRUM_BANDS as f32).powf(2.0);
-
-            let start = (low_freq * top_bin as f32) as usize;
-            let end = ((high_freq * top_bin as f32) as usize)
-                .max(start + 1)
-                .min(nyquist);
+            let (start, end) = (edges[band], edges[band + 1]);
 
             let mut max_mag = 0.0f32;
             for item in &fft_input[start..end] {
@@ -176,26 +232,7 @@ where
             let tilt = 1.0 + SPECTRUM_TREBLE_BOOST * band as f32 / (SPECTRUM_BANDS - 1) as f32;
             *spectrum_val = (max_mag * 8.0 * tilt).sqrt().min(1.0);
         }
-
-        if let Ok(mut analysis) = self.analysis.lock() {
-            let block_secs = FFT_SIZE as f32 / self.sample_rate.get() as f32;
-            self.vu_scale.track(rms_left.max(rms_right), block_secs);
-            let (vu_left, vu_right) = (
-                self.vu_scale.level(rms_left),
-                self.vu_scale.level(rms_right),
-            );
-            analysis.vu_left = smooth_level(analysis.vu_left, vu_left);
-            analysis.vu_right = smooth_level(analysis.vu_right, vu_right);
-
-            for (i, spectrum_val) in spectrum.iter().enumerate() {
-                analysis.spectrum[i] = smooth_level(analysis.spectrum[i], spectrum_val.min(1.0));
-            }
-
-            analysis.sample_count = self.local_sample_count;
-        }
-
-        self.buffer_left.clear();
-        self.buffer_right.clear();
+        (rms_left, rms_right, spectrum)
     }
 }
 
@@ -1295,6 +1332,108 @@ mod tests {
         let data = analyze(Segments::new(vec![(1, 44_100, mono), (2, 44_100, stereo)]));
         assert!(data.vu_left > 0.0);
         assert!(data.vu_right < 0.001, "right {}", data.vu_right);
+    }
+
+    #[test]
+    fn every_bar_has_bins_of_its_own_and_none_has_dc() {
+        for rate in [8_000.0f32, 22_050.0, 44_100.0, 48_000.0, 96_000.0] {
+            let hz_per_bin = rate / FFT_SIZE as f32;
+            let top_bin =
+                ((SPECTRUM_MAX_HZ / hz_per_bin) as usize).clamp(SPECTRUM_BANDS, FFT_SIZE / 2);
+            let edges = band_edges(top_bin, FFT_SIZE / 2);
+            assert_eq!(edges[0], 1, "{rate}: DC is left out");
+            assert!(
+                edges.windows(2).all(|w| w[1] > w[0]),
+                "{rate}: bars overlap or are empty: {edges:?}"
+            );
+            assert!(edges[SPECTRUM_BANDS] <= FFT_SIZE / 2);
+        }
+    }
+
+    #[test]
+    fn an_offset_lights_no_bar_and_bass_lights_the_first() {
+        // A constant offset, no sound at all
+        let offset = analyze(Segments::new(vec![(1, 44_100, vec![0.4; FFT_SIZE * 8])]));
+        assert!(
+            offset.spectrum.iter().all(|&v| v < 0.05),
+            "{:?}",
+            offset.spectrum
+        );
+        // An 86 Hz tone (bin 1) on top of an offset: the first bar, not
+        // the second
+        let bass = analyze(Segments::new(vec![(
+            1,
+            44_100,
+            frames(1, FFT_SIZE * 8, |i, _| {
+                0.2 + (i as f32 * std::f32::consts::TAU / FFT_SIZE as f32).sin() * 0.5
+            }),
+        )]));
+        assert!(
+            bass.spectrum[0] > bass.spectrum[1] && bass.spectrum[0] > 0.5,
+            "{:?}",
+            bass.spectrum
+        );
+    }
+
+    #[test]
+    fn an_unshown_analysis_only_counts_samples() {
+        let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
+        let tone = |i: usize, _| (i as f32 * 0.3).sin() * 0.5;
+        let blocks = |seconds: f32| (44_100.0 * seconds) as usize / FFT_SIZE;
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44_100).unwrap(),
+            frames(1, FFT_SIZE * blocks(UNSHOWN_GRACE_SECS + 1.0), tone),
+        );
+        let mut analyzing = AnalyzingSource::new(source, analysis.clone(), active_flag());
+        // Past the grace time with nobody looking: the meters are cleared
+        // by hand and must stay so, while the count carries on
+        for _ in 0..FFT_SIZE * (blocks(UNSHOWN_GRACE_SECS) + 2) {
+            analyzing.next();
+        }
+        analysis.lock().unwrap().reset();
+        for _ in 0..FFT_SIZE * 4 {
+            analyzing.next();
+        }
+        {
+            let data = analysis.lock().unwrap();
+            assert_eq!(data.vu_left, 0.0);
+            assert!(data.spectrum.iter().all(|&v| v == 0.0));
+            assert!(data.sample_count > 0);
+        }
+        // Shown again: worked out again from the next block on
+        analysis.lock().unwrap().mark_shown();
+        for _ in 0..FFT_SIZE * 4 {
+            analyzing.next();
+        }
+        let data = analysis.lock().unwrap();
+        assert!(data.vu_left > 0.0);
+        assert!(data.spectrum.iter().any(|&v| v > 0.0));
+    }
+
+    #[test]
+    fn nothing_is_written_once_stopped_mid_block() {
+        let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
+        let active = active_flag();
+        let source = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(44_100).unwrap(),
+            frames(1, FFT_SIZE * 2, |i, _| (i as f32 * 0.3).sin() * 0.5),
+        );
+        let mut analyzing = AnalyzingSource::new(source, analysis.clone(), active.clone());
+        // Most of a block in, then the engine stops the station and resets
+        for _ in 0..FFT_SIZE - 1 {
+            analyzing.next();
+        }
+        active.store(false, Ordering::SeqCst);
+        analysis.lock().unwrap().reset();
+        // The analyzer still finishes the block it had nearly filled
+        analyzing.buffer_left.push(0.5);
+        analyzing.buffer_right.push(0.5);
+        analyzing.process_buffers();
+        let data = analysis.lock().unwrap();
+        assert_eq!(data.sample_count, 0);
+        assert_eq!(data.vu_left, 0.0);
     }
 
     #[test]
