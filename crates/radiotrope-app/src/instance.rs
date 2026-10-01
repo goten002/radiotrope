@@ -12,9 +12,10 @@
 //!   `/run/user/<uid>`, which is where it points anyway; failing that, a 0700
 //!   folder in the temp directory. Abstract socket names are avoided: they
 //!   have no permissions.
-//! - Windows: the named pipe `\\.\pipe\radiotrope-<user>`, which refuses
-//!   remote clients and is open to its owner only. The lock file lives in the
-//!   local app data folder.
+//! - Windows: the named pipe `\\.\pipe\radiotrope-<user SID>`, which
+//!   refuses remote clients and is open to that user only. Anyone can make a
+//!   pipe of any name, so a client talks only to a pipe whose server runs as
+//!   its own user. The lock file lives in the local app data folder.
 //!
 //! A connection starts with one line saying what it wants ([`HELLO_MCP`] or
 //! [`HELLO_SHOW`]); an MCP session follows the first.
@@ -93,7 +94,26 @@ pub async fn connect() -> io::Result<Stream> {
 }
 
 async fn connect_in(dir: &Path) -> io::Result<Stream> {
-    Stream::connect(socket_name(dir)?).await
+    let stream = Stream::connect(socket_name(dir)?).await?;
+    // Another user could have made the pipe first, to read what agents
+    // send: say nothing to one that isn't our own player's
+    #[cfg(windows)]
+    {
+        let server = stream.peer_creds()?.pid();
+        let theirs = server
+            .ok_or_else(|| io::Error::other("no server process"))
+            .and_then(windows_user::of_process)
+            .map_err(|e| {
+                io::Error::new(e.kind(), format!("can't tell who runs the player: {e}"))
+            })?;
+        if theirs != windows_user::ours()? {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "the player's pipe belongs to another user",
+            ));
+        }
+    }
+    Ok(stream)
 }
 
 /// Ask the running player to show its window (from a second launch).
@@ -306,11 +326,13 @@ fn listen_in(dir: &Path) -> io::Result<Listener> {
     let options = {
         use interprocess::os::windows::local_socket::ListenerOptionsExt;
         use interprocess::os::windows::security_descriptor::SecurityDescriptor;
-        // Full access for the pipe's owner and the system, nobody else. The
-        // default descriptor lets any local user open the pipe for reading.
-        let sd =
-            SecurityDescriptor::deserialize(widestring::u16cstr!("D:P(A;;GA;;;OW)(A;;GA;;;SY)"))?;
-        options.security_descriptor(sd)
+        // Full access for this user and the system, nobody else. The default
+        // descriptor lets any local user open the pipe for reading. The user
+        // by SID, not as the owner: an elevated player's pipe belongs to
+        // Administrators, which would keep out the user's own relays.
+        let sddl = format!("D:P(A;;GA;;;{})(A;;GA;;;SY)", windows_user::ours()?);
+        let sddl = widestring::U16CString::from_str(sddl).map_err(io::Error::other)?;
+        options.security_descriptor(SecurityDescriptor::deserialize(&sddl)?)
     };
 
     options.create_tokio()
@@ -328,18 +350,112 @@ fn socket_name(dir: &Path) -> io::Result<Name<'static>> {
 #[cfg(windows)]
 fn socket_name(dir: &Path) -> io::Result<Name<'static>> {
     use interprocess::local_socket::{GenericNamespaced, ToNsName};
-    // Named pipes are machine-wide: the user's name keeps two people on one
-    // computer apart. Tests pass their own folder, which names its own pipe.
-    let user: String = std::env::var("USERNAME")
-        .unwrap_or_default()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-        .collect();
-    let name = match dir.file_name().and_then(|n| n.to_str()) {
-        Some("radiotrope") | None => format!("radiotrope-{user}"),
-        Some(other) => format!("radiotrope-{user}-{other}"),
-    };
+    let name = pipe_name(&windows_user::ours()?, dir);
     Ok(name.to_ns_name::<GenericNamespaced>()?.into_owned())
+}
+
+/// The pipe of the user with SID `sid`. Named pipes are machine-wide: the
+/// SID keeps two people on one computer apart, where names can share a
+/// spelling once made ASCII, and needs nothing from the environment. Tests
+/// pass their own folder, which names its own pipe.
+#[cfg(any(windows, test))]
+fn pipe_name(sid: &str, dir: &Path) -> String {
+    match dir.file_name().and_then(|n| n.to_str()) {
+        Some("radiotrope") | None => format!("radiotrope-{sid}"),
+        Some(other) => format!("radiotrope-{sid}-{other}"),
+    }
+}
+
+/// Who a process runs as: its user's SID, e.g. "S-1-5-21-...-1001"
+#[cfg(windows)]
+mod windows_user {
+    use std::ffi::c_void;
+    use std::io;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+
+    type Handle = *mut c_void;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetCurrentProcess() -> Handle;
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    }
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn OpenProcessToken(process: Handle, access: u32, token: *mut Handle) -> i32;
+        fn GetTokenInformation(
+            token: Handle,
+            class: u32,
+            info: *mut c_void,
+            length: u32,
+            returned: *mut u32,
+        ) -> i32;
+        fn ConvertSidToStringSidW(sid: *mut c_void, text: *mut *mut u16) -> i32;
+    }
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const TOKEN_QUERY: u32 = 0x0008;
+    /// `TokenUser` of TOKEN_INFORMATION_CLASS
+    const TOKEN_USER: u32 = 1;
+
+    /// This process's user
+    pub fn ours() -> io::Result<String> {
+        // SAFETY: no preconditions; the pseudo handle needs no closing
+        token_user(unsafe { GetCurrentProcess() })
+    }
+
+    /// The user of process `pid`
+    pub fn of_process(pid: u32) -> io::Result<String> {
+        // SAFETY: plain Win32 call; null means it failed
+        let process = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if process.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a handle we just opened, closed when this drops
+        let process = unsafe { OwnedHandle::from_raw_handle(process) };
+        token_user(process.as_raw_handle())
+    }
+
+    fn token_user(process: Handle) -> io::Result<String> {
+        let mut token: Handle = std::ptr::null_mut();
+        // SAFETY: `token` receives a handle on success
+        if unsafe { OpenProcessToken(process, TOKEN_QUERY, &mut token) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the handle just received, closed when this drops
+        let token = unsafe { OwnedHandle::from_raw_handle(token) };
+        // TOKEN_USER: a pointer to the SID, its attributes, then the SID
+        // itself (68 bytes at most); u64s keep the pointer aligned
+        let mut info = [0u64; 16];
+        let mut length = 0u32;
+        // SAFETY: `info` is as long as said
+        let ok = unsafe {
+            GetTokenInformation(
+                token.as_raw_handle(),
+                TOKEN_USER,
+                info.as_mut_ptr().cast(),
+                std::mem::size_of_val(&info) as u32,
+                &mut length,
+            )
+        };
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: the call filled in TOKEN_USER, which starts with the pointer
+        let sid = unsafe { info.as_ptr().cast::<*mut c_void>().read() };
+        let mut text: *mut u16 = std::ptr::null_mut();
+        // SAFETY: `sid` points into `info`, still alive; `text` receives a
+        // string the system allocated
+        if unsafe { ConvertSidToStringSidW(sid, &mut text) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a NUL-terminated string from the call above, freed once
+        // copied
+        let sid = unsafe { widestring::U16CStr::from_ptr_str(text) }.to_string_lossy();
+        // SAFETY: `text` came from LocalAlloc and is not used again
+        unsafe { LocalFree(text.cast()) };
+        Ok(sid)
+    }
 }
 
 /// The user's private folder for the lock and the socket
@@ -437,6 +553,35 @@ mod tests {
         );
         // Nothing to add when nothing is known
         assert!(missing_session_vars(|_| None, &[]).is_empty());
+    }
+
+    #[test]
+    fn each_user_has_a_pipe_of_their_own() {
+        let sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
+        assert_eq!(
+            pipe_name(sid, Path::new("C:/Users/José/AppData/Local/radiotrope")),
+            format!("radiotrope-{sid}")
+        );
+        assert_ne!(
+            pipe_name(sid, Path::new("radiotrope")),
+            pipe_name(
+                "S-1-5-21-1004336348-1177238915-682003330-1002",
+                Path::new("radiotrope")
+            )
+        );
+        // A test's own folder gets a pipe of its own
+        assert_eq!(
+            pipe_name(sid, Path::new("/tmp/rt-inst-sock-42")),
+            format!("radiotrope-{sid}-rt-inst-sock-42")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn this_process_runs_as_its_user() {
+        let ours = windows_user::ours().unwrap();
+        assert!(ours.starts_with("S-1-"), "{ours}");
+        assert_eq!(windows_user::of_process(std::process::id()).unwrap(), ours);
     }
 
     #[test]
