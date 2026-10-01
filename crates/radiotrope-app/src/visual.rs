@@ -155,7 +155,7 @@ pub fn logo_palette(rgba: &[u8], dark: bool) -> Vec<[u8; 3]> {
     let mut neutral_sum = [0f64; 3];
     let mut neutral_count = 0usize;
 
-    for px in rgba.chunks_exact(4) {
+    for px in rgba.as_chunks::<4>().0 {
         if px[3] < 128 {
             continue;
         }
@@ -282,7 +282,12 @@ pub fn logo_backdrops(rgba: &[u8], width: usize) -> (Option<Backdrop>, Option<Ba
     let height = rgba.len() / 4 / width;
     let share = |part: usize, whole: usize| part as f32 / whole.max(1) as f32;
     // Logos with their own background stop here, before the costly part
-    let see_through = rgba.chunks_exact(4).filter(|px| px[3] < 128).count();
+    let see_through = rgba
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|px| px[3] < 128)
+        .count();
     if share(see_through, width * height) < MIN_TRANSPARENT {
         return (None, None);
     }
