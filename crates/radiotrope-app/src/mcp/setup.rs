@@ -70,12 +70,17 @@ impl AgentApp {
 
     /// Help shown next to the line for this computer, if any
     pub fn local_note(self) -> &'static str {
+        self.local_note_for(SHELL)
+    }
+
+    fn local_note_for(self, shell: Shell) -> &'static str {
         match self {
             AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
             AgentApp::ClaudeDesktop => {
                 "Add to claude_desktop_config.json (Settings > Developer > Edit Config), \
                  then restart Claude Desktop."
             }
+            AgentApp::VsCode if shell == Shell::Windows => COMMAND_PROMPT,
             _ => "",
         }
     }
@@ -83,19 +88,30 @@ impl AgentApp {
     /// Help shown next to the network line, if any; `token` says whether
     /// the line carries one
     pub fn network_note(self, token: bool) -> &'static str {
+        self.network_note_for(token, SHELL)
+    }
+
+    fn network_note_for(self, token: bool, shell: Shell) -> &'static str {
         match self {
             AgentApp::Codex if token => {
                 "Codex reads the token from the RADIOTROPE_TOKEN environment variable: \
                  set it to the token above."
             }
             AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
+            AgentApp::VsCode if shell == Shell::Windows => COMMAND_PROMPT,
             _ => "",
         }
     }
 }
 
-/// How the line is quoted: for a Unix shell, or for Windows (cmd and
-/// PowerShell both take double quotes)
+/// The note for a Windows line that only Command Prompt reads right
+const COMMAND_PROMPT: &str =
+    "Run it in Command Prompt: PowerShell reads the quotes inside it differently.";
+
+/// How the line is quoted: for a Unix shell (sh, bash, zsh), or for
+/// Command Prompt on Windows. PowerShell reads Command Prompt's double
+/// quotes the same way, except for the escaped ones inside VS Code's JSON,
+/// so that line says which one to use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shell {
     Unix,
@@ -139,7 +155,7 @@ pub fn no_network_line(app: AgentApp) -> &'static str {
 }
 
 fn local_line_for(app: AgentApp, exe: &str, shell: Shell) -> String {
-    let path = quote_path(exe);
+    let path = quote(exe, shell);
     match app {
         AgentApp::ClaudeCode => format!("claude mcp add radiotrope -- {path} --mcp"),
         AgentApp::Codex => format!("codex mcp add radiotrope -- {path} --mcp"),
@@ -158,6 +174,9 @@ fn local_line_for(app: AgentApp, exe: &str, shell: Shell) -> String {
 
 fn network_line_for(app: AgentApp, url: &str, token: Option<&str>, shell: Shell) -> Option<String> {
     let bearer = token.map(|t| format!("Bearer {}", if t.is_empty() { "<token>" } else { t }));
+    // The JSON lines take it as it is
+    let json_url = url;
+    let url = quote(url, shell);
     Some(match app {
         AgentApp::ClaudeCode => {
             let mut line = format!("claude mcp add --transport http radiotrope {url}");
@@ -182,14 +201,14 @@ fn network_line_for(app: AgentApp, url: &str, token: Option<&str>, shell: Shell)
             line + &format!(" radiotrope {url}")
         }
         AgentApp::VsCode => {
-            let mut server = json!({ "name": "radiotrope", "type": "http", "url": url });
+            let mut server = json!({ "name": "radiotrope", "type": "http", "url": json_url });
             if let Some(bearer) = &bearer {
                 server["headers"] = json!({ "Authorization": bearer });
             }
             vscode_line(server, shell)
         }
         AgentApp::Cursor => {
-            let mut server = json!({ "url": url });
+            let mut server = json!({ "url": json_url });
             if let Some(bearer) = &bearer {
                 server["headers"] = json!({ "Authorization": bearer });
             }
@@ -205,18 +224,31 @@ fn network_line_for(app: AgentApp, url: &str, token: Option<&str>, shell: Shell)
 fn vscode_line(server: serde_json::Value, shell: Shell) -> String {
     let server = server.to_string();
     match shell {
-        // JSON has no single quotes, so they wrap it whole
-        Shell::Unix => format!("code --add-mcp '{server}'"),
-        // As in VS Code's own docs: double quotes, inner ones escaped
+        Shell::Unix => format!("code --add-mcp {}", quote(&server, shell)),
+        // As in VS Code's own docs: double quotes, inner ones escaped. Only
+        // Command Prompt reads these as meant (see COMMAND_PROMPT).
         Shell::Windows => format!("code --add-mcp \"{}\"", server.replace('"', "\\\"")),
     }
 }
 
-fn quote_path(path: &str) -> String {
-    if path.contains(char::is_whitespace) {
-        format!("\"{path}\"")
-    } else {
-        path.to_string()
+/// One word for the shell: as it is when nothing in it is special there,
+/// otherwise quoted. A Unix shell gets single quotes, inside which only a
+/// single quote needs care (`'\''`: end, an escaped quote, start again), so
+/// `$`, backticks and spaces stay as they are. Command Prompt gets double
+/// quotes, which a Windows path never contains.
+fn quote(word: &str, shell: Shell) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "/._-:".contains(c);
+    match shell {
+        Shell::Unix
+            if !word.is_empty() && word.chars().all(|c| plain(c) || "+,=@%".contains(c)) =>
+        {
+            word.to_string()
+        }
+        Shell::Unix => format!("'{}'", word.replace('\'', r"'\''")),
+        Shell::Windows if !word.is_empty() && word.chars().all(|c| plain(c) || c == '\\') => {
+            word.to_string()
+        }
+        Shell::Windows => format!("\"{word}\""),
     }
 }
 
@@ -303,6 +335,56 @@ mod tests {
             network_line_for(AgentApp::Gemini, URL, None, Shell::Unix).unwrap(),
             format!("gemini mcp add -s user --transport http radiotrope {URL}")
         );
+    }
+
+    #[test]
+    fn paths_are_quoted_for_the_shell() {
+        let line = |exe: &str, shell| local_line_for(AgentApp::ClaudeCode, exe, shell);
+        assert_eq!(
+            line("/opt/My Apps/radiotrope", Shell::Unix),
+            "claude mcp add radiotrope -- '/opt/My Apps/radiotrope' --mcp"
+        );
+        // Neither $ nor a backtick is read by the shell inside single quotes
+        assert_eq!(
+            line("/home/a$b/`x`/radiotrope", Shell::Unix),
+            "claude mcp add radiotrope -- '/home/a$b/`x`/radiotrope' --mcp"
+        );
+        // A single quote ends the quoting, comes escaped, and it goes on
+        assert_eq!(
+            line("/home/o'neil/radiotrope", Shell::Unix),
+            r"claude mcp add radiotrope -- '/home/o'\''neil/radiotrope' --mcp"
+        );
+        assert_eq!(
+            line(r"C:\Tools&More\radiotrope.exe", Shell::Windows),
+            r#"claude mcp add radiotrope -- "C:\Tools&More\radiotrope.exe" --mcp"#
+        );
+        assert_eq!(
+            line(r"C:\radiotrope\radiotrope.exe", Shell::Windows),
+            r"claude mcp add radiotrope -- C:\radiotrope\radiotrope.exe --mcp"
+        );
+        // VS Code's JSON keeps working with a quote in the path
+        let vscode = local_line_for(AgentApp::VsCode, "/home/o'neil/rt", Shell::Unix);
+        assert_eq!(
+            vscode,
+            r#"code --add-mcp '{"args":["--mcp"],"command":"/home/o'\''neil/rt","name":"radiotrope"}'"#
+        );
+    }
+
+    #[test]
+    fn only_the_windows_vs_code_lines_name_their_shell() {
+        for app in AgentApp::ALL {
+            let windows = app == AgentApp::VsCode;
+            assert_eq!(
+                app.local_note_for(Shell::Windows) == COMMAND_PROMPT,
+                windows
+            );
+            assert_eq!(
+                app.network_note_for(false, Shell::Windows) == COMMAND_PROMPT,
+                windows
+            );
+            assert_ne!(app.local_note_for(Shell::Unix), COMMAND_PROMPT);
+            assert_ne!(app.network_note_for(true, Shell::Unix), COMMAND_PROMPT);
+        }
     }
 
     #[test]

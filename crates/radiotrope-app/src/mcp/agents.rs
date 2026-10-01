@@ -4,7 +4,8 @@
 //! off until turned on. Both share one set of tools, so `get_status` shows
 //! the last change whichever way the agent came in.
 
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use radiotrope_app::data::agent_token;
 use radiotrope_app::data::settings::{McpAuth, Settings};
@@ -17,7 +18,15 @@ pub struct Agents {
     network: Mutex<Option<network::Server>>,
     /// What the network server was last set up with
     applied: Mutex<Option<Applied>>,
+    /// Counts the changes asked for, so a change set up late never undoes
+    /// a newer one
+    asked: AtomicU64,
+    /// The last change asked for that has been set up
+    done: AtomicU64,
 }
+
+/// What to do with the status once the network server is set up
+pub type ShowStatus = Box<dyn FnOnce(NetworkStatus) + Send>;
 
 /// The settings the network server was last set up with, and how that went
 struct Applied {
@@ -55,6 +64,8 @@ impl Agents {
             tools,
             network: Mutex::new(None),
             applied: Mutex::new(None),
+            asked: AtomicU64::new(0),
+            done: AtomicU64::new(0),
         }
     }
 
@@ -63,9 +74,47 @@ impl Agents {
     }
 
     /// Start, restart or stop the network server to match the settings
+    /// (the window uses [`apply_network_later`](Self::apply_network_later))
+    #[cfg(test)]
     pub fn apply_network(&self, settings: &Settings) -> NetworkStatus {
+        let mut running = self.network.lock().unwrap_or_else(|e| e.into_inner());
+        self.apply_to(&mut running, settings)
+    }
+
+    /// Start, restart or stop the network server to match the settings, on
+    /// a thread of its own, then `show` the status. Stopping the old server
+    /// waits for it to let go of its port, which the window must not. A
+    /// change asked for after this one wins: this one then does nothing.
+    pub fn apply_network_later(self: &Arc<Self>, settings: &Settings, show: ShowStatus) {
+        let ours = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
+        let agents = self.clone();
+        let settings = settings.clone();
+        let spawned = std::thread::Builder::new()
+            .name("mcp-network-setup".into())
+            .spawn(move || {
+                // One at a time; the newest change only
+                let mut running = agents.network.lock().unwrap_or_else(|e| e.into_inner());
+                if agents.asked.load(Ordering::SeqCst) != ours {
+                    return;
+                }
+                let status = agents.apply_to(&mut running, &settings);
+                agents.done.store(ours, Ordering::SeqCst);
+                drop(running);
+                show(status);
+            });
+        if let Err(e) = spawned {
+            eprintln!("MCP network: can't set up the server: {e}");
+            self.done.store(ours, Ordering::SeqCst);
+        }
+    }
+
+    fn apply_to(
+        &self,
+        running: &mut Option<network::Server>,
+        settings: &Settings,
+    ) -> NetworkStatus {
         let address = listen_address(settings);
-        let status = self.start_network(settings, &address);
+        let status = self.start_network(running, settings, &address);
         *self.applied.lock().unwrap_or_else(|e| e.into_inner()) = Some(Applied {
             settings: settings.clone(),
             address,
@@ -74,25 +123,42 @@ impl Agents {
         status
     }
 
-    /// Set the network server up again when the picked interface's address
-    /// has changed, or when it could not listen last time. `None` when
+    /// Whether the network server needs setting up again: the picked
+    /// interface's address has changed, or it could not listen last time.
+    /// The settings to set it up with, then.
+    pub fn network_to_recheck(&self) -> Option<Settings> {
+        // A change still being set up comes first; what was applied before
+        // it is old news
+        if self.asked.load(Ordering::SeqCst) != self.done.load(Ordering::SeqCst) {
+            return None;
+        }
+        let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
+        let applied = applied.as_ref()?;
+        applied
+            .is_stale(&listen_address(&applied.settings))
+            .then(|| applied.settings.clone())
+    }
+
+    /// Set the network server up again when it needs it (see
+    /// [`network_to_recheck`](Self::network_to_recheck)). `None` when
     /// nothing needed doing.
+    #[cfg(test)]
     pub fn recheck_network(&self) -> Option<NetworkStatus> {
-        let settings = {
-            let applied = self.applied.lock().unwrap_or_else(|e| e.into_inner());
-            let applied = applied.as_ref()?;
-            if !applied.is_stale(&listen_address(&applied.settings)) {
-                return None;
-            }
-            applied.settings.clone()
-        };
+        let settings = self.network_to_recheck()?;
         Some(self.apply_network(&settings))
     }
 
-    fn start_network(&self, settings: &Settings, address: &str) -> NetworkStatus {
-        let mut running = self.network.lock().unwrap_or_else(|e| e.into_inner());
-        // The old server lets go of its port before a new one binds it
-        running.take();
+    fn start_network(
+        &self,
+        running: &mut Option<network::Server>,
+        settings: &Settings,
+        address: &str,
+    ) -> NetworkStatus {
+        // The old server lets go of its port before a new one binds it.
+        // Its sessions end with it, and so the agents it served are gone.
+        if running.take().is_some() {
+            self.tools.presence().network_stopped();
+        }
 
         if !settings.mcp_network {
             let token = agent_token::load_existing().unwrap_or_default();
@@ -228,6 +294,53 @@ mod tests {
         assert!(agents.apply_network(&settings).is_error);
         let again = agents.recheck_network().expect("tried again");
         assert!(again.is_error);
+    }
+
+    #[test]
+    fn a_change_set_up_late_never_undoes_a_newer_one() {
+        let agents = Arc::new(agents());
+        let (tx, rx) = std::sync::mpsc::channel();
+        // Hold the server's lock, as a slow stop would, while two changes
+        // are asked for
+        let held = agents.network.lock().unwrap();
+        for port in [0, 1] {
+            let settings = Settings {
+                mcp_network: false,
+                mcp_address: format!("127.0.0.1:{}", 9000 + port),
+                ..Settings::default()
+            };
+            let tx = tx.clone();
+            agents.apply_network_later(&settings, Box::new(move |s| tx.send(s.url).unwrap()));
+        }
+        // Nothing to recheck while a change waits
+        assert!(agents.network_to_recheck().is_none());
+        drop(held);
+        let shown = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert_eq!(shown, "http://127.0.0.1:9001/mcp");
+        // The older one did nothing and showed nothing
+        assert!(rx
+            .recv_timeout(std::time::Duration::from_millis(300))
+            .is_err());
+        let applied = agents.applied.lock().unwrap();
+        assert_eq!(applied.as_ref().unwrap().address, "127.0.0.1:9001");
+    }
+
+    #[test]
+    fn stopping_the_server_takes_its_agents_off_the_chip() {
+        let agents = agents();
+        let presence = agents.tools().presence();
+        let settings = Settings {
+            mcp_network: true,
+            mcp_address: "127.0.0.1:0".into(),
+            ..Settings::default()
+        };
+        assert!(!agents.apply_network(&settings).is_error);
+        let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        presence.network_seen(super::super::presence::NetworkId::Address(ip), ip);
+        assert_eq!(presence.agents().len(), 1);
+        // A restart, e.g. for a new token
+        assert!(!agents.apply_network(&settings).is_error);
+        assert!(presence.agents().is_empty());
     }
 
     #[test]

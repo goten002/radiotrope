@@ -19,7 +19,7 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::net::{IpAddr, SocketAddr, TcpListener as StdListener, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpListener as StdListener};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
@@ -464,17 +464,19 @@ async fn handle(
             presence.network_seen(id, from.ip);
             response
         }
-        // The agent's event stream: connected while it stays open
-        http::Method::GET if session.is_some() => match presence.stream_opened(&id) {
-            Some(guard) => response.map(|body| {
+        // The agent's event stream: connected while it stays open. The
+        // server took its session, so it counts even when it had gone from
+        // the list (asleep past the grace).
+        http::Method::GET if session.is_some() => {
+            let guard = presence.stream_opened(&id, from.ip);
+            response.map(|body| {
                 Watched {
                     body,
                     _guard: guard,
                 }
                 .boxed()
-            }),
-            None => response,
-        },
+            })
+        }
         http::Method::DELETE if session.is_some() => {
             presence.network_left(&id);
             response
@@ -544,39 +546,41 @@ pub fn url_for(address: &str) -> Result<String, String> {
     Ok(format!("http://{}/mcp", connect_authority(addr)))
 }
 
-/// "host:port" to a socket address; a missing port gets the default one
+/// "host:port" to a socket address; a missing port gets the default one.
+///
+/// Only IP addresses and `localhost` are taken, never looked up: the server
+/// listens on one of this computer's addresses, which the dialog lists by
+/// number, and a name would go to DNS every time the dialog changes.
 fn resolve(address: &str) -> Result<SocketAddr, String> {
     let address = address.trim();
     if address.is_empty() {
         return Err("Enter an address, e.g. 127.0.0.1:8765".into());
     }
-    let with_port = if address.parse::<SocketAddr>().is_ok() || has_port(address) {
-        address.to_string()
-    } else {
-        let default_port = radiotrope_app::config::mcp::DEFAULT_ADDRESS
-            .rsplit(':')
-            .next()
-            .unwrap_or("8765");
-        match address.parse::<IpAddr>() {
-            Ok(IpAddr::V6(ip)) => format!("[{ip}]:{default_port}"),
-            _ => format!("{address}:{default_port}"),
-        }
-    };
-    with_port
-        .to_socket_addrs()
-        .map_err(|_| format!("\"{address}\" is not an address this computer can listen on"))?
-        .next()
-        .ok_or_else(|| format!("\"{address}\" is not an address this computer can listen on"))
-}
-
-fn has_port(address: &str) -> bool {
-    // "host:port" or "[v6]:port"; a bare IPv6 address has colons too
-    match address.rsplit_once(':') {
-        Some((host, port)) => {
-            port.parse::<u16>().is_ok() && (!host.contains(':') || host.ends_with(']'))
-        }
-        None => false,
+    let not_ours = || format!("\"{address}\" is not an address this computer can listen on");
+    if let Ok(addr) = address.parse::<SocketAddr>() {
+        return Ok(addr);
     }
+    let default_port = radiotrope_app::config::mcp::DEFAULT_ADDRESS
+        .rsplit(':')
+        .next()
+        .and_then(|port| port.parse().ok())
+        .unwrap_or(8765);
+    // An address without its port, IPv6 in brackets or not
+    let bare = address
+        .strip_prefix('[')
+        .and_then(|a| a.strip_suffix(']'))
+        .unwrap_or(address);
+    if let Ok(ip) = bare.parse::<IpAddr>() {
+        return Ok(SocketAddr::new(ip, default_port));
+    }
+    let (host, port) = match address.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().map_err(|_| not_ours())?),
+        None => (address, default_port),
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return Ok(SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), port));
+    }
+    Err(not_ours())
 }
 
 /// The host:port an agent on another computer would use. Listening on every
@@ -744,8 +748,17 @@ mod tests {
         assert_eq!(resolve("[::1]:9000").unwrap().port(), 9000);
         assert_eq!(resolve("::1").unwrap().port(), 8765);
         assert_eq!(resolve("0.0.0.0").unwrap().ip().to_string(), "0.0.0.0");
+        assert_eq!(resolve("[::1]").unwrap().port(), 8765);
         assert!(resolve("").is_err());
         assert!(resolve("no such host.invalid").is_err());
+        // Names are never looked up; localhost needs no lookup
+        assert_eq!(resolve("localhost").unwrap().to_string(), "127.0.0.1:8765");
+        assert_eq!(
+            resolve("LocalHost:9000").unwrap().to_string(),
+            "127.0.0.1:9000"
+        );
+        assert!(resolve("example.com:8765").is_err());
+        assert!(resolve("localhost:http").is_err());
     }
 
     #[test]
