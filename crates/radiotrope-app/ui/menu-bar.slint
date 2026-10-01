@@ -150,7 +150,17 @@ export component MenuBar inherits Rectangle {
     // Agents (MCP) using the player now, and one line about each: a chip
     // at the end of the bar, only while there are any
     in property <int> agent-count;
-    in property <string> agent-list;
+    // The chip's hover bubble, drawn by the window (see AgentsChip)
+    out property <bool> agents-bubble-open: root.agent-count > 0 && root.agents-hover;
+    out property <length> agents-bubble-right;
+    out property <length> agents-bubble-top;
+    property <bool> agents-hover: false;
+    // The chip goes away with the last agent, and its hover with it
+    changed agent-count => {
+        if root.agent-count == 0 {
+            root.agents-hover = false;
+        }
+    }
 
     // Our own title bar: the bar moves the window and ends with the window
     // buttons (desktop only, when the system frame is turned off)
@@ -299,7 +309,12 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.agent-count;
-                list: root.agent-list;
+                show-bubble(right, top) => {
+                    root.agents-bubble-right = right;
+                    root.agents-bubble-top = top;
+                    root.agents-hover = true;
+                }
+                hide-bubble => { root.agents-hover = false; }
             }
         }
 
