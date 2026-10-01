@@ -2424,7 +2424,11 @@ fn show_listen_choices(
         ip: Ipv4Addr::LOCALHOST.into(),
         interface: None,
     }];
-    for i in mcp::network::interfaces() {
+    // Networks for containers and virtual machines stay out, unless picked
+    let interfaces = mcp::network::interfaces()
+        .into_iter()
+        .filter(|i| i.usable || settings.mcp_interface.as_deref() == Some(i.name.as_str()));
+    for i in interfaces {
         labels.push(format!("{} ({})", i.name, i.ip).into());
         choices.push(ListenChoice {
             ip: i.ip,
