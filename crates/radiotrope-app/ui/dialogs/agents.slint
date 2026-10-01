@@ -330,20 +330,16 @@ export component AgentsDialog inherits Rectangle {
             }
         }
 
-        VerticalLayout {
+        HorizontalLayout {
             spacing: 8px;
-
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Command"; }
-                CopyLine {
-                    text: root.local-command;
-                    enabled: root.available;
-                }
-                if root.local-note != "": VerticalLayout {
-                    alignment: center;
-                    InfoTip { text: root.local-note; }
-                }
+            RowLabel { text: "Command"; }
+            CopyLine {
+                text: root.local-command;
+                enabled: root.available;
+            }
+            if root.local-note != "": VerticalLayout {
+                alignment: center;
+                InfoTip { text: root.local-note; }
             }
         }
 
@@ -352,127 +348,119 @@ export component AgentsDialog inherits Rectangle {
             background: Theme.hairline;
         }
 
-        VerticalLayout {
-            spacing: 8px;
+        // While on, what the server says at the right: where it
+        // listens, in the accent colour, or why it can't
+        HorizontalLayout {
+            spacing: 12px;
 
-            // While on, what the server says at the right: where it
-            // listens, in the accent colour, or why it can't
-            HorizontalLayout {
-                spacing: 12px;
-
-                Toggle {
-                    label: "Allow agents over the network";
-                    enabled: root.available;
-                    checked <=> root.network-on;
-                    toggled(on) => { root.network-toggled(on); }
-                }
-                if root.network-on && root.available && root.status != "": HorizontalLayout {
-                    horizontal-stretch: 1;
-                    alignment: end;
-                    spacing: 6px;
-
-                    if !root.status-error: VerticalLayout {
-                        alignment: center;
-                        Rectangle {
-                            width: 7px;
-                            height: 7px;
-                            border-radius: 3.5px;
-                            background: Theme.accent;
-                        }
-                    }
-                    Text {
-                        text: root.status;
-                        color: root.status-error ? Theme.danger : Theme.accent-text;
-                        font-size: Theme.font-md;
-                        font-weight: 600;
-                        vertical-alignment: center;
-                        overflow: elide;
-                    }
-                }
+            Toggle {
+                label: "Allow agents over the network";
+                enabled: root.available;
+                checked <=> root.network-on;
+                toggled(on) => { root.network-toggled(on); }
             }
+            if root.network-on && root.available && root.status != "": HorizontalLayout {
+                horizontal-stretch: 1;
+                alignment: end;
+                spacing: 6px;
 
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Listen on"; }
-                Picker {
-                    items: root.listen-options;
-                    selected <=> root.listen;
-                    enabled: root.network-fields;
-                    changed(index) => { root.listen-changed(index); }
-                }
-                port-label := Text {
-                    text: "Port";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-md;
-                    vertical-alignment: center;
-                }
-                port-edit := StyledLineEdit {
-                    width: 72px;
-                    height: 34px;
-                    enabled: root.network-fields;
-                    text <=> root.edit-port;
-                    placeholder-text: "8765";
-                    accepted(text) => { root.apply-port(text); }
-                    changed has-focus => {
-                        if !self.has-focus && root.edit-port != root.port {
-                            root.apply-port(root.edit-port);
-                        }
+                if !root.status-error: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        background: Theme.accent;
                     }
                 }
-            }
-
-            // The token sits beside its choice; with None there is none
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Authentication"; }
-                Picker {
-                    width: 96px;
-                    horizontal-stretch: 0;
-                    items: root.auths;
-                    selected <=> root.auth;
-                    enabled: root.network-fields;
-                    changed(index) => { root.auth-changed(index); }
-                }
-                if root.token-on: CopyLine {
-                    text: root.token;
-                    placeholder: "Made when network agents first need one";
-                    enabled: root.network-fields;
-                }
-                // Under Port, so the token ends where Listen on does
-                if root.token-on: SecondaryButton {
-                    width: port-label.width + 8px + port-edit.width;
-                    label: "New token";
-                    enabled: root.network-fields && root.token != "";
-                    clicked => { root.regenerate-token(); }
-                }
-                if !root.token-on: Text {
-                    horizontal-stretch: 1;
-                    // The first choice is "This computer only"
-                    text: root.listen == 0 ? "Only programs on this computer can connect"
-                        : "Anyone who can reach the address can use the player";
-                    color: root.network-fields ? Theme.text-secondary : Theme.disabled-text;
+                Text {
+                    text: root.status;
+                    color: root.status-error ? Theme.danger : Theme.accent-text;
                     font-size: Theme.font-md;
+                    font-weight: 600;
                     vertical-alignment: center;
                     overflow: elide;
                 }
             }
         }
 
-        VerticalLayout {
+        HorizontalLayout {
             spacing: 8px;
+            RowLabel { text: "Listen on"; }
+            Picker {
+                items: root.listen-options;
+                selected <=> root.listen;
+                enabled: root.network-fields;
+                changed(index) => { root.listen-changed(index); }
+            }
+            port-label := Text {
+                text: "Port";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                vertical-alignment: center;
+            }
+            port-edit := StyledLineEdit {
+                width: 72px;
+                height: 34px;
+                enabled: root.network-fields;
+                text <=> root.edit-port;
+                placeholder-text: "8765";
+                accepted(text) => { root.apply-port(text); }
+                changed has-focus => {
+                    if !self.has-focus && root.edit-port != root.port {
+                        root.apply-port(root.edit-port);
+                    }
+                }
+            }
+        }
 
-            HorizontalLayout {
-                spacing: 8px;
-                RowLabel { text: "Command"; }
-                CopyLine {
-                    text: root.token-on && root.token == "" ? "" : root.command;
-                    placeholder: root.network-placeholder;
-                    enabled: root.network-fields;
-                }
-                if root.network-note != "": VerticalLayout {
-                    alignment: center;
-                    InfoTip { text: root.network-note; }
-                }
+        // The token sits beside its choice; with None there is none
+        HorizontalLayout {
+            spacing: 8px;
+            RowLabel { text: "Authentication"; }
+            Picker {
+                width: 96px;
+                horizontal-stretch: 0;
+                items: root.auths;
+                selected <=> root.auth;
+                enabled: root.network-fields;
+                changed(index) => { root.auth-changed(index); }
+            }
+            if root.token-on: CopyLine {
+                text: root.token;
+                placeholder: "Made when network agents first need one";
+                enabled: root.network-fields;
+            }
+            // Under Port, so the token ends where Listen on does
+            if root.token-on: SecondaryButton {
+                width: port-label.width + 8px + port-edit.width;
+                label: "New token";
+                enabled: root.network-fields && root.token != "";
+                clicked => { root.regenerate-token(); }
+            }
+            if !root.token-on: Text {
+                horizontal-stretch: 1;
+                // The first choice is "This computer only"
+                text: root.listen == 0 ? "Only agents on this computer can connect"
+                    : "Anyone who can reach the address can use the player";
+                color: root.network-fields ? Theme.text-secondary : Theme.disabled-text;
+                font-size: Theme.font-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            RowLabel { text: "Command"; }
+            CopyLine {
+                text: root.token-on && root.token == "" ? "" : root.command;
+                placeholder: root.network-placeholder;
+                enabled: root.network-fields;
+            }
+            if root.network-note != "": VerticalLayout {
+                alignment: center;
+                InfoTip { text: root.network-note; }
             }
         }
     }
