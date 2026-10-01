@@ -41,7 +41,7 @@ Every agent shares the one player running on your computer. `radiotrope --mcp` c
 Radiotrope can also take agents over the network (MCP Streamable HTTP). It is off until you turn it on in **Tools > Agents (MCP)**, where you also find:
 
 - **Listen on** and **Port**: This computer only (`127.0.0.1`) and port 8765 by default. To let other computers in, pick a network interface from the list (for example `eth0` or `Wi-Fi` with its address), or All networks. The list leaves out networks that only containers and virtual machines use (Docker, WSL, VirtualBox and the like) and self-assigned 169.254 addresses; VPNs such as Tailscale stay. A picked interface keeps working when the router gives it a new address.
-- **Authentication**: **None** (the default) lets in anyone who can reach the address. **Token** makes every request carry the token as `Authorization: Bearer <token>`; the token then shows beside the choice. It is made the first time Token is picked with network agents on, is kept in `mcp-token` in the config folder (readable by you only). **New token** replaces it; agents with the old one stop working.
+- **Authentication**: **None** (the default) lets in anyone who can reach the address. **Token** makes every request carry the token as `Authorization: Bearer <token>`; the token then shows beside the choice. It is made the first time Token is picked with network agents on and kept in `mcp-token` in the config folder (readable by you only). **New token** replaces it; agents with the old one stop working.
 - **A ready line for the picked agent** with a Copy button, for example for Claude Code:
 
   ```bash
