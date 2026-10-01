@@ -1422,6 +1422,21 @@ fn main() {
             },
         );
     }
+    // Take in favorites another player saved (one an agent started with
+    // `--mcp --standalone`); the poll below then redraws them
+    let follow_timer = slint::Timer::default();
+    {
+        let favs = favorites.clone();
+        follow_timer.start(
+            slint::TimerMode::Repeated,
+            radiotrope_app::config::ui::FAVORITES_FOLLOW,
+            move || {
+                if let Ok(mut f) = favs.try_lock() {
+                    f.reload_if_changed();
+                }
+            },
+        );
+    }
     let _timer = slint::Timer::default();
     _timer.start(
         slint::TimerMode::Repeated,

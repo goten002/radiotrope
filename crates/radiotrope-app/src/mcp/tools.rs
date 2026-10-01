@@ -1101,7 +1101,11 @@ impl RadioTools {
     }
 
     fn favorites(&self) -> std::sync::MutexGuard<'_, FavoritesManager> {
-        self.favorites.lock().unwrap_or_else(|e| e.into_inner())
+        let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
+        // What another player saved since: with `--mcp --standalone` the
+        // agent's own player and the usual one share the file
+        favorites.reload_if_changed();
+        favorites
     }
 
     fn snapshot(&self) -> AppSnapshot {

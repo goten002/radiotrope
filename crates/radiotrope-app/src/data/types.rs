@@ -212,7 +212,7 @@ impl HasLogo for Station {
 /// A favorite radio station with user-specific metadata
 ///
 /// Extends Station with statistics and display preferences.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Favorite {
     /// The station data
     #[serde(flatten)]
