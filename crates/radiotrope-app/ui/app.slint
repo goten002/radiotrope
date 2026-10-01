@@ -16,7 +16,7 @@ import { EqualizerDialog } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
-import { TextUtil } from "components.slint";
+import { TextUtil, AgentsBubble } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
 export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry }
@@ -261,7 +261,7 @@ export component App inherits Window {
             }
 
             VerticalLayout {
-            MenuBar {
+            menu-bar := MenuBar {
                 show-station-stats <=> root.show-station-stats;
                 show-visualizer <=> root.show-visualizer;
                 custom-frame: root.custom-frame;
@@ -323,7 +323,6 @@ export component App inherits Window {
                 open-recordings-folder => { root.open-recordings-folder(); }
                 open-agents => { agents-dialog.open(); }
                 agent-count: root.agent-count;
-                agent-list: root.agent-list;
             }
             playback := Playback {
                 station-name: root.station-name;
@@ -514,6 +513,14 @@ export component App inherits Window {
         disconnect-requested() => { root.wifi-disconnect-requested(); }
         close-requested() => { root.show-wifi-settings = false; }
         wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+    }
+
+    // The menu bar's agents bubble, over the header below it
+    if menu-bar.agents-bubble-open: AgentsBubble {
+        x: menu-bar.agents-bubble-right - self.width;
+        y: menu-bar.agents-bubble-top;
+        count: root.agent-count;
+        list: root.agent-list;
     }
 
     // Thin outline so the edge stays visible without the system frame

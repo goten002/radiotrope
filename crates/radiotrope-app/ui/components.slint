@@ -658,13 +658,15 @@ export component InfoTip inherits Rectangle {
     }
 }
 
-// How many agents use the player; hovering lists them in a bubble below.
-// The bubble is a popup so it draws over the header under the menu bar.
+// How many agents use the player; hovering lists them in an AgentsBubble.
+// The window draws the bubble (over the header under the menu bar), at the
+// chip's right edge: a popup would take the mouse and close it on any move.
 export component AgentsChip inherits Rectangle {
     in property <int> count;
-    in property <string> list;
-
-    property <bool> open: false;
+    // Show the bubble with its top right corner here (window coordinates),
+    // or hide it
+    callback show-bubble(/* right */ length, /* top */ length);
+    callback hide-bubble();
 
     width: row.preferred-width + 14px;
     height: 20px;
@@ -675,8 +677,7 @@ export component AgentsChip inherits Rectangle {
         changed has-hover => {
             delay.running = self.has-hover;
             if !self.has-hover {
-                root.open = false;
-                bubble-popup.close();
+                root.hide-bubble();
             }
         }
     }
@@ -686,8 +687,7 @@ export component AgentsChip inherits Rectangle {
         running: false;
         triggered => {
             self.running = false;
-            root.open = true;
-            bubble-popup.show();
+            root.show-bubble(root.absolute-position.x + root.width, root.absolute-position.y + root.height + 6px);
         }
     }
 
@@ -712,44 +712,40 @@ export component AgentsChip inherits Rectangle {
             vertical-alignment: center;
         }
     }
+}
 
-    // Same style as the other hover bubbles
-    bubble-popup := PopupWindow {
-        close-policy: no-auto-close;
-        // Right edge under the chip's right edge, just below the bar
-        x: root.width - self.width;
-        y: root.height + 6px;
-        width: max(Defaults.info-tip-width, bubble.preferred-width);
-        height: bubble.preferred-height;
+// The agents chip's list, in the same style as the other hover bubbles
+export component AgentsBubble inherits Rectangle {
+    in property <int> count;
+    in property <string> list;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-offset-y: 2px;
-            drop-shadow-color: Theme.shadow-soft;
+    width: max(Defaults.info-tip-width, bubble.preferred-width);
+    height: bubble.preferred-height;
+    background: Theme.popup-bg;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    drop-shadow-blur: 8px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: Theme.shadow-soft;
 
-            bubble := VerticalLayout {
-                padding-left: 12px;
-                padding-right: 12px;
-                padding-top: 8px;
-                padding-bottom: 8px;
-                spacing: 3px;
+    bubble := VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 3px;
 
-                Text {
-                    text: root.count == 1 ? "1 agent is using the player" : root.count + " agents are using the player";
-                    font-size: Theme.font-md;
-                    font-weight: 600;
-                    color: Theme.text-primary;
-                }
-                Text {
-                    text: root.list;
-                    font-size: Theme.font-md;
-                    color: Theme.text-secondary;
-                }
-            }
+        Text {
+            text: root.count == 1 ? "1 agent is using the player" : root.count + " agents are using the player";
+            font-size: Theme.font-md;
+            font-weight: 600;
+            color: Theme.text-primary;
+        }
+        Text {
+            text: root.list;
+            font-size: Theme.font-md;
+            color: Theme.text-secondary;
         }
     }
 }
