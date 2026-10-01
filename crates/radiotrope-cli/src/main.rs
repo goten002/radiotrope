@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use clap::Parser;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
@@ -120,15 +120,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let shared_stats = engine.shared_stats();
     let event_rx = engine.event_receiver().clone();
 
-    // Suppress stderr during TUI — ALSA/PulseAudio and other libs write
-    // diagnostic messages to stderr which corrupt the ratatui display.
-    // Windows audio (WASAPI) doesn't, so there stderr is left alone.
-    #[cfg(unix)]
-    let saved_stderr = quiet_stderr()?;
-
-    // Enter TUI
-    terminal::enable_raw_mode()?;
-    io::stdout().execute(EnterAlternateScreen)?;
+    // Enter TUI. The guard puts the terminal back however this function
+    // ends: a normal quit, an error returned by `?`, or a panic.
+    let terminal_guard = TerminalGuard::enter()?;
     let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
 
@@ -146,6 +140,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
+                        // Raw mode turns Ctrl+C into a key press
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            app.running = false;
+                        }
                         KeyCode::Char('q') | KeyCode::Esc => {
                             app.running = false;
                         }
@@ -195,8 +193,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         app.status = "Stopped".to_string();
                         app.running = false;
                     }
-                    AudioEvent::Error(_) => {
-                        app.status = "Error".to_string();
+                    AudioEvent::Error(reason) => {
+                        app.status = format!("Error: {reason}");
                     }
                     AudioEvent::ProbeTimeout => {
                         app.status = "Probe timeout (ADTS?)".to_string();
@@ -253,13 +251,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     drop(engine);
 
     // Restore terminal
-    terminal::disable_raw_mode()?;
-    io::stdout().execute(LeaveAlternateScreen)?;
-
-    #[cfg(unix)]
-    restore_stderr(saved_stderr);
+    drop(terminal_guard);
 
     Ok(())
+}
+
+/// Raw mode, the alternate screen and (on Unix) a silenced stderr while it
+/// lives; dropping it, or a panic, restores all three
+struct TerminalGuard;
+
+/// The stderr saved by [`quiet_stderr`], or -1, for the panic hook
+#[cfg(unix)]
+static SAVED_STDERR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        // Suppress stderr during TUI — ALSA/PulseAudio and other libs write
+        // diagnostic messages to stderr which corrupt the ratatui display.
+        // Windows audio (WASAPI) doesn't, so there stderr is left alone.
+        #[cfg(unix)]
+        SAVED_STDERR.store(quiet_stderr()?, Ordering::SeqCst);
+
+        // Release builds abort on panic, so drops don't run: restore the
+        // terminal before the panic message is printed
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            default_hook(info);
+        }));
+
+        let guard = TerminalGuard;
+        terminal::enable_raw_mode()?;
+        io::stdout().execute(EnterAlternateScreen)?;
+        Ok(guard)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        restore_terminal();
+    }
+}
+
+/// Leave raw mode and the alternate screen and give stderr back. Safe to
+/// call more than once.
+fn restore_terminal() {
+    let _ = terminal::disable_raw_mode();
+    let _ = io::stdout().execute(LeaveAlternateScreen);
+    #[cfg(unix)]
+    restore_stderr(SAVED_STDERR.swap(-1, Ordering::SeqCst));
 }
 
 /// Send stderr to /dev/null, returning a copy of the old stderr (or -1)
@@ -387,13 +427,16 @@ fn extract_host(url: &str) -> &str {
         .unwrap_or(url)
 }
 
+/// Cut `s` to at most `max` characters, ending in "..." when cut. Counts
+/// characters, not bytes, so non-ASCII text is never split mid-character.
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
+    if s.chars().count() <= max {
         s.to_string()
     } else if max > 3 {
-        format!("{}...", &s[..max - 3])
+        let kept: String = s.chars().take(max - 3).collect();
+        format!("{kept}...")
     } else {
-        s[..max].to_string()
+        s.chars().take(max).collect()
     }
 }
 
@@ -671,5 +714,31 @@ fn format_number(n: u64) -> String {
             result.push(c);
         }
         result.chars().rev().collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_str;
+
+    #[test]
+    fn short_text_is_kept() {
+        assert_eq!(truncate_str("http://a.test", 20), "http://a.test");
+    }
+
+    #[test]
+    fn long_text_is_cut_with_dots() {
+        assert_eq!(truncate_str("abcdefghij", 8), "abcde...");
+        assert_eq!(truncate_str("abcdefghij", 3), "abc");
+    }
+
+    #[test]
+    fn non_ascii_text_is_cut_on_characters() {
+        let url = "http://example.gr/ραδιόφωνο.mp3";
+        // The old byte cut at 21 landed inside "α" (bytes 20-21) and panicked
+        let cut = truncate_str(url, 24);
+        assert_eq!(cut, "http://example.gr/ραδ...");
+        assert_eq!(cut.chars().count(), 24);
+        assert_eq!(truncate_str("ραδιόφωνο", 2), "ρα");
     }
 }
