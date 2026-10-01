@@ -64,19 +64,37 @@ component CopyLine inherits Rectangle {
             }
         }
 
+        // A small borderless Copy, part of the box
         if Platform.has-clipboard: VerticalLayout {
             alignment: center;
-            SecondaryButton {
-                height: 26px;
-                label: root.copied ? "Copied" : "Copy";
-                enabled: root.enabled && root.text != "";
-                clicked => {
-                    clipboard.select-all();
-                    clipboard.copy();
-                    clipboard.clear-selection();
-                    root.copied = true;
-                    copied-timer.running = false;
-                    copied-timer.running = true;
+            copy := Rectangle {
+                property <bool> can-copy: root.enabled && root.text != "";
+                width: copy-label.preferred-width + 16px;
+                height: 24px;
+                border-radius: Theme.radius-sm;
+                background: self.can-copy && copy-touch.has-hover ? Theme.menu-hover : transparent;
+                animate background { duration: Theme.fast; }
+
+                copy-touch := TouchArea {
+                    enabled: copy.can-copy;
+                    mouse-cursor: copy.can-copy ? pointer : default;
+                    clicked => {
+                        clipboard.select-all();
+                        clipboard.copy();
+                        clipboard.clear-selection();
+                        root.copied = true;
+                        copied-timer.running = false;
+                        copied-timer.running = true;
+                    }
+                }
+                copy-label := Text {
+                    text: root.copied ? "Copied" : "Copy";
+                    color: !copy.can-copy ? Theme.disabled-text
+                        : copy-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    font-size: Theme.font-sm;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
         }
@@ -156,7 +174,8 @@ component Picker inherits Rectangle {
     in property <bool> enabled: true;
     callback changed(int);
 
-    height: 32px;
+    // As tall as CopyLine and the buttons, so a row lines up
+    height: 34px;
     horizontal-stretch: 1;
     border-radius: Theme.radius-sm;
     border-width: 1px;
@@ -378,14 +397,15 @@ export component AgentsDialog inherits Rectangle {
                     enabled: root.network-fields;
                     changed(index) => { root.listen-changed(index); }
                 }
-                Text {
+                port-label := Text {
                     text: "Port";
                     color: Theme.text-secondary;
                     font-size: Theme.font-md;
                     vertical-alignment: center;
                 }
-                StyledLineEdit {
+                port-edit := StyledLineEdit {
                     width: 72px;
+                    height: 34px;
                     enabled: root.network-fields;
                     text <=> root.edit-port;
                     placeholder-text: "8765";
@@ -415,7 +435,9 @@ export component AgentsDialog inherits Rectangle {
                     placeholder: "Made when network agents first need one";
                     enabled: root.network-fields;
                 }
+                // Under Port, so the token ends where Listen on does
                 if root.token-on: SecondaryButton {
+                    width: port-label.width + 8px + port-edit.width;
                     label: "New token";
                     enabled: root.network-fields && root.token != "";
                     clicked => { root.regenerate-token(); }
