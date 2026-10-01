@@ -15,7 +15,7 @@ use interprocess::local_socket::tokio::prelude::*;
 use rmcp::ServiceExt;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::instance::{self, Instance, HELLO_MCP, HELLO_SHOW};
+use crate::instance::{self, Acquire, Instance, HELLO_MCP, HELLO_SHOW};
 
 use super::tools::RadioTools;
 
@@ -24,7 +24,8 @@ const START_WAIT: Duration = Duration::from_secs(10);
 /// After the agent closes stdin, how long the relay still waits for answers
 /// to requests the player is working on
 const DRAIN_LIMIT: Duration = Duration::from_secs(10);
-/// How long a new connection has to say what it wants
+/// How long a new connection has to say what it wants, and the player has
+/// to answer the relay's hello
 const HELLO_WAIT: Duration = Duration::from_secs(5);
 /// Longest first line we read before giving up on a connection
 const HELLO_MAX: u64 = 64;
@@ -168,25 +169,56 @@ pub fn run_relay() -> i32 {
 }
 
 async fn connect_or_start() -> std::io::Result<interprocess::local_socket::tokio::Stream> {
-    if let Ok(conn) = instance::connect().await {
-        return Ok(conn);
+    match instance::connect().await {
+        Ok(conn) => return Ok(conn),
+        // Another user's socket or pipe, or one we may not open: a player
+        // we start couldn't serve agents either
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(e),
+        Err(_) => {}
     }
-    instance::spawn_player()?;
+    let started = start_player_if_none(instance::acquire())?;
     let deadline = Instant::now() + START_WAIT;
     loop {
         tokio::time::sleep(Duration::from_millis(100)).await;
         match instance::connect().await {
             Ok(conn) => return Ok(conn),
-            // Most likely it could not open its window
             Err(e) if Instant::now() >= deadline => {
-                return Err(std::io::Error::other(format!(
-                    "the player did not start within {} s ({e}); start Radiotrope \
-                     from the desktop and try again",
-                    START_WAIT.as_secs()
-                )))
+                return Err(std::io::Error::other(if started {
+                    // Most likely it could not open its window
+                    format!(
+                        "the player did not start within {} s ({e}); start Radiotrope \
+                         from the desktop and try again",
+                        START_WAIT.as_secs()
+                    )
+                } else {
+                    format!(
+                        "the player is running but does not answer agents ({e}); quit \
+                         Radiotrope and try again"
+                    )
+                }));
             }
             Err(_) => {}
         }
+    }
+}
+
+/// No player answers: start one if none holds the lock, and say whether we
+/// did. One that holds it may still be starting up, so it is waited for
+/// instead; a second player would only show its window, or, without the
+/// lock, run beside it where agents can't reach it.
+fn start_player_if_none(found: Acquire) -> std::io::Result<bool> {
+    match found {
+        Acquire::Primary(lock) => {
+            // Let go, for the player to take
+            drop(lock);
+            instance::spawn_player()?;
+            Ok(true)
+        }
+        Acquire::Running => Ok(false),
+        Acquire::Unavailable(e) => Err(std::io::Error::new(
+            e.kind(),
+            format!("can't tell whether the player runs: {e}"),
+        )),
     }
 }
 
@@ -207,9 +239,12 @@ where
     to_player.write_all(mcp_hello().as_bytes()).await?;
     let mut from_player = BufReader::new(from_player);
     let mut answer = String::new();
-    from_player.read_line(&mut answer).await?;
-    match answer.trim_end() {
-        WELCOME => {}
+    // A hung player must not hang the agent
+    let mut limited = (&mut from_player).take(HELLO_MAX);
+    let read = limited.read_line(&mut answer);
+    match tokio::time::timeout(HELLO_WAIT, read).await {
+        Ok(Ok(_)) if answer.trim_end() == WELCOME => {}
+        Ok(Err(e)) => return Err(e),
         _ => return Err(std::io::Error::other("the player did not answer")),
     }
 
@@ -381,6 +416,32 @@ mod tests {
         agent_out.read_to_string(&mut answer).await.unwrap();
         assert!(answer.contains("\"id\":1"), "{answer}");
         player.await.unwrap();
+    }
+
+    #[test]
+    fn a_player_is_started_only_when_none_holds_the_lock() {
+        // One that holds the lock is waited for
+        assert!(!start_player_if_none(Acquire::Running).unwrap());
+        // Without the lock a player would run where agents can't reach it
+        let unavailable = Acquire::Unavailable(std::io::ErrorKind::PermissionDenied.into());
+        let e = start_player_if_none(unavailable).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+    }
+
+    #[tokio::test]
+    async fn the_relay_gives_up_on_a_player_that_never_says_ok() {
+        let (relay_side, mut player_side) = duplex(4096);
+        let (_agent_in, relay_in) = duplex(64);
+        let (relay_out, _agent_out) = duplex(64);
+        // A long line with no end: the relay stops reading after a few bytes
+        player_side.write_all(&[b'x'; 1024]).await.unwrap();
+        let relayed = tokio::time::timeout(
+            Duration::from_millis(500),
+            relay(relay_in, relay_out, relay_side),
+        )
+        .await
+        .expect("relay did not give up");
+        assert!(relayed.is_err());
     }
 
     #[tokio::test]
