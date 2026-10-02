@@ -111,6 +111,10 @@ pub mod ui {
     /// thread of its own
     pub const FAVORITES_SAVE_DELAY: Duration = Duration::from_secs(2);
 
+    /// The window's settings are saved once they have stayed the same this
+    /// long after a change
+    pub const SETTINGS_SAVE_DELAY: Duration = Duration::from_secs(2);
+
     /// The most listening time one tick of the UI's poll can add. The poll
     /// runs every 200 ms; a longer gap is the computer asleep (on Windows
     /// the clock keeps counting through sleep) or a stalled UI.
