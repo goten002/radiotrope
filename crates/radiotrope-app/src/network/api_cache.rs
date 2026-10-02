@@ -4,16 +4,16 @@
 //! request, named by a hash of the request. An entry is fresh for the TTL the
 //! caller passes; a stale entry is still used when the network request fails,
 //! so the browser keeps working offline. Entries older than
-//! [`API_CACHE_MAX_AGE`] are deleted when the cache is opened.
+//! [`API_CACHE_MAX_AGE`](crate::config::providers::API_CACHE_MAX_AGE) are
+//! deleted by [`ApiCache::prune`], which the app runs at startup and once a
+//! day.
 
 use crate::config::caches::TEMP_FILE_MAX_AGE;
-use crate::config::providers::API_CACHE_MAX_AGE;
 use crate::data::cache::ensure_cache_dir;
 use crate::data::types::fnv1a;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
 /// Cache of API response bodies in one directory
@@ -25,14 +25,10 @@ pub struct ApiCache {
 impl ApiCache {
     /// Open the cache in the application cache directory
     ///
-    /// Old entries are pruned the first time this is called in a process.
     /// Returns `None` when the cache directory cannot be created.
     pub fn open_default() -> Option<Self> {
-        static PRUNED: OnceLock<()> = OnceLock::new();
         let dir = ensure_cache_dir().ok()?.join("api");
-        let cache = Self::with_dir(dir)?;
-        PRUNED.get_or_init(|| cache.prune(API_CACHE_MAX_AGE));
-        Some(cache)
+        Self::with_dir(dir)
     }
 
     /// Open a cache in `dir`, creating it if needed

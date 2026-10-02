@@ -9,7 +9,8 @@ use crate::data::types::url_to_id;
 use crate::network::failed_logos::FailedLogos;
 use crate::network::LogoService;
 
-/// Logos not shown for this long are removed from disk at startup
+/// Logos not shown for this long are removed from disk (at startup and
+/// once a day)
 pub const UNUSED_AFTER: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Size the browser shows logos at (2x its 40px for HiDPI screens)

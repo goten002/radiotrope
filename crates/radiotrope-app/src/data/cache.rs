@@ -20,6 +20,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, ImageReader};
@@ -298,10 +299,11 @@ impl ImageCache {
 
     /// Clean up orphaned cached images
     ///
-    /// Removes cached images that don't belong to any of the provided valid IDs.
-    /// Returns the number of files removed. Temp files a write left behind
-    /// are removed too (not counted).
-    pub fn cleanup_orphaned(&self, valid_ids: &HashSet<String>) -> usize {
+    /// Removes cached images that don't belong to any of the provided valid
+    /// IDs and were written or touched at least `min_age` ago. Returns the
+    /// number of files removed. Temp files a write left behind are removed
+    /// too (not counted).
+    pub fn cleanup_orphaned(&self, valid_ids: &HashSet<String>, min_age: Duration) -> usize {
         let entries = match fs::read_dir(&self.cache_dir) {
             Ok(entries) => entries,
             Err(_) => return 0,
@@ -319,7 +321,10 @@ impl ImageCache {
                 if IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
                     // Extract ID from filename (filename without extension)
                     if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
-                        if !valid_ids.contains(filename) && fs::remove_file(&path).is_ok() {
+                        if !valid_ids.contains(filename)
+                            && is_older_than(&entry, min_age)
+                            && fs::remove_file(&path).is_ok()
+                        {
                             removed += 1;
                         }
                     }
@@ -567,18 +572,24 @@ fn remove_if_stale_temp(entry: &fs::DirEntry) -> bool {
     if path.extension().is_none_or(|e| e != "tmp") {
         return false;
     }
-    let stale = entry
-        .metadata()
-        .and_then(|m| m.modified())
-        .is_ok_and(|modified| {
-            std::time::SystemTime::now()
-                .duration_since(modified)
-                .is_ok_and(|age| age >= TEMP_FILE_MAX_AGE)
-        });
-    if stale {
+    if is_older_than(entry, TEMP_FILE_MAX_AGE) {
         let _ = fs::remove_file(&path);
     }
     true
+}
+
+/// Whether `entry` was last written at least `age` ago. A time in the
+/// future (a clock change) counts as new.
+fn is_older_than(entry: &fs::DirEntry, age: Duration) -> bool {
+    age.is_zero()
+        || entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| {
+                std::time::SystemTime::now()
+                    .duration_since(modified)
+                    .is_ok_and(|elapsed| elapsed >= age)
+            })
 }
 
 /// Decode a logo, refusing anything larger than [`MAX_DIMENSION`] a side
@@ -770,7 +781,7 @@ mod tests {
         };
 
         let (old, new) = (make("a.1.0.tmp", true), make("a.1.1.tmp", false));
-        assert_eq!(cache.cleanup_orphaned(&HashSet::new()), 0);
+        assert_eq!(cache.cleanup_orphaned(&HashSet::new(), Duration::ZERO), 0);
         assert!(!old.exists());
         // A write still in progress
         assert!(new.exists());
@@ -943,7 +954,7 @@ mod tests {
         // Startup: rename, then clean up
         assert!(cache.rename_id(&legacy_url_to_id(url), &url_to_id(url)));
         let valid: HashSet<String> = [url_to_id(url)].into_iter().collect();
-        assert_eq!(cache.cleanup_orphaned(&valid), 0);
+        assert_eq!(cache.cleanup_orphaned(&valid, Duration::ZERO), 0);
         assert!(cache.has(&url_to_id(url)));
 
         cleanup_dir(&dir);
@@ -967,13 +978,34 @@ mod tests {
             .into_iter()
             .collect();
 
-        let removed = cache.cleanup_orphaned(&valid_ids);
+        let removed = cache.cleanup_orphaned(&valid_ids, Duration::ZERO);
         assert_eq!(removed, 2);
 
         assert!(cache.has("keep1"));
         assert!(cache.has("keep2"));
         assert!(!cache.has("orphan1"));
         assert!(!cache.has("orphan2"));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn a_new_orphan_is_spared() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        for id in ["new", "old"] {
+            cache.put_thumbnail(id, &png(8)).unwrap();
+        }
+        fs::File::options()
+            .write(true)
+            .open(dir.join("old.png"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
+
+        let hour = Duration::from_secs(3600);
+        assert_eq!(cache.cleanup_orphaned(&HashSet::new(), hour), 1);
+        assert!(cache.has("new") && !cache.has("old"));
 
         cleanup_dir(&dir);
     }

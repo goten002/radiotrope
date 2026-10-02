@@ -190,40 +190,6 @@ fn main() {
     migrate_logo_ids(&favorites, settings.last_station.as_ref(), &logo_service);
     refresh_favorites(&ui, &favorites, &logo_service);
 
-    // Background: clean up logos of favorites no longer there (the refresh
-    // above started fetching the missing ones)
-    {
-        let logo_svc = logo_service.clone();
-        let fav_clone = favorites.clone();
-        // The station restored into the player keeps its logo even when it
-        // isn't a favorite
-        let last_station_id = settings.last_station.as_ref().map(|s| s.id());
-        std::thread::Builder::new()
-            .name("logo-cleanup".into())
-            .spawn(move || {
-                let favs = fav_clone.lock().unwrap_or_else(|e| e.into_inner());
-                let all: Vec<_> = favs
-                    .sorted(FavoriteSort::Manual)
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                drop(favs);
-
-                // Clean up cached logos not belonging to any current favorite,
-                // unless the favorites couldn't be read: their logos may still
-                // be needed once the file is recovered
-                if favorites_loaded {
-                    let valid_ids: std::collections::HashSet<String> =
-                        all.iter().map(|f| f.id()).chain(last_station_id).collect();
-                    let removed = logo_svc.cache().cleanup_orphaned(&valid_ids);
-                    if removed > 0 {
-                        eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
-                    }
-                }
-            })
-            .ok();
-    }
-
     // Apply initial settings to UI
     ui.set_volume(settings.volume);
     ui.set_is_muted(settings.muted);
@@ -898,13 +864,16 @@ fn main() {
 
     // Logos of the browser rows on screen, kept small on disk
     let browse_logos = Arc::new(BrowseLogos::open());
-    {
-        let browse_logos = browse_logos.clone();
-        std::thread::Builder::new()
-            .name("browse-logo-cleanup".into())
-            .spawn(move || browse_logos.remove_unused())
-            .ok();
-    }
+    // The caches are trimmed now (the logos the favorites lack are being
+    // fetched already, and the restored station is in the shared state)
+    // and then once a day
+    prune_caches_daily(
+        favorites.clone(),
+        favorites_loaded,
+        shared_state.clone(),
+        logo_service.clone(),
+        browse_logos.clone(),
+    );
     let row_logos = row_logos::RowLogos::start(
         ui.as_weak(),
         browse_logos,
@@ -1736,6 +1705,60 @@ fn migrate_logo_ids(
         .count();
     if renamed > 0 {
         eprintln!("Logo cache: renamed {renamed} logo(s) to the current favorite ids");
+    }
+}
+
+/// Trim the disk caches on a thread of their own, now and then once a day:
+/// API responses older than a month, browser logos not shown for 90 days,
+/// and the logos of stations that are neither favorites nor the one in the
+/// player. Those are kept when the favorites couldn't be read: they may
+/// still be needed once the file is recovered.
+fn prune_caches_daily(
+    favorites: Arc<Mutex<FavoritesManager>>,
+    favorites_loaded: bool,
+    shared_state: Arc<Mutex<AppSnapshot>>,
+    logo_service: Arc<LogoService>,
+    browse_logos: Arc<BrowseLogos>,
+) {
+    use radiotrope_app::config::caches::{ORPHAN_LOGO_MIN_AGE, PRUNE_EVERY};
+    let prune = move || {
+        if let Some(cache) = radiotrope_app::network::ApiCache::open_default() {
+            cache.prune(radiotrope_app::config::providers::API_CACHE_MAX_AGE);
+        }
+        browse_logos.remove_unused();
+        if !favorites_loaded {
+            return;
+        }
+        let mut valid: std::collections::HashSet<String> = favorites
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .all()
+            .into_iter()
+            .map(|f| f.id())
+            .collect();
+        // The station in the player keeps its logo even when it isn't a
+        // favorite
+        let playing = shared_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .station_url
+            .clone();
+        valid.extend(playing.map(|url| radiotrope_app::data::types::url_to_id(&url)));
+        let removed = logo_service
+            .cache()
+            .cleanup_orphaned(&valid, ORPHAN_LOGO_MIN_AGE);
+        if removed > 0 {
+            eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
+        }
+    };
+    let spawned = std::thread::Builder::new()
+        .name("cache-prune".into())
+        .spawn(move || loop {
+            prune();
+            std::thread::sleep(PRUNE_EVERY);
+        });
+    if let Err(e) = spawned {
+        eprintln!("Failed to start the cache prune thread: {e}");
     }
 }
 
