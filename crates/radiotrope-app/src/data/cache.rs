@@ -5,8 +5,10 @@
 //!
 //! Decodable logos are stored as PNG thumbnails no larger than
 //! [`LOGO_MAX_SIZE`], so loading one never decodes a full-size image and the
-//! lookup hits `<id>.png` first. Data the `image` crate cannot decode (e.g.
-//! SVG) is stored as-is with an extension guessed from its content.
+//! lookup hits `<id>.png` first. The logo services store nothing else
+//! ([`ImageCache::store_thumbnail`]); [`ImageCache::put`] keeps data the
+//! `image` crate cannot decode (e.g. SVG) as-is, with an extension guessed
+//! from its content.
 
 use crate::config::app::NAME;
 use crate::config::caches::TEMP_FILE_MAX_AGE;
@@ -191,7 +193,11 @@ impl ImageCache {
         if !needs_thumbnail(ImageReader::new(Cursor::new(&data))) {
             return None;
         }
-        let png = make_thumbnail(&data)?;
+        let Some(png) = make_thumbnail(&data) else {
+            // Only its header was fine: it is fetched again
+            let _ = fs::remove_file(&path);
+            return None;
+        };
         let saved = self.write_png(id, &png).map(|_| ());
         Some(Thumbnail { png, saved })
     }
@@ -366,9 +372,14 @@ impl ImageCache {
     /// Unlike [`put`](Self::put), data the `image` crate can't decode is not
     /// stored, and `None` is returned.
     pub fn put_thumbnail(&self, id: &str, data: &[u8]) -> Option<Vec<u8>> {
+        self.store_thumbnail(id, data).map(|thumb| thumb.png)
+    }
+
+    /// [`put_thumbnail`](Self::put_thumbnail), telling how the write went
+    pub fn store_thumbnail(&self, id: &str, data: &[u8]) -> Option<Thumbnail> {
         let png = make_thumbnail(data)?;
-        let _ = self.write_png(id, &png);
-        Some(png)
+        let saved = self.write_png(id, &png).map(|_| ());
+        Some(Thumbnail { png, saved })
     }
 
     /// Mark a cached image as just used, so [`remove_unused`](Self::remove_unused)
@@ -1403,6 +1414,22 @@ mod tests {
         assert_eq!(cache.get("thumb_legacy").unwrap(), thumb.png);
         // Nothing left to convert
         assert!(cache.convert("thumb_legacy").is_none());
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn a_legacy_entry_that_fails_to_decode_is_dropped() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        // A whole header, then the file stops
+        let mut cut = encode_image(400, ImageFormat::Png);
+        cut.truncate(100);
+        fs::write(dir.join("cut.png"), cut).unwrap();
+
+        assert_eq!(cache.state("cut"), CacheState::NeedsConversion);
+        assert!(cache.convert("cut").is_none());
+        assert_eq!(cache.state("cut"), CacheState::Absent);
 
         cleanup_dir(&dir);
     }

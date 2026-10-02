@@ -80,7 +80,11 @@ impl BrowseLogos {
         let logo = row_rgba(&png);
         match logo {
             Some(_) => self.failed.clear(logo_url),
-            None => self.failed.record_unusable(logo_url),
+            None => {
+                // A cached one that fails to decode isn't kept
+                self.cache.delete(&key);
+                self.failed.record_unusable(logo_url);
+            }
         }
         logo
     }

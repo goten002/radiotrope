@@ -87,9 +87,14 @@ impl LogoService {
         let data = self.download(url).ok()?;
 
         // Cache it, as the thumbnail every later look gets (a cache that
-        // can't be written still leaves us the data)
-        let _ = self.cache.put_logo(item, &data);
-        self.cache.get_logo(item).or(Some(data))
+        // can't be written still leaves us the thumbnail)
+        match self.cache.store_thumbnail(&item.logo_cache_key(), &data) {
+            Some(thumb) => Some(thumb.png),
+            None => {
+                self.unusable(url);
+                None
+            }
+        }
     }
 
     /// Get logo bytes only if already cached (no network request)
@@ -134,13 +139,21 @@ impl LogoService {
 
         // Fetch and cache
         let data = self.download(url)?;
+        let Some(thumb) = self.cache.store_thumbnail(&key, &data) else {
+            self.unusable(url);
+            return Err(AppError::Image(format!("{url} is not an image")));
+        };
         // A cache that can't be written would have it downloaded on every
         // look
-        self.cache
-            .put_logo(item, &data)
-            .inspect_err(|e| self.failed.record(url, e))?;
+        thumb.saved.inspect_err(|e| self.failed.record(url, e))?;
 
         Ok(true)
+    }
+
+    /// `url` gave data that isn't an image we can show (a web page, an
+    /// SVG): nothing is cached, and it isn't fetched again this session
+    fn unusable(&self, url: &str) {
+        self.failed.record_unusable(url);
     }
 
     /// Whether `item` has a logo to fetch: it has a URL, isn't cached, and
@@ -330,13 +343,24 @@ impl LogoService {
     /// Convenience method that combines get() with decode_to_rgba().
     pub fn get_rgba<T: HasLogo>(&self, item: &T) -> Option<(Vec<u8>, u32, u32)> {
         let data = self.get(item)?;
-        self.decode_to_rgba(&data).ok()
+        self.decode_cached(item, &data)
     }
 
     /// Get cached logo as RGBA pixels (no network request)
     pub fn get_cached_rgba<T: HasLogo>(&self, item: &T) -> Option<(Vec<u8>, u32, u32)> {
         let data = self.get_cached(item)?;
-        self.decode_to_rgba(&data).ok()
+        self.decode_cached(item, &data)
+    }
+
+    /// Decode `item`'s cached logo. One that fails to decode (what older
+    /// builds kept of a web page, say) is deleted, so it is fetched again,
+    /// and then not kept if it still isn't an image.
+    fn decode_cached<T: HasLogo>(&self, item: &T, data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+        let decoded = self.decode_to_rgba(data).ok();
+        if decoded.is_none() {
+            self.cache.delete_logo(item);
+        }
+        decoded
     }
 }
 
@@ -670,6 +694,43 @@ mod tests {
         let (_, w, h) = service.get_cached_rgba(&station).unwrap();
         assert_eq!((w, h), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
         assert!(!service.is_missing(&station));
+    }
+
+    #[test]
+    fn a_page_instead_of_a_logo_is_not_cached_or_fetched_again() {
+        use crate::network::test_http::{ok, serve};
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        for path in ["prefetched.png", "played.png"] {
+            let server = serve(ok(b"<html>Moved</html>", true), Duration::ZERO);
+            let url = format!("{server}/{path}");
+            let station = Station::new(path, format!("http://{path}.test/stream")).with_logo(&url);
+            if path == "prefetched.png" {
+                assert!(service.ensure_cached(&station).is_err());
+            } else {
+                assert!(service.get_rgba(&station).is_none());
+            }
+            assert!(!service.is_cached(&station));
+            assert!(service.failed.has_failed(&url));
+            assert!(!service.is_missing(&station));
+        }
+    }
+
+    #[test]
+    fn a_cached_logo_that_fails_to_decode_is_dropped() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let station = Station::new("Junk", "http://junk.test/stream")
+            .with_logo("http://logo.invalid/junk.png");
+        // What older builds kept of a web page
+        let file = service
+            .cache()
+            .dir()
+            .join(format!("{}.png", station.logo_cache_key()));
+        std::fs::write(&file, b"<html>Moved</html>").unwrap();
+
+        assert!(service.get_cached_rgba(&station).is_none());
+        assert!(!file.exists());
+        // So it is fetched again
+        assert!(service.is_missing(&station));
     }
 
     #[test]
