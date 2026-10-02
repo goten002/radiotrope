@@ -1,6 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion } from "../components.slint";
-import { LogoFog, LogoFogLayer } from "../logo-fog.slint";
+import { LogoFog, LogoFogLayer, Fog } from "../logo-fog.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -81,7 +81,7 @@ component StationRow inherits Rectangle {
                 border-color: Theme.hairline;
                 clip: true;
 
-                if root.has-logo: LogoFogLayer {
+                if root.has-logo && Fog.shown(root.logo-fog): LogoFogLayer {
                     fog: root.logo-fog;
                 }
 
