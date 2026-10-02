@@ -27,8 +27,8 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::{
-    LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SHUTDOWN_GRACE,
-    SHUTDOWN_SEND_TIMEOUT,
+    FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME,
+    SEARCH_PAGE_SIZE, SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT,
 };
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
@@ -41,7 +41,9 @@ use radiotrope_app::providers::ProviderRegistry;
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
 use app::controller::AppController;
+use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
+use app::shown_station::ShownStation;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
 
@@ -115,6 +117,17 @@ fn main() {
     };
     let favorites = Arc::new(Mutex::new(favorites));
     let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
+    // Listening time is saved a moment after it is added, on a thread of
+    // its own: the UI doesn't wait on the disk once a minute
+    let favorites_saver = {
+        let favorites = favorites.clone();
+        DelayedSave::start("favorites-save", FAVORITES_SAVE_DELAY, move || {
+            let mut favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = favs.save() {
+                eprintln!("Failed to save favorites: {e}");
+            }
+        })
+    };
 
     // Generation counter for browse logo fetches (to cancel stale requests)
     let browse_logo_gen = Arc::new(AtomicU64::new(0));
@@ -189,40 +202,6 @@ fn main() {
     // Initial load of favorites into UI model
     migrate_logo_ids(&favorites, settings.last_station.as_ref(), &logo_service);
     refresh_favorites(&ui, &favorites, &logo_service);
-
-    // Background: clean up logos of favorites no longer there (the refresh
-    // above started fetching the missing ones)
-    {
-        let logo_svc = logo_service.clone();
-        let fav_clone = favorites.clone();
-        // The station restored into the player keeps its logo even when it
-        // isn't a favorite
-        let last_station_id = settings.last_station.as_ref().map(|s| s.id());
-        std::thread::Builder::new()
-            .name("logo-cleanup".into())
-            .spawn(move || {
-                let favs = fav_clone.lock().unwrap_or_else(|e| e.into_inner());
-                let all: Vec<_> = favs
-                    .sorted(FavoriteSort::Manual)
-                    .into_iter()
-                    .cloned()
-                    .collect();
-                drop(favs);
-
-                // Clean up cached logos not belonging to any current favorite,
-                // unless the favorites couldn't be read: their logos may still
-                // be needed once the file is recovered
-                if favorites_loaded {
-                    let valid_ids: std::collections::HashSet<String> =
-                        all.iter().map(|f| f.id()).chain(last_station_id).collect();
-                    let removed = logo_svc.cache().cleanup_orphaned(&valid_ids);
-                    if removed > 0 {
-                        eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
-                    }
-                }
-            })
-            .ok();
-    }
 
     // Apply initial settings to UI
     ui.set_volume(settings.volume);
@@ -319,6 +298,7 @@ fn main() {
     if let Some(ref station) = settings.last_station {
         ui.set_station_name(station.name.as_str().into());
         ui.set_station_url(station.url.as_str().into());
+        let shown = show_station(&station.url);
         if let Some(ref logo_url) = station.logo_url {
             ui.set_station_logo_url(logo_url.as_str().into());
         }
@@ -339,14 +319,13 @@ fn main() {
                     let logo_svc = logo_service.clone();
                     let ui_weak = ui.as_weak();
                     let station_url = station.url.clone();
-                    let state = shared_state.clone();
                     std::thread::Builder::new()
                         .name("last-logo-fetch".into())
                         .spawn(move || {
                             if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     let Some(ui) = ui_weak.upgrade() else { return };
-                                    if is_current_station(&state, &ui, &station_url) {
+                                    if is_current_station(shown, &station_url) {
                                         let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                                         ui.set_current_logo(slint::Image::from_rgba8(pb));
                                     }
@@ -670,7 +649,8 @@ fn main() {
                 let favs = favs.clone();
                 let ui_weak = ui_weak.clone();
                 let url = url.clone();
-                let state = edit_shared_state.clone();
+                // Shown in the player only if it is the station there now
+                let shown = SHOWN_STATION.with(|s| s.borrow().seq());
                 std::thread::Builder::new()
                     .name("edit-logo-fetch".into())
                     .spawn(move || {
@@ -679,7 +659,7 @@ fn main() {
                             let _ = slint::invoke_from_event_loop(move || {
                                 let Some(ui) = ui_weak.upgrade() else { return };
                                 // Update playback logo if this is the current station
-                                if is_current_station(&state, &ui, &url) {
+                                if is_current_station(shown, &url) {
                                     let pixel_buf =
                                         SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                                             &rgba, width, height,
@@ -898,13 +878,16 @@ fn main() {
 
     // Logos of the browser rows on screen, kept small on disk
     let browse_logos = Arc::new(BrowseLogos::open());
-    {
-        let browse_logos = browse_logos.clone();
-        std::thread::Builder::new()
-            .name("browse-logo-cleanup".into())
-            .spawn(move || browse_logos.remove_unused())
-            .ok();
-    }
+    // The caches are trimmed now (the logos the favorites lack are being
+    // fetched already, and the restored station is in the shared state)
+    // and then once a day
+    prune_caches_daily(
+        favorites.clone(),
+        favorites_loaded,
+        shared_state.clone(),
+        logo_service.clone(),
+        browse_logos.clone(),
+    );
     let row_logos = row_logos::RowLogos::start(
         ui.as_weak(),
         browse_logos,
@@ -1422,13 +1405,13 @@ fn main() {
         .as_ref()
         .and_then(|s| Some((s.url.clone(), s.logo_url.clone()?)))
         .filter(|(_, logo)| !logo.is_empty());
-    let last_poll_url = std::cell::RefCell::new(String::new());
     // Recording notice on screen: its sequence number and when it appeared
     let poll_notice = std::cell::RefCell::new((0u64, Instant::now()));
     // Listening session of the station playing now, for favorite stats
     let listen_session: std::rc::Rc<std::cell::RefCell<Option<ListenSession>>> = Default::default();
     let poll_listen = listen_session.clone();
     let listen_favs = favorites.clone();
+    let poll_saver = favorites_saver.clone();
     // Keep "12 min ago" and similar texts current
     let stats_timer = slint::Timer::default();
     {
@@ -1527,7 +1510,13 @@ fn main() {
 
             // Credit listening time to the favorite being played
             let playing_url = station_url.as_deref().filter(|_| is_playing);
-            track_listening(&ui, &poll_favs, &mut poll_listen.borrow_mut(), playing_url);
+            track_listening(
+                &ui,
+                &poll_favs,
+                &poll_saver,
+                &mut poll_listen.borrow_mut(),
+                playing_url,
+            );
 
             // Set UI properties without holding any lock
             ui.set_station_name(station_name);
@@ -1541,22 +1530,18 @@ fn main() {
             }
             ui.set_is_muted(is_muted);
             if let Some(url) = station_url {
-                let url_changed = {
-                    let last = last_poll_url.borrow();
-                    *last != url.as_str()
-                };
+                let url_changed = SHOWN_STATION.with(|s| s.borrow().changed(url.as_str()));
                 ui.set_station_url(url.clone());
-                // Update favorite star based on current station
-                let is_fav = poll_favs
-                    .lock()
-                    .map(|f| f.is_favorite(url.as_str()))
-                    .unwrap_or(false);
-                ui.set_is_station_favorited(is_fav);
+                // Update favorite star based on current station (while a
+                // save holds the favorites, the star stays as it was)
+                if let Ok(f) = poll_favs.try_lock() {
+                    ui.set_is_station_favorited(f.is_favorite(url.as_str()));
+                }
 
                 // When station URL changes (e.g. MCP play), update logo
                 // and country
                 if url_changed {
-                    *last_poll_url.borrow_mut() = url.to_string();
+                    let shown = show_station(url.as_str());
 
                     // A favorite's details first, then the restored
                     // station's own logo, then what came with the Play
@@ -1599,7 +1584,6 @@ fn main() {
                             let ui_weak2 = ui.as_weak();
                             let station_name = ui.get_station_name().to_string();
                             let station_url = url.to_string();
-                            let state = poll_state.clone();
                             std::thread::Builder::new()
                                 .name("poll-logo-fetch".into())
                                 .spawn(move || {
@@ -1608,7 +1592,7 @@ fn main() {
                                     if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                         let _ = slint::invoke_from_event_loop(move || {
                                             let Some(ui) = ui_weak2.upgrade() else { return };
-                                            if is_current_station(&state, &ui, &station_url) {
+                                            if is_current_station(shown, &station_url) {
                                                 let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                                                 ui.set_current_logo(slint::Image::from_rgba8(pb));
                                             }
@@ -1657,10 +1641,12 @@ fn main() {
     let shutdown_sent = ui_tx.shutdown(SHUTDOWN_SEND_TIMEOUT);
     let deadline = Instant::now() + SHUTDOWN_GRACE;
 
-    // Credit the session still playing at exit
+    // Credit the session still playing at exit, and save what is waiting
+    // to be saved
     if let Some(session) = listen_session.borrow_mut().take() {
-        credit_listening(&ui, &listen_favs, session);
+        credit_listening(&ui, &listen_favs, &favorites_saver, session);
     }
+    favorites_saver.flush();
 
     // Final save before shutdown
     save_settings(&shared_state, &ui);
@@ -1741,6 +1727,60 @@ fn migrate_logo_ids(
         .count();
     if renamed > 0 {
         eprintln!("Logo cache: renamed {renamed} logo(s) to the current favorite ids");
+    }
+}
+
+/// Trim the disk caches on a thread of their own, now and then once a day:
+/// API responses older than a month, browser logos not shown for 90 days,
+/// and the logos of stations that are neither favorites nor the one in the
+/// player. Those are kept when the favorites couldn't be read: they may
+/// still be needed once the file is recovered.
+fn prune_caches_daily(
+    favorites: Arc<Mutex<FavoritesManager>>,
+    favorites_loaded: bool,
+    shared_state: Arc<Mutex<AppSnapshot>>,
+    logo_service: Arc<LogoService>,
+    browse_logos: Arc<BrowseLogos>,
+) {
+    use radiotrope_app::config::caches::{ORPHAN_LOGO_MIN_AGE, PRUNE_EVERY};
+    let prune = move || {
+        if let Some(cache) = radiotrope_app::network::ApiCache::open_default() {
+            cache.prune(radiotrope_app::config::providers::API_CACHE_MAX_AGE);
+        }
+        browse_logos.remove_unused();
+        if !favorites_loaded {
+            return;
+        }
+        let mut valid: std::collections::HashSet<String> = favorites
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .all()
+            .into_iter()
+            .map(|f| f.id())
+            .collect();
+        // The station in the player keeps its logo even when it isn't a
+        // favorite
+        let playing = shared_state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .station_url
+            .clone();
+        valid.extend(playing.map(|url| radiotrope_app::data::types::url_to_id(&url)));
+        let removed = logo_service
+            .cache()
+            .cleanup_orphaned(&valid, ORPHAN_LOGO_MIN_AGE);
+        if removed > 0 {
+            eprintln!("Logo cache: cleaned up {removed} orphaned image(s)");
+        }
+    };
+    let spawned = std::thread::Builder::new()
+        .name("cache-prune".into())
+        .spawn(move || loop {
+            prune();
+            std::thread::sleep(PRUNE_EVERY);
+        });
+    if let Err(e) = spawned {
+        eprintln!("Failed to start the cache prune thread: {e}");
     }
 }
 
@@ -2706,6 +2746,8 @@ fn setup_recording(
         let state = shared_state.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+            // A folder still being checked isn't saved over it
+            new_folder_check();
             save_recording_settings(&state, |s| s.recording_dir = None);
             show_recording_folder(&ui, None);
         }
@@ -2739,12 +2781,23 @@ fn setup_recording(
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let dir = std::path::PathBuf::from(ui.get_recording_folder().as_str());
-            // Opening a folder that doesn't exist yet would show an error
-            if let Err(e) = recordings::prepare_dir(&dir) {
-                ui.set_recording_folder_error(e.into());
-                return;
+            let ui_weak = ui_weak.clone();
+            // Opening a folder that doesn't exist yet would show an error.
+            // Making it can wait on a slow or sleeping drive, so it isn't
+            // done on the UI thread.
+            let spawned = std::thread::Builder::new()
+                .name("open-recordings".into())
+                .spawn(move || match recordings::prepare_dir(&dir) {
+                    Ok(()) => open_folder(&dir),
+                    Err(e) => {
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.set_recording_folder_error(e.into())
+                        });
+                    }
+                });
+            if let Err(e) = spawned {
+                ui.set_recording_folder_error(format!("Cannot open the folder: {e}").into());
             }
-            open_folder(&dir);
         }
     });
 
@@ -2755,8 +2808,11 @@ fn setup_recording(
 }
 
 /// Save a folder typed or picked in the Recording Settings dialog, or show
-/// why it can't be used (the folder in use stays as it was).
-fn apply_recording_folder(ui: &App, state: &Mutex<AppSnapshot>, path: &str) {
+/// why it can't be used (the folder in use stays as it was). The folder is
+/// made and checked on a thread of its own, as a slow or sleeping drive
+/// can take a while, then saved back on the UI thread unless another
+/// folder was asked for meanwhile.
+fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, path: &str) {
     let path = std::path::PathBuf::from(path.trim());
     if path.as_os_str().is_empty() {
         ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
@@ -2766,14 +2822,43 @@ fn apply_recording_folder(ui: &App, state: &Mutex<AppSnapshot>, path: &str) {
         ui.set_recording_folder_error("Enter a full path to a folder.".into());
         return;
     }
-    if let Err(e) = recordings::prepare_dir(&path) {
-        ui.set_recording_folder_error(e.into());
-        return;
+    let check = new_folder_check();
+    let ui_weak = ui.as_weak();
+    let state = state.clone();
+    let spawned = std::thread::Builder::new()
+        .name("recording-folder".into())
+        .spawn(move || {
+            let checked = recordings::prepare_dir(&path);
+            // Choosing the default folder by hand keeps following the default
+            let custom = (path != recordings::default_dir()).then_some(path);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                if FOLDER_CHECK.get() != check {
+                    return;
+                }
+                if let Err(e) = checked {
+                    ui.set_recording_folder_error(e.into());
+                    return;
+                }
+                save_recording_settings(&state, |s| s.recording_dir = custom.clone());
+                show_recording_folder(&ui, custom.as_deref());
+            });
+        });
+    if let Err(e) = spawned {
+        ui.set_recording_folder_error(format!("Cannot check the folder: {e}").into());
     }
-    // Choosing the default folder by hand keeps following the default
-    let custom = (path != recordings::default_dir()).then_some(path);
-    save_recording_settings(state, |s| s.recording_dir = custom.clone());
-    show_recording_folder(ui, custom.as_deref());
+}
+
+thread_local! {
+    /// Counts the recording folders asked for, so only the last one asked
+    /// for is saved when its check comes back
+    static FOLDER_CHECK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A new recording folder was asked for (or the default restored): a
+/// check still running for an earlier one is ignored when it ends
+fn new_folder_check() -> u64 {
+    FOLDER_CHECK.set(FOLDER_CHECK.get() + 1);
+    FOLDER_CHECK.get()
 }
 
 /// Show `custom` (or the default folder) in the Recording Settings dialog.
@@ -2854,21 +2939,37 @@ fn show_recording_state(
 fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapshot>>) {
     let Some(ui) = ui_weak.upgrade() else { return };
     let start = std::path::PathBuf::from(ui.get_recording_folder_edit().as_str());
-    let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Recording Folder");
-    // Start in the folder being edited, or the nearest parent that exists
-    if let Some(dir) = start.ancestors().find(|p| p.is_dir()) {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog = dialog.set_parent(&ui.window().window_handle());
-    let pick = dialog.pick_folder();
-    let spawned = slint::spawn_local(async move {
-        let picked = pick.await;
-        let Some(ui) = ui_weak.upgrade() else { return };
-        // A picked folder saves straight away, like the other settings
-        if let Some(folder) = picked {
-            apply_recording_folder(&ui, &state, &folder.path().display().to_string());
-        }
-    });
+    // Start in the folder being edited, or the nearest parent that exists.
+    // Looking can wake a sleeping drive, so it is done off the UI thread,
+    // and the dialog opened back on it.
+    let spawned = std::thread::Builder::new()
+        .name("recording-folder".into())
+        .spawn(move || {
+            let dir = start
+                .ancestors()
+                .find(|p| p.is_dir())
+                .map(std::path::Path::to_path_buf);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Recording Folder");
+                if let Some(dir) = dir {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog = dialog.set_parent(&ui.window().window_handle());
+                let pick = dialog.pick_folder();
+                let ui_weak = ui.as_weak();
+                let spawned = slint::spawn_local(async move {
+                    let picked = pick.await;
+                    let Some(ui) = ui_weak.upgrade() else { return };
+                    // A picked folder saves straight away, like the other settings
+                    if let Some(folder) = picked {
+                        apply_recording_folder(&ui, &state, &folder.path().display().to_string());
+                    }
+                });
+                if let Err(e) = spawned {
+                    eprintln!("Failed to open the folder dialog: {e}");
+                }
+            });
+        });
     if let Err(e) = spawned {
         eprintln!("Failed to open the folder dialog: {e}");
     }
@@ -2897,7 +2998,12 @@ fn open_folder(dir: &std::path::Path) {
 
 /// Persist current app state to settings.json
 fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
-    let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    // A copy: the controller and agents aren't kept waiting on the state
+    // while the file is read and written
+    let s = shared_state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
     settings.volume = s.volume;
     settings.muted = s.is_muted;
@@ -2953,25 +3059,30 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
         }
     }
 
-    drop(s);
     let _ = settings.save();
+}
+
+thread_local! {
+    /// The station the player shows, numbered (see [`ShownStation`])
+    static SHOWN_STATION: std::cell::RefCell<ShownStation> = Default::default();
+}
+
+/// The player now shows the station at `url`. Returns its number, for the
+/// logo fetched for it.
+fn show_station(url: &str) -> u64 {
+    SHOWN_STATION.with(|s| s.borrow_mut().show(url))
+}
+
+/// Whether a logo fetched for `url` while station number `shown` was in
+/// the player may still be shown: no station was picked since (from the
+/// UI or an agent). The poll overwrites the logo of a station it finds
+/// changed, so one landing just before it doesn't stay.
+fn is_current_station(shown: u64, url: &str) -> bool {
+    SHOWN_STATION.with(|s| s.borrow().is_current(shown, url))
 }
 
 /// Shared helper for all play actions. Enriches metadata from favorites if available,
 /// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
-/// Whether `url` is still the current station, for a logo that finished
-/// downloading in the background. The shared state changes the moment
-/// another station is picked (from the UI or MCP); the UI's station URL
-/// only follows at the next poll, so a late logo could slip past it.
-fn is_current_station(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App, url: &str) -> bool {
-    let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-    match state.station_url.as_deref() {
-        Some(current) => current == url,
-        // A station that failed to start is cleared there but stays on screen
-        None => ui.get_station_url() == url,
-    }
-}
-
 fn play_station_with_metadata(
     ui: &App,
     cmd_tx: &UiSender,
@@ -3008,6 +3119,7 @@ fn play_station_with_metadata(
         }
         *last = Some((url.clone(), now));
     }
+    let shown = show_station(&url);
 
     // Set UI metadata properties
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
@@ -3061,7 +3173,6 @@ fn play_station_with_metadata(
                 let play_name = name.unwrap_or_default();
                 let play_url = url;
                 let play_logo = logo.clone();
-                let state = shared_state.clone();
                 std::thread::Builder::new()
                     .name("logo-fetch".into())
                     .spawn(move || {
@@ -3071,7 +3182,7 @@ fn play_station_with_metadata(
                                 let Some(ui) = ui_weak.upgrade() else { return };
                                 // Another station may have been picked while
                                 // this one's logo was downloading
-                                if !is_current_station(&state, &ui, &play_url) {
+                                if !is_current_station(shown, &play_url) {
                                     return;
                                 }
                                 let pixel_buf =
@@ -3445,6 +3556,7 @@ fn session_listen_secs(id: &str) -> u64 {
 fn track_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
+    saver: &DelayedSave,
     session: &mut Option<ListenSession>,
     playing_url: Option<&str>,
 ) {
@@ -3453,7 +3565,7 @@ fn track_listening(
         .is_some_and(|s| Some(s.url.as_str()) != playing_url)
     {
         if let Some(ended) = session.take() {
-            credit_listening(ui, favorites, ended);
+            credit_listening(ui, favorites, saver, ended);
         }
     }
     match (session.as_mut(), playing_url) {
@@ -3465,7 +3577,14 @@ fn track_listening(
             if listened >= s.credited + LISTEN_CREDIT_SECS {
                 let (url, credited) = (s.url.clone(), s.credited);
                 s.credited = listened;
-                add_listening(ui, favorites, &url, listened - credited, credited == 0);
+                add_listening(
+                    ui,
+                    favorites,
+                    saver,
+                    &url,
+                    listened - credited,
+                    credited == 0,
+                );
             }
         }
         _ => {}
@@ -3476,6 +3595,7 @@ fn track_listening(
 fn credit_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
+    saver: &DelayedSave,
     mut session: ListenSession,
 ) {
     let elapsed = session.tick(Instant::now());
@@ -3485,15 +3605,19 @@ fn credit_listening(
     add_listening(
         ui,
         favorites,
+        saver,
         &session.url,
         elapsed - session.credited,
         session.credited == 0,
     );
 }
 
+/// Add listening time to the favorite playing from `url`. It is saved a
+/// moment later by `saver`, off the UI thread.
 fn add_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
+    saver: &DelayedSave,
     url: &str,
     secs: u64,
     new_play: bool,
@@ -3508,7 +3632,7 @@ fn add_listening(
         .get_or_insert_with(HashMap::new)
         .entry(id)
         .or_default() += secs;
-    let _ = favs.save();
+    saver.request();
     update_favorite_stats(ui, &favs);
 }
 

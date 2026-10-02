@@ -9,7 +9,8 @@ use crate::data::types::url_to_id;
 use crate::network::failed_logos::FailedLogos;
 use crate::network::LogoService;
 
-/// Logos not shown for this long are removed from disk at startup
+/// Logos not shown for this long are removed from disk (at startup and
+/// once a day)
 pub const UNUSED_AFTER: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 60 * 60);
 
 /// Size the browser shows logos at (2x its 40px for HiDPI screens)
@@ -80,7 +81,11 @@ impl BrowseLogos {
         let logo = row_rgba(&png);
         match logo {
             Some(_) => self.failed.clear(logo_url),
-            None => self.failed.record_unusable(logo_url),
+            None => {
+                // A cached one that fails to decode isn't kept
+                self.cache.delete(&key);
+                self.failed.record_unusable(logo_url);
+            }
         }
         logo
     }

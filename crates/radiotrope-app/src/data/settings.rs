@@ -395,13 +395,46 @@ mod tests {
     use super::*;
     use std::env::temp_dir;
     use std::fs;
+    use std::path::Path;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
-    fn temp_path() -> std::path::PathBuf {
+    /// A settings path in a folder of its own, removed with what the test
+    /// left in it (backups included). Another test run at the same time
+    /// has its own.
+    struct TempPath(PathBuf);
+
+    impl std::ops::Deref for TempPath {
+        type Target = Path;
+        fn deref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl AsRef<Path> for TempPath {
+        fn as_ref(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempPath {
+        fn drop(&mut self) {
+            if let Some(dir) = self.0.parent() {
+                let _ = fs::remove_dir_all(dir);
+            }
+        }
+    }
+
+    fn temp_path() -> TempPath {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        temp_dir().join(format!("radiotrope_settings_test_{}.json", id))
+        let dir = temp_dir().join(format!(
+            "radiotrope-settings-test-{}-{id}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        TempPath(dir.join("settings.json"))
     }
 
     #[test]
