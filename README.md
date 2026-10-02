@@ -109,13 +109,14 @@ Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*,
 
 ## Architecture
 
-The project is a Cargo workspace with three crates:
+The project is a Cargo workspace with four crates:
 
 | Crate | Type | Description |
 |-------|------|-------------|
 | `radiotrope` | Library | Streaming engine: stream resolution, audio decoding, buffering, health monitoring |
 | `radiotrope-app` | Binary | Desktop GUI with MCP server, built with [Slint](https://slint.dev) |
 | `radiotrope-cli` | Binary | Terminal player built with [ratatui](https://github.com/ratatui/ratatui) |
+| `radiotrope-probe` | Binary + library | Station checker: on air or not, format, level, song info; text or JSON for schedulers |
 
 The engine is designed to be embedded in any Rust application. Both the GUI and CLI are consumers of the library API.
 
@@ -144,6 +145,7 @@ cargo build --release
 Binaries will be at:
 - `target/release/radiotrope` - Desktop GUI + MCP server
 - `target/release/radiotrope-cli` - Terminal player
+- `target/release/radiotrope-probe` - Station checker
 
 ### Dependencies (Linux)
 
@@ -176,7 +178,7 @@ cd radiotrope
 cargo build --release
 ```
 
-The binaries are `target\release\radiotrope.exe` and `target\release\radiotrope-cli.exe`.
+The binaries are `target\release\radiotrope.exe`, `target\release\radiotrope-cli.exe` and `target\release\radiotrope-probe.exe`.
 The release GUI opens without a console window. Started from a terminal it prints `--help` and its log there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`.
 
 ### Desktop integration (Linux)
@@ -214,6 +216,26 @@ radiotrope-cli <URL>
 ```
 
 ![radiotrope cli](assets/radiotrope_cli.png)
+
+### Station checker
+
+`radiotrope-probe` connects to a station the way the player does, listens to
+its audio for a few seconds (no sound card needed), and reports whether it is
+on air, its format, its level and what is playing:
+
+```bash
+radiotrope-probe http://example.com/radio.pls          # readable report
+radiotrope-probe --json <URL>...                       # JSON for scripts
+radiotrope-probe --ndjson --input stations.txt         # one JSON line per station
+radiotrope-probe --quiet --listen 5 <URL>...           # one line per station
+```
+
+The exit status suits cron, systemd timers, Task Scheduler and Nagios-style
+monitors: 0 up, 1 degraded (silent, slower than real time, stalling, many
+decode errors, ended), 2 down (with an error code such as `dns`, `connect`,
+`http_status`, `web_page`, `timeout`), 3 the check could not run. With several
+stations the worst one counts. On Linux the binary needs the ALSA runtime
+library (`libasound2`) even though it plays nothing.
 
 ## Roadmap
 

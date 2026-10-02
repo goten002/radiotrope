@@ -4,6 +4,7 @@ members = [
     "crates/radiotrope",
     "crates/radiotrope-cli",
     "crates/radiotrope-app",
+    "crates/radiotrope-probe",
 ]
 exclude = ["build", "yocto"]
 
