@@ -4,7 +4,12 @@ import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing } from "../components.
 component EqFader inherits Rectangle {
     in property <string> label;
     in-out property <float> value: 0;
+    // The EQ is off: grey instead of the accent, but it still moves, so
+    // the curve can be set up before turning the EQ on
+    in property <bool> dimmed: false;
     callback value-changed(float);
+
+    property <color> tint: root.dimmed ? Theme.text-tertiary : Theme.accent;
 
     horizontal-stretch: 1;
     height: 220px;
@@ -96,7 +101,8 @@ component EqFader inherits Rectangle {
                 y: thumb-y < center-y ? thumb-y : center-y;
                 width: 5px;
                 height: thumb-y < center-y ? center-y - thumb-y : thumb-y - center-y;
-                background: Theme.accent;
+                background: root.tint;
+                animate background { duration: Theme.normal; }
                 border-radius: 2.5px;
             }
 
@@ -109,7 +115,8 @@ component EqFader inherits Rectangle {
                 width: root.knob;
                 height: root.knob;
                 border-radius: root.knob / 2;
-                background: Theme.accent;
+                background: root.tint;
+                animate background { duration: Theme.normal; }
 
                 // Inner highlight dot
                 Rectangle {
@@ -516,6 +523,7 @@ export component EqualizerDialog inherits Rectangle {
             // Preamp fader
             EqFader {
                 label: "Pre";
+                dimmed: !root.eq-enabled;
                 value <=> root.preamp-gain;
                 value-changed(v) => { root.preamp-changed(v); }
             }
@@ -532,16 +540,16 @@ export component EqualizerDialog inherits Rectangle {
             }
 
             // 10 band faders — each stretches equally
-            EqFader { label: "40"; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
-            EqFader { label: "64"; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
-            EqFader { label: "125"; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
-            EqFader { label: "250"; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
-            EqFader { label: "500"; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
-            EqFader { label: "1K"; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
-            EqFader { label: "2K"; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
-            EqFader { label: "4K"; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
-            EqFader { label: "8K"; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
-            EqFader { label: "12K"; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
+            EqFader { label: "40"; dimmed: !root.eq-enabled; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
+            EqFader { label: "64"; dimmed: !root.eq-enabled; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
+            EqFader { label: "125"; dimmed: !root.eq-enabled; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
+            EqFader { label: "250"; dimmed: !root.eq-enabled; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
+            EqFader { label: "500"; dimmed: !root.eq-enabled; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
+            EqFader { label: "1K"; dimmed: !root.eq-enabled; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
+            EqFader { label: "2K"; dimmed: !root.eq-enabled; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
+            EqFader { label: "4K"; dimmed: !root.eq-enabled; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
+            EqFader { label: "8K"; dimmed: !root.eq-enabled; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
+            EqFader { label: "12K"; dimmed: !root.eq-enabled; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
         }
     }
 }
