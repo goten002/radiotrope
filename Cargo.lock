@@ -5209,6 +5209,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "radiotrope-probe"
+version = "0.1.0-dev"
+dependencies = [
+ "clap",
+ "crossbeam-channel",
+ "mp3lame-encoder",
+ "radiotrope",
+ "reqwest",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "rand"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
