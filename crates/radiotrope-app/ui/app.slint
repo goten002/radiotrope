@@ -99,7 +99,6 @@ export component App inherits Window {
     in-out property <bool> record-with-eq <=> recording-dialog.with-eq;
     in-out property <string> recording-format <=> recording-dialog.format;
     in-out property <int> recording-bitrate <=> recording-dialog.bitrate;
-    in-out property <bool> show-recording-dialog <=> recording-dialog.show-dialog;
 
     // Agents (MCP)
     callback agents-network-toggled(bool);
@@ -188,8 +187,6 @@ export component App inherits Window {
     // Try the station browser's failed request again
     callback retry-browse();
     in-out property <string> browse-country-name <=> browser-dialog.country-name;
-    in-out property <string> browse-country-code <=> browser-dialog.country-code;
-    in-out property <image> browse-country-flag <=> browser-dialog.country-flag;
     // Put the current list aside (per mode) before showing another one
     callback stash-browse();
     // Bring back the list kept for a mode ("search", or "country" with its

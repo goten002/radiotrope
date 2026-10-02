@@ -13,7 +13,6 @@ export component NetworkStreamDialog inherits Rectangle {
     in-out property <string> country: "";
     // url, name, logo url, country
     callback accepted(string, string, string, string);
-    callback cancelled();
 
     property <bool> can-play: root.name != "" && root.url != "";
 
@@ -28,7 +27,6 @@ export component NetworkStreamDialog inherits Rectangle {
     function cancel() {
         root.reset();
         root.show-dialog = false;
-        root.cancelled();
     }
 
     function play() {
