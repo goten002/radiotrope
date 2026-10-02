@@ -153,6 +153,15 @@ pub enum AudioEvent {
     OutputLost,
     /// Playback moved to a newly opened output device after `OutputLost`
     OutputRestored,
+    /// Opening the output device is taking longer than
+    /// [`EngineConfig::output_open_deadline`]: its driver is stuck. The
+    /// engine can't act on commands until it returns; they wait.
+    ///
+    /// [`EngineConfig::output_open_deadline`]: super::EngineConfig::output_open_deadline
+    OutputNotResponding,
+    /// The open that was [`AudioEvent::OutputNotResponding`] returned. If it
+    /// failed, [`AudioEvent::OutputLost`] follows.
+    OutputResponding,
     /// The output came back after a live station had played into nothing
     /// for longer than [`EngineConfig::behind_live_limit`]: rather than
     /// carry on that far behind live, the station ends, and `Stopped`

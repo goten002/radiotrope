@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{bounded, Receiver, Select, Sender, TryRecvError};
+use crossbeam_channel::{
+    bounded, unbounded, Receiver, RecvTimeoutError, Select, Sender, TryRecvError,
+};
 use rodio::Player;
 
 use crate::config::timeouts::{
@@ -71,6 +73,11 @@ pub struct EngineConfig {
     pub no_audio_timeout: Duration,
     /// Time without new audio after which a playing station has stalled
     pub stall_timeout: Duration,
+    /// An output device that takes longer than this to open is reported as
+    /// not responding ([`AudioEvent::OutputNotResponding`]), and
+    /// [`AudioEngine::new`] stops waiting for it. The open can't be cut
+    /// short: a driver stuck inside it holds the engine until it returns.
+    pub output_open_deadline: Duration,
 }
 
 impl Default for EngineConfig {
@@ -86,6 +93,7 @@ impl Default for EngineConfig {
             buffering_stall: Duration::from_secs(BUFFERING_STALL_THRESHOLD_SECS),
             no_audio_timeout: Duration::from_secs(BUFFERING_TIMEOUT_SECS),
             stall_timeout: Duration::from_secs(STREAM_STALL_TIMEOUT_SECS),
+            output_open_deadline: Duration::from_secs(5),
         }
     }
 }
@@ -116,11 +124,20 @@ struct Outputs {
     open: OpenOutput,
     /// Only on Windows (see [`DefaultWatch`])
     default: Option<DefaultWatch>,
+    /// Says when an open takes too long; set by the engine's thread
+    watch: Option<OpenWatch>,
 }
 
 impl Outputs {
     fn open(&mut self, lost: &Arc<AtomicBool>, devices: Devices) -> Result<Output, String> {
-        let (output, device) = (self.open)(lost, devices)?;
+        if let Some(watch) = &self.watch {
+            watch.opening();
+        }
+        let opened = (self.open)(lost, devices);
+        if let Some(watch) = &self.watch {
+            watch.opened();
+        }
+        let (output, device) = opened?;
         if let Some(watch) = self.default.as_mut() {
             watch.follow(device);
         }
@@ -138,6 +155,56 @@ impl Outputs {
         if let Some(watch) = self.default.as_mut() {
             watch.not_opened(Instant::now());
         }
+    }
+}
+
+/// Watches the output opens from a thread of its own: a driver can hang in
+/// one (some Bluetooth and USB devices, a stalled sound server), and the
+/// engine's thread can't say so while it waits. Past the deadline it sends
+/// [`AudioEvent::OutputNotResponding`], and once the open returns
+/// [`AudioEvent::OutputResponding`]. Its thread ends with the engine's.
+struct OpenWatch {
+    /// `true` when an open starts, `false` when it returns
+    tx: Sender<bool>,
+}
+
+impl OpenWatch {
+    fn start(events: Sender<EngineEvent>, deadline: Duration) -> Option<Self> {
+        let (tx, rx) = unbounded::<bool>();
+        let device = |event| EngineEvent {
+            stream: None,
+            event,
+        };
+        thread::Builder::new()
+            .name("audio-open-watch".to_string())
+            .spawn(move || {
+                while let Ok(opening) = rx.recv() {
+                    if !opening {
+                        continue;
+                    }
+                    match rx.recv_timeout(deadline) {
+                        Ok(_) => {}
+                        Err(RecvTimeoutError::Disconnected) => return,
+                        Err(RecvTimeoutError::Timeout) => {
+                            let _ = events.try_send(device(AudioEvent::OutputNotResponding));
+                            if rx.recv().is_err() {
+                                return;
+                            }
+                            let _ = events.try_send(device(AudioEvent::OutputResponding));
+                        }
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self { tx })
+    }
+
+    fn opening(&self) {
+        let _ = self.tx.send(true);
+    }
+
+    fn opened(&self) {
+        let _ = self.tx.send(false);
     }
 }
 
@@ -305,8 +372,10 @@ pub struct AudioEngine {
 impl AudioEngine {
     /// Create a new audio engine, spawning the engine thread.
     ///
-    /// Blocks until the engine thread has tried the audio output. With no
-    /// output device the engine still starts: it sends
+    /// Blocks until the engine thread has tried the audio output, or at most
+    /// [`EngineConfig::output_open_deadline`]: an open that hangs is
+    /// reported with [`AudioEvent::OutputNotResponding`], and commands wait
+    /// for it. With no output device the engine still starts: it sends
     /// [`AudioEvent::OutputLost`] and plays once a device can be opened.
     pub fn new() -> Result<Self, RadioError> {
         Self::with_config(EngineConfig::default())
@@ -325,6 +394,7 @@ impl AudioEngine {
                     // Only Windows keeps playing on a device that is no
                     // longer the default
                     default: cfg!(windows).then(DefaultWatch::system),
+                    watch: None,
                 }
             }
             EngineOutput::Silent { speed } => Outputs {
@@ -332,6 +402,7 @@ impl AudioEngine {
                     SilentOutput::open(speed).map(|output| (Output::Silent(output), None))
                 }),
                 default: None,
+                watch: None,
             },
         };
         Self::with_output(outputs, config)
@@ -340,8 +411,11 @@ impl AudioEngine {
     /// Create an engine that plays through what `outputs` opens: at start,
     /// again whenever the device goes away, and when the default changes
     fn with_output(outputs: Outputs, config: EngineConfig) -> Result<Self, RadioError> {
-        let (cmd_tx, cmd_rx) = bounded::<AudioCommand>(16);
+        // Unbounded: an output open that hangs holds the engine's thread,
+        // and a full queue would hold whoever sends to it too
+        let (cmd_tx, cmd_rx) = unbounded::<AudioCommand>();
         let (event_tx, event_rx) = bounded::<EngineEvent>(64);
+        let open_deadline = config.output_open_deadline;
         let (init_tx, init_rx) = bounded::<Result<(), String>>(1);
 
         let analysis = Arc::new(Mutex::new(AudioAnalysis::default()));
@@ -374,12 +448,17 @@ impl AudioEngine {
             })
             .map_err(|e| RadioError::Audio(format!("Failed to spawn audio thread: {}", e)))?;
 
-        // Wait for initialization
-        let init_result = init_rx
-            .recv()
-            .map_err(|_| RadioError::Audio("Audio thread terminated during init".to_string()))?;
-
-        init_result.map_err(RadioError::Audio)?;
+        // Wait for initialization. An output that takes too long to open
+        // is reported by the engine itself: carry on without waiting.
+        match init_rx.recv_timeout(open_deadline) {
+            Ok(result) => result.map_err(RadioError::Audio)?,
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                return Err(RadioError::Audio(
+                    "Audio thread terminated during init".to_string(),
+                ))
+            }
+        }
 
         Ok(Self {
             cmd_tx,
@@ -592,6 +671,8 @@ impl AudioEngine {
         mut outputs: Outputs,
         config: EngineConfig,
     ) {
+        outputs.watch = OpenWatch::start(event_tx.clone(), config.output_open_deadline);
+
         // Create audio output on this thread (cpal streams may be !Send).
         // Without a device, start anyway and keep trying.
         let mut stream = match outputs.open(&output_lost, Devices::Any) {
@@ -1588,6 +1669,7 @@ mod tests {
         let outputs = Outputs {
             open,
             default: None,
+            watch: None,
         };
         (outputs, attempts)
     }
@@ -1820,6 +1902,7 @@ mod tests {
                 move || current.lock().unwrap().clone(),
                 Duration::from_millis(10),
             )),
+            watch: None,
         };
         let engine = AudioEngine::with_output(outputs, config).expect("the engine starts");
         (engine, tried, default)
@@ -4263,11 +4346,77 @@ mod tests {
 
     // === Event contract, and starting without a device ===
 
+    #[test]
+    fn a_hung_device_open_is_reported_and_holds_no_one_else() {
+        // The first open hangs until the test lets it go, like a stuck driver
+        let (release_tx, release_rx) = bounded::<()>(1);
+        let release_rx = Mutex::new(release_rx);
+        let outputs = Outputs {
+            open: Box::new(move |_, _| {
+                let _ = release_rx.lock().unwrap().recv();
+                SilentOutput::open(TEST_SPEED).map(|output| (Output::Silent(output), None))
+            }),
+            default: None,
+            watch: None,
+        };
+        let config = EngineConfig {
+            output_open_deadline: Duration::from_millis(200),
+            ..test_config()
+        };
+
+        // The engine starts without waiting for the open
+        let started = Instant::now();
+        let engine = AudioEngine::with_output(outputs, config).expect("the engine starts");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        let event = engine
+            .event_receiver()
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the hang is reported");
+        assert!(event.stream.is_none());
+        assert!(
+            matches!(event.event, AudioEvent::OutputNotResponding),
+            "{event:?}"
+        );
+
+        // Commands queue up without holding the sender
+        let sending = Instant::now();
+        for _ in 0..100 {
+            engine.set_volume(0.5);
+        }
+        assert!(
+            sending.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            sending.elapsed()
+        );
+
+        // The driver comes back: so does the engine, and it plays
+        release_tx.send(()).unwrap();
+        let event = engine
+            .event_receiver()
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the recovery is reported");
+        assert!(
+            matches!(event.event, AudioEvent::OutputResponding),
+            "{event:?}"
+        );
+        engine.play(Box::new(Cursor::new(make_one_second_wav())), None, None);
+        let events = events_for(&engine, 3000);
+        assert!(
+            has(&events, |e| matches!(e, AudioEvent::Playing(_))),
+            "{events:?}"
+        );
+    }
+
     /// An engine on a machine with no audio output (runs on CI too)
     fn engine_without_device() -> AudioEngine {
         let outputs = Outputs {
             open: Box::new(|_, _| Err("no device".to_string())),
             default: None,
+            watch: None,
         };
         AudioEngine::with_output(outputs, test_config())
             .expect("the engine starts without a device")
