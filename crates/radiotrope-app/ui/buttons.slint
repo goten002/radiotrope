@@ -57,6 +57,7 @@ export component AccentButton inherits Rectangle {
 export component SecondaryButton inherits Rectangle {
     in property <string> label;
     in property <bool> enabled: true;
+    out property <bool> has-focus: focus.has-focus;
     callback clicked();
 
     height: 34px;
