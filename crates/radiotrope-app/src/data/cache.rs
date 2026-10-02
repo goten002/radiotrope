@@ -54,6 +54,25 @@ pub fn ensure_cache_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// What the cache holds for an id
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheState {
+    /// Nothing
+    Absent,
+    /// A logo ready to show (or data kept as-is)
+    Ready,
+    /// A logo cached before logos were stored as thumbnails, still to be
+    /// shrunk by [`ImageCache::convert`]
+    NeedsConversion,
+}
+
+/// A logo shrunk to a PNG thumbnail, and how writing it to the cache went
+/// (the thumbnail is there either way)
+pub struct Thumbnail {
+    pub png: Vec<u8>,
+    pub saved: Result<()>,
+}
+
 /// Image cache manager for station logos
 pub struct ImageCache {
     cache_dir: PathBuf,
@@ -140,18 +159,41 @@ impl ImageCache {
 
     /// Load cached image data
     ///
-    /// Entries cached before logos were stored as thumbnails (any non-PNG
-    /// format, or larger than [`LOGO_MAX_SIZE`]) are converted on first read.
+    /// An entry cached before logos were stored as thumbnails (any non-PNG
+    /// format, or larger than [`LOGO_MAX_SIZE`]) isn't returned: shrinking
+    /// it is too slow for the UI thread, so a background thread does it
+    /// with [`convert`](Self::convert).
     pub fn get(&self, id: &str) -> Option<Vec<u8>> {
         let path = self.find_cached_path(id)?;
         let data = fs::read(&path).ok()?;
-        if needs_thumbnail(&data) {
-            if let Some(thumb) = make_thumbnail(&data) {
-                let _ = self.write_png(id, &thumb);
-                return Some(thumb);
-            }
+        (!needs_thumbnail(ImageReader::new(Cursor::new(&data)))).then_some(data)
+    }
+
+    /// Whether a logo is cached for `id`, and whether it is ready or still
+    /// to be converted. Only reads the file's header.
+    pub fn state(&self, id: &str) -> CacheState {
+        let Some(path) = self.find_cached_path(id) else {
+            return CacheState::Absent;
+        };
+        match ImageReader::open(&path).map(needs_thumbnail) {
+            Ok(true) => CacheState::NeedsConversion,
+            Ok(false) => CacheState::Ready,
+            Err(_) => CacheState::Absent,
         }
-        Some(data)
+    }
+
+    /// Shrink an entry cached before logos were stored as thumbnails to a
+    /// PNG thumbnail. `None` when `id` has no such entry. Slow: for
+    /// background threads.
+    pub fn convert(&self, id: &str) -> Option<Thumbnail> {
+        let path = self.find_cached_path(id)?;
+        let data = fs::read(&path).ok()?;
+        if !needs_thumbnail(ImageReader::new(Cursor::new(&data))) {
+            return None;
+        }
+        let png = make_thumbnail(&data)?;
+        let saved = self.write_png(id, &png).map(|_| ());
+        Some(Thumbnail { png, saved })
     }
 
     /// Save image data to cache
@@ -495,8 +537,8 @@ impl ImageCache {
 /// Whether cached data is a decodable image not yet stored as a thumbnail
 ///
 /// Only reads the image header, so it is cheap for data that is already fine.
-fn needs_thumbnail(data: &[u8]) -> bool {
-    let Ok(reader) = ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+fn needs_thumbnail<R: std::io::BufRead + std::io::Seek>(reader: ImageReader<R>) -> bool {
+    let Ok(reader) = reader.with_guessed_format() else {
         return false;
     };
     let is_png = reader.format() == Some(ImageFormat::Png);
@@ -1336,7 +1378,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_converts_legacy_entry() {
+    fn a_legacy_entry_is_left_to_convert() {
         let dir = temp_cache_dir();
         let cache = ImageCache::with_dir(dir.clone()).unwrap();
 
@@ -1347,16 +1389,26 @@ mod tests {
         )
         .unwrap();
 
-        let data = cache.get("thumb_legacy").unwrap();
-        assert_eq!(dimensions(&data), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        // The UI thread's lookups don't convert it
+        assert!(cache.get("thumb_legacy").is_none());
+        assert_eq!(cache.state("thumb_legacy"), CacheState::NeedsConversion);
+        assert!(dir.join("thumb_legacy.jpg").exists());
+
+        let thumb = cache.convert("thumb_legacy").unwrap();
+        assert!(thumb.saved.is_ok());
+        assert_eq!(dimensions(&thumb.png), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
         assert!(!dir.join("thumb_legacy.jpg").exists());
-        assert_eq!(fs::read(dir.join("thumb_legacy.png")).unwrap(), data);
+        assert_eq!(fs::read(dir.join("thumb_legacy.png")).unwrap(), thumb.png);
+        assert_eq!(cache.state("thumb_legacy"), CacheState::Ready);
+        assert_eq!(cache.get("thumb_legacy").unwrap(), thumb.png);
+        // Nothing left to convert
+        assert!(cache.convert("thumb_legacy").is_none());
 
         cleanup_dir(&dir);
     }
 
     #[test]
-    fn test_get_converts_legacy_large_png() {
+    fn a_legacy_large_png_is_left_to_convert() {
         let dir = temp_cache_dir();
         let cache = ImageCache::with_dir(dir.clone()).unwrap();
 
@@ -1366,9 +1418,12 @@ mod tests {
         )
         .unwrap();
 
-        let data = cache.get("thumb_big_png").unwrap();
-        assert_eq!(dimensions(&data), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
-        assert_eq!(fs::read(dir.join("thumb_big_png.png")).unwrap(), data);
+        assert!(cache.get("thumb_big_png").is_none());
+        assert_eq!(cache.state("thumb_big_png"), CacheState::NeedsConversion);
+        let thumb = cache.convert("thumb_big_png").unwrap();
+        assert_eq!(dimensions(&thumb.png), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        assert_eq!(fs::read(dir.join("thumb_big_png.png")).unwrap(), thumb.png);
+        assert_eq!(cache.state("missing"), CacheState::Absent);
 
         cleanup_dir(&dir);
     }
@@ -1382,6 +1437,8 @@ mod tests {
         fs::write(dir.join("thumb_ok.png"), &original).unwrap();
 
         assert_eq!(cache.get("thumb_ok").unwrap(), original);
+        assert_eq!(cache.state("thumb_ok"), CacheState::Ready);
+        assert!(cache.convert("thumb_ok").is_none());
 
         cleanup_dir(&dir);
     }

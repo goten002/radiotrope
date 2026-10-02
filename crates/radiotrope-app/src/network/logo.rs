@@ -4,7 +4,7 @@
 //! handling both cache lookups and network fetching.
 
 use crate::config::logos::MAX_BYTES;
-use crate::data::cache::{decode_logo, ImageCache};
+use crate::data::cache::{decode_logo, CacheState, ImageCache};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use crate::network::failed_logos::FailedLogos;
@@ -77,6 +77,10 @@ impl LogoService {
         if let Some(data) = self.cache.get_logo(item) {
             return Some(data);
         }
+        // Cached by an older build: shrunk here, off the UI thread
+        if let Some(thumb) = self.cache.convert(&item.logo_cache_key()) {
+            return Some(thumb.png);
+        }
 
         // Not cached - try to fetch
         let url = item.logo_url()?;
@@ -110,9 +114,17 @@ impl LogoService {
     /// - `Ok(false)` if the logo was already cached
     /// - `Err` if there's no logo URL or the download failed
     pub fn ensure_cached<T: HasLogo>(&self, item: &T) -> Result<bool> {
-        // Already cached?
-        if self.cache.has_logo(item) {
-            return Ok(false);
+        let key = item.logo_cache_key();
+        match self.cache.state(&key) {
+            CacheState::Ready => return Ok(false),
+            // Cached by an older build: shrunk here, off the UI thread
+            CacheState::NeedsConversion => {
+                if let Some(thumb) = self.cache.convert(&key) {
+                    thumb.saved?;
+                    return Ok(true);
+                }
+            }
+            CacheState::Absent => {}
         }
 
         // Get URL
@@ -132,11 +144,16 @@ impl LogoService {
     }
 
     /// Whether `item` has a logo to fetch: it has a URL, isn't cached, and
-    /// hasn't failed lately
+    /// hasn't failed lately. A logo cached by an older build, still to be
+    /// converted, counts too: [`prefetch`](Self::prefetch) converts it.
     pub fn is_missing<T: HasLogo>(&self, item: &T) -> bool {
-        item.logo_url()
-            .is_some_and(|url| !url.is_empty() && !self.failed.has_failed(url))
-            && !self.cache.has_logo(item)
+        match self.cache.state(&item.logo_cache_key()) {
+            CacheState::Ready => false,
+            CacheState::NeedsConversion => true,
+            CacheState::Absent => item
+                .logo_url()
+                .is_some_and(|url| !url.is_empty() && !self.failed.has_failed(url)),
+        }
     }
 
     /// [`prefetch`](Self::prefetch) `items` on a thread of its own, then
@@ -177,8 +194,9 @@ impl LogoService {
 
     /// Prefetch logos for multiple items
     ///
-    /// Downloads and caches logos that aren't already cached.
-    /// Returns the number of logos successfully fetched.
+    /// Downloads and caches logos that aren't already cached, and converts
+    /// the ones an older build cached. Returns the number of logos
+    /// successfully fetched or converted.
     ///
     /// This is a blocking operation - for background prefetching,
     /// call this from a separate thread.
@@ -628,6 +646,30 @@ mod tests {
         let station = Station::new("Wide", "http://wide.test/stream").with_logo(&url);
         let (_, w, h) = service.get_rgba(&station).unwrap();
         assert_eq!((w, h), (LOGO_MAX_SIZE, LOGO_MAX_SIZE / 2));
+    }
+
+    #[test]
+    fn a_logo_cached_by_an_older_build_is_converted_by_the_prefetch() {
+        use crate::data::cache::LOGO_MAX_SIZE;
+        let cache = temp_cache();
+        let dir = cache.dir().to_path_buf();
+        let service = LogoService::with_cache(cache).unwrap();
+        // No logo URL: nothing to download, only the old entry to convert
+        let station = Station::new("Old", "http://old.test/stream");
+        std::fs::write(
+            dir.join(format!("{}.png", station.logo_cache_key())),
+            png(400, 400),
+        )
+        .unwrap();
+
+        // What the UI thread sees: no logo yet, and one to fetch
+        assert!(service.get_cached_rgba(&station).is_none());
+        assert!(service.is_missing(&station));
+
+        assert_eq!(service.prefetch(std::slice::from_ref(&station)), 1);
+        let (_, w, h) = service.get_cached_rgba(&station).unwrap();
+        assert_eq!((w, h), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        assert!(!service.is_missing(&station));
     }
 
     #[test]
