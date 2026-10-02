@@ -21,6 +21,17 @@ crossbeam-channel = { workspace = true }
 clap = { workspace = true }
 ratatui = "0.30"
 crossterm = "0.29"
+unicode-width = "0.2"
+# Reading the app's favorites and settings (read only)
+serde_json = "1.0"
+dirs = "7.0"
+# Recording file names carry the start time
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# The app's own code writes the files the CLI reads, so a change to their
+# format fails here (test only: the CLI program has none of the app's code)
+radiotrope-app = { path = "../radiotrope-app" }
