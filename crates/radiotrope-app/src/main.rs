@@ -160,6 +160,7 @@ fn main() {
         state.is_muted = settings.muted;
         state.eq_gains = settings.eq_gains;
         state.eq_preamp = settings.eq_preamp;
+        state.eq_preamp_moved = settings.eq_preamp_moved;
         state.eq_enabled = settings.eq_enabled;
         state.eq_preset_name = settings.eq_preset_name.clone();
         state.accent_color = settings.accent_color.clone();
@@ -3137,6 +3138,7 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     settings.muted = s.is_muted;
     settings.eq_gains = s.eq_gains;
     settings.eq_preamp = s.eq_preamp;
+    settings.eq_preamp_moved = s.eq_preamp_moved;
     settings.eq_enabled = s.eq_enabled;
     settings.eq_preset_name = s.eq_preset_name.clone();
     settings.accent_color = s.accent_color.clone();

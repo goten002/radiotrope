@@ -108,6 +108,11 @@ pub struct Settings {
     #[serde(default)]
     pub eq_preamp: f32,
 
+    /// The preamp was moved by hand after the preset was picked, so a
+    /// restored preset keeps `eq_preamp` instead of bringing its own
+    #[serde(default)]
+    pub eq_preamp_moved: bool,
+
     #[serde(default)]
     pub eq_enabled: bool,
 
@@ -213,6 +218,7 @@ impl Default for Settings {
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
+            eq_preamp_moved: false,
             eq_enabled: false,
             eq_preset_name: Some("Flat".to_string()),
             recording_dir: None,
