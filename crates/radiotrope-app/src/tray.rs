@@ -89,11 +89,14 @@ impl View {
         let active = p.playing || p.loading;
         let station = cut(&p.station);
         let song = cut(&p.song);
-        let header = match (active, song.is_empty()) {
-            (false, _) => "Not playing".to_string(),
-            (true, _) if p.loading => format!("{station} · Starting…"),
-            (true, true) => station.clone(),
-            (true, false) => format!("{station} · {song}"),
+        // The song stays out of the menu (it made the menu very wide); the
+        // tooltip still carries it.
+        let header = if !active {
+            "Not playing".to_string()
+        } else if p.loading {
+            format!("{station} · Starting…")
+        } else {
+            station.clone()
         };
         let tooltip = match (active, song.is_empty()) {
             (false, _) => "Radiotrope".to_string(),
@@ -550,9 +553,9 @@ mod tests {
     }
 
     #[test]
-    fn playing_shows_station_song_and_stop() {
+    fn playing_shows_station_only_and_stop() {
         let v = View::of(&playing());
-        assert_eq!(v.header, "Fly 104 · Dua Lipa - Houdini");
+        assert_eq!(v.header, "Fly 104");
         assert_eq!(v.tooltip, "Radiotrope\nFly 104\nDua Lipa - Houdini");
         assert_eq!(v.play_label, "Stop");
         assert!(v.can_play);
