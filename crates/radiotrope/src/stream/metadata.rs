@@ -114,11 +114,17 @@ impl StreamMetadata {
 /// Parse ICY metadata string to extract StreamTitle value.
 ///
 /// ICY metadata format: `StreamTitle='Artist - Song';StreamUrl='...';`
+///
+/// Some servers leave out the closing `';`: the title is then the rest of
+/// the block, without a closing `'`.
 pub fn parse_icy_metadata(metadata: &str) -> Option<String> {
     let start = metadata.find("StreamTitle='")?;
-    let start = start + 13; // length of "StreamTitle='"
-    let end = metadata[start..].find("';")?;
-    let title = metadata[start..start + end].trim();
+    let rest = &metadata[start + 13..]; // after "StreamTitle='"
+    let title = match rest.find("';") {
+        Some(end) => &rest[..end],
+        None => rest.trim_end().strip_suffix('\'').unwrap_or(rest),
+    };
+    let title = title.trim();
     if title.is_empty() {
         None
     } else {
@@ -754,8 +760,22 @@ mod tests {
 
     #[test]
     fn parse_icy_metadata_missing_closing_quote() {
+        // The rest of the block is the title
         let raw = "StreamTitle='No Closing Quote";
-        assert_eq!(parse_icy_metadata(raw), None);
+        assert_eq!(
+            parse_icy_metadata(raw),
+            Some("No Closing Quote".to_string())
+        );
+        assert_eq!(
+            parse_icy_metadata("StreamTitle='Artist - Song'"),
+            Some("Artist - Song".to_string())
+        );
+        assert_eq!(
+            parse_icy_metadata("StreamTitle='It's Alright' "),
+            Some("It's Alright".to_string())
+        );
+        assert_eq!(parse_icy_metadata("StreamTitle='"), None);
+        assert_eq!(parse_icy_metadata("StreamTitle=''"), None);
     }
 
     #[test]
