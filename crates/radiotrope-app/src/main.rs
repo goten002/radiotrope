@@ -43,6 +43,7 @@ use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 use app::controller::AppController;
 use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
+use app::shown_station::ShownStation;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
 
@@ -297,6 +298,7 @@ fn main() {
     if let Some(ref station) = settings.last_station {
         ui.set_station_name(station.name.as_str().into());
         ui.set_station_url(station.url.as_str().into());
+        let shown = show_station(&station.url);
         if let Some(ref logo_url) = station.logo_url {
             ui.set_station_logo_url(logo_url.as_str().into());
         }
@@ -317,14 +319,13 @@ fn main() {
                     let logo_svc = logo_service.clone();
                     let ui_weak = ui.as_weak();
                     let station_url = station.url.clone();
-                    let state = shared_state.clone();
                     std::thread::Builder::new()
                         .name("last-logo-fetch".into())
                         .spawn(move || {
                             if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     let Some(ui) = ui_weak.upgrade() else { return };
-                                    if is_current_station(&state, &ui, &station_url) {
+                                    if is_current_station(shown, &station_url) {
                                         let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                                         ui.set_current_logo(slint::Image::from_rgba8(pb));
                                     }
@@ -648,7 +649,8 @@ fn main() {
                 let favs = favs.clone();
                 let ui_weak = ui_weak.clone();
                 let url = url.clone();
-                let state = edit_shared_state.clone();
+                // Shown in the player only if it is the station there now
+                let shown = SHOWN_STATION.with(|s| s.borrow().seq());
                 std::thread::Builder::new()
                     .name("edit-logo-fetch".into())
                     .spawn(move || {
@@ -657,7 +659,7 @@ fn main() {
                             let _ = slint::invoke_from_event_loop(move || {
                                 let Some(ui) = ui_weak.upgrade() else { return };
                                 // Update playback logo if this is the current station
-                                if is_current_station(&state, &ui, &url) {
+                                if is_current_station(shown, &url) {
                                     let pixel_buf =
                                         SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
                                             &rgba, width, height,
@@ -1398,7 +1400,6 @@ fn main() {
         .as_ref()
         .and_then(|s| Some((s.url.clone(), s.logo_url.clone()?)))
         .filter(|(_, logo)| !logo.is_empty());
-    let last_poll_url = std::cell::RefCell::new(String::new());
     // Recording notice on screen: its sequence number and when it appeared
     let poll_notice = std::cell::RefCell::new((0u64, Instant::now()));
     // Listening session of the station playing now, for favorite stats
@@ -1524,10 +1525,7 @@ fn main() {
             }
             ui.set_is_muted(is_muted);
             if let Some(url) = station_url {
-                let url_changed = {
-                    let last = last_poll_url.borrow();
-                    *last != url.as_str()
-                };
+                let url_changed = SHOWN_STATION.with(|s| s.borrow().changed(url.as_str()));
                 ui.set_station_url(url.clone());
                 // Update favorite star based on current station (while a
                 // save holds the favorites, the star stays as it was)
@@ -1538,7 +1536,7 @@ fn main() {
                 // When station URL changes (e.g. MCP play), update logo
                 // and country
                 if url_changed {
-                    *last_poll_url.borrow_mut() = url.to_string();
+                    let shown = show_station(url.as_str());
 
                     // A favorite's details first, then the restored
                     // station's own logo, then what came with the Play
@@ -1581,7 +1579,6 @@ fn main() {
                             let ui_weak2 = ui.as_weak();
                             let station_name = ui.get_station_name().to_string();
                             let station_url = url.to_string();
-                            let state = poll_state.clone();
                             std::thread::Builder::new()
                                 .name("poll-logo-fetch".into())
                                 .spawn(move || {
@@ -1590,7 +1587,7 @@ fn main() {
                                     if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                         let _ = slint::invoke_from_event_loop(move || {
                                             let Some(ui) = ui_weak2.upgrade() else { return };
-                                            if is_current_station(&state, &ui, &station_url) {
+                                            if is_current_station(shown, &station_url) {
                                                 let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
                                                 ui.set_current_logo(slint::Image::from_rgba8(pb));
                                             }
@@ -2987,21 +2984,27 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     let _ = settings.save();
 }
 
-/// Shared helper for all play actions. Enriches metadata from favorites if available,
-/// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
-/// Whether `url` is still the current station, for a logo that finished
-/// downloading in the background. The shared state changes the moment
-/// another station is picked (from the UI or MCP); the UI's station URL
-/// only follows at the next poll, so a late logo could slip past it.
-fn is_current_station(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App, url: &str) -> bool {
-    let state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
-    match state.station_url.as_deref() {
-        Some(current) => current == url,
-        // A station that failed to start is cleared there but stays on screen
-        None => ui.get_station_url() == url,
-    }
+thread_local! {
+    /// The station the player shows, numbered (see [`ShownStation`])
+    static SHOWN_STATION: std::cell::RefCell<ShownStation> = Default::default();
 }
 
+/// The player now shows the station at `url`. Returns its number, for the
+/// logo fetched for it.
+fn show_station(url: &str) -> u64 {
+    SHOWN_STATION.with(|s| s.borrow_mut().show(url))
+}
+
+/// Whether a logo fetched for `url` while station number `shown` was in
+/// the player may still be shown: no station was picked since (from the
+/// UI or an agent). The poll overwrites the logo of a station it finds
+/// changed, so one landing just before it doesn't stay.
+fn is_current_station(shown: u64, url: &str) -> bool {
+    SHOWN_STATION.with(|s| s.borrow().is_current(shown, url))
+}
+
+/// Shared helper for all play actions. Enriches metadata from favorites if available,
+/// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
 fn play_station_with_metadata(
     ui: &App,
     cmd_tx: &UiSender,
@@ -3038,6 +3041,7 @@ fn play_station_with_metadata(
         }
         *last = Some((url.clone(), now));
     }
+    let shown = show_station(&url);
 
     // Set UI metadata properties
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
@@ -3091,7 +3095,6 @@ fn play_station_with_metadata(
                 let play_name = name.unwrap_or_default();
                 let play_url = url;
                 let play_logo = logo.clone();
-                let state = shared_state.clone();
                 std::thread::Builder::new()
                     .name("logo-fetch".into())
                     .spawn(move || {
@@ -3101,7 +3104,7 @@ fn play_station_with_metadata(
                                 let Some(ui) = ui_weak.upgrade() else { return };
                                 // Another station may have been picked while
                                 // this one's logo was downloading
-                                if !is_current_station(&state, &ui, &play_url) {
+                                if !is_current_station(shown, &play_url) {
                                     return;
                                 }
                                 let pixel_buf =
