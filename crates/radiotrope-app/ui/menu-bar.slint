@@ -1,5 +1,5 @@
 import { Theme } from "defaults.slint";
-import { Icon, AgentsChip, ButtonKeys, FocusRing } from "components.slint";
+import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 
@@ -429,15 +429,7 @@ export component MenuBar inherits Rectangle {
         y: 32px;
         width: popup-layout.preferred-width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             popup-layout := VerticalLayout {
                 padding: 4px;
 
@@ -458,15 +450,7 @@ export component MenuBar inherits Rectangle {
         y: 32px;
         width: stations-popup-layout.preferred-width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             stations-popup-layout := VerticalLayout {
                 padding: 4px;
 
@@ -496,15 +480,7 @@ export component MenuBar inherits Rectangle {
         y: root.window-menu-y;
         width: window-popup-layout.preferred-width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             window-popup-layout := VerticalLayout {
                 padding: 4px;
 
@@ -533,14 +509,7 @@ export component MenuBar inherits Rectangle {
                         root.always-on-top = !root.always-on-top;
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 MenuItem {
                     label: "Close";
                     icon: @image-url("icons/xmark.svg");
@@ -558,15 +527,7 @@ export component MenuBar inherits Rectangle {
         y: 32px;
         width: view-popup-layout.preferred-width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             view-popup-layout := VerticalLayout {
                 padding: 4px;
 
@@ -588,14 +549,7 @@ export component MenuBar inherits Rectangle {
                         Theme.dark-mode = false;
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 MenuItem {
                     label: "Accent Color";
                     icon: @image-url("icons/palette.svg");
@@ -604,14 +558,7 @@ export component MenuBar inherits Rectangle {
                         root.open-accent-color();
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 if Platform.has-window-frame: CheckMenuItem {
                     // Chrome's wording: ticked means the system frame
                     label: "Use System Title Bar";
@@ -622,14 +569,7 @@ export component MenuBar inherits Rectangle {
                         view-popup.close();
                     }
                 }
-                if Platform.has-window-frame: Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                if Platform.has-window-frame: MenuSeparator {}
                 CheckMenuItem {
                     label: "Show Station Stats";
                     icon: @image-url("icons/clock.svg");
@@ -639,14 +579,7 @@ export component MenuBar inherits Rectangle {
                         root.show-station-stats = !root.show-station-stats;
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 CheckMenuItem {
                     label: "Visualizer";
                     icon: @image-url("icons/wave-square.svg");
@@ -676,15 +609,7 @@ export component MenuBar inherits Rectangle {
         y: 32px;
         width: help-popup-layout.preferred-width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             help-popup-layout := VerticalLayout {
                 padding: 4px;
 
@@ -705,15 +630,7 @@ export component MenuBar inherits Rectangle {
         y: 32px;
         width: tools-popup-layout.preferred-width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             tools-popup-layout := VerticalLayout {
                 padding: 4px;
 
@@ -733,14 +650,7 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 MenuItem {
                     label: root.is-recording ? "Stop Recording" : "Start Recording";
                     // Greyed out until a station plays
@@ -767,14 +677,7 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 MenuItem {
                     label: "Agents (MCP)";
                     icon: @image-url("icons/robot.svg");
@@ -783,14 +686,7 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                if Platform.has-wifi: Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                if Platform.has-wifi: MenuSeparator {}
                 if Platform.has-wifi: MenuItem {
                     label: "WiFi Settings";
                     icon: @image-url("icons/wifi.svg");

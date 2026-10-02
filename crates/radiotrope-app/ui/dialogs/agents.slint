@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle, InfoTip, Icon } from "../components.slint";
+import { DialogShell, Toggle, InfoTip, Icon, PopupCard } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or a command that adds Radiotrope
@@ -218,14 +218,7 @@ component Picker inherits Rectangle {
         y: root.height + 2px;
         width: root.width;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-
+        PopupCard {
             VerticalLayout {
                 padding: 4px;
                 for label[index] in root.items: PickerItem {

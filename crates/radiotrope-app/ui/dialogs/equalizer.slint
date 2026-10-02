@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing } from "../components.slint";
+import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing, PopupCard } from "../components.slint";
 
 component EqFader inherits Rectangle {
     in property <string> label;
@@ -437,14 +437,7 @@ export component EqualizerDialog inherits Rectangle {
                     // The columns, the gaps between them and the padding
                     width: root.preset-groups.length * (root.preset-column-width + 4px) + 4px;
 
-                    Rectangle {
-                        background: Theme.popup-bg;
-                        border-radius: Theme.radius-md;
-                        border-width: 1px;
-                        border-color: Theme.hairline;
-                        drop-shadow-blur: 8px;
-                        drop-shadow-color: Theme.shadow-soft;
-
+                    PopupCard {
                         VerticalLayout {
                             padding: 4px;
                             spacing: 4px;

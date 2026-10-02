@@ -1,6 +1,6 @@
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion } from "components.slint";
+import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator } from "components.slint";
 import { LogoFog, LogoFogLayer, Fog } from "logo-fog.slint";
 
 export struct FavoriteStation {
@@ -418,7 +418,7 @@ component FavoriteRow inherits Rectangle {
 
     // Styled like the Statistics tiles: a caption over the total, and
     // label and value rows beside it
-    stats-bubble := Rectangle {
+    stats-bubble := PopupCard {
         property <bool> shown: ((stats-touch.has-hover && root.stats-ready)
                 || (root.stats-pinned && root.show-stats))
             && !stats-touch.pressed && !root.dragging;
@@ -430,13 +430,6 @@ component FavoriteRow inherits Rectangle {
         y: (root.height - self.height) / 2;
         width: bubble-layout.preferred-width;
         height: bubble-layout.preferred-height;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.hairline;
-        drop-shadow-blur: 8px;
-        drop-shadow-offset-y: 2px;
-        drop-shadow-color: Theme.shadow-soft;
 
         // Side by side so the bubble stays about as tall as the row
         bubble-layout := HorizontalLayout {
@@ -532,15 +525,7 @@ component FavoriteRow inherits Rectangle {
         width: root.menu-width;
         close-policy: close-on-click-outside;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             VerticalLayout {
                 padding: 4px;
 
@@ -586,14 +571,7 @@ component FavoriteRow inherits Rectangle {
                         }
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 // Asks once more before removing
                 RowMenuItem {
                     label: root.confirm-remove ? "Press Again to Remove" : "Remove from Favorites";
