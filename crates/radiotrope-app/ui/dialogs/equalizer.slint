@@ -442,12 +442,14 @@ export component EqualizerDialog inherits Rectangle {
                             padding: 4px;
                             spacing: 4px;
 
+                            // Each item picks before closing: the menu's rows
+                            // (and their name) go away with the popup
                             for name in root.top-presets: PresetItem {
                                 name: name;
                                 is-selected: root.preset-name == name;
                                 clicked => {
-                                    preset-popup.close();
                                     root.preset-selected(name);
+                                    preset-popup.close();
                                 }
                             }
 
@@ -466,8 +468,8 @@ export component EqualizerDialog inherits Rectangle {
                                         name: name;
                                         is-selected: root.preset-name == name;
                                         clicked => {
-                                            preset-popup.close();
                                             root.preset-selected(name);
+                                            preset-popup.close();
                                         }
                                     }
                                     Rectangle { vertical-stretch: 1; }
