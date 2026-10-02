@@ -183,7 +183,7 @@ impl LogoService {
     }
 
     /// `url` gave data that isn't an image we can show (a web page, an
-    /// SVG): nothing is cached, and it isn't fetched again this session
+    /// SVG that draws nothing): nothing is cached, and it isn't fetched again this session
     fn unusable(&self, url: &str) {
         self.failed.record_unusable(url);
     }

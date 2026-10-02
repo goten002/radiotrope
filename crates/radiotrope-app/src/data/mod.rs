@@ -9,6 +9,7 @@ pub mod flags;
 pub mod recordings;
 pub mod settings;
 pub mod storage;
+pub mod svg_logo;
 pub mod types;
 
 // Re-export common types
