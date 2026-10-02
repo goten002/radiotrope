@@ -572,7 +572,7 @@ component FavoriteRow inherits Rectangle {
                 // Act before closing: inside an `if` the handler stops
                 // once the menu closes
                 if root.show-stats: RowMenuItem {
-                    label: root.confirm-reset ? "Click Again to Reset" : "Reset Stats";
+                    label: root.confirm-reset ? "Press Again to Reset" : "Reset Stats";
                     confirming: root.confirm-reset;
                     icon: @image-url("icons/rotate-left.svg");
                     enabled: root.play-count > 0
@@ -596,7 +596,7 @@ component FavoriteRow inherits Rectangle {
                 }
                 // Asks once more before removing
                 RowMenuItem {
-                    label: root.confirm-remove ? "Click Again to Remove" : "Remove from Favorites";
+                    label: root.confirm-remove ? "Press Again to Remove" : "Remove from Favorites";
                     confirming: root.confirm-remove;
                     icon: @image-url("icons/trash-can.svg");
                     danger: true;

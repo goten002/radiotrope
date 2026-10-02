@@ -115,7 +115,7 @@ export component EditFavoriteDialog inherits Rectangle {
 
             // Asks once more before removing, like the row's menu
             DangerButton {
-                label: root.confirm-remove ? "Click Again to Remove" : "Remove";
+                label: root.confirm-remove ? "Press Again to Remove" : "Remove";
                 icon: @image-url("../icons/trash-can.svg");
                 clicked => {
                     if root.confirm-remove {

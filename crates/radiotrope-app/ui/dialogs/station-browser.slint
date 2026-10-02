@@ -483,7 +483,7 @@ export component StationBrowserDialog inherits Rectangle {
                     // Infinite scroll: fetch the next page when the view
                     // comes within about five rows of the end
                     changed content-y => {
-                        // After a failure, the countdown or Retry fetches it
+                        // After a failure, the countdown or Try again fetches it
                         if root.has-more && !root.search-loading-more
                            && root.search-error == ""
                            && self.height - self.content-y > self.content-height - 300px {
@@ -608,14 +608,14 @@ export component StationBrowserDialog inherits Rectangle {
                 }
 
                 Text {
-                    text: root.retry-in > 0 ? "· retrying in \{root.retry-in}s" : "";
+                    text: root.retry-in > 0 ? "· trying again in \{root.retry-in}s" : "";
                     color: Theme.text-secondary;
                     font-size: Theme.font-sm;
                     vertical-alignment: center;
                 }
 
                 retry-link := Text {
-                    text: "Retry";
+                    text: "Try again";
                     color: retry-touch.has-hover ? Theme.accent : Theme.accent-text;
                     font-size: Theme.font-sm;
                     font-weight: 600;
