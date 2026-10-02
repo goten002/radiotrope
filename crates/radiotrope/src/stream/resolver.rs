@@ -108,7 +108,7 @@ impl StreamResolver {
     }
 
     /// Open the HLS stream whose media playlist `playlist_url` (found from
-    /// `url`) led to
+    /// the station's `url`) led to
     fn open_hls(
         url: &str,
         playlist_url: &str,
@@ -123,6 +123,7 @@ impl StreamResolver {
         let (hls_reader, metadata_rx) = HlsReader::open_resolved(
             media_url,
             playlist_url,
+            url,
             Some(playback_position.clone()),
             cancel.clone(),
             deadline,

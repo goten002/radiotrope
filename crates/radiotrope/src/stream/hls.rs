@@ -20,7 +20,7 @@ use crate::config::hls::{
     FIND_AGAIN_AFTER_FAILURES, FIRST_SEGMENT_TIMEOUT_SECS, MAX_DOWNLOAD_SECS, MAX_PLAYLIST_BYTES,
     MAX_SEGMENT_BYTES, SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS,
 };
-use crate::config::network::USER_AGENT;
+use crate::config::network::{MAX_PLAYLIST_DEPTH, USER_AGENT};
 use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::{StreamCancel, Waited};
@@ -29,7 +29,9 @@ use crate::stream::hls_metadata::{
 };
 use crate::stream::id3::{parse_id3v2_payload, Id3Scanner};
 use crate::stream::metadata::{MetadataSink, StreamMetadata};
-use crate::stream::playlist::{sniff_playlist, PlaylistCheck};
+use crate::stream::playlist::{
+    resolve_playlist, resolve_playlist_as, sniff_playlist, PlaylistCheck,
+};
 use crate::stream::{gave_up, Deadline, StreamEnd, READ_POLL_INTERVAL};
 
 /// Detected segment container format
@@ -64,6 +66,8 @@ pub struct HlsReader {
 struct Opening {
     /// Where the media playlist was found from (see [`HlsReader::open_resolved`])
     origin: Option<String>,
+    /// The station's own address, which led to `origin`
+    station: Option<String>,
     /// How long to wait for the first segment
     first_wait: Duration,
     /// How long a playing stream may go without a new segment
@@ -74,6 +78,7 @@ impl Default for Opening {
     fn default() -> Self {
         Self {
             origin: None,
+            station: None,
             first_wait: Duration::from_secs(FIRST_SEGMENT_TIMEOUT_SECS),
             give_up: Duration::from_secs(RECONNECT_GIVE_UP_SECS),
         }
@@ -109,19 +114,23 @@ impl HlsReader {
     }
 
     /// [`HlsReader::new_cancellable`] for a media playlist that
-    /// [`resolve_hls`] found from `origin`. If the playlist's address stops
-    /// working (an expired token, a dead edge server), the downloader finds
-    /// it again from `origin`. The wait for the first segment ends by
-    /// `deadline`.
+    /// [`resolve_hls`] found from `origin`, which the station's address
+    /// `station` led to. If the playlist's address stops working (an expired
+    /// token, a dead edge server), the downloader finds it again from
+    /// `station` (whose playlists can hand out a new `origin`), or else
+    /// from `origin`. The wait for the first segment ends by `deadline`.
     pub(crate) fn open_resolved(
         media_url: &str,
         origin: &str,
+        station: &str,
         playback_position: Option<Arc<AtomicU64>>,
         cancel: StreamCancel,
         deadline: Deadline,
     ) -> Result<(Self, Receiver<StreamMetadata>)> {
         let opening = Opening {
             origin: Some(origin.to_string()),
+            // Found again from `origin` alone when that is the station
+            station: (station != origin).then(|| station.to_string()),
             first_wait: deadline.cap(Opening::default().first_wait),
             ..Opening::default()
         };
@@ -149,6 +158,7 @@ impl HlsReader {
         let downloader = SegmentDownloader {
             playlist_url,
             origin: opening.origin,
+            station: opening.station,
             sender,
             metadata_sink,
             cancel: cancel.clone(),
@@ -853,6 +863,26 @@ pub(crate) fn resolve_hls(
     ))
 }
 
+/// The media playlist that the station's address `station` leads to now,
+/// through its PLS or M3U playlists
+fn find_from_station(station: &str, cancel: &StreamCancel, deadline: Deadline) -> Option<String> {
+    let mut target = resolve_playlist(station, cancel, deadline).ok()?;
+    for _ in 0..MAX_PLAYLIST_DEPTH {
+        // A stream address in a playlist isn't downloaded as a playlist;
+        // the station's own address can serve anything
+        if !target.hls && target.url != station {
+            return None;
+        }
+        match resolve_hls(&target.url, cancel, deadline).ok()? {
+            HlsFound::Media(found) => return Some(found),
+            HlsFound::Playlist(kind) => {
+                target = resolve_playlist_as(&target.url, kind, cancel, deadline).ok()?
+            }
+        }
+    }
+    None
+}
+
 use super::backoff_sleep;
 
 /// Why a playlist can't be played, if it is encrypted
@@ -946,12 +976,15 @@ impl PlaylistOrder {
 ///
 /// The media playlist's address is often a CDN edge server's, with a token
 /// that expires. When the playlist or its segments keep failing, the
-/// downloader finds the playlist again from `origin` and carries on after
-/// the last segment it played.
+/// downloader finds the playlist again from `station` or `origin` and
+/// carries on after the last segment it played.
 struct SegmentDownloader {
     playlist_url: Url,
     /// Where `playlist_url` was found from, if known
     origin: Option<String>,
+    /// The station's address that led to `origin`, when it is another
+    /// (a PLS or M3U, whose entry can carry a token too)
+    station: Option<String>,
     sender: Sender<Vec<u8>>,
     metadata_sink: MetadataSink,
     cancel: StreamCancel,
@@ -988,13 +1021,20 @@ impl SegmentDownloader {
         self.cancel.sleep(duration)
     }
 
-    /// Find the media playlist again from `origin`. Returns its address if
-    /// that has changed (another edge server, a new token).
+    /// Find the media playlist again from the station's address, or else
+    /// from `origin`. Returns its address if that has changed (another edge
+    /// server, a new token).
     fn find_again(&self, media_url: &Url) -> Option<Url> {
-        let origin = self.origin.as_deref()?;
-        let HlsFound::Media(found) = resolve_hls(origin, &self.cancel, Deadline::NONE).ok()? else {
-            return None;
+        let from_station = || {
+            let station = self.station.as_deref()?;
+            find_from_station(station, &self.cancel, Deadline::for_resolve())
         };
+        let from_origin =
+            || match resolve_hls(self.origin.as_deref()?, &self.cancel, Deadline::NONE) {
+                Ok(HlsFound::Media(found)) => Some(found),
+                _ => None,
+            };
+        let found = from_station().or_else(from_origin)?;
         Url::parse(&found).ok().filter(|url| url != media_url)
     }
 
@@ -2928,6 +2968,7 @@ mod tests {
             let err = HlsReader::open_resolved(
                 &server.url("/index.m3u8"),
                 &server.url("/index.m3u8"),
+                &server.url("/index.m3u8"),
                 None,
                 StreamCancel::new(),
                 Deadline::after(Duration::from_secs(1)),
@@ -3057,7 +3098,7 @@ mod tests {
             let cancel = StreamCancel::new();
             let origin = server.url(station);
             let media = resolve_hls_url(&origin).unwrap();
-            HlsReader::open_resolved(&media, &origin, None, cancel, Deadline::NONE)
+            HlsReader::open_resolved(&media, &origin, &origin, None, cancel, Deadline::NONE)
                 .unwrap()
                 .0
         }
@@ -3113,6 +3154,41 @@ mod tests {
             assert!(end.is_ok(), "{end:?}");
             assert_eq!(server.hits("/edge2/seg1.ts?token=b"), 0);
             assert_eq!(server.hits("/edge2/seg2.ts?token=b"), 0);
+        }
+
+        #[test]
+        fn a_new_address_from_the_stations_playlist_is_found() {
+            // The station's PLS hands out the HLS address with a token. Once
+            // it expires, only the PLS has the new one.
+            let server = TestServer::start();
+            let audio: Vec<Vec<u8>> = (1..=3).map(|i| frame(300 + i)).collect();
+            let pls = |path: &str| Route::new(format!("[playlist]\nFile1={}\n", server.url(path)));
+            server.route("/station.pls", pls("/edge1/live.m3u8?token=a"));
+            server.route(
+                "/edge1/live.m3u8?token=a",
+                Route::new(playlist(&["seg1.ts", "seg2.ts"], false)),
+            );
+            for i in 1..=3 {
+                let ts = plain_ts(&audio[i - 1]);
+                server.route(&format!("/edge1/seg{i}.ts"), Route::new(ts.clone()));
+                server.route(&format!("/edge2/seg{i}.ts"), Route::new(ts));
+            }
+            let mut reader = crate::stream::StreamResolver::resolve(&server.url("/station.pls"))
+                .unwrap()
+                .reader;
+            assert_eq!(read_exactly(&mut reader, 301 + 302), audio[..2].concat());
+
+            server.route("/edge1/live.m3u8?token=a", Route::status(403));
+            server.route("/station.pls", pls("/edge2/live.m3u8?token=b"));
+            server.route(
+                "/edge2/live.m3u8?token=b",
+                Route::new(playlist(&["seg1.ts", "seg2.ts", "seg3.ts"], true)),
+            );
+
+            let (played, end) = read_until_end(&mut reader);
+            assert_eq!(played, audio[2], "went on after the last segment played");
+            assert!(end.is_ok(), "{end:?}");
+            assert_eq!(server.hits("/edge2/seg1.ts"), 0, "replayed a segment");
         }
 
         #[test]
@@ -3407,6 +3483,7 @@ mod tests {
             let start = Instant::now();
             let err = HlsReader::open_resolved(
                 &media,
+                &server.url("/station.m3u8"),
                 &server.url("/station.m3u8"),
                 None,
                 StreamCancel::new(),
