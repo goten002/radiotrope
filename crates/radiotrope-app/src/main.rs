@@ -1908,9 +1908,9 @@ fn setup_rotary_encoder(
 /// Push one visualizer frame to the UI (levels already gated and smoothed).
 /// The model is updated in place.
 fn show_viz_frame(viz: &VizData, vu: &[f32], spectrum: &[f32], spectrum_model: &VecModel<f32>) {
-    for (i, &level) in spectrum.iter().enumerate() {
-        spectrum_model.set_row_data(i, level);
-    }
+    // Only the bands that changed: every write makes the visualizer update
+    // (Wave redraws on any write), and in silence nothing changes
+    set_levels(spectrum_model, spectrum);
     viz.set_vu_left(vu[0]);
     viz.set_vu_right(vu[1]);
     viz.set_has_signal(spectrum.iter().any(|&level| level > 0.01));

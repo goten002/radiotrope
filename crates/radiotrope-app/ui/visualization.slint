@@ -76,7 +76,10 @@ component Bar inherits Rectangle {
     // Share of the fill taken by the first piece
     property <float> first-share: root.split ? 0.5 / root.amount : 1;
 
-    if root.amount > 0.01: Rectangle {
+    // Hidden rather than taken away when the level drops, so a bar that
+    // keeps crossing the threshold doesn't rebuild its fill each time
+    Rectangle {
+        visible: root.amount > 0.01;
         width: root.horizontal ? max(2px, root.amount * parent.width) : parent.width;
         height: root.horizontal ? parent.height : max(2px, root.amount * parent.height);
         x: 0;
@@ -103,7 +106,8 @@ component Bar inherits Rectangle {
 
         // From the middle to the level, overlapping the first piece by a
         // pixel so no gap shows where they meet
-        if root.spread && root.split: Rectangle {
+        if root.spread: Rectangle {
+            visible: root.split;
             width: root.horizontal ? parent.width * (1 - root.first-share) + 1px : parent.width;
             height: root.horizontal ? parent.height : parent.height * (1 - root.first-share) + 1px;
             x: parent.width - self.width;
