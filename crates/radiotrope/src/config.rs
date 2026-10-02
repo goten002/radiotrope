@@ -73,6 +73,10 @@ pub mod network {
 
     /// Maximum playlist resolution depth
     pub const MAX_PLAYLIST_DEPTH: usize = 5;
+
+    /// Most stream addresses of one PLS or M3U playlist tried, in order,
+    /// until one plays (a station's mirrors)
+    pub const MAX_PLAYLIST_ENTRIES: usize = 5;
 }
 
 /// HLS-related configuration

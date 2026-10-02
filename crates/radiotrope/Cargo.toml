@@ -29,6 +29,11 @@ chardetng = { workspace = true }
 encoding_rs = { workspace = true }
 sys-locale = { workspace = true }
 
+# The proxy set in Windows' settings (elsewhere the HTTP_PROXY / HTTPS_PROXY
+# variables, which reqwest reads anyway)
+[target.'cfg(windows)'.dependencies]
+reqwest = { workspace = true, features = ["system-proxy"] }
+
 [dev-dependencies]
 mpeg2ts = { workspace = true }
 proptest = { workspace = true }

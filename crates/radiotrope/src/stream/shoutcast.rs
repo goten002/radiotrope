@@ -6,9 +6,12 @@
 //! then the body until the connection closes. These servers only speak plain
 //! `http://`. The station's own address may redirect to one (the HTTP client
 //! followed it before it failed), so redirects are followed too.
+//!
+//! The request goes over a plain TCP connection, so it ignores any proxy
+//! the HTTP client would use.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
 use std::time::Duration;
 
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
@@ -57,10 +60,10 @@ fn get_once(url: &Url) -> io::Result<Reply> {
     if url.scheme() != "http" {
         return Err(invalid("only plain http"));
     }
+    // In brackets for an IPv6 address, as the Host header wants it
     let host = url.host_str().ok_or_else(|| invalid("no host"))?;
-    let port = url.port_or_known_default().unwrap_or(80);
 
-    let stream = connect(host, port)?;
+    let stream = connect(url)?;
     stream.set_read_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))?;
     stream.set_write_timeout(Some(Duration::from_secs(READ_TIMEOUT_SECS)))?;
 
@@ -103,10 +106,10 @@ fn get_once(url: &Url) -> io::Result<Reply> {
     })
 }
 
-fn connect(host: &str, port: u16) -> io::Result<TcpStream> {
+fn connect(url: &Url) -> io::Result<TcpStream> {
     let timeout = Duration::from_secs(CONNECT_TIMEOUT_SECS);
     let mut last_error = io::Error::new(io::ErrorKind::NotFound, "no address for the host");
-    for addr in (host, port).to_socket_addrs()? {
+    for addr in url.socket_addrs(|| Some(80))? {
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(stream) => return Ok(stream),
             Err(e) => last_error = e,
@@ -238,6 +241,22 @@ mod tests {
         // A redirect without a Location is the reply
         server.route("/odd", Route::status(302));
         assert_eq!(get(&server.url("/odd")).unwrap().status, StatusCode::FOUND);
+    }
+
+    #[test]
+    fn reaches_a_server_by_its_ipv6_address() {
+        // `[::1]` was looked up as a host name. Skipped without IPv6.
+        let Ok(server) = TestServer::bind("[::1]:0") else {
+            return;
+        };
+        server.route(
+            "/;stream.mp3",
+            Route::new("audio bytes").raw_head("ICY 200 OK\r\nicy-name:Old FM\r\n\r\n"),
+        );
+        let url = server.url("/;stream.mp3");
+        assert!(url.starts_with("http://[::1]:"), "{url}");
+        let reply = get(&url).unwrap();
+        assert_eq!(reply.headers["icy-name"], "Old FM");
     }
 
     #[test]
