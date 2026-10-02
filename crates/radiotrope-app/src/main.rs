@@ -2733,6 +2733,8 @@ fn setup_recording(
         let state = shared_state.clone();
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
+            // A folder still being checked isn't saved over it
+            new_folder_check();
             save_recording_settings(&state, |s| s.recording_dir = None);
             show_recording_folder(&ui, None);
         }
@@ -2766,12 +2768,23 @@ fn setup_recording(
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let dir = std::path::PathBuf::from(ui.get_recording_folder().as_str());
-            // Opening a folder that doesn't exist yet would show an error
-            if let Err(e) = recordings::prepare_dir(&dir) {
-                ui.set_recording_folder_error(e.into());
-                return;
+            let ui_weak = ui_weak.clone();
+            // Opening a folder that doesn't exist yet would show an error.
+            // Making it can wait on a slow or sleeping drive, so it isn't
+            // done on the UI thread.
+            let spawned = std::thread::Builder::new()
+                .name("open-recordings".into())
+                .spawn(move || match recordings::prepare_dir(&dir) {
+                    Ok(()) => open_folder(&dir),
+                    Err(e) => {
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                            ui.set_recording_folder_error(e.into())
+                        });
+                    }
+                });
+            if let Err(e) = spawned {
+                ui.set_recording_folder_error(format!("Cannot open the folder: {e}").into());
             }
-            open_folder(&dir);
         }
     });
 
@@ -2782,8 +2795,11 @@ fn setup_recording(
 }
 
 /// Save a folder typed or picked in the Recording Settings dialog, or show
-/// why it can't be used (the folder in use stays as it was).
-fn apply_recording_folder(ui: &App, state: &Mutex<AppSnapshot>, path: &str) {
+/// why it can't be used (the folder in use stays as it was). The folder is
+/// made and checked on a thread of its own, as a slow or sleeping drive
+/// can take a while, then saved back on the UI thread unless another
+/// folder was asked for meanwhile.
+fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, path: &str) {
     let path = std::path::PathBuf::from(path.trim());
     if path.as_os_str().is_empty() {
         ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
@@ -2793,14 +2809,43 @@ fn apply_recording_folder(ui: &App, state: &Mutex<AppSnapshot>, path: &str) {
         ui.set_recording_folder_error("Enter a full path to a folder.".into());
         return;
     }
-    if let Err(e) = recordings::prepare_dir(&path) {
-        ui.set_recording_folder_error(e.into());
-        return;
+    let check = new_folder_check();
+    let ui_weak = ui.as_weak();
+    let state = state.clone();
+    let spawned = std::thread::Builder::new()
+        .name("recording-folder".into())
+        .spawn(move || {
+            let checked = recordings::prepare_dir(&path);
+            // Choosing the default folder by hand keeps following the default
+            let custom = (path != recordings::default_dir()).then_some(path);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                if FOLDER_CHECK.get() != check {
+                    return;
+                }
+                if let Err(e) = checked {
+                    ui.set_recording_folder_error(e.into());
+                    return;
+                }
+                save_recording_settings(&state, |s| s.recording_dir = custom.clone());
+                show_recording_folder(&ui, custom.as_deref());
+            });
+        });
+    if let Err(e) = spawned {
+        ui.set_recording_folder_error(format!("Cannot check the folder: {e}").into());
     }
-    // Choosing the default folder by hand keeps following the default
-    let custom = (path != recordings::default_dir()).then_some(path);
-    save_recording_settings(state, |s| s.recording_dir = custom.clone());
-    show_recording_folder(ui, custom.as_deref());
+}
+
+thread_local! {
+    /// Counts the recording folders asked for, so only the last one asked
+    /// for is saved when its check comes back
+    static FOLDER_CHECK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A new recording folder was asked for (or the default restored): a
+/// check still running for an earlier one is ignored when it ends
+fn new_folder_check() -> u64 {
+    FOLDER_CHECK.set(FOLDER_CHECK.get() + 1);
+    FOLDER_CHECK.get()
 }
 
 /// Show `custom` (or the default folder) in the Recording Settings dialog.
@@ -2881,21 +2926,37 @@ fn show_recording_state(
 fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapshot>>) {
     let Some(ui) = ui_weak.upgrade() else { return };
     let start = std::path::PathBuf::from(ui.get_recording_folder_edit().as_str());
-    let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Recording Folder");
-    // Start in the folder being edited, or the nearest parent that exists
-    if let Some(dir) = start.ancestors().find(|p| p.is_dir()) {
-        dialog = dialog.set_directory(dir);
-    }
-    dialog = dialog.set_parent(&ui.window().window_handle());
-    let pick = dialog.pick_folder();
-    let spawned = slint::spawn_local(async move {
-        let picked = pick.await;
-        let Some(ui) = ui_weak.upgrade() else { return };
-        // A picked folder saves straight away, like the other settings
-        if let Some(folder) = picked {
-            apply_recording_folder(&ui, &state, &folder.path().display().to_string());
-        }
-    });
+    // Start in the folder being edited, or the nearest parent that exists.
+    // Looking can wake a sleeping drive, so it is done off the UI thread,
+    // and the dialog opened back on it.
+    let spawned = std::thread::Builder::new()
+        .name("recording-folder".into())
+        .spawn(move || {
+            let dir = start
+                .ancestors()
+                .find(|p| p.is_dir())
+                .map(std::path::Path::to_path_buf);
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                let mut dialog = rfd::AsyncFileDialog::new().set_title("Choose Recording Folder");
+                if let Some(dir) = dir {
+                    dialog = dialog.set_directory(dir);
+                }
+                dialog = dialog.set_parent(&ui.window().window_handle());
+                let pick = dialog.pick_folder();
+                let ui_weak = ui.as_weak();
+                let spawned = slint::spawn_local(async move {
+                    let picked = pick.await;
+                    let Some(ui) = ui_weak.upgrade() else { return };
+                    // A picked folder saves straight away, like the other settings
+                    if let Some(folder) = picked {
+                        apply_recording_folder(&ui, &state, &folder.path().display().to_string());
+                    }
+                });
+                if let Err(e) = spawned {
+                    eprintln!("Failed to open the folder dialog: {e}");
+                }
+            });
+        });
     if let Err(e) = spawned {
         eprintln!("Failed to open the folder dialog: {e}");
     }
