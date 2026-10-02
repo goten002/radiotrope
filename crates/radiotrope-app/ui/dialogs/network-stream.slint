@@ -24,6 +24,7 @@ export component NetworkStreamDialog inherits Rectangle {
         root.country = "";
     }
 
+    // Cancel clears the fields
     function cancel() {
         root.reset();
         root.show-dialog = false;
@@ -43,7 +44,9 @@ export component NetworkStreamDialog inherits Rectangle {
         subtitle: "Play any internet radio or HLS stream by its address";
         card-width: Defaults.network-stream-width;
         auto-focus: false;
-        close-requested => { root.cancel(); }
+        // Esc, the close button or a click beside the dialog keep what was
+        // typed, for when it is opened again
+        close-requested => { root.show-dialog = false; }
 
         // Same fields, in the same order, as Edit Favorite
         Field {
