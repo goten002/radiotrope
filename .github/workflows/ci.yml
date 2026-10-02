@@ -2,12 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, test/all-upgrades]
   pull_request:
-    branches: [main]
+    branches: [main, test/all-upgrades]
 
 env:
   CARGO_TERM_COLOR: always
+
+# A newer push to the same branch or PR replaces the run still going
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
@@ -16,6 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
       - run: cargo check --workspace
 
@@ -25,8 +31,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
-      - run: cargo test --workspace
+      - name: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee test.log; then
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
 
   clippy:
     name: Clippy
@@ -36,8 +50,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - uses: Swatinem/rust-cache@v2
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
-      - run: cargo clippy --workspace -- -D warnings
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            # Show the first problems as annotations on the run and the PR
+            sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
 
   fmt:
     name: Format
@@ -48,3 +71,32 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  # Windows is a release target: lint the Windows-only code and run the
+  # tests there (MSVC, with CMake for the bundled libopus)
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            # Show the first problems as annotations on the run and the PR
+            sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
+      - name: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee test.log; then
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi

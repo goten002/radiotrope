@@ -533,7 +533,9 @@ fn parse_pat(payload: &[u8]) -> Vec<u16> {
     section
         .get(5..)
         .unwrap_or_default()
-        .chunks_exact(4)
+        .as_chunks::<4>()
+        .0
+        .iter()
         .filter(|entry| entry[0] != 0 || entry[1] != 0) // program 0 = network PID
         .map(|entry| u16::from(entry[2] & 0x1F) << 8 | u16::from(entry[3]))
         .collect()
