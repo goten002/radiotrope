@@ -134,7 +134,7 @@ export component VizContent inherits Rectangle {
     // radio searching for the station
     property <int> tune-ticks: 16;
     // Needle position across the dial (0-1), easing at both ends
-    property <float> tune-pos: 0.5 - 0.5 * cos(mod(animation-tick() / 1600ms * 180deg, 360deg));
+    property <float> tune-pos: 0.5 - 0.5 * cos(mod(animation-tick() / Theme.tune-period * 180deg, 360deg));
     property <length> tune-gap: 2px;
     property <length> tune-tick: (root.width - (root.tune-ticks - 1) * root.tune-gap) / root.tune-ticks;
 

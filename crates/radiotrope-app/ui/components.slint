@@ -103,7 +103,7 @@ export component NowPlayingBars inherits HorizontalLayout {
         alignment: end;
         Rectangle {
             width: 3px;
-            height: 3px + 9px * abs(sin(Motion.tick / (520ms + i * 140ms) * 180deg + i * 50deg));
+            height: 3px + 9px * abs(sin(Motion.tick / (Theme.bars-period + i * Theme.bars-period-step) * 180deg + i * 50deg));
             border-radius: 1.5px;
             background: Theme.accent;
         }
@@ -378,7 +378,7 @@ export component Chip inherits Rectangle {
                 height: 6px;
                 border-radius: 3px;
                 background: root.tone;
-                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / 1400ms * 180deg)) : 1;
+                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / Theme.pulse-period * 180deg)) : 1;
             }
         }
 

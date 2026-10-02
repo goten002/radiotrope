@@ -311,7 +311,7 @@ component FavoriteRow inherits Rectangle {
                         width: 12px;
                         height: 12px;
                         colorize: Theme.accent;
-                        rotation: mod(Motion.tick / 900ms, 1) * 360deg;
+                        rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
                     }
                 }
 
@@ -761,7 +761,7 @@ export component Favorites inherits Rectangle {
 
         // Keeps scrolling while the pointer rests near an edge
         Timer {
-            interval: 16ms;
+            interval: Defaults.drag-scroll-step;
             running: list.scroll-step != 0px;
             triggered => {
                 fav-flickable.content-y = clamp(
