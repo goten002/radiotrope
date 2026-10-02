@@ -26,7 +26,7 @@ use crate::stream::id3::Id3Scanner;
 use crate::stream::metadata::{
     extract_icy_title_as, MetadataSink, MetadataSource, StationText, StreamMetadata,
 };
-use crate::stream::playlist::{sniff_playlist, PlaylistCheck};
+use crate::stream::playlist::{is_web_page, sniff_playlist, PlaylistCheck};
 use crate::stream::resolver::StreamResolver;
 
 use super::cancel::{StreamCancel, Waited};
@@ -216,12 +216,18 @@ impl IcyReader {
         // An address without a playlist extension can still serve one
         // (`/listen.php?id=7`, or `/radio` redirecting to `index.m3u8`): its
         // text must not reach the decoder
-        if metaint == 0 {
+        let web_page = is_web_page(headers.content_type.as_deref());
+        if metaint == 0 || web_page {
             let kind = sniff_playlist(headers.content_type.as_deref(), &initial_data);
             if kind != PlaylistCheck::NotPlaylist {
                 cancel.cancel();
                 return Ok(Opened::Playlist(kind));
             }
+        }
+        // A station's error or "offline" page served with 200 OK
+        if web_page {
+            cancel.cancel();
+            return Err(RadioError::Stream(WEB_PAGE.to_string()));
         }
 
         Ok(Opened::Stream(
@@ -887,16 +893,18 @@ fn reconnect(url: &str) -> std::result::Result<Connection, String> {
         return Err(format!("HTTP {}", response.status));
     }
     // An error or parking page served with 200 OK must not reach the decoder
-    let is_web_page = response
+    let content_type = response
         .headers
         .get("content-type")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"));
-    if is_web_page {
-        return Err("the server sent a web page instead of audio".to_string());
+        .and_then(|v| v.to_str().ok());
+    if is_web_page(content_type) {
+        return Err(WEB_PAGE.to_string());
     }
     Ok(response)
 }
+
+/// Why a web page isn't played
+const WEB_PAGE: &str = "the server sent a web page instead of audio";
 
 #[cfg(test)]
 mod tests {
@@ -1774,6 +1782,37 @@ mod tests {
                 "{err}"
             );
             assert_no_more_requests(&server, "/live");
+        }
+
+        #[test]
+        fn a_web_page_is_not_played() {
+            let server = TestServer::start();
+            server.route(
+                "/live",
+                Route::new("<html><body>Station offline</body></html>")
+                    .header("Content-Type", "text/html; charset=utf-8"),
+            );
+            let opened = IcyReader::open_detecting(
+                &server.url("/live"),
+                None,
+                StreamCancel::new(),
+                Deadline::NONE,
+            );
+            let err = opened.err().expect("an offline page is not a stream");
+            assert!(err.to_string().contains("web page"), "{err}");
+
+            // Unless it is a playlist served as a web page
+            server.route(
+                "/list",
+                Route::new("http://radio.example/live\n").header("Content-Type", "text/html"),
+            );
+            let opened = IcyReader::open_detecting(
+                &server.url("/list"),
+                None,
+                StreamCancel::new(),
+                Deadline::NONE,
+            );
+            assert!(matches!(opened, Ok(Opened::Playlist(PlaylistCheck::M3u))));
         }
 
         #[test]

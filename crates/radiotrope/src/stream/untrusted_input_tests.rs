@@ -21,8 +21,10 @@ use super::id3::test_util::{frame, id3v1_song, id3v2_song, id3v2_tag};
 use super::id3::{id3v2_tag_len, parse_id3v1, parse_id3v2, parse_id3v2_payload, Id3Scanner};
 use super::metadata::{decode_html_references, extract_icy_title_as, StationText, StreamMetadata};
 use super::playlist::{
-    check_playlist_type, make_absolute_url, parse_m3u, parse_pls, sniff_playlist,
+    check_playlist_type, m3u_entries, make_absolute_url, parse_m3u, parse_pls, pls_entries,
+    sniff_playlist,
 };
+use crate::config::network::MAX_PLAYLIST_ENTRIES;
 
 // --- Damage ---
 
@@ -419,13 +421,15 @@ proptest! {
         ])),
     ) {
         sniff_playlist(content_type, text.as_bytes());
-        if let Some(url) = parse_pls(&text) {
-            prop_assert!(!url.is_empty());
-        }
+        let pls = pls_entries(&text);
+        prop_assert!(pls.len() <= MAX_PLAYLIST_ENTRIES);
+        prop_assert!(pls.iter().all(|url| !url.is_empty()));
+        prop_assert_eq!(parse_pls(&text), pls.first().cloned());
         for base in ["http://example.com/dir", "", "not a url"] {
-            if let Some(url) = parse_m3u(&text, base) {
-                prop_assert!(!url.is_empty());
-            }
+            let m3u = m3u_entries(&text, base);
+            prop_assert!(m3u.len() <= MAX_PLAYLIST_ENTRIES);
+            prop_assert!(m3u.iter().all(|url| !url.is_empty()));
+            prop_assert_eq!(parse_m3u(&text, base), m3u.first().cloned());
         }
         check_playlist_type(&text);
         make_absolute_url(&text, "http://example.com/dir");
