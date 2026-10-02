@@ -22,17 +22,9 @@ pub enum AppCommand {
         country: Option<String>,
     },
     Stop,
-    #[allow(dead_code)] // planned: pause/resume from MCP
-    Pause,
-    #[allow(dead_code)] // planned: pause/resume from MCP
-    Resume,
     SetVolume(f32),
     Mute,
     Unmute,
-
-    // State query (MCP reads shared_state directly)
-    #[allow(dead_code)]
-    GetState,
 
     // Shutdown the app
     Shutdown,

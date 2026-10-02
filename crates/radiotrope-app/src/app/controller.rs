@@ -163,16 +163,6 @@ impl AppController {
                 state.title.clear();
                 state.artist.clear();
             }
-            AppCommand::Pause => {
-                if let Some(engine) = &self.engine {
-                    engine.pause();
-                }
-            }
-            AppCommand::Resume => {
-                if let Some(engine) = &self.engine {
-                    engine.resume();
-                }
-            }
             AppCommand::SetVolume(vol) => {
                 // Keep NaN out of the shared state and the saved settings
                 if !vol.is_finite() {
@@ -257,9 +247,6 @@ impl AppController {
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.eq_enabled = on;
-            }
-            AppCommand::GetState => {
-                // No-op: MCP reads shared_state directly via Arc<Mutex<>>
             }
             AppCommand::StartRecording {
                 folder,
