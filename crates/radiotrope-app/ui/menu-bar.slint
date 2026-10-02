@@ -173,24 +173,32 @@ component CaptionButton inherits Rectangle {
 // or Down once reached with Tab
 component MenuTitle inherits Rectangle {
     in property <string> label;
+    // Greyed out and not clickable when false
+    in property <bool> enabled: true;
     callback clicked();
 
     width: title.preferred-width + 20px;
     height: 32px;
-    background: touch.has-hover || keys.has-focus ? Theme.menu-bar-hover : transparent;
+    background: root.enabled && (touch.has-hover || keys.has-focus) ? Theme.menu-bar-hover : transparent;
     animate background { duration: Theme.fast; }
 
     accessible-role: button;
     accessible-label: root.label;
-    accessible-action-default => { root.clicked(); }
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
 
     touch := TouchArea {
+        enabled: root.enabled;
         clicked => { root.clicked(); }
     }
 
     title := Text {
         text: root.label;
-        color: Theme.menu-text;
+        color: root.enabled ? Theme.menu-text : Theme.disabled-text;
         font-size: Theme.font-base;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -198,6 +206,7 @@ component MenuTitle inherits Rectangle {
     }
 
     keys := FocusScope {
+        enabled: root.enabled;
         focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
@@ -237,6 +246,9 @@ export component MenuBar inherits Rectangle {
     callback open-recording-settings();
     callback open-recordings-folder();
     callback open-agents();
+    // The menus are greyed out while a dialog is open; the window buttons
+    // and moving the window still work
+    in property <bool> menus-enabled: true;
     // Agents (MCP) using the player now, and one line about each: a chip
     // at the end of the bar, only while there are any
     in property <int> agent-count;
@@ -276,26 +288,31 @@ export component MenuBar inherits Rectangle {
 
         open-menu := MenuTitle {
             label: "Open";
+            enabled: root.menus-enabled;
             clicked => { open-popup.show(); }
         }
 
         stations-menu := MenuTitle {
             label: "Stations";
+            enabled: root.menus-enabled;
             clicked => { stations-popup.show(); }
         }
 
         view-menu := MenuTitle {
             label: "View";
+            enabled: root.menus-enabled;
             clicked => { view-popup.show(); }
         }
 
         tools-menu := MenuTitle {
             label: "Tools";
+            enabled: root.menus-enabled;
             clicked => { tools-popup.show(); }
         }
 
         help-menu := MenuTitle {
             label: "Help";
+            enabled: root.menus-enabled;
             clicked => { help-popup.show(); }
         }
 
