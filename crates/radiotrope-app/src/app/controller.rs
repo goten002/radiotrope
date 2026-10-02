@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{never, select, tick, Receiver, Sender};
 
 use radiotrope::audio::{
     AudioAnalysis, AudioEngine, AudioEvent, EngineEvent, PlaybackState, RecordingFormat,
@@ -25,6 +25,10 @@ use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 /// duration the resolve attempt is abandoned. The engine ends a resolve by
 /// its own deadline with the reason; this is a little longer, as a backstop.
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(RESOLVE_TIMEOUT_SECS + 3);
+
+/// How often a recording's progress is read while one runs (the UI shows
+/// it about as often)
+const RECORDING_POLL: Duration = Duration::from_millis(200);
 
 pub struct AppController {
     cmd_rx: Receiver<AppCommand>,
@@ -46,8 +50,6 @@ pub struct AppController {
     stats_tx: Option<Sender<SharedStats>>,
     /// Saved volume level before mute (for restoring on unmute)
     volume_before_mute: f32,
-    /// Reusable buffer for collecting engine events (avoids allocation per poll)
-    event_buf: Vec<EngineEvent>,
     /// Sequence number of the last recording notice
     notice_seq: u64,
     /// The playing stream failed: the engine's Stopped that follows keeps the
@@ -75,7 +77,6 @@ impl AppController {
             analysis_tx: Some(analysis_tx),
             stats_tx: Some(stats_tx),
             volume_before_mute: 1.0,
-            event_buf: Vec::new(),
             notice_seq: 0,
             stream_failed: false,
         }
@@ -107,21 +108,40 @@ impl AppController {
             }
         }
 
+        // Sleep until a command, an engine event or song info comes; while
+        // recording, also wake to read its progress
+        let commands = self.cmd_rx.clone();
+        let mut engine_events = match &self.engine {
+            Some(engine) => engine.event_receiver().clone(),
+            None => never(),
+        };
+        let recording_tick = tick(RECORDING_POLL);
+        let no_tick = never();
+        let mut recording = false;
         loop {
-            // Process commands (blocking with timeout so we can poll engine events)
-            match self.cmd_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(cmd) => {
-                    if self.handle_command(cmd) {
-                        break;
+            let metadata = self.metadata_rx.clone().unwrap_or_else(never);
+            select! {
+                recv(commands) -> cmd => match cmd {
+                    Ok(cmd) => {
+                        if self.handle_command(cmd) {
+                            break;
+                        }
                     }
-                }
-                Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                    Err(_) => break,
+                },
+                recv(engine_events) -> event => match event {
+                    Ok(event) => self.handle_engine_event(event),
+                    // The engine's thread is gone
+                    Err(_) => engine_events = never(),
+                },
+                recv(metadata) -> meta => match meta {
+                    Ok(meta) => self.show_metadata(meta),
+                    // The station's reader is gone
+                    Err(_) => self.metadata_rx = None,
+                },
+                recv(if recording { &recording_tick } else { &no_tick }) -> _ => {}
             }
-
-            // Poll engine events
-            self.poll_engine_events();
-            self.poll_recording();
+            recording = self.poll_recording();
         }
 
         // Finish any recording before the engine goes away
@@ -425,29 +445,6 @@ impl AppController {
         }
     }
 
-    /// Poll audio engine events and metadata
-    fn poll_engine_events(&mut self) {
-        // Collect events into reusable buffer to avoid borrow conflict with self
-        self.event_buf.clear();
-        if let Some(engine) = &self.engine {
-            while let Some(event) = engine.try_recv_event() {
-                self.event_buf.push(event);
-            }
-        } else {
-            return;
-        }
-
-        // Temporarily take ownership of the buffer so we can iterate + call &mut self
-        let mut buf = std::mem::take(&mut self.event_buf);
-        for event in buf.drain(..) {
-            self.handle_engine_event(event);
-        }
-        self.event_buf = buf; // put back (empty but retains capacity)
-
-        // Poll metadata
-        self.poll_metadata();
-    }
-
     fn handle_engine_event(&mut self, event: EngineEvent) {
         // An earlier station's last words: it was stopped when the station
         // changed, and nothing it says applies to the one playing now.
@@ -666,15 +663,18 @@ impl AppController {
     }
 
     /// Mirror the recording's progress into the shared state, and stop it
-    /// if writing failed (e.g. the disk is full).
-    fn poll_recording(&mut self) {
-        let Some(engine) = &self.engine else { return };
+    /// if writing failed (e.g. the disk is full). Returns whether one is
+    /// still running.
+    fn poll_recording(&mut self) -> bool {
+        let Some(engine) = &self.engine else {
+            return false;
+        };
         let Some(status) = engine.recorder().status() else {
-            return;
+            return false;
         };
         if status.error.is_some() {
             self.stop_recording();
-            return;
+            return false;
         }
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.recording = Some(RecordingProgress {
@@ -682,6 +682,7 @@ impl AppController {
             duration: status.duration,
             bytes: status.bytes_written,
         });
+        true
     }
 
     fn report_finished(&mut self, status: &RecordingStatus) {
@@ -706,26 +707,19 @@ impl AppController {
         });
     }
 
-    fn poll_metadata(&mut self) {
-        let rx = match &self.metadata_rx {
-            Some(rx) => rx,
-            None => return,
-        };
-
-        // Drain all pending metadata, keep the latest
-        let mut latest = None;
-        while let Ok(meta) = rx.try_recv() {
-            latest = Some(meta);
+    /// Show the station's song info: `meta`, or a newer one already waiting
+    fn show_metadata(&mut self, mut meta: StreamMetadata) {
+        if let Some(rx) = &self.metadata_rx {
+            while let Ok(newer) = rx.try_recv() {
+                meta = newer;
+            }
         }
-
-        if let Some(meta) = latest {
-            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(title) = meta.title {
-                state.title = title;
-            }
-            if let Some(artist) = meta.artist {
-                state.artist = artist;
-            }
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(title) = meta.title {
+            state.title = title;
+        }
+        if let Some(artist) = meta.artist {
+            state.artist = artist;
         }
     }
 }
