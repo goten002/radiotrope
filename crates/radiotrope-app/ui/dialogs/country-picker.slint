@@ -1,6 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, ButtonKeys, FocusRing } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
+import { SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
 export struct CountryEntry {
@@ -130,13 +131,30 @@ export component CountryPickerDialog inherits Rectangle {
                 vertical-alignment: center;
             }
 
-            // Error state
-            if root.error != "" && !root.loading: Text {
-                text: root.error;
-                color: Theme.danger;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            // Error state, with a way to ask again
+            if root.error != "" && !root.loading: VerticalLayout {
+                alignment: center;
+                spacing: 6px;
+
+                Text {
+                    text: root.error;
+                    color: Theme.danger;
+                    font-size: Theme.font-base;
+                    horizontal-alignment: center;
+                }
+
+                HorizontalLayout {
+                    alignment: center;
+                    padding-top: 6px;
+
+                    SecondaryButton {
+                        label: "Try again";
+                        clicked => {
+                            root.loading = true;
+                            root.load-countries();
+                        }
+                    }
+                }
             }
 
             // Country list

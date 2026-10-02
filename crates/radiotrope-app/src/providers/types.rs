@@ -2,6 +2,7 @@
 //!
 //! Types used across all station providers.
 
+use crate::data::flags::code_for_country;
 use crate::data::types::Station;
 
 /// Results from a station search or browse operation
@@ -89,11 +90,13 @@ impl StationFilter {
             .genre
             .as_deref()
             .is_none_or(|g| station.genres.iter().any(|sg| contains(sg, g)));
+        // Stations carry a country name ("Greece, Attica"): an ISO code
+        // given is compared with the code that name stands for
         let country_ok = match (self.country_code(), self.country.as_deref()) {
-            (Some(code), _) => station
-                .country
-                .as_deref()
-                .is_some_and(|c| c.eq_ignore_ascii_case(&code)),
+            (Some(code), _) => station.country.as_deref().is_some_and(|c| {
+                c.trim().eq_ignore_ascii_case(&code)
+                    || code_for_country(c).is_some_and(|cc| cc.eq_ignore_ascii_case(&code))
+            }),
             (None, Some(name)) => station
                 .country
                 .as_deref()
@@ -178,7 +181,9 @@ mod tests {
     #[test]
     fn a_filter_matches_every_field_it_sets() {
         let mut station = Station::new("Jazz FM", "http://jazz.test");
-        station.country = Some("GB".into());
+        // As radio-browser names it
+        station.country =
+            Some("The United Kingdom Of Great Britain And Northern Ireland, London".into());
         station.language = Some("english".into());
         station.genres = ["smooth jazz".to_string()].into();
         station.codec = Some("MP3".into());
@@ -195,6 +200,11 @@ mod tests {
             order: SearchOrder::Popular,
         };
         assert!(filter.matches(&station));
+        let by_name = StationFilter {
+            country: Some("united kingdom".into()),
+            ..Default::default()
+        };
+        assert!(by_name.matches(&station));
         for miss in [
             StationFilter {
                 name: Some("news".into()),
