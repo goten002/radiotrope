@@ -239,6 +239,7 @@ fn main() {
     ui.set_eq_band7(settings.eq_gains[7]);
     ui.set_eq_band8(settings.eq_gains[8]);
     ui.set_eq_band9(settings.eq_gains[9]);
+    show_eq_presets(&ui);
 
     // Apply saved accent color
     if let Some((r, g, b)) = settings.accent_color_rgb() {
@@ -1903,6 +1904,32 @@ fn setup_rotary_encoder(
             }
         })
         .ok();
+}
+
+/// The equalizer's preset menu, from the engine's preset list: the presets
+/// without a group (Flat) on their own, then a column per group, in the
+/// list's order
+fn show_eq_presets(ui: &App) {
+    let mut top: Vec<slint::SharedString> = Vec::new();
+    let mut groups: Vec<(&str, Vec<slint::SharedString>)> = Vec::new();
+    for preset in radiotrope::audio::PRESETS {
+        match preset.group.title() {
+            None => top.push(preset.name.into()),
+            Some(title) => match groups.iter_mut().find(|(t, _)| *t == title) {
+                Some((_, names)) => names.push(preset.name.into()),
+                None => groups.push((title, vec![preset.name.into()])),
+            },
+        }
+    }
+    let groups: Vec<EqPresetGroup> = groups
+        .into_iter()
+        .map(|(title, names)| EqPresetGroup {
+            title: title.into(),
+            names: ModelRc::new(VecModel::from(names)),
+        })
+        .collect();
+    ui.set_eq_top_presets(ModelRc::new(VecModel::from(top)));
+    ui.set_eq_preset_groups(ModelRc::new(VecModel::from(groups)));
 }
 
 /// Push one visualizer frame to the UI (levels already gated and smoothed).

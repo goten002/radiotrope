@@ -310,8 +310,19 @@ component PresetGroupLabel inherits Rectangle {
     }
 }
 
+// A column of the preset menu: its heading and its presets
+export struct EqPresetGroup {
+    title: string,
+    names: [string],
+}
+
 export component EqualizerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    // The presets, from the engine's list (set from Rust): the ones shown
+    // on their own at the top (Flat), then a column per group
+    in property <[string]> top-presets;
+    in property <[EqPresetGroup]> preset-groups;
+    property <length> preset-column-width: 140px;
     in-out property <bool> eq-enabled: false;
     in-out property <string> preset-name: "Flat";
     in-out property <float> preamp-gain: 0;
@@ -416,7 +427,8 @@ export component EqualizerDialog inherits Rectangle {
                 preset-popup := PopupWindow {
                     x: 0;
                     y: 30px;
-                    width: 3 * 140px + 2 * 4px + 2 * 4px;
+                    // The columns, the gaps between them and the padding
+                    width: root.preset-groups.length * (root.preset-column-width + 4px) + 4px;
 
                     Rectangle {
                         background: Theme.popup-bg;
@@ -430,7 +442,14 @@ export component EqualizerDialog inherits Rectangle {
                             padding: 4px;
                             spacing: 4px;
 
-                            PresetItem { name: "Flat"; is-selected: root.preset-name == "Flat"; clicked => { preset-popup.close(); root.preset-selected("Flat"); } }
+                            for name in root.top-presets: PresetItem {
+                                name: name;
+                                is-selected: root.preset-name == name;
+                                clicked => {
+                                    preset-popup.close();
+                                    root.preset-selected(name);
+                                }
+                            }
 
                             Rectangle {
                                 height: 1px;
@@ -440,34 +459,17 @@ export component EqualizerDialog inherits Rectangle {
                             HorizontalLayout {
                                 spacing: 4px;
 
-                                VerticalLayout {
-                                    width: 140px;
-                                    PresetGroupLabel { text: "Listening"; }
-                                    PresetItem { name: "Voice"; is-selected: root.preset-name == "Voice"; clicked => { preset-popup.close(); root.preset-selected("Voice"); } }
-                                    PresetItem { name: "Small Speakers"; is-selected: root.preset-name == "Small Speakers"; clicked => { preset-popup.close(); root.preset-selected("Small Speakers"); } }
-                                    PresetItem { name: "Quiet Listening"; is-selected: root.preset-name == "Quiet Listening"; clicked => { preset-popup.close(); root.preset-selected("Quiet Listening"); } }
-                                    PresetItem { name: "Soften Highs"; is-selected: root.preset-name == "Soften Highs"; clicked => { preset-popup.close(); root.preset-selected("Soften Highs"); } }
-                                    Rectangle { vertical-stretch: 1; }
-                                }
-
-                                VerticalLayout {
-                                    width: 140px;
-                                    PresetGroupLabel { text: "Tone"; }
-                                    PresetItem { name: "Warm"; is-selected: root.preset-name == "Warm"; clicked => { preset-popup.close(); root.preset-selected("Warm"); } }
-                                    PresetItem { name: "Bright"; is-selected: root.preset-name == "Bright"; clicked => { preset-popup.close(); root.preset-selected("Bright"); } }
-                                    PresetItem { name: "Bass Lift"; is-selected: root.preset-name == "Bass Lift"; clicked => { preset-popup.close(); root.preset-selected("Bass Lift"); } }
-                                    PresetItem { name: "Bass Cut"; is-selected: root.preset-name == "Bass Cut"; clicked => { preset-popup.close(); root.preset-selected("Bass Cut"); } }
-                                    Rectangle { vertical-stretch: 1; }
-                                }
-
-                                VerticalLayout {
-                                    width: 140px;
-                                    PresetGroupLabel { text: "Music"; }
-                                    PresetItem { name: "Electronic"; is-selected: root.preset-name == "Electronic"; clicked => { preset-popup.close(); root.preset-selected("Electronic"); } }
-                                    PresetItem { name: "Hip-Hop"; is-selected: root.preset-name == "Hip-Hop"; clicked => { preset-popup.close(); root.preset-selected("Hip-Hop"); } }
-                                    PresetItem { name: "Rock"; is-selected: root.preset-name == "Rock"; clicked => { preset-popup.close(); root.preset-selected("Rock"); } }
-                                    PresetItem { name: "Acoustic"; is-selected: root.preset-name == "Acoustic"; clicked => { preset-popup.close(); root.preset-selected("Acoustic"); } }
-                                    PresetItem { name: "Vocal Pop"; is-selected: root.preset-name == "Vocal Pop"; clicked => { preset-popup.close(); root.preset-selected("Vocal Pop"); } }
+                                for group in root.preset-groups: VerticalLayout {
+                                    width: root.preset-column-width;
+                                    PresetGroupLabel { text: group.title; }
+                                    for name in group.names: PresetItem {
+                                        name: name;
+                                        is-selected: root.preset-name == name;
+                                        clicked => {
+                                            preset-popup.close();
+                                            root.preset-selected(name);
+                                        }
+                                    }
                                     Rectangle { vertical-stretch: 1; }
                                 }
                             }

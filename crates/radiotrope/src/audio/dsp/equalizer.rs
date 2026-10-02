@@ -119,6 +119,19 @@ pub enum PresetGroup {
     Music,
 }
 
+impl PresetGroup {
+    /// The group's heading in the preset menu; None for Flat, which sits
+    /// on its own above the groups
+    pub fn title(self) -> Option<&'static str> {
+        match self {
+            PresetGroup::None => None,
+            PresetGroup::Listening => Some("Listening"),
+            PresetGroup::Tone => Some("Tone"),
+            PresetGroup::Music => Some("Music"),
+        }
+    }
+}
+
 /// A named EQ preset.
 pub struct EqPreset {
     pub name: &'static str,

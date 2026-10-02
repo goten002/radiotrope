@@ -12,14 +12,14 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
-import { EqualizerDialog } from "dialogs/equalizer.slint";
+import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
-export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow }
+export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -218,6 +218,9 @@ export component App inherits Window {
     in-out property <float> eq-band7 <=> eq-dialog.band7;
     in-out property <float> eq-band8 <=> eq-dialog.band8;
     in-out property <float> eq-band9 <=> eq-dialog.band9;
+    // The preset menu, from the engine's preset list
+    in property <[string]> eq-top-presets;
+    in property <[EqPresetGroup]> eq-preset-groups;
 
     // WiFi proxy properties (embedded only)
     in-out property <bool> show-wifi-settings: false;
@@ -470,6 +473,8 @@ export component App inherits Window {
         }
 
         eq-dialog := EqualizerDialog {
+            top-presets: root.eq-top-presets;
+            preset-groups: root.eq-preset-groups;
             enabled-toggled(val) => { root.eq-enabled-toggled(val); }
             preset-selected(name) => { root.eq-preset-selected(name); }
             preamp-changed(val) => { root.eq-preamp-changed(val); }
