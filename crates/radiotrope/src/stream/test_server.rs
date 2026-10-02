@@ -84,7 +84,8 @@ impl Route {
     }
 }
 
-/// Serves fixed routes on 127.0.0.1 until the test process exits.
+/// Serves fixed routes on 127.0.0.1 (or another local address) until the
+/// test process exits.
 pub struct TestServer {
     pub base_url: String,
     routes: Arc<Mutex<HashMap<String, Route>>>,
@@ -93,7 +94,13 @@ pub struct TestServer {
 
 impl TestServer {
     pub fn start() -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::bind("127.0.0.1:0").unwrap()
+    }
+
+    /// A server on `addr`, such as `[::1]:0` (which fails on a machine
+    /// without IPv6)
+    pub fn bind(addr: &str) -> std::io::Result<Self> {
+        let listener = TcpListener::bind(addr)?;
         let base_url = format!("http://{}", listener.local_addr().unwrap());
         let routes: Arc<Mutex<HashMap<String, Route>>> = Arc::default();
         let hits: Arc<Mutex<HashMap<String, usize>>> = Arc::default();
@@ -158,11 +165,11 @@ impl TestServer {
                 });
             }
         });
-        Self {
+        Ok(Self {
             base_url,
             routes,
             hits,
-        }
+        })
     }
 
     /// How many requests `path` has had
