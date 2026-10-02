@@ -6,6 +6,8 @@ import { Platform } from "@platform/wifi.slint";
 component MenuItem inherits Rectangle {
     in property <string> label;
     in property <image> icon;
+    // Its keyboard shortcut, shown on the right ("Ctrl+Q")
+    in property <string> shortcut;
     // Greyed out and not clickable when false
     in property <bool> enabled: true;
     callback clicked();
@@ -62,6 +64,37 @@ component MenuItem inherits Rectangle {
             font-size: Theme.font-base;
             vertical-alignment: center;
             accessible-role: none;
+        }
+
+        if root.shortcut != "": Rectangle {
+            horizontal-stretch: 1;
+            min-width: 16px;
+        }
+        if root.shortcut != "": Text {
+            text: root.shortcut;
+            color: Theme.disabled-text;
+            font-size: Theme.font-sm;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+    }
+}
+
+// Why the items above it are greyed out, in the menu itself
+component MenuNote inherits Rectangle {
+    in property <string> text;
+
+    HorizontalLayout {
+        // Lined up with the item labels (padding, icon, spacing)
+        padding-left: 35px;
+        padding-right: 12px;
+        padding-top: 2px;
+        padding-bottom: 4px;
+
+        Text {
+            text: root.text;
+            color: Theme.disabled-text;
+            font-size: Theme.font-sm;
         }
     }
 }
@@ -279,6 +312,12 @@ export component MenuBar inherits Rectangle {
     property <length> menu-start: 4px;
     property <length> window-menu-y;
     callback close-window();
+    // System tray options (View menu) and Quit (Open menu)
+    in-out property <bool> tray-icon;
+    in-out property <bool> close-to-tray;
+    in-out property <bool> start-in-tray;
+    in property <bool> tray-available: true;
+    callback quit-app();
 
 
     HorizontalLayout {
@@ -441,6 +480,16 @@ export component MenuBar inherits Rectangle {
                         root.open-network-stream();
                     }
                 }
+                MenuSeparator {}
+                MenuItem {
+                    label: "Quit";
+                    icon: @image-url("icons/power-off.svg");
+                    shortcut: "Ctrl+Q";
+                    clicked => {
+                        open-popup.close();
+                        root.quit-app();
+                    }
+                }
             }
         }
     }
@@ -599,6 +648,40 @@ export component MenuBar inherits Rectangle {
                         view-popup.close();
                         VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
                     }
+                }
+                if Platform.has-tray: MenuSeparator {}
+                if Platform.has-tray: CheckMenuItem {
+                    label: "Show Tray Icon";
+                    icon: @image-url("icons/inbox.svg");
+                    checked: root.tray-icon;
+                    clicked => {
+                        root.tray-icon = !root.tray-icon;
+                        view-popup.close();
+                    }
+                }
+                // Greyed with no tray to hide in; they keep their ticks
+                if Platform.has-tray: CheckMenuItem {
+                    label: "Close to Tray";
+                    icon: @image-url("icons/right-to-bracket.svg");
+                    enabled: root.tray-icon && root.tray-available;
+                    checked: root.close-to-tray;
+                    clicked => {
+                        root.close-to-tray = !root.close-to-tray;
+                        view-popup.close();
+                    }
+                }
+                if Platform.has-tray: CheckMenuItem {
+                    label: "Start Hidden in Tray";
+                    icon: @image-url("icons/eye-slash.svg");
+                    enabled: root.tray-icon && root.tray-available;
+                    checked: root.start-in-tray;
+                    clicked => {
+                        root.start-in-tray = !root.start-in-tray;
+                        view-popup.close();
+                    }
+                }
+                if Platform.has-tray && root.tray-icon && !root.tray-available: MenuNote {
+                    text: "This desktop shows no tray icons.\nOn GNOME, turn on the AppIndicator extension.";
                 }
             }
         }

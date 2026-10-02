@@ -10,6 +10,8 @@ export global Platform {
     // A desktop window: the app can draw its own title bar
     out property <bool> has-window-frame: true;
     // A system clipboard: clicking the song title copies it
+    // A system tray icon, and the View menu's tray options
+    out property <bool> has-tray: true;
     out property <bool> has-clipboard: true;
 }
 

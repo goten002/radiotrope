@@ -50,22 +50,20 @@ pub struct Settings {
     pub theme: Theme,
 
     // === System Tray ===
-    /// Show system tray icon
+    // Earlier builds saved unused `show_tray_icon`, `minimize_to_tray`,
+    // `start_minimized` and `show_notifications`, mostly as true. They are
+    // left unread, so nobody finds Close to Tray switched on by them.
+    /// Show the icon in the system tray (desktop)
     #[serde(default = "default_true")]
-    pub show_tray_icon: bool,
+    pub tray_icon: bool,
 
-    /// Minimize to tray instead of closing
-    #[serde(default = "default_true")]
-    pub minimize_to_tray: bool,
-
-    /// Start minimized to tray
+    /// Closing the window hides it to the tray and keeps playing
     #[serde(default)]
-    pub start_minimized: bool,
+    pub close_to_tray: bool,
 
-    // === Notifications ===
-    /// Show notifications for track changes
-    #[serde(default = "default_true")]
-    pub show_notifications: bool,
+    /// Start with the window hidden, only the tray icon showing
+    #[serde(default)]
+    pub start_in_tray: bool,
 
     // === Visualization ===
     /// Visualization mode (wave, spectrum, mirror, dots, vu, hbars)
@@ -204,10 +202,9 @@ impl Default for Settings {
             window_width: None,
             window_height: None,
             theme: Theme::default(),
-            show_tray_icon: true,
-            minimize_to_tray: true,
-            start_minimized: false,
-            show_notifications: true,
+            tray_icon: true,
+            close_to_tray: false,
+            start_in_tray: false,
             viz_mode: default_viz_mode(),
             viz_palette: default_viz_palette(),
             show_visualizer: true,
@@ -478,8 +475,9 @@ mod tests {
         assert_eq!(settings.volume, 1.0);
         assert!(!settings.muted);
 
-        assert!(settings.show_tray_icon);
-        assert!(settings.minimize_to_tray);
+        assert!(settings.tray_icon);
+        assert!(!settings.close_to_tray);
+        assert!(!settings.start_in_tray);
         assert_eq!(settings.theme, Theme::System);
     }
 
@@ -612,10 +610,9 @@ mod tests {
             settings.window_width = Some(1920);
             settings.window_height = Some(1080);
             settings.theme = Theme::Light;
-            settings.show_tray_icon = false;
-            settings.minimize_to_tray = false;
-            settings.start_minimized = true;
-            settings.show_notifications = false;
+            settings.tray_icon = false;
+            settings.close_to_tray = true;
+            settings.start_in_tray = true;
             settings.accent_color = Some("#3584e4".to_string());
             settings.recording_dir = Some(PathBuf::from("/media/usb/radio"));
             settings.record_with_eq = true;
@@ -637,10 +634,9 @@ mod tests {
             assert_eq!(s.window_width, Some(1920));
             assert_eq!(s.window_height, Some(1080));
             assert_eq!(s.theme, Theme::Light);
-            assert!(!s.show_tray_icon);
-            assert!(!s.minimize_to_tray);
-            assert!(s.start_minimized);
-            assert!(!s.show_notifications);
+            assert!(!s.tray_icon);
+            assert!(s.close_to_tray);
+            assert!(s.start_in_tray);
             assert_eq!(s.accent_color, Some("#3584e4".to_string()));
             assert_eq!(s.recording_dir, Some(PathBuf::from("/media/usb/radio")));
             assert!(s.record_with_eq);
@@ -671,8 +667,9 @@ mod tests {
         // Missing fields should use defaults
         assert!(!settings.muted);
         assert_eq!(settings.theme, Theme::System);
-        assert!(settings.show_tray_icon);
-        assert!(settings.minimize_to_tray);
+        assert!(settings.tray_icon);
+        assert!(!settings.close_to_tray);
+        assert!(!settings.start_in_tray);
         assert!(settings.show_visualizer);
         assert!(settings.show_station_stats);
         assert!(settings.panel_gradient);
@@ -860,6 +857,21 @@ mod tests {
         assert!(content.contains("\"theme\": \"light\""));
 
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn old_tray_fields_leave_close_to_tray_off() {
+        // What every settings.json written before the tray holds
+        let old: Settings = serde_json::from_str(
+            r#"{"show_tray_icon": true, "minimize_to_tray": true,
+                "start_minimized": true, "show_notifications": true}"#,
+        )
+        .unwrap();
+        assert!(old.tray_icon);
+        assert!(!old.close_to_tray);
+        assert!(!old.start_in_tray);
+        let saved = serde_json::to_string(&old).unwrap();
+        assert!(!saved.contains("minimize_to_tray"));
     }
 
     #[test]
