@@ -9,9 +9,10 @@ use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use crate::network::failed_logos::FailedLogos;
 use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// Service for fetching and caching station logos
@@ -27,6 +28,23 @@ pub struct LogoService {
     /// A background prefetch is running, and whether another was asked for
     /// meanwhile
     prefetching: Mutex<(bool, bool)>,
+    /// Cache keys whose logo a thread is fetching now. Another fetch of
+    /// one waits for it (see [`claim`](Self::claim)).
+    fetching: Mutex<HashSet<String>>,
+    fetched: Condvar,
+}
+
+/// A logo this thread is fetching; dropping it lets the next one in
+struct Claim<'a> {
+    service: &'a LogoService,
+    key: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.service.lock_fetching().remove(&self.key);
+        self.service.fetched.notify_all();
+    }
 }
 
 impl LogoService {
@@ -50,6 +68,8 @@ impl LogoService {
             client,
             failed: FailedLogos::new(),
             prefetching: Mutex::new((false, false)),
+            fetching: Mutex::default(),
+            fetched: Condvar::new(),
         })
     }
 
@@ -73,12 +93,18 @@ impl LogoService {
     /// - The item has no logo URL
     /// - The fetch fails and nothing is cached
     pub fn get<T: HasLogo>(&self, item: &T) -> Option<Vec<u8>> {
+        let key = item.logo_cache_key();
         // Check cache first
-        if let Some(data) = self.cache.get_logo(item) {
+        if let Some(data) = self.cache.get(&key) {
+            return Some(data);
+        }
+        let _claim = self.claim(&key);
+        // Another fetch may have brought it meanwhile
+        if let Some(data) = self.cache.get(&key) {
             return Some(data);
         }
         // Cached by an older build: shrunk here, off the UI thread
-        if let Some(thumb) = self.cache.convert(&item.logo_cache_key()) {
+        if let Some(thumb) = self.cache.convert(&key) {
             return Some(thumb.png);
         }
 
@@ -88,7 +114,7 @@ impl LogoService {
 
         // Cache it, as the thumbnail every later look gets (a cache that
         // can't be written still leaves us the thumbnail)
-        match self.cache.store_thumbnail(&item.logo_cache_key(), &data) {
+        match self.cache.store_thumbnail(&key, &data) {
             Some(thumb) => Some(thumb.png),
             None => {
                 self.unusable(url);
@@ -115,13 +141,19 @@ impl LogoService {
     /// Ensure a logo is cached, downloading if necessary
     ///
     /// Returns:
-    /// - `Ok(true)` if the logo was downloaded and cached
+    /// - `Ok(true)` if the logo was downloaded (or converted) and cached,
+    ///   here or by another fetch this one waited for
     /// - `Ok(false)` if the logo was already cached
     /// - `Err` if there's no logo URL or the download failed
     pub fn ensure_cached<T: HasLogo>(&self, item: &T) -> Result<bool> {
         let key = item.logo_cache_key();
+        if self.cache.state(&key) == CacheState::Ready {
+            return Ok(false);
+        }
+        let _claim = self.claim(&key);
         match self.cache.state(&key) {
-            CacheState::Ready => return Ok(false),
+            // Another fetch brought it meanwhile
+            CacheState::Ready => return Ok(true),
             // Cached by an older build: shrunk here, off the UI thread
             CacheState::NeedsConversion => {
                 if let Some(thumb) = self.cache.convert(&key) {
@@ -154,6 +186,28 @@ impl LogoService {
     /// SVG): nothing is cached, and it isn't fetched again this session
     fn unusable(&self, url: &str) {
         self.failed.record_unusable(url);
+    }
+
+    /// Fetch `key`'s logo on this thread alone. The play path, the poll and
+    /// the prefetch can all want the same logo at once: the later ones wait
+    /// here, then find it cached (or failed) instead of downloading it too.
+    fn claim(&self, key: &str) -> Claim<'_> {
+        let mut fetching = self.lock_fetching();
+        while fetching.contains(key) {
+            fetching = self
+                .fetched
+                .wait(fetching)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        fetching.insert(key.to_string());
+        Claim {
+            service: self,
+            key: key.to_string(),
+        }
+    }
+
+    fn lock_fetching(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.fetching.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Whether `item` has a logo to fetch: it has a URL, isn't cached, and
@@ -731,6 +785,32 @@ mod tests {
         assert!(!file.exists());
         // So it is fetched again
         assert!(service.is_missing(&station));
+    }
+
+    #[test]
+    fn a_logo_wanted_three_times_at_once_is_downloaded_once() {
+        use crate::network::test_http::{ok, serve_counted};
+        let service = Arc::new(LogoService::with_cache(temp_cache()).unwrap());
+        let (server, requests) = serve_counted(ok(&png(8, 8), true), Duration::from_millis(300));
+        let station = Station::new("Popular", "http://popular.test/stream")
+            .with_logo(format!("{server}/logo.png").as_str());
+
+        // The prefetch, the play path and the poll
+        let fetches: Vec<_> = (0..3)
+            .map(|i| {
+                let service = service.clone();
+                let station = station.clone();
+                std::thread::spawn(move || match i {
+                    0 => service.ensure_cached(&station).is_ok(),
+                    _ => service.get_rgba(&station).is_some(),
+                })
+            })
+            .collect();
+        for fetch in fetches {
+            assert!(fetch.join().unwrap());
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(service.lock_fetching().is_empty());
     }
 
     #[test]
