@@ -11,6 +11,7 @@ mod ui;
 mod visual;
 
 use std::io;
+#[cfg(unix)]
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
