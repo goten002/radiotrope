@@ -6,11 +6,13 @@
 //! so the browser keeps working offline. Entries older than
 //! [`API_CACHE_MAX_AGE`] are deleted when the cache is opened.
 
+use crate::config::caches::TEMP_FILE_MAX_AGE;
 use crate::config::providers::API_CACHE_MAX_AGE;
 use crate::data::cache::ensure_cache_dir;
 use crate::data::types::fnv1a;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{Duration, SystemTime};
 
@@ -63,20 +65,34 @@ impl ApiCache {
     /// Store `body` for `key`. Failures are ignored: the cache is optional.
     pub fn put(&self, key: &str, body: &[u8]) {
         let path = self.path(key);
-        // Write then rename, so a reader never sees a half-written file
-        let tmp = path.with_extension("tmp");
-        if fs::write(&tmp, body).is_ok() && fs::rename(&tmp, &path).is_err() {
+        // Write then rename, so a reader never sees a half-written file.
+        // Each write has its own temp name: the UI and an agent can store
+        // the same request at once.
+        static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp = self.dir.join(format!(
+            "{:016x}.{}.{n}.tmp",
+            fnv1a(key.as_bytes()),
+            std::process::id()
+        ));
+        if fs::write(&tmp, body).is_err() || fs::rename(&tmp, &path).is_err() {
             let _ = fs::remove_file(&tmp);
         }
     }
 
-    /// Delete entries older than `max_age`
+    /// Delete entries older than `max_age`, and temp files a write left
+    /// behind (a crash between the write and the rename)
     pub fn prune(&self, max_age: Duration) {
         let Ok(entries) = fs::read_dir(&self.dir) else {
             return;
         };
         for entry in entries.flatten() {
             let path = entry.path();
+            let max_age = if path.extension().is_some_and(|e| e == "tmp") {
+                max_age.min(TEMP_FILE_MAX_AGE)
+            } else {
+                max_age
+            };
             if age_of(&path).is_some_and(|age| age >= max_age) {
                 let _ = fs::remove_file(path);
             }
@@ -142,6 +158,42 @@ mod tests {
         assert!(cache.get_any("GET a").is_some());
         cache.prune(Duration::ZERO);
         assert!(cache.get_any("GET a").is_none());
+        let _ = fs::remove_dir_all(cache.dir());
+    }
+
+    #[test]
+    fn writes_leave_no_temp_files_and_prune_removes_stale_ones() {
+        let cache = temp_cache("tmp");
+        cache.put("GET a", b"[1]");
+        cache.put("GET a", b"[2]");
+        let names = || -> Vec<String> {
+            let mut names: Vec<String> = fs::read_dir(cache.dir())
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(names().len(), 1);
+        assert_eq!(cache.get_any("GET a").unwrap(), b"[2]");
+
+        // What a crash between write and rename leaves: kept while it may
+        // still be renamed, removed once it is old
+        let fresh = cache.dir().join("0000000000000001.1.0.tmp");
+        let stale = cache.dir().join("0000000000000002.1.0.tmp");
+        fs::write(&fresh, b"[").unwrap();
+        fs::write(&stale, b"[").unwrap();
+        fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(SystemTime::now() - TEMP_FILE_MAX_AGE - Duration::from_secs(1))
+            .unwrap();
+        cache.prune(Duration::from_secs(3600));
+        assert!(fresh.exists());
+        assert!(!stale.exists());
+        assert!(cache.get_any("GET a").is_some());
         let _ = fs::remove_dir_all(cache.dir());
     }
 

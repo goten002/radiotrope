@@ -43,6 +43,16 @@ pub mod providers {
     pub const API_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
 }
 
+/// The disk caches (API responses, logos)
+pub mod caches {
+    use std::time::Duration;
+
+    /// A temp file a write left behind (a crash before its rename) is
+    /// deleted once it is this old. A write in progress never takes this
+    /// long.
+    pub const TEMP_FILE_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+}
+
 /// Station logos
 pub mod logos {
     use std::time::Duration;

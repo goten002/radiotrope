@@ -9,6 +9,7 @@
 //! SVG) is stored as-is with an extension guessed from its content.
 
 use crate::config::app::NAME;
+use crate::config::caches::TEMP_FILE_MAX_AGE;
 use crate::config::logos::{MAX_DECODE_BYTES, MAX_DIMENSION};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
@@ -250,7 +251,8 @@ impl ImageCache {
     /// Clean up orphaned cached images
     ///
     /// Removes cached images that don't belong to any of the provided valid IDs.
-    /// Returns the number of files removed.
+    /// Returns the number of files removed. Temp files a write left behind
+    /// are removed too (not counted).
     pub fn cleanup_orphaned(&self, valid_ids: &HashSet<String>) -> usize {
         let entries = match fs::read_dir(&self.cache_dir) {
             Ok(entries) => entries,
@@ -260,6 +262,9 @@ impl ImageCache {
         let mut removed = 0;
         for entry in entries.flatten() {
             let path = entry.path();
+            if remove_if_stale_temp(&entry) {
+                continue;
+            }
 
             // Only process image files
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
@@ -336,7 +341,8 @@ impl ImageCache {
 
     /// Delete cached images not written or touched for longer than `age`
     ///
-    /// Returns how many were removed.
+    /// Returns how many were removed. Temp files a write left behind are
+    /// removed too (not counted).
     pub fn remove_unused(&self, age: std::time::Duration) -> usize {
         let Ok(entries) = fs::read_dir(&self.cache_dir) else {
             return 0;
@@ -347,6 +353,9 @@ impl ImageCache {
         entries
             .flatten()
             .filter(|entry| {
+                if remove_if_stale_temp(entry) {
+                    return false;
+                }
                 let path = entry.path();
                 let is_image = path
                     .extension()
@@ -495,6 +504,28 @@ fn needs_thumbnail(data: &[u8]) -> bool {
         Ok((w, h)) => !is_png || w > LOGO_MAX_SIZE || h > LOGO_MAX_SIZE,
         Err(_) => false,
     }
+}
+
+/// Whether `entry` is a temp file of [`ImageCache::write_png`]. One older
+/// than [`TEMP_FILE_MAX_AGE`] was left by a crash before its rename, and is
+/// removed.
+fn remove_if_stale_temp(entry: &fs::DirEntry) -> bool {
+    let path = entry.path();
+    if path.extension().is_none_or(|e| e != "tmp") {
+        return false;
+    }
+    let stale = entry
+        .metadata()
+        .and_then(|m| m.modified())
+        .is_ok_and(|modified| {
+            std::time::SystemTime::now()
+                .duration_since(modified)
+                .is_ok_and(|age| age >= TEMP_FILE_MAX_AGE)
+        });
+    if stale {
+        let _ = fs::remove_file(&path);
+    }
+    true
 }
 
 /// Decode a logo, refusing anything larger than [`MAX_DIMENSION`] a side
@@ -662,6 +693,38 @@ mod tests {
         );
         assert!(!cache.has("old"));
         assert!(cache.has("touched") && cache.has("new"));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn stale_temp_files_are_removed_by_both_cleanups() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        let long_ago = std::time::SystemTime::now() - TEMP_FILE_MAX_AGE * 2;
+        let make = |name: &str, old: bool| {
+            let path = dir.join(name);
+            fs::write(&path, b"x").unwrap();
+            if old {
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(long_ago)
+                    .unwrap();
+            }
+            path
+        };
+
+        let (old, new) = (make("a.1.0.tmp", true), make("a.1.1.tmp", false));
+        assert_eq!(cache.cleanup_orphaned(&HashSet::new()), 0);
+        assert!(!old.exists());
+        // A write still in progress
+        assert!(new.exists());
+
+        let old = make("b.1.0.tmp", true);
+        assert_eq!(cache.remove_unused(std::time::Duration::from_secs(3600)), 0);
+        assert!(!old.exists() && new.exists());
 
         cleanup_dir(&dir);
     }
