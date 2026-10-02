@@ -153,11 +153,9 @@ pub fn stamp(path: &Path) -> Option<FileStamp> {
 /// old file or the new one, never a half-written one. The file being
 /// replaced is kept as `<path>.bak` first. Returns the new file's stamp.
 fn write_file(path: &Path, content: &str) -> Result<FileStamp> {
-    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let tmp = sibling(path, &format!(".{}-{n}.tmp", std::process::id()));
+    let tmp = temp_sibling(path);
 
-    let result = write_new(&tmp, content).and_then(|()| {
+    let result = write_new(&tmp, content, false).and_then(|()| {
         // Taken before the move, which keeps it: taken after, it could
         // already be another process's save
         let stamp = FileStamp::of(&with_retries(|| fs::metadata(&tmp))?);
@@ -194,10 +192,43 @@ fn write_file(path: &Path, content: &str) -> Result<FileStamp> {
     })
 }
 
-/// Create `path` with `content` and wait until it is on the disk
-fn write_new(path: &Path, content: &str) -> std::io::Result<()> {
+/// Replace `path` with `content` in one step, the way [`write_file`] saves
+/// the JSON files, but with no backup copy and, on Unix, readable by the
+/// user only (0600). For a small private file: the agents' token. A crash
+/// leaves the old file or the new one, never a half-written one.
+pub fn write_private(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = temp_sibling(path);
+    let result =
+        write_new(&tmp, content, true).and_then(|()| with_retries(|| fs::rename(&tmp, path)));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+/// A name next to `path` for the new file of a save, unique to this
+/// process and this save
+fn temp_sibling(path: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    sibling(path, &format!(".{}-{n}.tmp", std::process::id()))
+}
+
+/// Create `path` with `content` and wait until it is on the disk. A
+/// `private` file is readable by the user only (on Unix; on Windows the
+/// user's own folders already are).
+fn write_new(path: &Path, content: &str, private: bool) -> std::io::Result<()> {
     use std::io::Write;
     let mut file = fs::File::create(path)?;
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::PermissionsExt;
+        // Before anything is written; a file left by a crash keeps its
+        // mode on create
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    let _ = private;
     file.write_all(content.as_bytes())?;
     file.sync_all()
 }

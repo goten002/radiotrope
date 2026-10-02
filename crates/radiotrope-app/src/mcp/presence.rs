@@ -7,8 +7,11 @@
 //! clients open one as they start and it drops when they quit), and
 //! otherwise until [`AGENT_IDLE`] after its last request. One whose stream
 //! closed is gone unless it comes back within [`STREAM_GRACE`]; one that
-//! ends its session leaves at once. At most [`MAX_NETWORK_AGENTS`] network
-//! agents are listed: a new one pushes out the one seen longest ago.
+//! ends its session leaves at once. A session's agent that comes back
+//! later (a laptop waking up) counts again, under its name, as its stream
+//! opens. At most [`MAX_NETWORK_AGENTS`] network agents are kept: a new one
+//! pushes out the one seen longest ago. A restart of the network server
+//! ends every network session, so its agents leave the list then.
 //! Names come from the agents themselves, once they send them.
 
 use std::collections::{BTreeMap, HashMap};
@@ -16,7 +19,7 @@ use std::net::IpAddr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use radiotrope_app::config::mcp::{AGENT_IDLE, MAX_NETWORK_AGENTS, STREAM_GRACE};
+use radiotrope_app::config::mcp::{AGENT_IDLE, MAX_NETWORK_AGENTS, SESSION_IDLE, STREAM_GRACE};
 
 /// A network agent, as the server tells them apart
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -114,11 +117,12 @@ struct Inner {
 
 impl Inner {
     /// The network agent `id`, added at `now` if it's new. A new one makes
-    /// room first: the agents that have gone go, then, while the list is
-    /// full, the one seen longest ago (one with its stream open last).
+    /// room first: the agents that are past coming back go, then, while the
+    /// list is full, the one seen longest ago (one with its stream open
+    /// last).
     fn network_entry(&mut self, id: NetworkId, ip: IpAddr, now: Instant) -> &mut Remote {
         if !self.network.contains_key(&id) {
-            self.network.retain(|_, remote| remote.present(now));
+            self.network.retain(|id, remote| remote.kept(id, now));
             if self.network.len() >= MAX_NETWORK_AGENTS {
                 let oldest = self
                     .network
@@ -165,6 +169,18 @@ impl Remote {
             }
             _ => now.saturating_duration_since(self.last_request) < AGENT_IDLE,
         }
+    }
+
+    /// Worth keeping at `now`: still there, or a session's agent that has
+    /// gone but may come back while the server keeps its session
+    fn kept(&self, id: &NetworkId, now: Instant) -> bool {
+        if self.present(now) {
+            return true;
+        }
+        let last = self
+            .stream_closed
+            .map_or(self.last_request, |closed| closed.max(self.last_request));
+        matches!(id, NetworkId::Session(_)) && now.saturating_duration_since(last) < SESSION_IDLE
     }
 
     fn seen(&self, now: Instant) -> Seen {
@@ -246,21 +262,29 @@ impl Presence {
         remote.last_request = at;
     }
 
-    /// A network agent opened its event stream; it counts as connected
-    /// until the guard drops. `None` for an agent we don't know.
-    pub fn stream_opened(&self, id: &NetworkId) -> Option<StreamGuard> {
+    /// A network agent opened its event stream, from `ip`; it counts as
+    /// connected until the guard drops. One that had gone from the list
+    /// (asleep past [`STREAM_GRACE`]) is back on it.
+    pub fn stream_opened(&self, id: &NetworkId, ip: IpAddr) -> StreamGuard {
         let mut inner = self.lock();
-        let remote = inner.network.get_mut(id)?;
+        let remote = inner.network_entry(id.clone(), ip, Instant::now());
+        remote.ip = ip;
         remote.streams += 1;
-        Some(StreamGuard {
+        StreamGuard {
             presence: self.clone(),
             id: id.clone(),
-        })
+        }
     }
 
     /// A network agent ended its session
     pub fn network_left(&self, id: &NetworkId) {
         self.lock().network.remove(id);
+    }
+
+    /// The network server stopped: its sessions, and so its agents, are
+    /// gone. Local agents stay.
+    pub fn network_stopped(&self) {
+        self.lock().network.clear();
     }
 
     /// An agent said its name
@@ -297,10 +321,11 @@ impl Presence {
 
     fn agents_at(&self, now: Instant) -> Vec<AgentInfo> {
         let mut inner = self.lock();
-        inner.network.retain(|_, remote| remote.present(now));
+        inner.network.retain(|id, remote| remote.kept(id, now));
         let mut network: Vec<AgentInfo> = inner
             .network
             .values()
+            .filter(|remote| remote.present(now))
             .map(|remote| AgentInfo {
                 name: remote.name.clone(),
                 address: Some(remote.ip),
@@ -446,7 +471,7 @@ mod tests {
         let ip: IpAddr = LAN.parse().unwrap();
         let start = Instant::now();
         presence.network_seen_at(session("a"), ip, start);
-        let stream = presence.stream_opened(&session("a")).unwrap();
+        let stream = presence.stream_opened(&session("a"), ip);
         let agents = presence.agents_at(start + AGENT_IDLE * 3);
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].seen_label(), "connected");
@@ -462,11 +487,49 @@ mod tests {
         let presence = Presence::default();
         let ip: IpAddr = LAN.parse().unwrap();
         presence.network_seen(session("a"), ip);
-        drop(presence.stream_opened(&session("a")).unwrap());
-        let _again = presence.stream_opened(&session("a")).unwrap();
+        drop(presence.stream_opened(&session("a"), ip));
+        let _again = presence.stream_opened(&session("a"), ip);
         let agents = presence.agents_at(Instant::now() + STREAM_GRACE * 2);
         assert_eq!(agents.len(), 1);
         assert!(agents[0].is_connected());
+    }
+
+    #[test]
+    fn an_agent_that_wakes_up_after_the_grace_is_back_with_its_name() {
+        let presence = Presence::default();
+        let ip: IpAddr = LAN.parse().unwrap();
+        presence.network_seen(session("a"), ip);
+        presence.set_name(&Place::Network(session("a")), "claude-code");
+        drop(presence.stream_opened(&session("a"), ip));
+        // Asleep: gone from the list once the grace is over
+        let later = Instant::now() + STREAM_GRACE * 2;
+        assert!(presence.agents_at(later).is_empty());
+        // Awake again: its stream opens before any request
+        let _stream = presence.stream_opened(&session("a"), ip);
+        let agents = presence.agents();
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].describe(), "claude-code, 192.168.1.20");
+        assert!(agents[0].is_connected());
+        // A stream of a session never seen counts too
+        let _other = presence.stream_opened(&session("b"), ip);
+        assert_eq!(presence.agents().len(), 2);
+    }
+
+    #[test]
+    fn a_stopped_server_takes_its_agents_off_the_list() {
+        let presence = Presence::default();
+        let ip: IpAddr = LAN.parse().unwrap();
+        let _local = presence.local_connected(None);
+        presence.network_seen(session("a"), ip);
+        presence.network_seen(NetworkId::Address(ip), ip);
+        let stream = presence.stream_opened(&session("b"), ip);
+        assert_eq!(presence.agents().len(), 4);
+        presence.network_stopped();
+        assert_eq!(presence.agents().len(), 1);
+        // The old server's stream closing later changes nothing
+        drop(stream);
+        assert_eq!(presence.agents().len(), 1);
+        assert!(!presence.agents()[0].is_network());
     }
 
     #[test]
@@ -474,10 +537,9 @@ mod tests {
         let presence = Presence::default();
         let ip: IpAddr = LAN.parse().unwrap();
         presence.network_seen(session("a"), ip);
-        let _stream = presence.stream_opened(&session("a")).unwrap();
+        let _stream = presence.stream_opened(&session("a"), ip);
         presence.network_left(&session("a"));
         assert!(presence.agents().is_empty());
-        assert!(presence.stream_opened(&session("a")).is_none());
     }
 
     #[test]
@@ -520,7 +582,7 @@ mod tests {
         let at = |i: usize| start + Duration::from_secs(i as u64);
         // The first one holds its stream open, so it stays
         presence.network_seen_at(session("0"), ip, at(0));
-        let _stream = presence.stream_opened(&session("0")).unwrap();
+        let _stream = presence.stream_opened(&session("0"), ip);
         for i in 1..MAX_NETWORK_AGENTS {
             presence.network_seen_at(session(&i.to_string()), ip, at(i));
         }
