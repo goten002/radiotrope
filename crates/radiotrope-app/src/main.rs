@@ -986,10 +986,11 @@ fn main() {
         let row_logos = row_logos.clone();
         let favs = favorites.clone();
         ui.on_load_more_stations(move || {
+            // The offset moves on only once the page is in the list, so a
+            // list put aside meanwhile keeps the offset of the rows it holds
             let (query, offset) = {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.1 += SEARCH_PAGE_SIZE;
-                (s.0.clone(), s.1)
+                let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                (s.0.clone(), s.1 + SEARCH_PAGE_SIZE)
             };
             let my_gen = gen.load(Ordering::Relaxed);
             let ui_weak = ui_weak.clone();
@@ -1003,21 +1004,19 @@ fn main() {
                     let results = fetch_browse_page(&query, offset);
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
-                        ui.set_search_loading_more(false);
-                        // A new search replaced the list meanwhile
+                        // A new search or the other mode's list replaced this
+                        // one meanwhile (and cleared its loading mark)
                         if gen.load(Ordering::Relaxed) != my_gen {
                             return;
                         }
+                        ui.set_search_loading_more(false);
                         match results {
                             Ok(results) => {
+                                state.lock().unwrap_or_else(|e| e.into_inner()).1 = offset;
                                 show_browse_results(&ui, results, true, &favs, &row_logos)
                             }
-                            Err(e) => {
-                                // Step back so the retry asks for this page again
-                                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                                s.1 = s.1.saturating_sub(SEARCH_PAGE_SIZE);
-                                show_browse_error(&ui, &e);
-                            }
+                            // The offset stayed, so the retry asks for this page again
+                            Err(e) => show_browse_error(&ui, &e),
                         }
                     });
                 })
@@ -3257,6 +3256,8 @@ fn start_browse(
         ui.set_has_more(false);
         ui.set_search_error(Default::default());
         ui.set_search_loading(true);
+        // A page still loading for the old list is dropped when it comes
+        ui.set_search_loading_more(false);
     }
     let ui_weak = ui_weak.clone();
     let gen = gen.clone();
