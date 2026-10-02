@@ -28,7 +28,8 @@ use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::{
     FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, PLAY_TAKE_TIMEOUT,
-    RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT,
+    RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SETTINGS_SAVE_DELAY, SHUTDOWN_GRACE,
+    SHUTDOWN_SEND_TIMEOUT,
 };
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
@@ -1457,6 +1458,10 @@ fn main() {
     let poll_listen = listen_session.clone();
     let listen_favs = favorites.clone();
     let poll_saver = favorites_saver.clone();
+    // The window's settings, saved a moment after they change rather than
+    // only at exit, which a logoff or a crash never reaches
+    let poll_settings =
+        std::cell::RefCell::new(app::settings_watch::SettingsWatch::new(SETTINGS_SAVE_DELAY));
     // Keep "12 min ago" and similar texts current
     let stats_timer = slint::Timer::default();
     {
@@ -1549,7 +1554,14 @@ fn main() {
                 .into();
             let recording = s.recording.clone();
             let recording_notice = s.recording_notice.clone();
+            let settings_now = window_settings(&s, &ui);
             drop(s);
+            if let Some(settings) = poll_settings
+                .borrow_mut()
+                .note(settings_now, Instant::now())
+            {
+                write_settings(&settings);
+            }
 
             // A station picked here that the controller hasn't taken up
             // yet shows as starting: the state still holds the old one,
@@ -3133,34 +3145,38 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-    settings.volume = s.volume;
-    settings.muted = s.is_muted;
-    settings.eq_gains = s.eq_gains;
-    settings.eq_preamp = s.eq_preamp;
-    settings.eq_preamp_moved = s.eq_preamp_moved;
-    settings.eq_enabled = s.eq_enabled;
-    settings.eq_preset_name = s.eq_preset_name.clone();
-    settings.accent_color = s.accent_color.clone();
+    write_settings(&window_settings(&s, ui));
+}
 
-    settings.theme = if ui.get_dark_mode() {
-        radiotrope_app::data::settings::Theme::Dark
-    } else {
-        radiotrope_app::data::settings::Theme::Light
-    };
+/// What the window keeps in settings.json, as it is now
+#[derive(Clone, PartialEq)]
+struct WindowSettings {
+    volume: f32,
+    muted: bool,
+    eq_gains: [f32; 10],
+    eq_preamp: f32,
+    eq_preamp_moved: bool,
+    eq_enabled: bool,
+    eq_preset_name: Option<String>,
+    accent_color: Option<String>,
+    theme: radiotrope_app::data::settings::Theme,
+    viz_mode: String,
+    viz_palette: String,
+    show_station_stats: bool,
+    show_visualizer: bool,
+    panel_gradient: bool,
+    /// Custom title bar and always on top (not on the Pi)
+    frame: Option<(bool, bool)>,
+    last_station: Option<Station>,
+    window_size: Option<(u32, u32)>,
+}
 
-    settings.viz_mode = ui.get_viz_mode().to_string();
-    settings.viz_palette = ui.global::<VizStyle>().get_palette().to_string();
-    settings.show_station_stats = ui.get_show_station_stats();
-    settings.show_visualizer = ui.get_show_visualizer();
-    settings.panel_gradient = ui.get_panel_gradient();
-    if cfg!(not(feature = "embedded")) {
-        settings.custom_title_bar = ui.get_custom_frame();
-        settings.always_on_top = ui.get_keep_on_top();
-    }
-
-    if let Some(ref url) = s.station_url {
-        if !url.is_empty() {
+fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
+    let last_station = s
+        .station_url
+        .as_ref()
+        .filter(|url| !url.is_empty())
+        .map(|url| {
             let name = s
                 .station_name
                 .clone()
@@ -3172,23 +3188,73 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
                 station = station.with_logo(&logo_url);
             }
             station.country = Some(ui.get_station_country().to_string()).filter(|c| !c.is_empty());
-            settings.last_station = Some(station);
-        }
-    }
+            station
+        });
 
     // Saved in logical pixels, the unit the size is restored in at startup.
     // The window reports physical pixels, so saving those made the window
     // grow by the display scale (e.g. 125%) on every launch. A maximized
     // window keeps the size it had before it was maximized.
     let window = ui.window();
-    if !window.is_maximized() {
-        let size = window.size().to_logical(window.scale_factor());
-        if size.width >= 1.0 && size.height >= 1.0 {
-            settings.window_width = Some(size.width.round() as u32);
-            settings.window_height = Some(size.height.round() as u32);
-        }
-    }
+    let window_size = (!window.is_maximized())
+        .then(|| window.size().to_logical(window.scale_factor()))
+        .filter(|size| size.width >= 1.0 && size.height >= 1.0)
+        .map(|size| (size.width.round() as u32, size.height.round() as u32));
 
+    WindowSettings {
+        volume: s.volume,
+        muted: s.is_muted,
+        eq_gains: s.eq_gains,
+        eq_preamp: s.eq_preamp,
+        eq_preamp_moved: s.eq_preamp_moved,
+        eq_enabled: s.eq_enabled,
+        eq_preset_name: s.eq_preset_name.clone(),
+        accent_color: s.accent_color.clone(),
+        theme: if ui.get_dark_mode() {
+            radiotrope_app::data::settings::Theme::Dark
+        } else {
+            radiotrope_app::data::settings::Theme::Light
+        },
+        viz_mode: ui.get_viz_mode().to_string(),
+        viz_palette: ui.global::<VizStyle>().get_palette().to_string(),
+        show_station_stats: ui.get_show_station_stats(),
+        show_visualizer: ui.get_show_visualizer(),
+        panel_gradient: ui.get_panel_gradient(),
+        frame: cfg!(not(feature = "embedded"))
+            .then(|| (ui.get_custom_frame(), ui.get_keep_on_top())),
+        last_station,
+        window_size,
+    }
+}
+
+/// Write `w` into settings.json, keeping what the file has besides
+fn write_settings(w: &WindowSettings) {
+    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+    settings.volume = w.volume;
+    settings.muted = w.muted;
+    settings.eq_gains = w.eq_gains;
+    settings.eq_preamp = w.eq_preamp;
+    settings.eq_preamp_moved = w.eq_preamp_moved;
+    settings.eq_enabled = w.eq_enabled;
+    settings.eq_preset_name = w.eq_preset_name.clone();
+    settings.accent_color = w.accent_color.clone();
+    settings.theme = w.theme;
+    settings.viz_mode = w.viz_mode.clone();
+    settings.viz_palette = w.viz_palette.clone();
+    settings.show_station_stats = w.show_station_stats;
+    settings.show_visualizer = w.show_visualizer;
+    settings.panel_gradient = w.panel_gradient;
+    if let Some((custom_title_bar, always_on_top)) = w.frame {
+        settings.custom_title_bar = custom_title_bar;
+        settings.always_on_top = always_on_top;
+    }
+    if let Some(station) = &w.last_station {
+        settings.last_station = Some(station.clone());
+    }
+    if let Some((width, height)) = w.window_size {
+        settings.window_width = Some(width);
+        settings.window_height = Some(height);
+    }
     let _ = settings.save();
 }
 
