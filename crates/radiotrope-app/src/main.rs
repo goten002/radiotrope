@@ -1359,10 +1359,21 @@ fn main() {
         );
     }
 
+    // The engine's SharedStats, once it has sent them
+    let engine_stats = {
+        let shared_stats: std::cell::RefCell<Option<SharedStats>> = Default::default();
+        std::rc::Rc::new(move || -> Option<SharedStats> {
+            let mut shared_stats = shared_stats.borrow_mut();
+            if shared_stats.is_none() {
+                *shared_stats = stats_rx.try_recv().ok();
+            }
+            shared_stats.clone()
+        })
+    };
     // SharedStats → statistics dialog properties
     let show_stats = {
-        let shared_stats: std::cell::RefCell<Option<SharedStats>> = Default::default();
         let ui_weak = ui.as_weak();
+        let engine_stats = engine_stats.clone();
         std::rc::Rc::new(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             // Stopped: clear what the last station left behind, so the
@@ -1372,11 +1383,7 @@ fn main() {
                 clear_stats_ui(&ui);
                 return;
             }
-            let mut shared_stats = shared_stats.borrow_mut();
-            if shared_stats.is_none() {
-                *shared_stats = stats_rx.try_recv().ok();
-            }
-            let Some(shared_stats) = &*shared_stats else {
+            let Some(shared_stats) = engine_stats() else {
                 return;
             };
             // try_lock: skip this tick if engine holds shared_stats
@@ -1435,6 +1442,7 @@ fn main() {
     let poll_logo_svc = logo_service.clone();
     let poll_tx = ui_tx.clone();
     let poll_viz_timer = viz_timer.clone();
+    let poll_stats = engine_stats.clone();
     // Logo of the station restored at startup, which may not be a favorite
     let restored_logo: Option<(String, String)> = settings
         .last_station
@@ -1580,6 +1588,17 @@ fn main() {
             ui.set_status_text(status_text);
             ui.set_is_error(is_error);
             ui.set_is_playing(is_playing);
+            // The play time beside "Playing", kept current here: the
+            // statistics dialog, which shows it too, is fed only while open
+            if is_playing {
+                if let Some(stats) = poll_stats() {
+                    if let Ok(s) = stats.try_lock() {
+                        let started = s.play_started_at;
+                        drop(s);
+                        ui.set_stat_playtime(format_playtime(started).into());
+                    }
+                }
+            }
             // Playing started, or the window came back from being minimised
             if viz_wanted(&ui) && !poll_viz_timer.running() {
                 poll_viz_timer.restart();
