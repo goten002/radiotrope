@@ -30,6 +30,10 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(RESOLVE_TIMEOUT_SECS + 3);
 /// it about as often)
 const RECORDING_POLL: Duration = Duration::from_millis(200);
 
+/// The status while the output device's driver is stuck in an open. Nothing
+/// plays until it returns, and if it never does only a restart helps.
+pub const OUTPUT_NOT_RESPONDING: &str = "Audio device not responding, restart if it stays";
+
 pub struct AppController {
     cmd_rx: Receiver<AppCommand>,
     cmd_tx: Sender<AppCommand>,
@@ -55,6 +59,9 @@ pub struct AppController {
     /// The playing stream failed: the engine's Stopped that follows keeps the
     /// error showing instead of a plain "Stopped"
     stream_failed: bool,
+    /// While the output device hangs: the status it covers, shown again
+    /// once the device answers
+    output_hang: Option<(std::borrow::Cow<'static, str>, bool)>,
 }
 
 impl AppController {
@@ -79,6 +86,7 @@ impl AppController {
             volume_before_mute: 1.0,
             notice_seq: 0,
             stream_failed: false,
+            output_hang: None,
         }
     }
 
@@ -142,6 +150,7 @@ impl AppController {
                 recv(if recording { &recording_tick } else { &no_tick }) -> _ => {}
             }
             recording = self.poll_recording();
+            self.keep_hang_showing();
         }
 
         // Finish any recording before the engine goes away
@@ -150,6 +159,24 @@ impl AppController {
         // Shutdown engine
         if let Some(engine) = self.engine.take() {
             engine.shutdown();
+        }
+    }
+
+    /// While the output device hangs, its message stays up: a Play or a
+    /// station's end would otherwise cover it with a status nothing acts on
+    fn keep_hang_showing(&mut self) {
+        let Some(under) = self.output_hang.as_mut() else {
+            return;
+        };
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.status_text != OUTPUT_NOT_RESPONDING {
+            *under = (state.status_text.clone(), state.is_error);
+            state.status_text = OUTPUT_NOT_RESPONDING.into();
+            state.is_error = true;
+        }
+        // An agent waiting for its station hears why it doesn't start
+        if state.last_error.is_none() {
+            state.last_error = Some(OUTPUT_NOT_RESPONDING.to_string());
         }
     }
 
@@ -488,8 +515,14 @@ impl AppController {
 
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         // While a new station resolves, news of the device waits: the
-        // engine repeats a lost device once the station plays
-        if state.is_resolving {
+        // engine repeats a lost device once the station plays. A hung
+        // device isn't repeated, so it shows at once.
+        if state.is_resolving
+            && !matches!(
+                event,
+                AudioEvent::OutputNotResponding | AudioEvent::OutputResponding
+            )
+        {
             return;
         }
         match event {
@@ -557,6 +590,23 @@ impl AppController {
                 // The station stays loaded, and so does a recording
                 state.status_text = "Audio output lost, waiting for a device".into();
                 state.is_error = true;
+            }
+            AudioEvent::OutputNotResponding => {
+                self.output_hang = Some((state.status_text.clone(), state.is_error));
+                state.status_text = OUTPUT_NOT_RESPONDING.into();
+                state.is_error = true;
+                state.last_error = Some(OUTPUT_NOT_RESPONDING.to_string());
+            }
+            AudioEvent::OutputResponding => {
+                if let Some((status, is_error)) = self.output_hang.take() {
+                    if state.status_text == OUTPUT_NOT_RESPONDING {
+                        state.status_text = status;
+                        state.is_error = is_error;
+                    }
+                    if state.last_error.as_deref() == Some(OUTPUT_NOT_RESPONDING) {
+                        state.last_error = None;
+                    }
+                }
             }
             AudioEvent::OutputRestored => {
                 state.status_text = match state.playback {
@@ -1108,6 +1158,36 @@ mod tests {
             stream: None,
             event,
         }
+    }
+
+    #[test]
+    fn a_hung_output_device_shows_until_it_answers() {
+        let (mut controller, state) = controller();
+        controller.handle_engine_event(device(AudioEvent::OutputNotResponding));
+        {
+            let state = state.lock().unwrap();
+            assert!(state.is_error);
+            assert_eq!(state.status_text, OUTPUT_NOT_RESPONDING);
+            assert_eq!(state.last_error.as_deref(), Some(OUTPUT_NOT_RESPONDING));
+        }
+
+        // A station picked meanwhile doesn't cover it, and an agent waiting
+        // for that station is told why it doesn't start
+        resolving(&mut controller, &state);
+        state.lock().unwrap().last_error = None;
+        controller.keep_hang_showing();
+        {
+            let state = state.lock().unwrap();
+            assert_eq!(state.status_text, OUTPUT_NOT_RESPONDING);
+            assert_eq!(state.last_error.as_deref(), Some(OUTPUT_NOT_RESPONDING));
+        }
+
+        // The device answers: the station's status shows again
+        controller.handle_engine_event(device(AudioEvent::OutputResponding));
+        let state = state.lock().unwrap();
+        assert!(!state.is_error);
+        assert_eq!(state.status_text, "Resolving...");
+        assert_eq!(state.last_error, None);
     }
 
     /// A controller playing station 1
