@@ -5248,12 +5248,17 @@ dependencies = [
 name = "radiotrope-cli"
 version = "0.1.0-dev"
 dependencies = [
+ "chrono",
  "clap",
  "crossbeam-channel",
  "crossterm",
+ "dirs",
  "libc",
  "radiotrope",
+ "radiotrope-app",
  "ratatui",
+ "serde_json",
+ "unicode-width",
 ]
 
 [[package]]

@@ -212,8 +212,17 @@ radiotrope --mcp --standalone  # a separate player for this agent alone
 ### Terminal player
 
 ```bash
-radiotrope-cli <URL>
+radiotrope-cli            # your favorites from the app
+radiotrope-cli 3          # play favorite number 3
+radiotrope-cli capital    # play the first favorite whose name contains "capital"
+radiotrope-cli <URL>      # play a stream URL
 ```
+
+It shows the station, its format and the song, a spectrum, and your favorites
+from the app. Keys: `↑`/`↓` pick, `Enter` play, `Space` stop or play again,
+`n`/`p` next and previous favorite, `+`/`-` volume, `m` mute, `r` start or stop
+a recording (with the folder, format and bitrate set in the app), `q` quit.
+It reads the app's favorites and settings and never changes them.
 
 ![radiotrope cli](assets/radiotrope_cli.png)
 
