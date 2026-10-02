@@ -27,8 +27,8 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::{
-    LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SHUTDOWN_GRACE,
-    SHUTDOWN_SEND_TIMEOUT,
+    FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME,
+    SEARCH_PAGE_SIZE, SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT,
 };
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
@@ -41,6 +41,7 @@ use radiotrope_app::providers::ProviderRegistry;
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
 use app::controller::AppController;
+use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
@@ -115,6 +116,17 @@ fn main() {
     };
     let favorites = Arc::new(Mutex::new(favorites));
     let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
+    // Listening time is saved a moment after it is added, on a thread of
+    // its own: the UI doesn't wait on the disk once a minute
+    let favorites_saver = {
+        let favorites = favorites.clone();
+        DelayedSave::start("favorites-save", FAVORITES_SAVE_DELAY, move || {
+            let mut favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+            if let Err(e) = favs.save() {
+                eprintln!("Failed to save favorites: {e}");
+            }
+        })
+    };
 
     // Generation counter for browse logo fetches (to cancel stale requests)
     let browse_logo_gen = Arc::new(AtomicU64::new(0));
@@ -1393,6 +1405,7 @@ fn main() {
     let listen_session: std::rc::Rc<std::cell::RefCell<Option<ListenSession>>> = Default::default();
     let poll_listen = listen_session.clone();
     let listen_favs = favorites.clone();
+    let poll_saver = favorites_saver.clone();
     // Keep "12 min ago" and similar texts current
     let stats_timer = slint::Timer::default();
     {
@@ -1491,7 +1504,13 @@ fn main() {
 
             // Credit listening time to the favorite being played
             let playing_url = station_url.as_deref().filter(|_| is_playing);
-            track_listening(&ui, &poll_favs, &mut poll_listen.borrow_mut(), playing_url);
+            track_listening(
+                &ui,
+                &poll_favs,
+                &poll_saver,
+                &mut poll_listen.borrow_mut(),
+                playing_url,
+            );
 
             // Set UI properties without holding any lock
             ui.set_station_name(station_name);
@@ -1510,12 +1529,11 @@ fn main() {
                     *last != url.as_str()
                 };
                 ui.set_station_url(url.clone());
-                // Update favorite star based on current station
-                let is_fav = poll_favs
-                    .lock()
-                    .map(|f| f.is_favorite(url.as_str()))
-                    .unwrap_or(false);
-                ui.set_is_station_favorited(is_fav);
+                // Update favorite star based on current station (while a
+                // save holds the favorites, the star stays as it was)
+                if let Ok(f) = poll_favs.try_lock() {
+                    ui.set_is_station_favorited(f.is_favorite(url.as_str()));
+                }
 
                 // When station URL changes (e.g. MCP play), update logo
                 // and country
@@ -1621,10 +1639,12 @@ fn main() {
     let shutdown_sent = ui_tx.shutdown(SHUTDOWN_SEND_TIMEOUT);
     let deadline = Instant::now() + SHUTDOWN_GRACE;
 
-    // Credit the session still playing at exit
+    // Credit the session still playing at exit, and save what is waiting
+    // to be saved
     if let Some(session) = listen_session.borrow_mut().take() {
-        credit_listening(&ui, &listen_favs, session);
+        credit_listening(&ui, &listen_favs, &favorites_saver, session);
     }
+    favorites_saver.flush();
 
     // Final save before shutdown
     save_settings(&shared_state, &ui);
@@ -3455,6 +3475,7 @@ fn session_listen_secs(id: &str) -> u64 {
 fn track_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
+    saver: &DelayedSave,
     session: &mut Option<ListenSession>,
     playing_url: Option<&str>,
 ) {
@@ -3463,7 +3484,7 @@ fn track_listening(
         .is_some_and(|s| Some(s.url.as_str()) != playing_url)
     {
         if let Some(ended) = session.take() {
-            credit_listening(ui, favorites, ended);
+            credit_listening(ui, favorites, saver, ended);
         }
     }
     match (session.as_mut(), playing_url) {
@@ -3475,7 +3496,14 @@ fn track_listening(
             if listened >= s.credited + LISTEN_CREDIT_SECS {
                 let (url, credited) = (s.url.clone(), s.credited);
                 s.credited = listened;
-                add_listening(ui, favorites, &url, listened - credited, credited == 0);
+                add_listening(
+                    ui,
+                    favorites,
+                    saver,
+                    &url,
+                    listened - credited,
+                    credited == 0,
+                );
             }
         }
         _ => {}
@@ -3486,6 +3514,7 @@ fn track_listening(
 fn credit_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
+    saver: &DelayedSave,
     mut session: ListenSession,
 ) {
     let elapsed = session.tick(Instant::now());
@@ -3495,15 +3524,19 @@ fn credit_listening(
     add_listening(
         ui,
         favorites,
+        saver,
         &session.url,
         elapsed - session.credited,
         session.credited == 0,
     );
 }
 
+/// Add listening time to the favorite playing from `url`. It is saved a
+/// moment later by `saver`, off the UI thread.
 fn add_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
+    saver: &DelayedSave,
     url: &str,
     secs: u64,
     new_play: bool,
@@ -3518,7 +3551,7 @@ fn add_listening(
         .get_or_insert_with(HashMap::new)
         .entry(id)
         .or_default() += secs;
-    let _ = favs.save();
+    saver.request();
     update_favorite_stats(ui, &favs);
 }
 

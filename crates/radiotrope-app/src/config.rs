@@ -107,6 +107,10 @@ pub mod ui {
     /// Listening time is saved in steps of this long while a station plays
     pub const LISTEN_CREDIT_SECS: u64 = 60;
 
+    /// Listening time added to a favorite is saved this long after, on a
+    /// thread of its own
+    pub const FAVORITES_SAVE_DELAY: Duration = Duration::from_secs(2);
+
     /// The most listening time one tick of the UI's poll can add. The poll
     /// runs every 200 ms; a longer gap is the computer asleep (on Windows
     /// the clock keeps counting through sleep) or a stalled UI.
