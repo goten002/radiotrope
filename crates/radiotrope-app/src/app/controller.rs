@@ -746,18 +746,67 @@ fn recording_kbps(chosen: Option<u32>, station: Option<u32>) -> u32 {
 mod tests {
     use super::*;
 
+    fn controller_and_state() -> (AppController, Arc<Mutex<AppSnapshot>>) {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
+        let (analysis_tx, _) = crossbeam_channel::unbounded();
+        let (stats_tx, _) = crossbeam_channel::unbounded();
+        let state = Arc::new(Mutex::new(AppSnapshot::default()));
+        let controller = AppController::new(cmd_rx, cmd_tx, state.clone(), analysis_tx, stats_tx);
+        (controller, state)
+    }
+
+    mod equalizer_at_startup {
+        use super::*;
+        use radiotrope_app::data::settings::Settings;
+
+        /// The equalizer once the startup commands for `settings` are handled
+        fn restored(settings: &Settings) -> AppSnapshot {
+            let (mut controller, state) = controller_and_state();
+            for command in AppCommand::restore_eq(settings) {
+                controller.handle_command(command);
+            }
+            let state = state.lock().unwrap();
+            state.clone()
+        }
+
+        #[test]
+        fn a_saved_preset_gets_its_own_preamp() {
+            let rock = radiotrope::audio::find_preset("Rock").unwrap();
+            assert!(rock.preamp_db() < 0.0);
+            // Kept by a build where Rock had other gains and no preamp
+            let settings = Settings {
+                eq_enabled: true,
+                eq_preset_name: Some("Rock".into()),
+                eq_gains: [3.0; 10],
+                eq_preamp: 0.0,
+                ..Default::default()
+            };
+            let state = restored(&settings);
+            assert!(state.eq_enabled);
+            assert_eq!(state.eq_preset_name.as_deref(), Some("Rock"));
+            assert_eq!(state.eq_gains, rock.gains);
+            assert_eq!(state.eq_preamp, rock.preamp_db());
+        }
+
+        #[test]
+        fn custom_gains_get_the_saved_preamp() {
+            let gains = [2.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.5, 0.0, 0.0, -2.0];
+            let settings = Settings {
+                eq_preset_name: None,
+                eq_gains: gains,
+                eq_preamp: -4.5,
+                ..Default::default()
+            };
+            let state = restored(&settings);
+            assert!(!state.eq_enabled);
+            assert_eq!(state.eq_preset_name, None);
+            assert_eq!(state.eq_gains, gains);
+            assert_eq!(state.eq_preamp, -4.5);
+        }
+    }
+
     mod output_device {
         use super::*;
-
-        fn controller_and_state() -> (AppController, Arc<Mutex<AppSnapshot>>) {
-            let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
-            let (analysis_tx, _) = crossbeam_channel::unbounded();
-            let (stats_tx, _) = crossbeam_channel::unbounded();
-            let state = Arc::new(Mutex::new(AppSnapshot::default()));
-            let controller =
-                AppController::new(cmd_rx, cmd_tx, state.clone(), analysis_tx, stats_tx);
-            (controller, state)
-        }
 
         #[test]
         fn a_lost_output_shows_until_a_device_is_back() {

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use radiotrope::audio::{PlaybackState, RecordingFormat};
+use radiotrope_app::data::settings::Settings;
 
 /// Commands sent by any frontend (GUI, MCP, tray)
 pub enum AppCommand {
@@ -65,6 +66,24 @@ pub enum AppCommand {
         generation: u64,
         result: Result<radiotrope::stream::ResolvedStream, String>,
     },
+}
+
+impl AppCommand {
+    /// The commands that set the equalizer as `settings` keep it, sent at
+    /// startup. A saved preset brings its own preamp, as when it is picked:
+    /// the saved one can be from a build where the preset's gains differed.
+    /// Custom gains get the saved preamp.
+    pub fn restore_eq(settings: &Settings) -> Vec<AppCommand> {
+        let mut commands = vec![AppCommand::SetEqEnabled(settings.eq_enabled)];
+        match &settings.eq_preset_name {
+            Some(name) => commands.push(AppCommand::SetEqPreset(name.clone())),
+            None => {
+                commands.push(AppCommand::SetEqGains(settings.eq_gains));
+                commands.push(AppCommand::SetEqPreamp(settings.eq_preamp));
+            }
+        }
+        commands
+    }
 }
 
 /// Snapshot of app state — shared between controller, GUI, and MCP

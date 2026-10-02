@@ -378,14 +378,8 @@ fn main() {
     }
 
     // Send initial EQ state to controller (which will forward to engine once started)
-    {
-        ui_tx.send(app::state::AppCommand::SetEqEnabled(settings.eq_enabled));
-        if let Some(ref preset_name) = settings.eq_preset_name {
-            ui_tx.send(app::state::AppCommand::SetEqPreset(preset_name.clone()));
-        } else {
-            ui_tx.send(app::state::AppCommand::SetEqGains(settings.eq_gains));
-        }
-        ui_tx.send(app::state::AppCommand::SetEqPreamp(settings.eq_preamp));
+    for command in app::state::AppCommand::restore_eq(&settings) {
+        ui_tx.send(command);
     }
 
     // Wire Slint callbacks → ui_tx
