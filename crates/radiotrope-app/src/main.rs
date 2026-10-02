@@ -358,14 +358,8 @@ fn main() {
     }
 
     // Send initial EQ state to controller (which will forward to engine once started)
-    {
-        ui_tx.send(app::state::AppCommand::SetEqEnabled(settings.eq_enabled));
-        if let Some(ref preset_name) = settings.eq_preset_name {
-            ui_tx.send(app::state::AppCommand::SetEqPreset(preset_name.clone()));
-        } else {
-            ui_tx.send(app::state::AppCommand::SetEqGains(settings.eq_gains));
-        }
-        ui_tx.send(app::state::AppCommand::SetEqPreamp(settings.eq_preamp));
+    for command in app::state::AppCommand::restore_eq(&settings) {
+        ui_tx.send(command);
     }
 
     // Wire Slint callbacks → ui_tx
@@ -970,10 +964,11 @@ fn main() {
         let row_logos = row_logos.clone();
         let favs = favorites.clone();
         ui.on_load_more_stations(move || {
+            // The offset moves on only once the page is in the list, so a
+            // list put aside meanwhile keeps the offset of the rows it holds
             let (query, offset) = {
-                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                s.1 += SEARCH_PAGE_SIZE;
-                (s.0.clone(), s.1)
+                let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                (s.0.clone(), s.1 + SEARCH_PAGE_SIZE)
             };
             let my_gen = gen.load(Ordering::Relaxed);
             let ui_weak = ui_weak.clone();
@@ -987,21 +982,19 @@ fn main() {
                     let results = fetch_browse_page(&query, offset);
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
-                        ui.set_search_loading_more(false);
-                        // A new search replaced the list meanwhile
+                        // A new search or the other mode's list replaced this
+                        // one meanwhile (and cleared its loading mark)
                         if gen.load(Ordering::Relaxed) != my_gen {
                             return;
                         }
+                        ui.set_search_loading_more(false);
                         match results {
                             Ok(results) => {
+                                state.lock().unwrap_or_else(|e| e.into_inner()).1 = offset;
                                 show_browse_results(&ui, results, true, &favs, &row_logos)
                             }
-                            Err(e) => {
-                                // Step back so the retry asks for this page again
-                                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-                                s.1 = s.1.saturating_sub(SEARCH_PAGE_SIZE);
-                                show_browse_error(&ui, &e);
-                            }
+                            // The offset stayed, so the retry asks for this page again
+                            Err(e) => show_browse_error(&ui, &e),
                         }
                     });
                 })
@@ -2988,11 +2981,27 @@ fn open_folder(dir: &std::path::Path) {
     } else {
         "xdg-open"
     };
-    match std::process::Command::new(program).arg(dir).spawn() {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    command.arg(explorer_path(dir));
+    #[cfg(not(windows))]
+    command.arg(dir);
+    match command.spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || child.wait());
         }
         Err(e) => eprintln!("Failed to open {}: {e}", dir.display()),
+    }
+}
+
+/// `dir` as Explorer takes it: given forward slashes ("C:/Users/..."), as a
+/// typed or saved folder can have, it opens Documents instead
+#[cfg(any(windows, test))]
+fn explorer_path(dir: &std::path::Path) -> std::ffi::OsString {
+    match dir.to_str() {
+        Some(text) => text.replace('/', "\\").into(),
+        // Not Unicode, so not typed in: left as it is
+        None => dir.as_os_str().to_owned(),
     }
 }
 
@@ -3403,6 +3412,8 @@ fn start_browse(
         ui.set_has_more(false);
         ui.set_search_error(Default::default());
         ui.set_search_loading(true);
+        // A page still loading for the old list is dropped when it comes
+        ui.set_search_loading_more(false);
     }
     let ui_weak = ui_weak.clone();
     let gen = gen.clone();
@@ -3882,4 +3893,20 @@ fn format_codec_line(s: &AppSnapshot) -> String {
         });
     }
     parts.join(" \u{2022} ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explorer_gets_backslashes() {
+        let path = |p: &str| explorer_path(std::path::Path::new(p));
+        assert_eq!(
+            path("C:/Users/José/Music/Radiotrope"),
+            r"C:\Users\José\Music\Radiotrope"
+        );
+        assert_eq!(path(r"\\nas\music/Radiotrope"), r"\\nas\music\Radiotrope");
+        assert_eq!(path(r"D:\Recordings"), r"D:\Recordings");
+    }
 }

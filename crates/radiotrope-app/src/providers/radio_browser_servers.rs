@@ -101,8 +101,9 @@ impl Servers {
     }
 
     /// Run `request` against the server in use. If that server times out,
-    /// can't be reached, is busy or fails, move to another one that answers
-    /// and run it again there. The error of the last server tried is returned
+    /// can't be reached, is busy, fails or answers with something other than
+    /// the JSON asked for, move to another one that answers and run it
+    /// again there. The error of the last server tried is returned
     /// when none of them manage.
     pub fn run<T>(&self, mut request: impl FnMut(&str) -> Result<T>) -> Result<T> {
         let mut tried: Vec<String> = Vec::new();
@@ -261,6 +262,11 @@ impl Servers {
 
 /// Whether another server might do better than the one that gave `e`
 fn worth_another_server(e: &AppError) -> bool {
+    // An answer that isn't the JSON asked for: a page from a proxy, or a
+    // server in maintenance answering 200
+    if matches!(e, AppError::InvalidResponse(_)) {
+        return true;
+    }
     matches!(
         ServiceProblem::of(e),
         ServiceProblem::Offline
@@ -307,6 +313,7 @@ fn merge(known: &mut Vec<String>, found: Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::network::client::fetch_json;
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -400,6 +407,19 @@ mod tests {
         );
         servers.lock().current = Some(busy);
         assert_eq!(get(&servers, "/json/x").unwrap(), "[1]");
+    }
+
+    #[test]
+    fn test_answer_that_is_not_json_is_left() {
+        let (odd, _) = serve(200, "<html>Down for maintenance</html>");
+        let (up, _) = serve(200, "[1]");
+        let servers = Servers::new(client(), vec![odd.clone(), up.clone()], None, false);
+        servers.lock().current = Some(odd);
+        let (answer, _) = servers
+            .run(|base| fetch_json::<Vec<u32>>(client().get(format!("{base}/json/x"))))
+            .unwrap();
+        assert_eq!(answer, vec![1]);
+        assert_eq!(servers.current(), Some(up));
     }
 
     #[test]

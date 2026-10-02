@@ -6,7 +6,7 @@
 use crate::config::providers::{CATEGORY_CACHE_TTL, RADIO_BROWSER_SERVERS, STATION_CACHE_TTL};
 use crate::data::types::Station;
 use crate::error::Result;
-use crate::network::client::body_of;
+use crate::network::client::{body_of, fetch_json};
 use crate::network::{ApiCache, HttpClient};
 
 use super::radio_browser_servers::Servers;
@@ -175,7 +175,7 @@ impl RadioBrowserProvider {
         self.client
             .get_or_fetch(&format!("GET {}", self.url(path)), ttl, || {
                 self.servers
-                    .run(|base| body_of(self.client.inner().get(format!("{base}{path}"))))
+                    .run(|base| fetch_json(self.client.inner().get(format!("{base}{path}"))))
             })
     }
 
@@ -195,7 +195,7 @@ impl RadioBrowserProvider {
         let key = format!("POST {} {body}", self.url(path));
         self.client.get_or_fetch(&key, ttl, || {
             self.servers.run(|base| {
-                body_of(
+                fetch_json(
                     self.client
                         .inner()
                         .post(format!("{base}{path}"))
@@ -205,12 +205,13 @@ impl RadioBrowserProvider {
         })
     }
 
-    /// Search stations via POST /json/stations/search
-    fn search_stations(&self, params: &[(&str, &str)]) -> Result<SearchResults> {
+    /// Search stations via POST /json/stations/search. `limit` is the page
+    /// size asked for: a shorter page is the last one.
+    fn search_stations(&self, params: &[(&str, &str)], limit: usize) -> Result<SearchResults> {
         let rb_stations: Vec<RbStation> =
             self.post_cached("/json/stations/search", params, STATION_CACHE_TTL)?;
 
-        let has_more = !rb_stations.is_empty();
+        let has_more = rb_stations.len() >= limit;
         let stations: Vec<Station> = rb_stations.into_iter().map(Station::from).collect();
 
         Ok(SearchResults {
@@ -286,14 +287,17 @@ impl StationProvider for RadioBrowserProvider {
     fn search(&self, query: &str, limit: usize, offset: usize) -> Result<SearchResults> {
         let limit_str = limit.to_string();
         let offset_str = offset.to_string();
-        self.search_stations(&[
-            ("name", query),
-            ("limit", &limit_str),
-            ("offset", &offset_str),
-            ("order", "clickcount"),
-            ("reverse", "true"),
-            ("hidebroken", "true"),
-        ])
+        self.search_stations(
+            &[
+                ("name", query),
+                ("limit", &limit_str),
+                ("offset", &offset_str),
+                ("order", "clickcount"),
+                ("reverse", "true"),
+                ("hidebroken", "true"),
+            ],
+            limit,
+        )
     }
 
     fn browse_categories(&self) -> Result<Vec<Category>> {
@@ -375,7 +379,7 @@ impl StationProvider for RadioBrowserProvider {
         if !query.is_empty() {
             params.push(("name", query));
         }
-        self.search_stations(&params)
+        self.search_stations(&params, limit)
     }
 
     fn search_filtered(
@@ -386,9 +390,7 @@ impl StationProvider for RadioBrowserProvider {
     ) -> Result<SearchResults> {
         let params = filtered_search_params(filter, limit, offset);
         let params: Vec<(&str, &str)> = params.iter().map(|(k, v)| (*k, v.as_str())).collect();
-        let mut results = self.search_stations(&params)?;
-        results.has_more = results.stations.len() >= limit;
-        Ok(results)
+        self.search_stations(&params, limit)
     }
 
     fn get_popular(&self, limit: usize) -> Result<Vec<Station>> {
@@ -898,6 +900,60 @@ mod tests {
         let station = Station::new("No ID", "http://test.com");
         // Should succeed without making any HTTP request
         assert!(provider.report_click(&station).is_ok());
+    }
+
+    /// A server answering every request, once read in full, with `body` as
+    /// JSON; returns its base URL
+    fn serve_json(body: &'static str) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut request = BufReader::new(stream.try_clone().unwrap());
+                let mut length = 0;
+                let mut line = String::new();
+                while request.read_line(&mut line).is_ok_and(|n| n > 2) {
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = v.trim().parse().unwrap_or(0);
+                    }
+                    line.clear();
+                }
+                let _ = request.read_exact(&mut vec![0; length]);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        base
+    }
+
+    #[test]
+    fn test_a_short_page_is_the_last() {
+        let two = r#"[{"stationuuid":"a","name":"A"},{"stationuuid":"b","name":"B"}]"#;
+        let provider = RadioBrowserProvider::with_base_url(serve_json(two)).unwrap();
+        let rock = Category::new("rock", "rock", CategoryType::Genre);
+        // A full page may have more after it
+        assert!(provider.search("x", 2, 50).unwrap().has_more);
+        assert!(
+            provider
+                .search_category(&rock, "x", 2, 50)
+                .unwrap()
+                .has_more
+        );
+        // A shorter one is the end, later pages and categories included
+        assert!(!provider.search("x", 5, 50).unwrap().has_more);
+        assert!(
+            !provider
+                .search_category(&rock, "x", 5, 50)
+                .unwrap()
+                .has_more
+        );
+        assert!(!provider.browse_category(&rock, 5, 0).unwrap().has_more);
+        let filter = StationFilter::default();
+        assert!(!provider.search_filtered(&filter, 5, 0).unwrap().has_more);
     }
 
     // ---- Integration tests (require network, marked #[ignore]) ----
