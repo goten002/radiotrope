@@ -1263,8 +1263,10 @@ fn main() {
     // up). The window doesn't wait for them: the timers below pick them up
     // when they come.
 
-    // Visualization timer, about 30 frames a second
-    let _viz_timer = slint::Timer::default();
+    // Visualization timer, about 30 frames a second. It runs only while
+    // there is something to show (see `viz_wanted`): it stops itself, and
+    // the poll below or `live_views_changed` start it again.
+    let viz_timer = std::rc::Rc::new(slint::Timer::default());
     {
         let mut analysis: Option<Arc<Mutex<AudioAnalysis>>> = None;
         let ui_weak = ui.as_weak();
@@ -1286,7 +1288,8 @@ fn main() {
         let mut gated = vec![0.0f32; bands];
         let mut idle = true;
         let mut last_frame = Instant::now();
-        _viz_timer.start(
+        let this = std::rc::Rc::downgrade(&viz_timer);
+        viz_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(33),
             move || {
@@ -1297,9 +1300,8 @@ fn main() {
                 let now = Instant::now();
                 let dt = now.duration_since(last_frame).as_secs_f32().min(0.1);
                 last_frame = now;
-                // Skip polling when not playing or the visualizer is off —
-                // zero out once on the transition
-                if !ui.get_is_playing() || !ui.get_show_visualizer() {
+                // Nothing to show: zero out once, and stop until wanted
+                if !viz_wanted(&ui) {
                     if !idle {
                         idle = true;
                         viz.set_active(false);
@@ -1309,6 +1311,9 @@ fn main() {
                         show_viz_frame(&viz, &[0.0, 0.0], &gated, &spectrum_model);
                         peak_hold.reset();
                         extras.clear();
+                    }
+                    if let Some(timer) = this.upgrade() {
+                        timer.stop();
                     }
                     return;
                 }
@@ -1352,38 +1357,73 @@ fn main() {
         );
     }
 
-    // Poll SharedStats → statistics dialog properties (200ms)
-    let _stats_timer = slint::Timer::default();
-    {
-        let mut shared_stats: Option<SharedStats> = None;
+    // SharedStats → statistics dialog properties
+    let show_stats = {
+        let shared_stats: std::cell::RefCell<Option<SharedStats>> = Default::default();
         let ui_weak = ui.as_weak();
-        _stats_timer.start(
+        std::rc::Rc::new(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            // Stopped: clear what the last station left behind, so the
+            // dialog doesn't keep showing it as live. Connecting still
+            // polls (the buffer fills, the status reads Connecting)
+            if !ui.get_is_playing() && !ui.get_is_loading() {
+                clear_stats_ui(&ui);
+                return;
+            }
+            let mut shared_stats = shared_stats.borrow_mut();
+            if shared_stats.is_none() {
+                *shared_stats = stats_rx.try_recv().ok();
+            }
+            let Some(shared_stats) = &*shared_stats else {
+                return;
+            };
+            // try_lock: skip this tick if engine holds shared_stats
+            let Ok(s) = shared_stats.try_lock() else {
+                return;
+            };
+            let stats_copy = s.clone();
+            drop(s);
+            update_stats_ui(&ui, &stats_copy);
+        })
+    };
+    // Every 200 ms while the dialog is open; it stops itself once closed
+    let stats_dialog_timer = std::rc::Rc::new(slint::Timer::default());
+    {
+        let ui_weak = ui.as_weak();
+        let show_stats = show_stats.clone();
+        let this = std::rc::Rc::downgrade(&stats_dialog_timer);
+        stats_dialog_timer.start(
             slint::TimerMode::Repeated,
             Duration::from_millis(200),
             move || {
                 let Some(ui) = ui_weak.upgrade() else { return };
-                // Stopped: clear what the last station left behind, so the
-                // dialog doesn't keep showing it as live. Connecting still
-                // polls (the buffer fills, the status reads Connecting)
-                if !ui.get_is_playing() && !ui.get_is_loading() {
-                    clear_stats_ui(&ui);
+                if !ui.get_stats_open() {
+                    if let Some(timer) = this.upgrade() {
+                        timer.stop();
+                    }
                     return;
                 }
-                if shared_stats.is_none() {
-                    shared_stats = stats_rx.try_recv().ok();
-                }
-                let Some(shared_stats) = &shared_stats else {
-                    return;
-                };
-                // try_lock: skip this tick if engine holds shared_stats
-                let Ok(s) = shared_stats.try_lock() else {
-                    return;
-                };
-                let stats_copy = s.clone();
-                drop(s);
-                update_stats_ui(&ui, &stats_copy);
+                show_stats();
             },
         );
+    }
+    // The visualizer was shown or hidden, or the statistics dialog opened
+    // or closed: start what feeds them
+    {
+        let ui_weak = ui.as_weak();
+        let viz_timer = viz_timer.clone();
+        let stats_dialog_timer = stats_dialog_timer.clone();
+        ui.on_live_views_changed(move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if viz_wanted(&ui) && !viz_timer.running() {
+                viz_timer.restart();
+            }
+            if ui.get_stats_open() && !stats_dialog_timer.running() {
+                // Right away, not with the last station's figures
+                show_stats();
+                stats_dialog_timer.restart();
+            }
+        });
     }
 
     // Poll shared state → Slint properties (runs on UI thread via Timer)
@@ -1392,6 +1432,7 @@ fn main() {
     let poll_favs = favorites.clone();
     let poll_logo_svc = logo_service.clone();
     let poll_tx = ui_tx.clone();
+    let poll_viz_timer = viz_timer.clone();
     // Logo of the station restored at startup, which may not be a favorite
     let restored_logo: Option<(String, String)> = settings
         .last_station
@@ -1517,6 +1558,10 @@ fn main() {
             ui.set_status_text(status_text);
             ui.set_is_error(is_error);
             ui.set_is_playing(is_playing);
+            // Playing started, or the window came back from being minimised
+            if viz_wanted(&ui) && !poll_viz_timer.running() {
+                poll_viz_timer.restart();
+            }
             ui.set_now_playing_title(now_playing);
             if !ui.get_volume_dragging() {
                 ui.set_volume(volume);
@@ -1943,6 +1988,13 @@ fn setup_rotary_encoder(
             }
         })
         .ok();
+}
+
+/// Whether the visualizer has something to show: a station playing, the
+/// visualizer on, and the window on screen
+fn viz_wanted(ui: &App) -> bool {
+    let window = ui.window();
+    ui.get_is_playing() && ui.get_show_visualizer() && window.is_visible() && !window.is_minimized()
 }
 
 /// Push one visualizer frame to the UI (levels already gated and smoothed).
