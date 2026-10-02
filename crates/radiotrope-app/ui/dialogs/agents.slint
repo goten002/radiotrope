@@ -39,7 +39,9 @@ component CopyLine inherits Rectangle {
                 overflow: elide;
                 vertical-alignment: center;
             }
-            if root.text != "": TextInput {
+            // Always there, so the focus stays when the line empties;
+            // an empty line can't take the focus
+            TextInput {
                 property <length> scroll;
 
                 x: min(0px, max(view.width - self.width - self.text-cursor-width, self.scroll));
@@ -55,7 +57,7 @@ component CopyLine inherits Rectangle {
                 text: root.text;
                 read-only: true;
                 single-line: true;
-                enabled: root.enabled;
+                enabled: root.enabled && root.text != "";
                 color: root.enabled ? Theme.text-primary : Theme.disabled-text;
                 selection-background-color: Theme.selection-bg;
                 selection-foreground-color: Theme.selection-fg;
@@ -305,8 +307,16 @@ export component AgentsDialog inherits Rectangle {
         title: "Agents (MCP)";
         subtitle: "AI agents can play stations, search and manage favorites";
         card-width: Defaults.agents-width;
-        auto-focus: false;
         close-requested => { root.close(); }
+
+        // With None the token and its button go away, and the focus with
+        // them if one had it: the dialog takes it back so Esc still works
+        property <bool> token-on: root.token-on;
+        changed token-on => {
+            if !self.token-on {
+                self.take-focus();
+            }
+        }
 
         if !root.available: Text {
             text: "This player serves one agent alone (--standalone). Agents connect to the main player.";

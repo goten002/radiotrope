@@ -100,7 +100,7 @@ export component CountryPickerDialog inherits Rectangle {
         auto-focus: false;
         close-requested => { root.show-dialog = false; }
 
-        StyledLineEdit {
+        filter-input := StyledLineEdit {
             placeholder-text: "Filter countries...";
             clearable: true;
             init => { self.focus-input(); }
@@ -152,6 +152,11 @@ export component CountryPickerDialog inherits Rectangle {
                         clicked => {
                             root.loading = true;
                             root.load-countries();
+                            // The button goes away while it loads: keep the
+                            // focus in the dialog so Esc still closes it
+                            if self.has-focus {
+                                filter-input.focus-input();
+                            }
                         }
                     }
                 }

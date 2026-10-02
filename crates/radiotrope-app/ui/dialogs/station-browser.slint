@@ -258,6 +258,8 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <string> search-error: "";
     // Seconds until a failed request is tried again on its own
     in-out property <int> retry-in: 0;
+    // The first page's Try again has the focus
+    property <bool> retry-focused;
     in-out property <[BrowseStation]> search-results: [];
     in-out property <[image]> browse-logos: [];
     // Colour fog of each logo, same order as browse-logos
@@ -412,6 +414,12 @@ export component StationBrowserDialog inherits Rectangle {
                     root.retry-in -= 1;
                     if root.retry-in == 0 {
                         root.retry();
+                        // Try again goes away while it loads: if it had
+                        // the focus, keep it in the dialog so Esc still works
+                        if root.retry-focused {
+                            root.retry-focused = false;
+                            search-input.focus-input();
+                        }
                     }
                 }
             }
@@ -454,9 +462,15 @@ export component StationBrowserDialog inherits Rectangle {
 
                     SecondaryButton {
                         label: "Try again";
+                        changed has-focus => { root.retry-focused = self.has-focus; }
                         clicked => {
                             root.retry-in = 0;
                             root.retry();
+                            // The button goes away while it loads: keep the
+                            // focus in the dialog so Esc still closes it
+                            if self.has-focus {
+                                search-input.focus-input();
+                            }
                         }
                     }
                 }

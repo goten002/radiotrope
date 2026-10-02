@@ -488,13 +488,20 @@ export component DialogShell inherits Rectangle {
     in property <length> card-height: 0px;
     in property <bool> close-on-backdrop: true;
     in property <length> content-padding: 20px;
-    // Take keyboard focus on open so Esc works; turn off when a child input
-    // focuses itself (Esc still reaches the shell from the input)
+    // Take keyboard focus on open so Esc works. Turn off only when a child
+    // input focuses itself on open (Esc then reaches the shell from the
+    // input): with nothing focused, Esc does nothing.
     in property <bool> auto-focus: true;
     // Show a back arrow at the start of the title row
     in property <bool> show-back: false;
     callback close-requested();
     callback back-requested();
+
+    // For a control that goes away while it has the focus: with nothing
+    // focused, Esc would do nothing, so the dialog takes the focus back
+    public function take-focus() {
+        keys.focus();
+    }
 
     // Drives the fade and slide-in when the dialog appears
     property <bool> shown: false;
@@ -528,6 +535,9 @@ export component DialogShell inherits Rectangle {
     // is not a stop of its own.
     keys := FocusScope {
         focus-on-tab-navigation: false;
+        // A backdrop click closes the dialog at once, rather than first
+        // taking the focus from a text field
+        focus-on-click: false;
         key-pressed(event) => {
             if event.text == Key.Escape {
                 root.close-requested();
