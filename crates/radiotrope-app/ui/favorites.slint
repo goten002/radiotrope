@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion } from "components.slint";
-import { LogoFog, LogoFogLayer } from "logo-fog.slint";
+import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator } from "components.slint";
+import { LogoFog, LogoFogLayer, Fog } from "logo-fog.slint";
 
 export struct FavoriteStation {
     id: string,
@@ -33,7 +33,7 @@ component RowMenuItem inherits Rectangle {
 
     height: 28px;
     min-width: 170px;
-    border-radius: 4px;
+    border-radius: Theme.radius-sm;
     background: root.lit ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
     animate background { duration: Theme.fast; }
 
@@ -86,6 +86,16 @@ component RowMenuItem inherits Rectangle {
             accessible-role: none;
         }
     }
+}
+
+// Sizes of the favorites list, in one place: dragging a row works out
+// where it lands from them
+global RowMetrics {
+    out property <length> row-height: 56px;
+    out property <length> row-spacing: 4px;
+    out property <length> list-padding: 8px;
+    // From one row's top to the next one's
+    out property <length> row-stride: row-height + row-spacing;
 }
 
 component FavoriteRow inherits Rectangle {
@@ -158,7 +168,7 @@ component FavoriteRow inherits Rectangle {
     accessible-item-index: root.row-index;
     accessible-action-default => { root.clicked(); }
 
-    height: 56px;
+    height: RowMetrics.row-height;
     background: root.is-drag-source ? Theme.elevated
               : is-current ? Theme.accent-soft
               : touch.has-hover || handle.has-hover ? Theme.menu-hover
@@ -245,7 +255,7 @@ component FavoriteRow inherits Rectangle {
                 border-color: Theme.hairline;
                 clip: true;
 
-                if root.has-logo: LogoFogLayer {
+                if root.has-logo && Fog.shown(root.logo-fog): LogoFogLayer {
                     fog: root.logo-fog;
                 }
 
@@ -301,7 +311,7 @@ component FavoriteRow inherits Rectangle {
                         width: 12px;
                         height: 12px;
                         colorize: Theme.accent;
-                        rotation: mod(Motion.tick / 900ms, 1) * 360deg;
+                        rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
                     }
                 }
 
@@ -408,7 +418,7 @@ component FavoriteRow inherits Rectangle {
 
     // Styled like the Statistics tiles: a caption over the total, and
     // label and value rows beside it
-    stats-bubble := Rectangle {
+    stats-bubble := PopupCard {
         property <bool> shown: ((stats-touch.has-hover && root.stats-ready)
                 || (root.stats-pinned && root.show-stats))
             && !stats-touch.pressed && !root.dragging;
@@ -420,13 +430,6 @@ component FavoriteRow inherits Rectangle {
         y: (root.height - self.height) / 2;
         width: bubble-layout.preferred-width;
         height: bubble-layout.preferred-height;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.hairline;
-        drop-shadow-blur: 8px;
-        drop-shadow-offset-y: 2px;
-        drop-shadow-color: Theme.shadow-soft;
 
         // Side by side so the bubble stays about as tall as the row
         bubble-layout := HorizontalLayout {
@@ -522,15 +525,7 @@ component FavoriteRow inherits Rectangle {
         width: root.menu-width;
         close-policy: close-on-click-outside;
 
-        Rectangle {
-            background: Theme.popup-bg;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            drop-shadow-blur: 8px;
-            drop-shadow-color: Theme.shadow-soft;
-            drop-shadow-offset-y: 2px;
-
+        PopupCard {
             VerticalLayout {
                 padding: 4px;
 
@@ -562,7 +557,7 @@ component FavoriteRow inherits Rectangle {
                 // Act before closing: inside an `if` the handler stops
                 // once the menu closes
                 if root.show-stats: RowMenuItem {
-                    label: root.confirm-reset ? "Click Again to Reset" : "Reset Stats";
+                    label: root.confirm-reset ? "Press Again to Reset" : "Reset Stats";
                     confirming: root.confirm-reset;
                     icon: @image-url("icons/rotate-left.svg");
                     enabled: root.play-count > 0
@@ -576,17 +571,10 @@ component FavoriteRow inherits Rectangle {
                         }
                     }
                 }
-                Rectangle {
-                    height: 9px;
-                    Rectangle {
-                        y: 4px;
-                        height: 1px;
-                        background: Theme.menu-hover;
-                    }
-                }
+                MenuSeparator {}
                 // Asks once more before removing
                 RowMenuItem {
-                    label: root.confirm-remove ? "Click Again to Remove" : "Remove from Favorites";
+                    label: root.confirm-remove ? "Press Again to Remove" : "Remove from Favorites";
                     confirming: root.confirm-remove;
                     icon: @image-url("icons/trash-can.svg");
                     danger: true;
@@ -666,12 +654,6 @@ component FavoriteRow inherits Rectangle {
             }
         }
     }
-}
-
-// Row height (56px) + spacing (4px)
-global RowMetrics {
-    out property <length> row-stride: 60px;
-    out property <length> list-padding: 8px;
 }
 
 export component Favorites inherits Rectangle {
@@ -779,7 +761,7 @@ export component Favorites inherits Rectangle {
 
         // Keeps scrolling while the pointer rests near an edge
         Timer {
-            interval: 16ms;
+            interval: Defaults.drag-scroll-step;
             running: list.scroll-step != 0px;
             triggered => {
                 fav-flickable.content-y = clamp(
@@ -795,12 +777,12 @@ export component Favorites inherits Rectangle {
             content-height: fav-layout.preferred-height;
 
             fav-layout := VerticalLayout {
-                padding: 8px;
+                padding: RowMetrics.list-padding;
                 padding-right: 14px;
-                spacing: 4px;
+                spacing: RowMetrics.row-spacing;
 
                 for station[idx] in root.favorites: Rectangle {
-                    height: 56px;
+                    height: RowMetrics.row-height;
                     // The dragged row draws above the others
                     z: root.drag-from-index == idx ? 1 : 0;
 

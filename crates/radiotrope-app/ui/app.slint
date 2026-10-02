@@ -12,14 +12,14 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
-import { EqualizerDialog } from "dialogs/equalizer.slint";
+import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
-export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow }
+export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -105,7 +105,6 @@ export component App inherits Window {
     in-out property <bool> record-with-eq <=> recording-dialog.with-eq;
     in-out property <string> recording-format <=> recording-dialog.format;
     in-out property <int> recording-bitrate <=> recording-dialog.bitrate;
-    in-out property <bool> show-recording-dialog <=> recording-dialog.show-dialog;
 
     // Agents (MCP)
     callback agents-network-toggled(bool);
@@ -194,8 +193,6 @@ export component App inherits Window {
     // Try the station browser's failed request again
     callback retry-browse();
     in-out property <string> browse-country-name <=> browser-dialog.country-name;
-    in-out property <string> browse-country-code <=> browser-dialog.country-code;
-    in-out property <image> browse-country-flag <=> browser-dialog.country-flag;
     // Put the current list aside (per mode) before showing another one
     callback stash-browse();
     // Bring back the list kept for a mode ("search", or "country" with its
@@ -224,6 +221,9 @@ export component App inherits Window {
     in-out property <float> eq-band7 <=> eq-dialog.band7;
     in-out property <float> eq-band8 <=> eq-dialog.band8;
     in-out property <float> eq-band9 <=> eq-dialog.band9;
+    // The preset menu, from the engine's preset list
+    in property <[string]> eq-top-presets;
+    in property <[EqPresetGroup]> eq-preset-groups;
 
     // WiFi proxy properties (embedded only)
     in-out property <bool> show-wifi-settings: false;
@@ -357,6 +357,7 @@ export component App inherits Window {
                     }
                     open-recordings-folder => { root.open-recordings-folder(); }
                     open-agents => { agents-dialog.open(); }
+                    menus-enabled: !root.dialog-open;
                     agent-count: root.agent-count;
                 }
                 playback := Playback {
@@ -414,36 +415,6 @@ export component App inherits Window {
         }
     }
 
-    stream-dialog := NetworkStreamDialog {
-        accepted(url, name, logo, country) => {
-            root.play-stream(url, name, logo, country);
-        }
-    }
-
-    stats-dialog := StatisticsDialog {
-        stat-health: root.stat-health;
-        stat-playtime: root.stat-playtime;
-        stat-codec: root.stat-codec;
-        stat-bitrate: root.stat-bitrate;
-        stat-sample-rate: root.stat-sample-rate;
-        stat-channels: root.stat-channels;
-        stat-received: root.stat-received;
-        stat-segments: root.stat-segments;
-        stat-throughput: root.stat-throughput;
-        stat-buffer-level: root.stat-buffer-level;
-        stat-buffer-capacity: root.stat-buffer-capacity;
-        stat-frames-played: root.stat-frames-played;
-        stat-decode-errors: root.stat-decode-errors;
-        stat-underruns: root.stat-underruns;
-    }
-
-    eq-dialog := EqualizerDialog {
-        enabled-toggled(val) => { root.eq-enabled-toggled(val); }
-        preset-selected(name) => { root.eq-preset-selected(name); }
-        preamp-changed(val) => { root.eq-preamp-changed(val); }
-        band-changed(band, gain) => { root.eq-band-changed(band, gain); }
-    }
-
     // Station browser listing one country's stations. Stations already
     // listed for that country are kept, so reopening it is instant.
     function open-country(name: string, code: string, flag: image) {
@@ -474,81 +445,121 @@ export component App inherits Window {
         root.load-countries();
     }
 
-    browser-dialog := StationBrowserDialog {
-        playing-url: root.station-url;
-        is-playing: root.is-playing;
-        play-loading: root.is-loading;
-        play-error: root.is-error;
-        play-status: root.status-text;
-        search-stations(query) => { root.search-stations(query); }
-        search-in-country(name, code, query) => { root.browse-country(name, code, query); }
-        change-country() => {
-            browser-dialog.show-dialog = false;
-            root.show-country-list();
+    // The dialogs. With our own title bar they leave it uncovered, so the
+    // window can still be moved, minimised, maximised and closed while one
+    // is open (the menus are greyed out meanwhile).
+    Rectangle {
+        y: root.custom-frame ? menu-bar.height : 0;
+        height: root.height - self.y;
+
+        stream-dialog := NetworkStreamDialog {
+            accepted(url, name, logo, country) => {
+                root.play-stream(url, name, logo, country);
+            }
         }
-        load-more() => { root.load-more-stations(); }
-        retry() => { root.retry-browse(); }
-        station-selected(station) => { root.play-station(station); }
-        favorite-toggled(station) => { root.toggle-browse-favorite(station); }
-        visible-rows-changed() => { root.browse-rows-changed(); }
-        closed() => { root.browse-closed(); }
-    }
 
-    edit-dialog := EditFavoriteDialog {
-        accepted(station) => {
-            return root.edit-favorite(station);
+        stats-dialog := StatisticsDialog {
+            stat-health: root.stat-health;
+            stat-playtime: root.stat-playtime;
+            stat-codec: root.stat-codec;
+            stat-bitrate: root.stat-bitrate;
+            stat-sample-rate: root.stat-sample-rate;
+            stat-channels: root.stat-channels;
+            stat-received: root.stat-received;
+            stat-segments: root.stat-segments;
+            stat-throughput: root.stat-throughput;
+            stat-buffer-level: root.stat-buffer-level;
+            stat-buffer-capacity: root.stat-buffer-capacity;
+            stat-frames-played: root.stat-frames-played;
+            stat-decode-errors: root.stat-decode-errors;
+            stat-underruns: root.stat-underruns;
         }
-        deleted(station) => {
-            root.delete-favorite(station);
+
+        eq-dialog := EqualizerDialog {
+            top-presets: root.eq-top-presets;
+            preset-groups: root.eq-preset-groups;
+            enabled-toggled(val) => { root.eq-enabled-toggled(val); }
+            preset-selected(name) => { root.eq-preset-selected(name); }
+            preamp-changed(val) => { root.eq-preamp-changed(val); }
+            band-changed(band, gain) => { root.eq-band-changed(band, gain); }
         }
-    }
 
-    accent-dialog := AccentColorDialog {
-        color-changed(color) => { root.accent-color-changed(color); }
-        custom-hex-requested(hex) => { root.apply-custom-hex(hex); }
-    }
-
-    picker-dialog := CountryPickerDialog {
-        country-selected(country) => {
-            root.open-country(country.name, country.code, country.flag);
+        browser-dialog := StationBrowserDialog {
+            playing-url: root.station-url;
+            is-playing: root.is-playing;
+            play-loading: root.is-loading;
+            play-error: root.is-error;
+            play-status: root.status-text;
+            search-stations(query) => { root.search-stations(query); }
+            search-in-country(name, code, query) => { root.browse-country(name, code, query); }
+            change-country() => {
+                browser-dialog.show-dialog = false;
+                root.show-country-list();
+            }
+            load-more() => { root.load-more-stations(); }
+            retry() => { root.retry-browse(); }
+            station-selected(station) => { root.play-station(station); }
+            favorite-toggled(station) => { root.toggle-browse-favorite(station); }
+            visible-rows-changed() => { root.browse-rows-changed(); }
+            closed() => { root.browse-closed(); }
         }
-        load-countries() => { root.load-countries(); }
-        filter-countries(text) => { root.filter-countries(text); }
-    }
 
-    recording-dialog := RecordingSettingsDialog {
-        browse() => { root.browse-recording-folder(); }
-        apply-folder(path) => { root.apply-recording-folder(path); }
-        restore-default() => { root.restore-recording-folder(); }
-        open-folder() => { root.open-recordings-folder(); }
-        eq-on: root.eq-enabled;
-        with-eq-toggled(on) => { root.record-with-eq-toggled(on); }
-        format-changed(id) => { root.recording-format-changed(id); }
-        bitrate-changed(kbps) => { root.recording-bitrate-changed(kbps); }
-    }
+        edit-dialog := EditFavoriteDialog {
+            accepted(station) => {
+                return root.edit-favorite(station);
+            }
+            deleted(station) => {
+                root.delete-favorite(station);
+            }
+        }
 
-    agents-dialog := AgentsDialog {
-        network-toggled(on) => { root.agents-network-toggled(on); }
-        apply-port(text) => { root.agents-apply-port(text); }
-        listen-changed(index) => { root.agents-listen-changed(index); }
-        refresh-listen() => { root.agents-refresh-listen(); }
-        regenerate-token() => { root.agents-regenerate-token(); }
-        app-changed(index) => { root.agents-app-changed(index); }
-        auth-changed(index) => { root.agents-auth-changed(index); }
-    }
+        accent-dialog := AccentColorDialog {
+            color-changed(color) => { root.accent-color-changed(color); }
+            custom-hex-requested(hex) => { root.apply-custom-hex(hex); }
+        }
 
-    about-dialog := AboutDialog {
-        open-url(url) => { root.open-url(url); }
-    }
+        picker-dialog := CountryPickerDialog {
+            country-selected(country) => {
+                root.open-country(country.name, country.code, country.flag);
+            }
+            load-countries() => { root.load-countries(); }
+            filter-countries(text) => { root.filter-countries(text); }
+        }
 
-    // WiFi settings dialog (an empty stand-in on desktop builds)
-    wifi-dialog := WifiSettingsDialog {
-        show-dialog <=> root.show-wifi-settings;
-        scan-requested() => { root.wifi-scan-requested(); }
-        connect-requested(path, password) => { root.wifi-connect-requested(path, password); }
-        disconnect-requested() => { root.wifi-disconnect-requested(); }
-        close-requested() => { root.show-wifi-settings = false; }
-        wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+        recording-dialog := RecordingSettingsDialog {
+            browse() => { root.browse-recording-folder(); }
+            apply-folder(path) => { root.apply-recording-folder(path); }
+            restore-default() => { root.restore-recording-folder(); }
+            open-folder() => { root.open-recordings-folder(); }
+            eq-on: root.eq-enabled;
+            with-eq-toggled(on) => { root.record-with-eq-toggled(on); }
+            format-changed(id) => { root.recording-format-changed(id); }
+            bitrate-changed(kbps) => { root.recording-bitrate-changed(kbps); }
+        }
+
+        agents-dialog := AgentsDialog {
+            network-toggled(on) => { root.agents-network-toggled(on); }
+            apply-port(text) => { root.agents-apply-port(text); }
+            listen-changed(index) => { root.agents-listen-changed(index); }
+            refresh-listen() => { root.agents-refresh-listen(); }
+            regenerate-token() => { root.agents-regenerate-token(); }
+            app-changed(index) => { root.agents-app-changed(index); }
+            auth-changed(index) => { root.agents-auth-changed(index); }
+        }
+
+        about-dialog := AboutDialog {
+            open-url(url) => { root.open-url(url); }
+        }
+
+        // WiFi settings dialog (an empty stand-in on desktop builds)
+        wifi-dialog := WifiSettingsDialog {
+            show-dialog <=> root.show-wifi-settings;
+            scan-requested() => { root.wifi-scan-requested(); }
+            connect-requested(path, password) => { root.wifi-connect-requested(path, password); }
+            disconnect-requested() => { root.wifi-disconnect-requested(); }
+            close-requested() => { root.show-wifi-settings = false; }
+            wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+        }
     }
 
     // Steps the status animations (Motion), only while there is one to show

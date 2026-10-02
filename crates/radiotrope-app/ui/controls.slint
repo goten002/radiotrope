@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "defaults.slint";
-import { IconButton, Icon, ButtonKeys, FocusRing } from "components.slint";
+import { IconButton, Icon, ButtonKeys, FocusRing, PopupCard } from "components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 component VolumeSlider inherits Rectangle {
@@ -451,7 +451,7 @@ export component Controls inherits Rectangle {
         }
     }
     // Full title above a cut-off one, styled like the favorites stats bubble
-    title-bubble := Rectangle {
+    title-bubble := PopupCard {
         property <bool> shown: root.title-cut && (root.title-hover-ready || root.title-pinned)
             && root.now-playing-title != "";
         visible: self.opacity > 0;
@@ -461,13 +461,6 @@ export component Controls inherits Rectangle {
         y: -self.height - 6px;
         width: min(bubble-layout.preferred-width, root.width - np-area.x - 14px);
         height: bubble-layout.preferred-height;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.hairline;
-        drop-shadow-blur: 8px;
-        drop-shadow-offset-y: 2px;
-        drop-shadow-color: Theme.shadow-soft;
 
         bubble-layout := VerticalLayout {
             padding-left: 12px;

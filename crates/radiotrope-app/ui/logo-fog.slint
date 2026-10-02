@@ -15,10 +15,18 @@ export struct LogoFog {
     light: FogColors,
 }
 
+// Whether a logo gets fog on the current theme. Most logos don't, so
+// create the layer only then: `if Fog.shown(fog): LogoFogLayer { ... }`
+export global Fog {
+    public pure function shown(fog: LogoFog) -> bool {
+        return Theme.dark-mode ? fog.dark.on : fog.light.on;
+    }
+}
+
 // Soft colour fog behind a see-through logo whose lettering would vanish on
 // its tile: black text on the dark theme, white text on the light one. Two
 // glows in the logo's own colours over a flat ground. Put it first inside a
-// clipping tile, under the logo.
+// clipping tile, under the logo, and only where Fog.shown().
 export component LogoFogLayer inherits Rectangle {
     in property <LogoFog> fog;
     property <FogColors> colors: Theme.dark-mode ? root.fog.dark : root.fog.light;

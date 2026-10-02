@@ -26,6 +26,9 @@ pub const VU_RISE_SECS: f32 = 0.05;
 /// meters dip between beats
 pub const VU_FALL_SECS: f32 = 0.15;
 
+/// A smoothed level below this is shown as zero (a bar shows from 0.01)
+const SETTLED_LEVEL: f32 = 0.001;
+
 /// Frame-to-frame smoothing of visualizer levels: quick but not instant
 /// rises, and gentle falls. Based on the time between frames, so motion
 /// stays even when frames arrive late.
@@ -54,6 +57,11 @@ impl LevelSmoother {
             let target = target.clamp(0.0, 1.0);
             let k = if target > *level { rise } else { fall };
             *level += (target - *level) * k;
+            // Far too low to see: settle at zero, so a quiet band stops
+            // changing instead of shrinking a little every frame
+            if *level < SETTLED_LEVEL {
+                *level = 0.0;
+            }
         }
         &self.levels
     }
@@ -470,6 +478,20 @@ mod tests {
         assert!(down > 0.7, "falls slower than it rises");
         let gone = s.update(&[0.0], 2.0)[0];
         assert!(gone < 0.01);
+    }
+
+    #[test]
+    fn smoother_settles_at_zero_in_silence() {
+        let mut s = LevelSmoother::new(1, SPECTRUM_RISE_SECS, SPECTRUM_FALL_SECS);
+        s.update(&[1.0], 1.0);
+        // A couple of seconds of 30 fps silence brings the bar down to
+        // exactly zero, and then it stays there
+        let frames = (2.0 / 0.033f32) as usize;
+        for _ in 0..frames {
+            s.update(&[0.0], 0.033);
+        }
+        assert_eq!(s.update(&[0.0], 0.033)[0], 0.0);
+        assert_eq!(s.update(&[0.0], 0.033)[0], 0.0);
     }
 
     #[test]

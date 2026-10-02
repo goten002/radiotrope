@@ -74,7 +74,7 @@ export component WifiSettingsDialog inherits Rectangle {
                     Rectangle {
                         width: 70px;
                         height: 26px;
-                        border-radius: 4px;
+                        border-radius: Theme.radius-sm;
                         background: root.is-scanning ? Theme.surface :
                                     scan-ta.has-hover ? Theme.accent-hover : Theme.accent;
                         animate background { duration: Theme.fast; }
@@ -114,7 +114,7 @@ export component WifiSettingsDialog inherits Rectangle {
                     Rectangle {
                         width: 24px;
                         height: 24px;
-                        border-radius: 4px;
+                        border-radius: Theme.radius-sm;
                         background: close-ta.has-hover ? Theme.menu-hover : transparent;
                         animate background { duration: Theme.fast; }
 
@@ -139,7 +139,7 @@ export component WifiSettingsDialog inherits Rectangle {
                 // Status bar
                 if root.connection-status != "" : Rectangle {
                     height: 28px;
-                    border-radius: 4px;
+                    border-radius: Theme.radius-sm;
                     background: root.connection-status == "Disconnected" ? Theme.surface :
                                 root.connection-status == "Connecting..." ? Theme.accent.with-alpha(0.1) :
                                 Theme.accent.with-alpha(0.15);
@@ -168,7 +168,7 @@ export component WifiSettingsDialog inherits Rectangle {
 
                     for network in root.networks : Rectangle {
                         height: 40px;
-                        border-radius: 6px;
+                        border-radius: Theme.radius-md;
                         background: net-ta.has-hover ? Theme.menu-hover :
                                     network.connected ? Theme.accent.with-alpha(0.12) : transparent;
                         animate background { duration: Theme.fast; }
@@ -209,7 +209,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             y: (parent.height - 22px) / 2;
                             width: 68px;
                             height: 22px;
-                            border-radius: 4px;
+                            border-radius: Theme.radius-sm;
                             background: Theme.accent.with-alpha(0.2);
 
                             Text {
@@ -229,7 +229,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             y: (parent.height - 22px) / 2;
                             width: 44px;
                             height: 22px;
-                            border-radius: 4px;
+                            border-radius: Theme.radius-sm;
                             background: Theme.surface;
 
                             Text {
@@ -248,7 +248,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             y: (parent.height - 22px) / 2;
                             width: 80px;
                             height: 22px;
-                            border-radius: 4px;
+                            border-radius: Theme.radius-sm;
                             background: disc-ta.has-hover ? Theme.menu-hover : Theme.surface;
                             animate background { duration: Theme.fast; }
 
@@ -305,7 +305,7 @@ export component WifiSettingsDialog inherits Rectangle {
                     // Connection target
                     Rectangle {
                         height: 28px;
-                        border-radius: 4px;
+                        border-radius: Theme.radius-sm;
                         background: Theme.surface;
 
                         Text {
