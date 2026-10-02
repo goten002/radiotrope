@@ -88,6 +88,20 @@ pub mod logos {
 pub mod ui {
     use std::time::Duration;
 
+    /// How often the tray icon's menu and tooltip are brought up to date
+    pub const TRAY_REFRESH: Duration = Duration::from_millis(250);
+
+    /// How often the desktop is asked whether it has a tray (Linux: the
+    /// panel, or GNOME's AppIndicator extension, can come and go)
+    pub const TRAY_HOST_CHECK: Duration = Duration::from_secs(2);
+
+    /// The tray menu lists this many favorites
+    pub const TRAY_FAVORITES: usize = 15;
+
+    /// Station and song text in the tray menu and tooltip is cut to this
+    /// many characters (Windows cuts a tooltip at 127 UTF-16 units)
+    pub const TRAY_TEXT_CHARS: usize = 60;
+
     /// Search results page size
     pub const SEARCH_PAGE_SIZE: usize = 100;
 

@@ -44,6 +44,19 @@ export component App inherits Window {
     callback switch-title-bar(bool);
     // The OS window menu on right-click; false when there is none
     callback show-system-menu(length, length, bool) -> bool;
+    // System tray (desktop; saved in settings). Rust sets tray-available:
+    // false when the desktop shows no tray icons (GNOME without the
+    // AppIndicator extension)
+    in-out property <bool> tray-icon: Platform.has-tray;
+    in-out property <bool> close-to-tray;
+    in-out property <bool> start-in-tray;
+    in property <bool> tray-available: true;
+    // End the app (Quit in the Open menu, Ctrl+Q); closing may only hide
+    callback quit-app();
+    // The play button, for the tray icon's menu and middle click
+    public function play-or-stop() {
+        controls.play-or-stop();
+    }
 
     callback play-url(string);
     // Open Network Stream: url, name, logo url, country (all but the url optional)
@@ -271,6 +284,10 @@ export component App inherits Window {
                     menu-bar.open-station-search();
                     return accept;
                 }
+                if event.modifiers.control && !event.modifiers.alt && (event.text == "q" || event.text == "Q") {
+                    root.quit-app();
+                    return accept;
+                }
                 return reject;
             }
             if event.text == Key.Space {
@@ -305,6 +322,11 @@ export component App inherits Window {
                     minimize => { root.minimize-window(); }
                     show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
                     close-window => { root.close(); }
+                    tray-icon <=> root.tray-icon;
+                    close-to-tray <=> root.close-to-tray;
+                    start-in-tray <=> root.start-in-tray;
+                    tray-available: root.tray-available;
+                    quit-app => { root.quit-app(); }
                     toggle-custom-frame => { root.switch-title-bar(!root.custom-frame); }
                     open-wifi-settings => {
                         root.show-wifi-settings = true;

@@ -7,6 +7,8 @@ mod instance;
 mod mcp;
 mod row_logos;
 #[cfg(feature = "desktop")]
+mod tray;
+#[cfg(feature = "desktop")]
 mod window_frame;
 #[cfg(windows)]
 mod windows_console;
@@ -255,6 +257,12 @@ fn main() {
     ui.set_show_station_stats(settings.show_station_stats);
     ui.set_show_visualizer(settings.show_visualizer);
     ui.set_panel_gradient(settings.panel_gradient);
+    #[cfg(feature = "desktop")]
+    {
+        ui.set_tray_icon(settings.tray_icon);
+        ui.set_close_to_tray(settings.close_to_tray);
+        ui.set_start_in_tray(settings.start_in_tray);
+    }
     // The Pi build is full screen with no frame to replace
     if cfg!(not(feature = "embedded")) {
         ui.set_custom_frame(settings.custom_title_bar);
@@ -1721,11 +1729,50 @@ fn main() {
     #[cfg(unix)]
     quit_on_signals();
 
-    // Run Slint event loop (blocks main thread). An error (the display
-    // went away, e.g. at logout) ends it like closing the window does.
-    if let Err(e) = ui.run() {
+    // Closing the window ends the app, or only hides it when View > Close
+    // to Tray is on and the tray shows our icon
+    {
+        let ui_weak = ui.as_weak();
+        ui.window().on_close_requested(move || {
+            #[cfg(feature = "desktop")]
+            if ui_weak
+                .upgrade()
+                .is_some_and(|ui| tray::hides_on_close(&ui))
+            {
+                return slint::CloseRequestResponse::HideWindow;
+            }
+            let _ = &ui_weak;
+            quit_app();
+            slint::CloseRequestResponse::HideWindow
+        });
+    }
+    ui.on_quit_app(quit_app);
+
+    // The tray icon, and whether the desktop shows one (GNOME only with
+    // the AppIndicator extension)
+    #[cfg(feature = "desktop")]
+    let start_hidden = {
+        let available = tray::host::available();
+        ui.set_tray_available(available);
+        let ui_weak = ui.as_weak();
+        tray::host::watch(move |available| {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| ui.set_tray_available(available));
+        });
+        tray::start(&ui);
+        settings.start_in_tray && settings.tray_icon && available
+    };
+    #[cfg(not(feature = "desktop"))]
+    let start_hidden = false;
+
+    // Run Slint event loop (blocks main thread) until Quit, or a close
+    // that doesn't go to the tray; a hidden window keeps it going. An
+    // error (the display went away, e.g. at logout) ends it like closing
+    // the window does.
+    let shown = if start_hidden { Ok(()) } else { ui.show() };
+    if let Err(e) = shown.and_then(|()| slint::run_event_loop_until_quit()) {
         eprintln!("Event loop ended: {e}");
     }
+    let _ = ui.hide();
 
     // Tell the controller first, so a recording starts finishing while the
     // rest is saved. A controller stuck on its audio device doesn't take
@@ -1876,7 +1923,17 @@ fn prune_caches_daily(
     }
 }
 
-/// Show the window and ask for focus (a second launch of radiotrope)
+/// End the app: the event loop stops, and the exit saves and finishes a
+/// recording
+fn quit_app() {
+    #[cfg(feature = "desktop")]
+    tray::quit();
+    #[cfg(not(feature = "desktop"))]
+    let _ = slint::quit_event_loop();
+}
+
+/// Show the window and ask for focus (a second launch of radiotrope, an
+/// agent, the tray icon)
 fn bring_to_front(window: &slint::Window) {
     let _ = window.show();
     #[cfg(feature = "desktop")]
@@ -3167,6 +3224,8 @@ struct WindowSettings {
     panel_gradient: bool,
     /// Custom title bar and always on top (not on the Pi)
     frame: Option<(bool, bool)>,
+    /// Tray icon, close to tray, start in tray (desktop)
+    tray: Option<(bool, bool, bool)>,
     last_station: Option<Station>,
     window_size: Option<(u32, u32)>,
 }
@@ -3222,6 +3281,13 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         panel_gradient: ui.get_panel_gradient(),
         frame: cfg!(not(feature = "embedded"))
             .then(|| (ui.get_custom_frame(), ui.get_keep_on_top())),
+        tray: cfg!(feature = "desktop").then(|| {
+            (
+                ui.get_tray_icon(),
+                ui.get_close_to_tray(),
+                ui.get_start_in_tray(),
+            )
+        }),
         last_station,
         window_size,
     }
@@ -3247,6 +3313,11 @@ fn write_settings(w: &WindowSettings) {
     if let Some((custom_title_bar, always_on_top)) = w.frame {
         settings.custom_title_bar = custom_title_bar;
         settings.always_on_top = always_on_top;
+    }
+    if let Some((tray_icon, close_to_tray, start_in_tray)) = w.tray {
+        settings.tray_icon = tray_icon;
+        settings.close_to_tray = close_to_tray;
+        settings.start_in_tray = start_in_tray;
     }
     if let Some(station) = &w.last_station {
         settings.last_station = Some(station.clone());
