@@ -4,9 +4,13 @@
 
 use std::time::Duration;
 
-use crate::config::network::{CONNECT_TIMEOUT_SECS, MAX_PLAYLIST_DEPTH, USER_AGENT};
+use crate::config::hls::MAX_PLAYLIST_BYTES;
+use crate::config::network::{
+    CONNECT_TIMEOUT_SECS, MAX_PLAYLIST_DEPTH, MAX_PLAYLIST_ENTRIES, USER_AGENT,
+};
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
+use crate::stream::hls::{read_body, too_large};
 use crate::stream::Deadline;
 
 /// Result of checking a URL's playlist type
@@ -133,22 +137,51 @@ fn strip_bom(content: &str) -> &str {
     content.strip_prefix('\u{feff}').unwrap_or(content)
 }
 
-/// Parse a PLS playlist and return the first stream URL
-pub fn parse_pls(content: &str) -> Option<String> {
-    for line in strip_bom(content).lines() {
-        let line = line.trim();
-        if line.to_lowercase().starts_with("file") {
-            // Split at the first '=' only: stream URLs often carry
-            // `?key=value&…` query strings (tokens, session ids)
-            if let Some((_, stream_url)) = line.split_once('=') {
-                let stream_url = stream_url.trim();
-                if is_http_url(stream_url) {
-                    return Some(stream_url.to_string());
-                }
-            }
+/// True for a URI with a scheme of its own (`mms:`, `rtsp:`, `file:`), or a
+/// drive letter (`C:\Music`): not one to play or to resolve against the
+/// playlist's address
+fn has_scheme(uri: &str) -> bool {
+    uri.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
+}
+
+/// `entries` without repeats, at most [`MAX_PLAYLIST_ENTRIES`] of them
+fn first_entries(entries: impl Iterator<Item = String>) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    for entry in entries {
+        if kept.len() == MAX_PLAYLIST_ENTRIES {
+            break;
+        }
+        if !kept.contains(&entry) {
+            kept.push(entry);
         }
     }
-    None
+    kept
+}
+
+/// Parse a PLS playlist and return the first stream URL
+pub fn parse_pls(content: &str) -> Option<String> {
+    pls_entries(content).into_iter().next()
+}
+
+/// The stream URLs of a PLS playlist in order (the first
+/// [`MAX_PLAYLIST_ENTRIES`]): a station's mirrors, tried in turn
+pub fn pls_entries(content: &str) -> Vec<String> {
+    first_entries(strip_bom(content).lines().filter_map(|line| {
+        let line = line.trim();
+        if !line.to_lowercase().starts_with("file") {
+            return None;
+        }
+        // Split at the first '=' only: stream URLs often carry
+        // `?key=value&…` query strings (tokens, session ids)
+        let (_, stream_url) = line.split_once('=')?;
+        let stream_url = stream_url.trim();
+        is_http_url(stream_url).then(|| stream_url.to_string())
+    }))
 }
 
 /// A `key=value` line, which some M3U files carry between entries.
@@ -162,26 +195,38 @@ fn is_setting(line: &str) -> bool {
 
 /// Parse an M3U playlist and return the first stream URL
 pub fn parse_m3u(content: &str, base_url: &str) -> Option<String> {
-    for line in strip_bom(content).lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
+    m3u_entries(content, base_url).into_iter().next()
+}
 
-        if is_http_url(line) {
-            return Some(line.to_string());
-        } else if !is_setting(line) {
-            return Some(make_absolute_url(line, base_url));
-        }
-    }
-    None
+/// The stream URLs of an M3U playlist in order (the first
+/// [`MAX_PLAYLIST_ENTRIES`]), relative ones made absolute against
+/// `base_url`. Entries of other schemes (`mms://`, `rtsp://`, local files)
+/// are left out, and so are the tags of a web page served as a playlist.
+pub fn m3u_entries(content: &str, base_url: &str) -> Vec<String> {
+    first_entries(
+        strip_bom(content)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with(['#', '<']))
+            .filter_map(|line| {
+                if is_http_url(line) {
+                    Some(line.to_string())
+                } else if has_scheme(line) || is_setting(line) {
+                    None
+                } else {
+                    Some(make_absolute_url(line, base_url))
+                }
+            }),
+    )
 }
 
 /// Resolve a playlist URL to its final stream URL, following chains recursively.
 ///
 /// M3U8 (HLS) URLs pass through unchanged: the HLS resolve fetches them, and
 /// hands back a plain M3U list named so. PLS and M3U playlists are fetched
-/// and parsed, recursing up to `MAX_PLAYLIST_DEPTH` levels.
+/// and parsed, recursing up to `MAX_PLAYLIST_DEPTH` levels. Of a playlist's
+/// entries, the first that leads somewhere is taken (an entry that is a
+/// playlist can fail to load).
 pub fn resolve_playlist_url(url: &str) -> Result<String> {
     Ok(resolve_playlist(url, &StreamCancel::new(), Deadline::NONE)?.url)
 }
@@ -220,39 +265,104 @@ fn resolve_recursive(
     if depth == 0 {
         return Err(RadioError::Stream("Playlist nesting too deep".to_string()));
     }
+    let hls = match read_playlist(url, kind, cancel, deadline)? {
+        Step::Hls => true,
+        Step::Stream => false,
+        Step::Entries(entries) => {
+            return first_that_works(&entries, deadline, |entry| {
+                resolve_recursive(entry, None, depth - 1, cancel, deadline)
+            })
+        }
+    };
+    Ok(Target {
+        url: url.to_string(),
+        hls,
+    })
+}
 
+/// What an address leads to
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// An HLS playlist
+    Hls,
+    /// Not a playlist by its name: a stream to connect to (whose response
+    /// can still turn out to be a playlist)
+    Stream,
+    /// The stream addresses of a PLS or M3U playlist, in order
+    Entries(Vec<String>),
+}
+
+/// What `url` leads to, read as a playlist of `kind` (by default the kind
+/// its name says). A PLS or M3U is fetched, stopped by `cancel` and done by
+/// `deadline`, and what it is decides, not what it is called: an `.m3u` can
+/// be HLS.
+pub(crate) fn read_playlist(
+    url: &str,
+    kind: Option<PlaylistCheck>,
+    cancel: &StreamCancel,
+    deadline: Deadline,
+) -> Result<Step> {
     let by_extension = kind.unwrap_or_else(|| check_playlist_type(url));
-    if matches!(
-        by_extension,
-        PlaylistCheck::Hls | PlaylistCheck::NotPlaylist
-    ) {
-        return Ok(Target {
-            url: url.to_string(),
-            hls: by_extension == PlaylistCheck::Hls,
-        });
+    match by_extension {
+        PlaylistCheck::Hls => return Ok(Step::Hls),
+        PlaylistCheck::NotPlaylist => return Ok(Step::Stream),
+        PlaylistCheck::Pls | PlaylistCheck::M3u => {}
     }
     deadline.check()?;
-    let playlist = fetch_playlist(url, deadline)?;
-    // What it is decides, not what it is called: an `.m3u` can be HLS
-    let kind = match sniff_playlist(playlist.content_type.as_deref(), playlist.text.as_bytes()) {
+    let playlist = fetch_playlist(url, cancel, deadline)?;
+    let content_type = playlist.content_type.as_deref();
+    let kind = match sniff_playlist(content_type, &playlist.body) {
+        // A station's error page in place of its playlist
+        PlaylistCheck::NotPlaylist if is_web_page(content_type) => {
+            return Err(RadioError::Stream(
+                "the server sent a web page instead of a playlist".to_string(),
+            ))
+        }
         PlaylistCheck::NotPlaylist => by_extension,
         sniffed => sniffed,
     };
-    let stream_url = match kind {
-        PlaylistCheck::Hls => {
-            return Ok(Target {
-                url: url.to_string(),
-                hls: true,
-            })
-        }
-        PlaylistCheck::Pls => parse_pls(&playlist.text)
-            .ok_or_else(|| RadioError::Stream("No stream URL found in PLS playlist".to_string()))?,
+    let text = String::from_utf8_lossy(&playlist.body);
+    let (entries, name) = match kind {
+        PlaylistCheck::Hls => return Ok(Step::Hls),
+        PlaylistCheck::Pls => (pls_entries(&text), "PLS"),
         // Relative entries are relative to where the playlist was served
         // from, after any redirects
-        _ => parse_m3u(&playlist.text, &directory_of(&playlist.final_url))
-            .ok_or_else(|| RadioError::Stream("No stream URL found in M3U playlist".to_string()))?,
+        _ => (
+            m3u_entries(&text, &directory_of(&playlist.final_url)),
+            "M3U",
+        ),
     };
-    resolve_recursive(&stream_url, None, depth - 1, cancel, deadline)
+    if entries.is_empty() {
+        return Err(RadioError::Stream(format!(
+            "No stream URL found in {name} playlist"
+        )));
+    }
+    Ok(Step::Entries(entries))
+}
+
+/// The first of `entries` that `open` gets to work, trying them in turn: a
+/// playlist's mirrors. Fails with the first entry's error (the station's
+/// main address), and tries no more once cancelled or past `deadline`.
+pub(crate) fn first_that_works<T>(
+    entries: &[String],
+    deadline: Deadline,
+    mut open: impl FnMut(&str) -> Result<T>,
+) -> Result<T> {
+    let mut first_error = None;
+    for entry in entries {
+        match open(entry) {
+            Ok(found) => return Ok(found),
+            Err(RadioError::Cancelled) => return Err(RadioError::Cancelled),
+            Err(e) => {
+                first_error.get_or_insert(e);
+                if deadline.check().is_err() {
+                    break;
+                }
+            }
+        }
+    }
+    Err(first_error
+        .unwrap_or_else(|| RadioError::Stream("No stream URL found in playlist".to_string())))
 }
 
 /// The directory part of `url` without the trailing slash, ignoring any
@@ -269,13 +379,14 @@ struct Playlist {
     /// Where it was served from, after redirects
     final_url: String,
     content_type: Option<String>,
-    text: String,
+    body: Vec<u8>,
 }
 
-fn fetch_playlist(url: &str, deadline: Deadline) -> Result<Playlist> {
+fn fetch_playlist(url: &str, cancel: &StreamCancel, deadline: Deadline) -> Result<Playlist> {
+    let wait = deadline.cap(Duration::from_secs(CONNECT_TIMEOUT_SECS));
     let client = reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
-        .timeout(deadline.cap(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
+        .timeout(wait)
         .build()?;
 
     let response = client.get(url).send()?;
@@ -290,10 +401,13 @@ fn fetch_playlist(url: &str, deadline: Deadline) -> Result<Playlist> {
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    // A stream where the playlist should be would never end
+    let body = read_body(response, MAX_PLAYLIST_BYTES, cancel, wait)?
+        .ok_or_else(|| RadioError::Stream(format!("Playlist {}", too_large(MAX_PLAYLIST_BYTES))))?;
     Ok(Playlist {
         final_url,
         content_type,
-        text: response.text()?,
+        body,
     })
 }
 
@@ -829,6 +943,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn every_entry_is_kept_in_order() {
+        let pls = "[playlist]\nFile1=http://a.example/live\nFile2=mms://b.example/live\n\
+                   File3=https://c.example/live\nFile4=http://a.example/live\n";
+        assert_eq!(
+            pls_entries(pls),
+            ["http://a.example/live", "https://c.example/live"]
+        );
+        let m3u = "#EXTM3U\nhttp://a.example/live\nmms://b.example/live\nrtsp://b.example/live\n\
+                   C:\\Music\\song.mp3\nbackup.mp3\nhttp://a.example/live\n";
+        assert_eq!(
+            m3u_entries(m3u, "http://example.com/radio"),
+            [
+                "http://a.example/live",
+                "http://example.com/radio/backup.mp3"
+            ]
+        );
+        let many: String = (1..=9)
+            .map(|i| format!("http://s{i}.example/live\n"))
+            .collect();
+        assert_eq!(m3u_entries(&many, "").len(), MAX_PLAYLIST_ENTRIES);
+        assert_eq!(m3u_entries(&many, "")[0], "http://s1.example/live");
+    }
+
+    #[test]
+    fn parse_m3u_skips_other_schemes_and_web_page_lines() {
+        let content = "mms://radio.example/live\nhttp://radio.example/live\n";
+        assert_eq!(
+            parse_m3u(content, "http://base.com"),
+            Some("http://radio.example/live".to_string())
+        );
+        let page = "<html>\n<body>Not found</body>\n</html>\n";
+        assert_eq!(parse_m3u(page, "http://base.com"), None);
+    }
+
     // --- resolve_playlist_url ---
 
     #[test]
@@ -1017,6 +1166,61 @@ mod tests {
             assert_eq!(
                 resolve_playlist_url(&server.url("/station.m3u")).unwrap(),
                 "http://radio.example/live"
+            );
+        }
+
+        #[test]
+        fn a_playlist_that_fails_to_load_falls_back_to_the_next_entry() {
+            let server = TestServer::start();
+            server.route(
+                "/station.pls",
+                Route::new(format!(
+                    "[playlist]\nFile1={}\nFile2={}\n",
+                    server.url("/gone.m3u"),
+                    server.url("/backup.m3u")
+                )),
+            );
+            server.route("/backup.m3u", Route::new("live.mp3\n"));
+            assert_eq!(
+                resolve_playlist_url(&server.url("/station.pls")).unwrap(),
+                server.url("/live.mp3")
+            );
+        }
+
+        #[test]
+        fn a_web_page_is_not_a_playlist() {
+            let server = TestServer::start();
+            server.route(
+                "/station.pls",
+                Route::new("<html><body>Moved</body></html>")
+                    .header("Content-Type", "text/html; charset=utf-8"),
+            );
+            let err = resolve_playlist_url(&server.url("/station.pls")).unwrap_err();
+            assert!(err.to_string().contains("web page"), "{err}");
+            // A playlist served as one is read
+            server.route(
+                "/station.m3u",
+                Route::new("#EXTM3U\nhttp://radio.example/live\n")
+                    .header("Content-Type", "text/html"),
+            );
+            assert_eq!(
+                resolve_playlist_url(&server.url("/station.m3u")).unwrap(),
+                "http://radio.example/live"
+            );
+        }
+
+        #[test]
+        fn a_playlist_that_never_ends_is_not_read_to_the_end() {
+            // A live stream where the playlist should be
+            let server = TestServer::start();
+            server.route("/station.pls", Route::new(vec![b'x'; 64 * 1024]).endless());
+            let start = std::time::Instant::now();
+            let err = resolve_playlist_url(&server.url("/station.pls")).unwrap_err();
+            assert!(err.to_string().contains("larger than"), "{err}");
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{:?}",
+                start.elapsed()
             );
         }
 

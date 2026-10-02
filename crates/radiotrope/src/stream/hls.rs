@@ -724,7 +724,7 @@ fn http_get(
 /// the client's timeout only bounds each read, so a body that never ends
 /// (a live stream where a segment should be) would otherwise be read up to
 /// `max_bytes`, after a Stop too.
-fn read_body(
+pub(crate) fn read_body(
     mut response: reqwest::blocking::Response,
     max_bytes: usize,
     cancel: &StreamCancel,
@@ -768,7 +768,7 @@ fn read_body(
 }
 
 /// Why a body longer than `max_bytes` wasn't read
-fn too_large(max_bytes: usize) -> String {
+pub(crate) fn too_large(max_bytes: usize) -> String {
     format!("larger than {} MB", max_bytes >> 20)
 }
 

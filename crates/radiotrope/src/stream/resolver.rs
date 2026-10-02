@@ -6,12 +6,15 @@
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
+use crossbeam_channel::Receiver;
+
 use crate::config::network::MAX_PLAYLIST_DEPTH;
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
 use crate::stream::hls::{resolve_hls, HlsFound, HlsReader, HlsSegmentFormat};
 use crate::stream::icy::{IcyReader, Opened};
-use crate::stream::playlist::{resolve_playlist, resolve_playlist_as};
+use crate::stream::metadata::StreamMetadata;
+use crate::stream::playlist::{first_that_works, read_playlist, PlaylistCheck, Step};
 use crate::stream::types::{ResolvedStream, StreamInfo, StreamType};
 use crate::stream::Deadline;
 
@@ -21,7 +24,8 @@ pub struct StreamResolver;
 impl StreamResolver {
     /// Resolve a URL to a `ResolvedStream`.
     ///
-    /// 1. Follow PLS/M3U playlist chains
+    /// 1. Follow PLS/M3U playlist chains, trying a playlist's entries in
+    ///    turn until one plays
     /// 2. If HLS → resolve HLS → HlsReader
     /// 3. Otherwise → IcyReader (works for ICY and non-ICY servers), unless
     ///    the address turns out to serve a playlist: then back to 1
@@ -39,72 +43,104 @@ impl StreamResolver {
     /// [`RESOLVE_TIMEOUT_SECS`](crate::config::timeouts::RESOLVE_TIMEOUT_SECS)
     /// (a stalled ICY server's reply to its request can take longer). A step
     /// that runs out of time fails with its own reason, such as the HTTP
-    /// status of an HLS segment.
+    /// status of an HLS segment. When none of a playlist's entries plays,
+    /// the first one's reason is given.
     pub fn resolve_cancellable(url: &str, cancel: &StreamCancel) -> Result<ResolvedStream> {
-        let deadline = Deadline::for_resolve();
-        let still_wanted = || match cancel.is_cancelled() {
-            true => Err(RadioError::Cancelled),
-            false => Ok(()),
+        Self::resolve_by(url, cancel, Deadline::for_resolve())
+    }
+
+    fn resolve_by(url: &str, cancel: &StreamCancel, deadline: Deadline) -> Result<ResolvedStream> {
+        Self::open_address(url, url, None, MAX_PLAYLIST_DEPTH, cancel, deadline)
+    }
+
+    /// Open `address`, which the station's `url` led to: an HLS stream, a
+    /// stream, or the first of a playlist's entries that plays. `kind` is
+    /// the kind of playlist the address is known to serve. Each address
+    /// read is one level of `depth`.
+    fn open_address(
+        url: &str,
+        address: &str,
+        kind: Option<PlaylistCheck>,
+        depth: usize,
+        cancel: &StreamCancel,
+        deadline: Deadline,
+    ) -> Result<ResolvedStream> {
+        if cancel.is_cancelled() {
+            return Err(RadioError::Cancelled);
+        }
+        if depth == 0 {
+            return Err(RadioError::Stream("Playlist nesting too deep".to_string()));
+        }
+        let next = |address: &str, kind| {
+            Self::open_address(url, address, kind, depth - 1, cancel, deadline)
         };
-        still_wanted()?;
-        let mut target = resolve_playlist(url, cancel, deadline)?;
-        // Each stream address that serves a playlist is one more level
-        for _ in 0..MAX_PLAYLIST_DEPTH {
-            still_wanted()?;
-            if target.hls {
-                match resolve_hls(&target.url, cancel, deadline)? {
-                    HlsFound::Media(media_url) => {
-                        return Self::open_hls(url, &target.url, &media_url, cancel, deadline)
-                    }
-                    // A plain list named like HLS (`.m3u8`)
-                    HlsFound::Playlist(kind) => {
-                        still_wanted()?;
-                        target = resolve_playlist_as(&target.url, kind, cancel, deadline)?;
-                        continue;
-                    }
+        match read_playlist(address, kind, cancel, deadline)? {
+            Step::Entries(entries) => {
+                first_that_works(&entries, deadline, |entry| next(entry, None))
+            }
+            Step::Hls => match resolve_hls(address, cancel, deadline)? {
+                HlsFound::Media(media_url) => {
+                    Self::open_hls(url, address, &media_url, cancel, deadline)
+                }
+                // A plain list named like HLS (`.m3u8`)
+                HlsFound::Playlist(kind) => next(address, Some(kind)),
+            },
+            Step::Stream => {
+                let playback_position = Arc::new(AtomicU64::new(0));
+                let opened = IcyReader::open_detecting(
+                    address,
+                    Some(playback_position.clone()),
+                    cancel.clone(),
+                    deadline,
+                )?;
+                match opened {
+                    Opened::Stream(reader, metadata_rx) => Ok(Self::direct(
+                        url,
+                        address,
+                        reader,
+                        metadata_rx,
+                        playback_position,
+                        cancel,
+                    )),
+                    // The address serves a playlist
+                    Opened::Playlist(kind) => next(address, Some(kind)),
                 }
             }
-            let playback_position = Arc::new(AtomicU64::new(0));
-            let opened = IcyReader::open_detecting(
-                &target.url,
-                Some(playback_position.clone()),
-                cancel.clone(),
-                deadline,
-            )?;
-            let (icy_reader, metadata_rx) = match opened {
-                Opened::Stream(reader, metadata_rx) => (reader, metadata_rx),
-                Opened::Playlist(kind) => {
-                    still_wanted()?;
-                    target = resolve_playlist_as(&target.url, kind, cancel, deadline)?;
-                    continue;
-                }
-            };
-
-            let content_type = icy_reader.headers.content_type.clone();
-            let station_name = icy_reader.headers.station_name.clone();
-            let bitrate = icy_reader.headers.bitrate;
-            let format_hint = Self::detect_format_hint(&target.url, content_type.as_deref());
-            let bytes_received = icy_reader.bytes_received.clone();
-
-            return Ok(ResolvedStream {
-                reader: Box::new(icy_reader),
-                metadata_rx: Some(metadata_rx),
-                info: StreamInfo {
-                    original_url: url.to_string(),
-                    resolved_url: target.url,
-                    stream_type: StreamType::Direct,
-                    format_hint,
-                    content_type,
-                    station_name,
-                    bitrate,
-                },
-                bytes_received: Some(bytes_received),
-                segments_downloaded: None,
-                playback_position: Some(playback_position),
-                cancel: cancel.clone(),
-            });
         }
-        Err(RadioError::Stream("Playlist nesting too deep".to_string()))
+    }
+
+    /// The stream at `address`, which the station's `url` led to
+    fn direct(
+        url: &str,
+        address: &str,
+        icy_reader: IcyReader,
+        metadata_rx: Receiver<StreamMetadata>,
+        playback_position: Arc<AtomicU64>,
+        cancel: &StreamCancel,
+    ) -> ResolvedStream {
+        let content_type = icy_reader.headers.content_type.clone();
+        let station_name = icy_reader.headers.station_name.clone();
+        let bitrate = icy_reader.headers.bitrate;
+        let format_hint = Self::detect_format_hint(address, content_type.as_deref());
+        let bytes_received = icy_reader.bytes_received.clone();
+
+        ResolvedStream {
+            reader: Box::new(icy_reader),
+            metadata_rx: Some(metadata_rx),
+            info: StreamInfo {
+                original_url: url.to_string(),
+                resolved_url: address.to_string(),
+                stream_type: StreamType::Direct,
+                format_hint,
+                content_type,
+                station_name,
+                bitrate,
+            },
+            bytes_received: Some(bytes_received),
+            segments_downloaded: None,
+            playback_position: Some(playback_position),
+            cancel: cancel.clone(),
+        }
     }
 
     /// Open the HLS stream whose media playlist `playlist_url` (found from
@@ -614,6 +650,110 @@ mod tests {
             // Dropping a stream nobody plays (a stale resolve) stops it
             drop(resolved);
             assert!(cancel.is_cancelled());
+        }
+    }
+
+    mod mirrors {
+        use super::*;
+        use crate::stream::id3::test_util::frame;
+        use crate::stream::test_server::{Route, TestServer};
+        use std::time::{Duration, Instant};
+
+        fn station(audio: Vec<u8>) -> Route {
+            Route::new(audio)
+                .header("Content-Type", "audio/mpeg")
+                .without_length()
+                .stall()
+        }
+
+        /// A PLS listing `paths` of `server`
+        fn pls(server: &TestServer, paths: &[&str]) -> Route {
+            let mut list = String::from("[playlist]\n");
+            for (i, path) in paths.iter().enumerate() {
+                list.push_str(&format!("File{}={}\n", i + 1, server.url(path)));
+            }
+            Route::new(list)
+        }
+
+        #[test]
+        fn a_dead_entry_falls_back_to_the_next() {
+            let server = TestServer::start();
+            server.route("/station.pls", pls(&server, &["/gone", "/down", "/live"]));
+            server.route("/down", Route::status(503));
+            server.route("/live", station(frame(4096)));
+            let resolved = StreamResolver::resolve(&server.url("/station.pls")).unwrap();
+            assert_eq!(resolved.info.resolved_url, server.url("/live"));
+            assert_eq!(resolved.info.original_url, server.url("/station.pls"));
+            assert_eq!(server.hits("/gone"), 1);
+            assert_eq!(server.hits("/down"), 1);
+        }
+
+        #[test]
+        fn an_entry_that_is_a_playlist_falls_back_too() {
+            let server = TestServer::start();
+            server.route("/station.m3u", pls(&server, &["/gone.m3u", "/live"]));
+            server.route("/live", station(frame(4096)));
+            let resolved = StreamResolver::resolve(&server.url("/station.m3u")).unwrap();
+            assert_eq!(resolved.info.resolved_url, server.url("/live"));
+        }
+
+        #[test]
+        fn when_none_plays_the_first_reason_is_given() {
+            let server = TestServer::start();
+            server.route("/station.pls", pls(&server, &["/gone", "/down"]));
+            server.route("/down", Route::status(503));
+            let err = StreamResolver::resolve(&server.url("/station.pls"))
+                .err()
+                .unwrap();
+            assert!(err.to_string().contains("404"), "{err}");
+            assert_eq!(server.hits("/down"), 1);
+        }
+
+        #[test]
+        fn no_more_entries_are_tried_once_the_time_is_up() {
+            let server = TestServer::start();
+            server.route("/station.pls", pls(&server, &["/silent", "/live"]));
+            server.route("/silent", station(Vec::new()));
+            server.route("/live", station(frame(4096)));
+            let start = Instant::now();
+            let deadline = Deadline::after(Duration::from_millis(500));
+            let err = StreamResolver::resolve_by(
+                &server.url("/station.pls"),
+                &StreamCancel::new(),
+                deadline,
+            )
+            .err()
+            .unwrap();
+            assert!(matches!(err, RadioError::Timeout(_)), "{err}");
+            assert!(
+                start.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                start.elapsed()
+            );
+            assert_eq!(server.hits("/live"), 0);
+        }
+
+        #[test]
+        fn no_more_entries_are_tried_once_cancelled() {
+            let server = TestServer::start();
+            server.route("/station.pls", pls(&server, &["/silent", "/live"]));
+            server.route("/silent", station(Vec::new()));
+            server.route("/live", station(frame(4096)));
+            let cancel = StreamCancel::new();
+            let resolve_cancel = cancel.clone();
+            let url = server.url("/station.pls");
+            let resolve = std::thread::spawn(move || {
+                StreamResolver::resolve_cancellable(&url, &resolve_cancel)
+            });
+            let start = Instant::now();
+            while server.hits("/silent") == 0 && start.elapsed() < Duration::from_secs(3) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            cancel.cancel();
+            let result = resolve.join().unwrap();
+            assert!(matches!(result, Err(RadioError::Cancelled)));
+            assert_eq!(server.hits("/live"), 0);
         }
     }
 
