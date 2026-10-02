@@ -6,13 +6,14 @@
 //! Decodable logos are stored as PNG thumbnails no larger than
 //! [`LOGO_MAX_SIZE`], so loading one never decodes a full-size image and the
 //! lookup hits `<id>.png` first. The logo services store nothing else
-//! ([`ImageCache::store_thumbnail`]); [`ImageCache::put`] keeps data the
-//! `image` crate cannot decode (e.g. SVG) as-is, with an extension guessed
-//! from its content.
+//! ([`ImageCache::store_thumbnail`]); [`ImageCache::put`] keeps data that
+//! isn't an image (a web page, say) as-is, with an extension guessed from
+//! its content. SVG logos are drawn to pixels first (see [`svg_logo`]).
 
 use crate::config::app::NAME;
 use crate::config::caches::TEMP_FILE_MAX_AGE;
 use crate::config::logos::{MAX_DECODE_BYTES, MAX_DIMENSION};
+use crate::data::svg_logo;
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use std::collections::HashSet;
@@ -163,13 +164,13 @@ impl ImageCache {
     /// Load cached image data
     ///
     /// An entry cached before logos were stored as thumbnails (any non-PNG
-    /// format, or larger than [`LOGO_MAX_SIZE`]) isn't returned: shrinking
-    /// it is too slow for the UI thread, so a background thread does it
-    /// with [`convert`](Self::convert).
+    /// format such as SVG, or larger than [`LOGO_MAX_SIZE`]) isn't returned:
+    /// shrinking it is too slow for the UI thread, so a background thread
+    /// does it with [`convert`](Self::convert).
     pub fn get(&self, id: &str) -> Option<Vec<u8>> {
         let path = self.find_cached_path(id)?;
         let data = fs::read(&path).ok()?;
-        (!needs_thumbnail(ImageReader::new(Cursor::new(&data)))).then_some(data)
+        (!needs_conversion(&data)).then_some(data)
     }
 
     /// Whether a logo is cached for `id`, and whether it is ready or still
@@ -178,6 +179,10 @@ impl ImageCache {
         let Some(path) = self.find_cached_path(id) else {
             return CacheState::Absent;
         };
+        // Older builds kept SVGs as they came
+        if path.extension().is_some_and(|ext| ext == "svg") {
+            return CacheState::NeedsConversion;
+        }
         match ImageReader::open(&path).map(needs_thumbnail) {
             Ok(true) => CacheState::NeedsConversion,
             Ok(false) => CacheState::Ready,
@@ -191,7 +196,7 @@ impl ImageCache {
     pub fn convert(&self, id: &str) -> Option<Thumbnail> {
         let path = self.find_cached_path(id)?;
         let data = fs::read(&path).ok()?;
-        if !needs_thumbnail(ImageReader::new(Cursor::new(&data))) {
+        if !needs_conversion(&data) {
             return None;
         }
         let Some(png) = make_thumbnail(&data) else {
@@ -550,6 +555,12 @@ impl ImageCache {
     }
 }
 
+/// Whether cached data is an SVG or a decodable image not yet stored as a
+/// thumbnail
+fn needs_conversion(data: &[u8]) -> bool {
+    svg_logo::is_svg(data) || needs_thumbnail(ImageReader::new(Cursor::new(data)))
+}
+
 /// Whether cached data is a decodable image not yet stored as a thumbnail
 ///
 /// Only reads the image header, so it is cheap for data that is already fine.
@@ -594,8 +605,19 @@ fn is_older_than(entry: &fs::DirEntry, age: Duration) -> bool {
 
 /// Decode a logo, refusing anything larger than [`MAX_DIMENSION`] a side
 /// or [`MAX_DECODE_BYTES`] of memory: a small file can unpack into a huge
-/// image, and several are decoded at once.
+/// image, and several are decoded at once. An SVG is drawn to fit
+/// [`LOGO_MAX_SIZE`].
 pub fn decode_logo(data: &[u8]) -> image::ImageResult<DynamicImage> {
+    if svg_logo::is_svg(data) {
+        return svg_logo::render(data, LOGO_MAX_SIZE)
+            .map(DynamicImage::ImageRgba8)
+            .map_err(|e| {
+                image::ImageError::Decoding(image::error::DecodingError::new(
+                    image::error::ImageFormatHint::Name("SVG".to_string()),
+                    e,
+                ))
+            });
+    }
     let mut reader = ImageReader::new(Cursor::new(data)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(MAX_DIMENSION);
@@ -647,7 +669,7 @@ fn fallback_dir_ready(dir: &Path) -> std::io::Result<()> {
 
 /// Decode an image and re-encode it as a PNG no larger than [`LOGO_MAX_SIZE`]
 ///
-/// Returns `None` if the data is not an image the `image` crate can decode.
+/// Returns `None` if the data is not an image [`decode_logo`] can decode.
 fn make_thumbnail(data: &[u8]) -> Option<Vec<u8>> {
     let img = decode_logo(data).ok()?;
     let img = if img.width() > LOGO_MAX_SIZE || img.height() > LOGO_MAX_SIZE {
@@ -1502,16 +1524,55 @@ mod tests {
         cleanup_dir(&dir);
     }
 
+    const RED_SVG: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 10"><rect width="20" height="10" fill="#ff0000"/></svg>"##;
+
     #[test]
-    fn test_undecodable_svg_stored_as_is() {
+    fn an_svg_logo_is_stored_as_a_png_thumbnail() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+
+        let png = cache.put_thumbnail("svg", RED_SVG).unwrap();
+        let img = image::load_from_memory(&png).unwrap();
+        assert_eq!(
+            (img.width(), img.height()),
+            (LOGO_MAX_SIZE, LOGO_MAX_SIZE / 2)
+        );
+        assert_eq!(cache.get_path("svg").unwrap(), dir.join("svg.png"));
+        assert_eq!(cache.state("svg"), CacheState::Ready);
+        assert_eq!(cache.get("svg").unwrap(), png);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn an_svg_kept_by_an_older_build_is_converted() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        fs::write(dir.join("old.svg"), RED_SVG).unwrap();
+
+        assert_eq!(cache.state("old"), CacheState::NeedsConversion);
+        assert!(cache.get("old").is_none(), "an SVG reached the UI thread");
+        let thumb = cache.convert("old").unwrap();
+        thumb.saved.unwrap();
+        assert_eq!(cache.get("old").unwrap(), thumb.png);
+        assert!(!dir.join("old.svg").exists());
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn an_svg_that_draws_nothing_is_stored_as_is_and_dropped_on_conversion() {
         let dir = temp_cache_dir();
         let cache = ImageCache::with_dir(dir.clone()).unwrap();
 
         let svg = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".to_vec();
-        let path = cache.put("thumb_svg", &svg, None).unwrap();
-
+        assert!(cache.put_thumbnail("empty", &svg).is_none());
+        let path = cache.put("empty", &svg, None).unwrap();
         assert!(path.to_string_lossy().ends_with(".svg"));
-        assert_eq!(cache.get("thumb_svg").unwrap(), svg);
+
+        assert!(cache.get("empty").is_none());
+        assert!(cache.convert("empty").is_none());
+        assert_eq!(cache.state("empty"), CacheState::Absent);
 
         cleanup_dir(&dir);
     }

@@ -66,7 +66,7 @@ impl BrowseLogos {
             None => match service.fetch_raw(logo_url) {
                 Ok(data) => match self.cache.put_thumbnail(&key, &data) {
                     Some(png) => png,
-                    // Not an image we can show (a web page, an SVG)
+                    // Not an image we can show (a web page, say)
                     None => {
                         self.failed.record_unusable(logo_url);
                         return None;
