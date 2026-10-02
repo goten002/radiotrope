@@ -93,33 +93,37 @@ impl HttpClient {
     }
 
     /// Serve `key` from the cache if fresh; otherwise send the request and
-    /// store the response. If the request fails, fall back to a stale entry.
+    /// store the response. If the request fails or its answer isn't the
+    /// JSON expected, fall back to a stale entry.
     fn cached<T: DeserializeOwned>(
         &self,
         key: &str,
         ttl: Duration,
         request: impl FnOnce() -> reqwest::blocking::RequestBuilder,
     ) -> Result<T> {
-        self.get_or_fetch(key, ttl, || body_of(request()))
+        self.get_or_fetch(key, ttl, || fetch_json(request()))
     }
 
-    /// Serve `key` from the cache if fresh; otherwise `fetch` the body and
-    /// store it. If fetching fails, fall back to a stale entry.
+    /// Serve `key` from the cache if fresh; otherwise `fetch` the answer
+    /// and store its body. If fetching fails, fall back to a stale entry.
+    ///
+    /// `fetch` parses the answer itself (see [`fetch_json`]), so a caller
+    /// trying several servers can move on from one whose answer isn't
+    /// the JSON expected, and only a parsed answer is stored.
     pub fn get_or_fetch<T: DeserializeOwned>(
         &self,
         key: &str,
         ttl: Duration,
-        fetch: impl FnOnce() -> Result<Vec<u8>>,
+        fetch: impl FnOnce() -> Result<(T, Vec<u8>)>,
     ) -> Result<T> {
         let Some(cache) = &self.cache else {
-            return parse(&fetch()?);
+            return fetch().map(|(data, _)| data);
         };
         if let Some(data) = cache.get_fresh(key, ttl).and_then(|b| parse(&b).ok()) {
             return Ok(data);
         }
         match fetch() {
-            Ok(bytes) => {
-                let data = parse(&bytes)?;
+            Ok((data, bytes)) => {
                 cache.put(key, &bytes);
                 Ok(data)
             }
@@ -141,6 +145,17 @@ pub fn body_of(request: reqwest::blocking::RequestBuilder) -> Result<Vec<u8>> {
         .and_then(|r| r.error_for_status())
         .and_then(|r| r.bytes())?
         .to_vec())
+}
+
+/// Send `request` and parse the body of a successful response as JSON,
+/// returned with the body. An answer that isn't the JSON expected (a
+/// maintenance page with status 200, say) is an
+/// [`InvalidResponse`](AppError::InvalidResponse).
+pub fn fetch_json<T: DeserializeOwned>(
+    request: reqwest::blocking::RequestBuilder,
+) -> Result<(T, Vec<u8>)> {
+    let bytes = body_of(request)?;
+    Ok((parse(&bytes)?, bytes))
 }
 
 fn parse<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -232,6 +247,28 @@ mod tests {
         assert_eq!(first, vec![7]);
         assert_eq!(second, vec![7]);
         let _ = std::fs::remove_dir_all(cache.dir());
+    }
+
+    #[test]
+    fn test_stale_entry_used_when_the_answer_is_not_json() {
+        let cache = temp_cache("garbled");
+        let client = HttpClient::new().unwrap().with_cache(Some(cache.clone()));
+        let url = serve_once("[7]");
+        let first: Vec<u32> = client
+            .get_or_fetch("k", Duration::ZERO, || fetch_json(client.inner().get(&url)))
+            .unwrap();
+        // A page instead of JSON, with status 200: the stale copy is used
+        let url = serve_once("<html>Down for maintenance</html>");
+        let second: Vec<u32> = client
+            .get_or_fetch("k", Duration::ZERO, || fetch_json(client.inner().get(&url)))
+            .unwrap();
+        assert_eq!(first, vec![7]);
+        assert_eq!(second, vec![7]);
+        let _ = std::fs::remove_dir_all(cache.dir());
+        // Read on its own, such an answer is an invalid response
+        let url = serve_once("<html>Down for maintenance</html>");
+        let e = fetch_json::<Vec<u32>>(client.inner().get(&url)).unwrap_err();
+        assert!(matches!(e, AppError::InvalidResponse(_)));
     }
 
     #[test]

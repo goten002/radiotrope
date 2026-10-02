@@ -6,7 +6,7 @@
 use crate::config::providers::{CATEGORY_CACHE_TTL, RADIO_BROWSER_SERVERS, STATION_CACHE_TTL};
 use crate::data::types::Station;
 use crate::error::Result;
-use crate::network::client::body_of;
+use crate::network::client::{body_of, fetch_json};
 use crate::network::{ApiCache, HttpClient};
 
 use super::radio_browser_servers::Servers;
@@ -175,7 +175,7 @@ impl RadioBrowserProvider {
         self.client
             .get_or_fetch(&format!("GET {}", self.url(path)), ttl, || {
                 self.servers
-                    .run(|base| body_of(self.client.inner().get(format!("{base}{path}"))))
+                    .run(|base| fetch_json(self.client.inner().get(format!("{base}{path}"))))
             })
     }
 
@@ -195,7 +195,7 @@ impl RadioBrowserProvider {
         let key = format!("POST {} {body}", self.url(path));
         self.client.get_or_fetch(&key, ttl, || {
             self.servers.run(|base| {
-                body_of(
+                fetch_json(
                     self.client
                         .inner()
                         .post(format!("{base}{path}"))
