@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle, InfoTip, Icon, PopupCard } from "../components.slint";
+import { DialogShell, Toggle, InfoTip, Dropdown } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or a command that adds Radiotrope
@@ -128,119 +128,6 @@ component RowLabel inherits Text {
     vertical-alignment: center;
 }
 
-// One choice in a picker's list, with the menus' tick when picked
-component PickerItem inherits Rectangle {
-    in property <string> label;
-    in property <bool> selected;
-    callback clicked();
-
-    height: 28px;
-    border-radius: Theme.radius-sm;
-    background: touch.has-hover ? Theme.menu-hover : transparent;
-    animate background { duration: Theme.fast; }
-
-    touch := TouchArea {
-        clicked => { root.clicked(); }
-    }
-
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 12px;
-        spacing: 10px;
-
-        Text {
-            horizontal-stretch: 1;
-            text: root.label;
-            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: Theme.font-md;
-            vertical-alignment: center;
-        }
-        Rectangle {
-            width: 12px;
-            if root.selected: Icon {
-                width: 12px;
-                height: 12px;
-                y: (parent.height - self.height) / 2;
-                source: @image-url("../icons/tick.svg");
-                colorize: Theme.accent;
-            }
-        }
-    }
-}
-
-// A dropdown like the EQ presets: which agent the setup lines are for,
-// and how network agents sign in
-component Picker inherits Rectangle {
-    in property <[string]> items;
-    in-out property <int> selected;
-    in property <bool> enabled: true;
-    callback changed(int);
-
-    // As tall as CopyLine and the buttons, so a row lines up
-    height: 34px;
-    horizontal-stretch: 1;
-    border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: Theme.hairline;
-    background: root.enabled && touch.has-hover ? Theme.menu-hover : Theme.elevated;
-    animate background { duration: Theme.fast; }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { popup.show(); }
-    }
-
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-
-        Text {
-            text: root.items[root.selected];
-            color: root.enabled ? Theme.text-primary : Theme.disabled-text;
-            font-size: Theme.font-md;
-            vertical-alignment: center;
-            horizontal-stretch: 1;
-            overflow: elide;
-        }
-        // Chevron, as on the EQ preset list
-        Rectangle {
-            width: 14px;
-            Text {
-                text: "\u{2304}";
-                color: root.enabled ? Theme.text-secondary : Theme.disabled-text;
-                font-size: Theme.font-lg;
-                y: (parent.height - self.preferred-height) / 2 - 2px;
-            }
-        }
-    }
-
-    popup := PopupWindow {
-        x: 0;
-        y: root.height + 2px;
-        width: root.width;
-
-        PopupCard {
-            VerticalLayout {
-                padding: 4px;
-                for label[index] in root.items: PickerItem {
-                    label: label;
-                    selected: index == root.selected;
-                    // Picks before closing: the list's rows (and their
-                    // index) go away with the popup
-                    clicked => {
-                        if root.selected != index {
-                            root.selected = index;
-                            root.changed(index);
-                        }
-                        popup.close();
-                    }
-                }
-            }
-        }
-    }
-}
-
 // Which AI agents may use the player: on this computer, and over the network
 export component AgentsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
@@ -330,7 +217,7 @@ export component AgentsDialog inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             RowLabel { text: "Agent"; }
-            Picker {
+            Dropdown {
                 items: root.apps;
                 selected <=> root.app;
                 changed(index) => { root.app-changed(index); }
@@ -394,7 +281,7 @@ export component AgentsDialog inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             RowLabel { text: "Listen on"; }
-            Picker {
+            Dropdown {
                 items: root.listen-options;
                 selected <=> root.listen;
                 enabled: root.network-fields;
@@ -425,7 +312,7 @@ export component AgentsDialog inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             RowLabel { text: "Authentication"; }
-            Picker {
+            Dropdown {
                 width: 96px;
                 horizontal-stretch: 0;
                 items: root.auths;
