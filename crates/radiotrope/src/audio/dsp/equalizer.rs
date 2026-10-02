@@ -1413,7 +1413,7 @@ mod tests {
 
     #[test]
     fn the_top_band_works_at_low_sample_rates() {
-        for rate in [22050.0, 32000.0] {
+        for rate in [22050.0, 24000.0, 32000.0] {
             let coeffs = band_coefficients(NUM_BANDS - 1, 6.0, rate)
                 .unwrap_or_else(|| panic!("no top band at {rate} Hz"));
             let top = response_db(&coeffs, rate * 0.49, rate);

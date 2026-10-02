@@ -1023,6 +1023,139 @@ mod tests {
     }
 
     #[test]
+    fn on_the_network_any_host_name_but_no_web_page_gets_in() {
+        let server = start(
+            &Options {
+                address: "0.0.0.0:0".into(),
+                token: None,
+            },
+            test_tools(),
+        )
+        .unwrap();
+        assert!(server.on_all_networks());
+        let port = port_of(&server);
+        // Agents call the computer by whatever name reaches it
+        let by_name = post_request(port, "").replace(&format!("127.0.0.1:{port}"), "radio.lan");
+        let (status, _) = http(port, &by_name, INIT);
+        assert!(status.contains(" 200 "), "{status}");
+        // Web pages stay out on every network
+        let web_page = post_request(port, "\r\nOrigin: http://radio.lan");
+        let (status, _) = http(port, &web_page, INIT);
+        assert!(status.contains(" 403 "), "{status}");
+    }
+
+    #[test]
+    fn a_modern_agent_needs_no_session() {
+        let (tx, commands) = crossbeam_channel::unbounded();
+        let tools = RadioTools::new(
+            tx,
+            Arc::new(std::sync::Mutex::new(
+                crate::app::state::AppSnapshot::default(),
+            )),
+            Arc::new(std::sync::Mutex::new(
+                radiotrope_app::data::favorites::FavoritesManager::new(),
+            )),
+        );
+        let presence = tools.presence();
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: None,
+            },
+            tools,
+        )
+        .unwrap();
+        let port = port_of(&server);
+        let meta = r#""_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientCapabilities":{},"io.modelcontextprotocol/clientInfo":{"name":"modern","version":"1"}}"#;
+        // A 2026 client repeats the method (and the tool) in headers
+        let post = |headers: &str| {
+            post_request(
+                port,
+                &format!("\r\nMCP-Protocol-Version: 2026-07-28{headers}"),
+            )
+        };
+
+        let discover =
+            format!(r#"{{"jsonrpc":"2.0","id":1,"method":"server/discover","params":{{{meta}}}}}"#);
+        let response = http_raw(port, &post("\r\nMcp-Method: server/discover"), &discover);
+        assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+        assert!(
+            !response.to_ascii_lowercase().contains("mcp-session-id"),
+            "{response}"
+        );
+        assert!(response.contains("2026-07-28"), "{response}");
+
+        let stop = format!(
+            r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"stop","arguments":{{}},{meta}}}}}"#
+        );
+        let (status, body) = http(
+            port,
+            &post("\r\nMcp-Method: tools/call\r\nMcp-Name: stop"),
+            &stop,
+        );
+        assert!(status.contains(" 200 "), "{status}");
+        assert!(body.contains(r#""resultType":"complete""#), "{body}");
+        assert!(matches!(
+            commands.recv_timeout(Duration::from_secs(5)),
+            Ok(crate::app::state::AppCommand::Stop)
+        ));
+        // Known by the computer it calls from, under the name it gives
+        assert!(eventually(|| presence
+            .agents()
+            .first()
+            .is_some_and(|a| a.name() == "modern")));
+        assert_eq!(presence.agents().len(), 1);
+    }
+
+    #[test]
+    fn a_request_whose_headers_trickle_in_is_dropped() {
+        use std::io::{ErrorKind, Read, Write};
+        let server = start(
+            &Options {
+                address: "127.0.0.1:0".into(),
+                token: None,
+            },
+            test_tools(),
+        )
+        .unwrap();
+        let port = port_of(&server);
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .write_all(
+                format!("POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nX-Slow: ").as_bytes(),
+            )
+            .unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(500)))
+            .unwrap();
+        // One byte every half second keeps the connection busy but never
+        // ends the headers
+        let started = Instant::now();
+        let give_up = HEADER_READ_TIMEOUT + Duration::from_secs(5);
+        let closed = loop {
+            if started.elapsed() > give_up {
+                break false;
+            }
+            if stream.write_all(b"a").is_err() {
+                break true;
+            }
+            let mut buf = [0u8; 256];
+            match stream.read(&mut buf) {
+                // Closed, maybe after a 408
+                Ok(_) => break true,
+                Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+                Err(_) => break true,
+            }
+        };
+        assert!(closed, "still open after {:?}", started.elapsed());
+        assert!(
+            started.elapsed() + Duration::from_secs(1) >= HEADER_READ_TIMEOUT,
+            "dropped too soon: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
     fn container_and_vm_networks_are_left_out() {
         let lan = "192.168.1.20".parse().unwrap();
         // No network found: Windows and Linux make up a 169.254 address
