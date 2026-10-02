@@ -132,6 +132,15 @@ pub fn ask_to_show() -> bool {
         let deadline = Instant::now() + SHOW_WAIT;
         loop {
             if let Ok(mut conn) = connect_in(&dir).await {
+                // Windows lets only the process the user just started bring
+                // a window to the front: hand that right to the player, or
+                // its window only flashes in the taskbar
+                #[cfg(windows)]
+                {
+                    if let Some(pid) = conn.peer_creds().ok().and_then(|c| c.pid()) {
+                        allow_to_come_forward(pid);
+                    }
+                }
                 return conn
                     .write_all(format!("{HELLO_SHOW}\n").as_bytes())
                     .await
@@ -143,6 +152,19 @@ pub fn ask_to_show() -> bool {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
+}
+
+/// Let process `pid` bring its window to the front, a right we have as the
+/// process the user just started
+#[cfg(windows)]
+fn allow_to_come_forward(pid: u32) {
+    #[link(name = "user32")]
+    extern "system" {
+        fn AllowSetForegroundWindow(process_id: u32) -> i32;
+    }
+    // SAFETY: plain Win32 call with a process id; when we hold no such right
+    // it fails and changes nothing
+    unsafe { AllowSetForegroundWindow(pid) };
 }
 
 /// Start the player as its own process, detached from ours, so that it keeps
