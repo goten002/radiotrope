@@ -143,8 +143,13 @@ impl AppController {
                 name,
                 logo_url,
                 country,
+                taken,
             } => {
-                self.start_stream(&url, name, logo_url, country);
+                let seq = self.start_stream(&url, name, logo_url, country);
+                if let Some(taken) = taken {
+                    // An agent that stopped waiting has dropped its end
+                    let _ = taken.send(seq);
+                }
             }
             AppCommand::Stop => {
                 self.stop_recording();
@@ -281,6 +286,7 @@ impl AppController {
     }
 
     /// Resolve the stream on a worker thread, then send the result back.
+    /// Returns the station's `play_seq`.
     ///
     /// Each call increments `resolve_generation`; stale results from earlier
     /// calls are discarded in `handle_stream_resolved`.
@@ -290,7 +296,7 @@ impl AppController {
         name: Option<String>,
         logo_url: Option<String>,
         country: Option<String>,
-    ) {
+    ) -> u64 {
         // Switching station ends the recording of the old one
         self.stop_recording();
 
@@ -307,7 +313,7 @@ impl AppController {
         let cancel = StreamCancel::new();
         self.stream_cancel = Some(cancel.clone());
 
-        {
+        let seq = {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.play_seq += 1;
             state.station_url = Some(url.to_string());
@@ -328,7 +334,8 @@ impl AppController {
             // The old station was stopped above. Its own Stopped is ignored
             // like the rest of its events.
             state.playback = PlaybackState::Stopped;
-        }
+            state.play_seq
+        };
 
         let url: Arc<str> = Arc::from(url);
         let cmd_tx = self.cmd_tx.clone();
@@ -364,6 +371,7 @@ impl AppController {
                 let _ = cmd_tx.send(AppCommand::InternalStreamResolved { generation, result });
             })
             .expect("Failed to spawn stream-resolve thread");
+        seq
     }
 
     /// Stop the station being resolved or played, and make any resolve
@@ -862,6 +870,31 @@ mod tests {
         }
 
         #[test]
+        fn a_play_tells_its_sender_which_station_it_became() {
+            let (mut controller, state) = controller();
+            // The window starts one first: it asks for nothing back
+            controller.handle_command(AppCommand::Play {
+                url: silent_station(),
+                name: None,
+                logo_url: None,
+                country: None,
+                taken: None,
+            });
+            let (taken, mut seq) = tokio::sync::oneshot::channel();
+            controller.handle_command(AppCommand::Play {
+                url: silent_station(),
+                name: Some("Agent FM".into()),
+                logo_url: None,
+                country: None,
+                taken: Some(taken),
+            });
+            let state = state.lock().unwrap();
+            assert_eq!(seq.try_recv().unwrap(), state.play_seq);
+            assert_eq!(state.play_seq, 2);
+            assert_eq!(state.station_name.as_deref(), Some("Agent FM"));
+        }
+
+        #[test]
         fn a_play_carries_its_logo_and_country() {
             let (mut controller, state) = controller();
             controller.handle_command(AppCommand::Play {
@@ -869,6 +902,7 @@ mod tests {
                 name: Some("Silent FM".into()),
                 logo_url: Some("http://silent.test/logo.png".into()),
                 country: Some("Greece".into()),
+                taken: None,
             });
             {
                 let state = state.lock().unwrap();
@@ -884,6 +918,7 @@ mod tests {
                 name: None,
                 logo_url: None,
                 country: Some(String::new()),
+                taken: None,
             });
             {
                 let state = state.lock().unwrap();

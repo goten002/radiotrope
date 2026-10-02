@@ -150,10 +150,15 @@ pub fn ask_to_show() -> bool {
 pub fn spawn_player() -> io::Result<()> {
     use std::process::{Command, Stdio};
 
-    let mut cmd = Command::new(std::env::current_exe()?);
+    let mut cmd = Command::new(player_program()?);
     cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    // Not the agent's working folder, which the player would keep busy (a
+    // project on a USB stick could not be ejected while it plays)
+    if let Some(home) = dirs::home_dir().filter(|dir| dir.is_dir()) {
+        cmd.current_dir(home);
+    }
 
     #[cfg(all(unix, not(target_os = "macos")))]
     for (var, value) in desktop_session_env() {
@@ -187,6 +192,16 @@ pub fn spawn_player() -> io::Result<()> {
     }
 
     cmd.spawn().map(drop)
+}
+
+/// The program to start as the player: this one, or inside an AppImage the
+/// AppImage file itself. The program running is in the AppImage's
+/// temporary mount, which goes away when this relay exits.
+fn player_program() -> io::Result<PathBuf> {
+    match std::env::var_os("APPIMAGE").filter(|path| !path.is_empty()) {
+        Some(appimage) => Ok(PathBuf::from(appimage)),
+        None => std::env::current_exe(),
+    }
 }
 
 /// The desktop session's variables that our environment lacks, for the

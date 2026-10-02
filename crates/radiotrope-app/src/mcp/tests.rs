@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crossbeam_channel::{unbounded, Receiver};
+use crossbeam_channel::{bounded, unbounded, Receiver, Sender};
 use rmcp::ServiceExt;
 use serde_json::{json, Value};
 use tokio::io::{
@@ -90,6 +90,8 @@ struct Session {
     lines: Lines<BufReader<ReadHalf<DuplexStream>>>,
     next_id: u64,
     commands: Receiver<AppCommand>,
+    /// The window's end of the command channel
+    window: Sender<AppCommand>,
     state: Arc<Mutex<AppSnapshot>>,
     favorites: Arc<Mutex<FavoritesManager>>,
     _dir: TempDir,
@@ -108,7 +110,13 @@ const MODERN: &str = "2026-07-28";
 
 impl Session {
     async fn start(search_delay: Duration) -> Self {
-        let (cmd_tx, commands) = unbounded();
+        Self::with_channel(search_delay, unbounded()).await
+    }
+
+    async fn with_channel(
+        search_delay: Duration,
+        (cmd_tx, commands): (Sender<AppCommand>, Receiver<AppCommand>),
+    ) -> Self {
         let state = Arc::new(Mutex::new(AppSnapshot::default()));
         let mut favs = FavoritesManager::new();
         favs.add(Favorite::new("Jazz FM", "http://jazz.test/stream"))
@@ -125,7 +133,7 @@ impl Session {
         providers.register(Box::new(FakeDirectory {
             delay: search_delay,
         }));
-        let tools = RadioTools::new(cmd_tx, state.clone(), favorites.clone())
+        let tools = RadioTools::new(cmd_tx.clone(), state.clone(), favorites.clone())
             .with_test_setup(providers, dir.join("favorites.json"));
 
         let (client, server) = tokio::io::duplex(1 << 16);
@@ -140,6 +148,7 @@ impl Session {
             lines: BufReader::new(read).lines(),
             next_id: 0,
             commands,
+            window: cmd_tx,
             state,
             favorites,
             _dir: TempDir(dir),
@@ -474,6 +483,7 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 name,
                 logo_url,
                 country,
+                taken,
             } = cmd
             else {
                 continue;
@@ -488,6 +498,9 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 st.is_resolving = true;
                 st.last_error = None;
                 st.playback = radiotrope::audio::PlaybackState::Stopped;
+                if let Some(taken) = taken {
+                    let _ = taken.send(st.play_seq);
+                }
             }
             std::thread::sleep(Duration::from_millis(150));
             let mut st = state.lock().unwrap();
@@ -534,6 +547,132 @@ async fn play_waits_for_the_outcome() {
     assert_eq!(state.station_country.as_deref(), Some("Greece"));
     let unknown = s.call("play_station", json!({"id": "nope"})).await;
     assert_eq!(unknown["isError"], true);
+}
+
+#[tokio::test]
+async fn play_reports_its_own_station_not_one_started_just_before() {
+    let mut s = Session::start(Duration::ZERO).await;
+    fake_controller(s.commands.clone(), s.state.clone());
+    s.legacy_handshake("2025-11-25").await;
+    // The window starts a station that fails, just before the agent's
+    s.window
+        .send(AppCommand::Play {
+            url: "http://broken.test/stream".into(),
+            name: None,
+            logo_url: None,
+            country: None,
+            taken: None,
+        })
+        .unwrap();
+    let played = s
+        .call(
+            "play_url",
+            json!({"url": "http://jazz.test/stream", "name": "Jazz FM"}),
+        )
+        .await;
+    assert_eq!(text(&played), "Playing Jazz FM (MP3, 128 kbps)", "{played}");
+}
+
+#[tokio::test]
+async fn a_busy_player_says_so_at_once() {
+    // A queue with no room: the controller is stuck
+    let (tx, rx) = bounded(1);
+    tx.send(AppCommand::Stop).unwrap();
+    let mut s = Session::with_channel(Duration::ZERO, (tx, rx)).await;
+    s.legacy_handshake("2025-11-25").await;
+    let started = std::time::Instant::now();
+    for (tool, args) in [
+        ("stop", json!({})),
+        ("set_muted", json!({"muted": true})),
+        ("play_url", json!({"url": "http://jazz.test/stream"})),
+    ] {
+        let r = s.call(tool, args).await;
+        assert_eq!(r["isError"], true, "{tool}: {r}");
+        assert!(text(&r).contains("busy"), "{tool}: {r}");
+    }
+    assert!(started.elapsed() < Duration::from_secs(2));
+    // Nothing went in behind the Stop
+    assert_eq!(s.commands.len(), 1);
+}
+
+#[tokio::test]
+async fn add_favorite_refuses_overlong_text_and_too_many_favorites() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let long_name = "n".repeat(513);
+    let r = s
+        .call(
+            "add_favorite",
+            json!({"url": "http://long.test/stream", "name": long_name}),
+        )
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+    let long_url = format!("http://long.test/{}", "x".repeat(2048));
+    let r = s
+        .call("add_favorite", json!({"url": long_url, "name": "Long"}))
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+    // Counted in characters: 512 Greek letters (1024 bytes) are fine
+    let greek = "α".repeat(512);
+    let r = s
+        .call(
+            "add_favorite",
+            json!({"url": "http://greek.test/stream", "name": greek}),
+        )
+        .await;
+    assert_ne!(r["isError"], true, "{r}");
+
+    {
+        let mut favs = s.favorites.lock().unwrap();
+        for i in favs.count()..1000 {
+            favs.add(Favorite::new("Filler", format!("http://filler.test/{i}")))
+                .unwrap();
+        }
+    }
+    let r = s
+        .call(
+            "add_favorite",
+            json!({"url": "http://one-more.test/stream", "name": "One more"}),
+        )
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(text(&r).contains("1000"), "{r}");
+    assert_eq!(s.favorites.lock().unwrap().count(), 1000);
+}
+
+#[tokio::test]
+async fn an_agent_records_with_the_settings_the_window_has() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    {
+        let mut st = s.state.lock().unwrap();
+        st.playback = radiotrope::audio::PlaybackState::Playing;
+        st.eq_enabled = true;
+        st.recording_setup = crate::app::state::RecordingSetup {
+            dir: Some(std::env::temp_dir().join("rt-rec-test")),
+            format: radiotrope::audio::RecordingFormat::Opus,
+            bitrate: Some(96),
+            with_eq: true,
+        };
+    }
+    // Nothing answers the command here: the tool says it is starting
+    let r = s.call("start_recording", json!({})).await;
+    assert_ne!(r["isError"], true, "{r}");
+    match s.commands.try_recv() {
+        Ok(AppCommand::StartRecording {
+            folder,
+            format,
+            bitrate,
+            with_eq,
+            ..
+        }) => {
+            assert_eq!(folder, std::env::temp_dir().join("rt-rec-test"));
+            assert_eq!(format, radiotrope::audio::RecordingFormat::Opus);
+            assert_eq!(bitrate, Some(96));
+            assert!(with_eq);
+        }
+        _ => panic!("no StartRecording"),
+    }
 }
 
 #[tokio::test]

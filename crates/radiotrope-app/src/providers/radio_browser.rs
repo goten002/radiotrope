@@ -400,6 +400,11 @@ impl StationProvider for RadioBrowserProvider {
     }
 
     fn get_station(&self, id: &str) -> Result<Option<Station>> {
+        // The id goes into the URL path: anything but a station's UUID
+        // could reach another endpoint, and would leave a cache entry
+        if !is_station_uuid(id) {
+            return Ok(None);
+        }
         let rb_stations: Vec<RbStation> =
             self.get_cached(&format!("/json/stations/byuuid/{id}"), STATION_CACHE_TTL)?;
         Ok(rb_stations.into_iter().next().map(Station::from))
@@ -414,6 +419,17 @@ impl StationProvider for RadioBrowserProvider {
         }
         Ok(())
     }
+}
+
+/// Whether `id` has the shape of a radio-browser station id: a UUID, such
+/// as `9617a958-0601-11e8-ae97-52543be04c81`
+fn is_station_uuid(id: &str) -> bool {
+    let groups: Vec<&str> = id.split('-').collect();
+    groups.len() == 5
+        && groups
+            .iter()
+            .zip([8, 4, 4, 4, 12])
+            .all(|(group, len)| group.len() == len && group.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 // =============================================================================
@@ -463,6 +479,23 @@ mod tests {
         assert!(params.contains(&("country", "Greece".to_string())));
         assert!(params.contains(&("order", "clickcount".to_string())));
         assert!(params.contains(&("reverse", "true".to_string())));
+    }
+
+    #[test]
+    fn only_a_uuid_is_looked_up_as_a_station_id() {
+        assert!(is_station_uuid("9617a958-0601-11e8-ae97-52543be04c81"));
+        assert!(is_station_uuid("9617A958-0601-11E8-AE97-52543BE04C81"));
+        assert!(!is_station_uuid(""));
+        assert!(!is_station_uuid(
+            "x/../../url/9617a958-0601-11e8-ae97-52543be04c81"
+        ));
+        assert!(!is_station_uuid("9617a958-0601-11e8-ae97-52543be04c81/x"));
+        assert!(!is_station_uuid("9617a958-0601-11e8-ae97-52543be04c8"));
+        assert!(!is_station_uuid("9617a958-0601-11e8-ae97-52543be04c8g"));
+        assert!(!is_station_uuid("9617a95806-01-11e8-ae97-52543be04c81"));
+        // Refused before any request: an unreachable server is never asked
+        let provider = RadioBrowserProvider::with_base_url("http://127.0.0.1:9").unwrap();
+        assert!(provider.get_station("../stats").unwrap().is_none());
     }
 
     // ---- RbStation -> Station conversion tests ----
