@@ -14,9 +14,12 @@ use crate::config::app::NAME;
 /// Folder name under the user's Music folder
 const FOLDER_NAME: &str = "Radiotrope";
 
-/// Longest station name kept in a file name, in characters. Keeps full
-/// paths well under the 260-character limit of older Windows APIs.
-const MAX_NAME_CHARS: usize = 80;
+/// Longest station name kept in a file name, in UTF-8 bytes (cut at a
+/// character). With the date and a number added the name stays well under
+/// the 255-byte limit of Linux file systems, which 80 characters of CJK
+/// text passed, and full paths under the 260-character limit of older
+/// Windows APIs.
+const MAX_NAME_BYTES: usize = 120;
 
 /// Names Windows reserves for devices, with or without an extension.
 const WINDOWS_RESERVED: &[&str] = &[
@@ -85,15 +88,17 @@ pub fn new_file_path(dir: &Path, station: &str, time: DateTime<Local>, ext: &str
 /// trims spaces and trailing dots, caps the length, and avoids Windows
 /// device names. Falls back to "Recording" for an empty result.
 pub fn sanitize_name(name: &str) -> String {
-    let mut out: String = name
-        .chars()
-        .map(|c| match c {
-            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
-            c if c.is_control() => '_',
-            c => c,
-        })
-        .take(MAX_NAME_CHARS)
-        .collect();
+    let mut out = String::new();
+    for c in name.chars().map(|c| match c {
+        '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+        c if c.is_control() => '_',
+        c => c,
+    }) {
+        if out.len() + c.len_utf8() > MAX_NAME_BYTES {
+            break;
+        }
+        out.push(c);
+    }
 
     let trimmed = out.trim_end_matches(['.', ' ']).trim_start();
     out = trimmed.to_string();
@@ -198,8 +203,22 @@ mod tests {
     fn long_and_non_ascii_names() {
         let greek = "Ράδιο Αθήνα 98.4";
         assert_eq!(sanitize_name(greek), greek);
-        let long = "Ω".repeat(200);
-        assert_eq!(sanitize_name(&long).chars().count(), MAX_NAME_CHARS);
+        let ascii = "a".repeat(200);
+        assert_eq!(sanitize_name(&ascii), "a".repeat(MAX_NAME_BYTES));
+        // Two, three and four bytes a character: cut at a character
+        // boundary, never past the limit
+        for c in ["Ω", "語", "🎵"] {
+            let long = format!("x{}", c.repeat(200));
+            let name = sanitize_name(&long);
+            assert!(name.len() <= MAX_NAME_BYTES);
+            assert!(name.len() > MAX_NAME_BYTES - c.len());
+            assert!(name.starts_with('x') && name[1..].chars().all(|n| n.to_string() == c));
+        }
+        // The whole file name fits Linux's 255 bytes
+        let dir = temp_dir("long");
+        let path = new_file_path(&dir, &"語".repeat(100), at(), "opus");
+        assert!(path.file_name().unwrap().len() < 255);
+        fs::write(&path, b"").unwrap();
     }
 
     #[test]

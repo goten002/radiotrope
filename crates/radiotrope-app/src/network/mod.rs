@@ -18,16 +18,26 @@ pub use logo::LogoService;
 pub(crate) mod test_http {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// Answer every request with `response` (status line, headers and
     /// body) after `delay`, then close. Returns the server's base URL.
     pub fn serve(response: Vec<u8>, delay: Duration) -> String {
+        serve_counted(response, delay).0
+    }
+
+    /// [`serve`], also counting the connections made to it
+    pub fn serve_counted(response: Vec<u8>, delay: Duration) -> (String, Arc<AtomicUsize>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
+        let connections = Arc::new(AtomicUsize::new(0));
+        let counter = connections.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { continue };
+                counter.fetch_add(1, Ordering::SeqCst);
                 let response = response.clone();
                 std::thread::spawn(move || {
                     let mut request = BufReader::new(stream.try_clone().unwrap());
@@ -40,7 +50,7 @@ pub(crate) mod test_http {
                 });
             }
         });
-        url
+        (url, connections)
     }
 
     /// A 200 response carrying `body`, with its length given or not

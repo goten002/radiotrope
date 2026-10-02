@@ -4,14 +4,15 @@
 //! handling both cache lookups and network fetching.
 
 use crate::config::logos::MAX_BYTES;
-use crate::data::cache::{decode_logo, ImageCache};
+use crate::data::cache::{decode_logo, CacheState, ImageCache};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use crate::network::failed_logos::FailedLogos;
 use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 /// Service for fetching and caching station logos
@@ -27,6 +28,23 @@ pub struct LogoService {
     /// A background prefetch is running, and whether another was asked for
     /// meanwhile
     prefetching: Mutex<(bool, bool)>,
+    /// Cache keys whose logo a thread is fetching now. Another fetch of
+    /// one waits for it (see [`claim`](Self::claim)).
+    fetching: Mutex<HashSet<String>>,
+    fetched: Condvar,
+}
+
+/// A logo this thread is fetching; dropping it lets the next one in
+struct Claim<'a> {
+    service: &'a LogoService,
+    key: String,
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        self.service.lock_fetching().remove(&self.key);
+        self.service.fetched.notify_all();
+    }
 }
 
 impl LogoService {
@@ -50,6 +68,8 @@ impl LogoService {
             client,
             failed: FailedLogos::new(),
             prefetching: Mutex::new((false, false)),
+            fetching: Mutex::default(),
+            fetched: Condvar::new(),
         })
     }
 
@@ -73,9 +93,19 @@ impl LogoService {
     /// - The item has no logo URL
     /// - The fetch fails and nothing is cached
     pub fn get<T: HasLogo>(&self, item: &T) -> Option<Vec<u8>> {
+        let key = item.logo_cache_key();
         // Check cache first
-        if let Some(data) = self.cache.get_logo(item) {
+        if let Some(data) = self.cache.get(&key) {
             return Some(data);
+        }
+        let _claim = self.claim(&key);
+        // Another fetch may have brought it meanwhile
+        if let Some(data) = self.cache.get(&key) {
+            return Some(data);
+        }
+        // Cached by an older build: shrunk here, off the UI thread
+        if let Some(thumb) = self.cache.convert(&key) {
+            return Some(thumb.png);
         }
 
         // Not cached - try to fetch
@@ -83,9 +113,14 @@ impl LogoService {
         let data = self.download(url).ok()?;
 
         // Cache it, as the thumbnail every later look gets (a cache that
-        // can't be written still leaves us the data)
-        let _ = self.cache.put_logo(item, &data);
-        self.cache.get_logo(item).or(Some(data))
+        // can't be written still leaves us the thumbnail)
+        match self.cache.store_thumbnail(&key, &data) {
+            Some(thumb) => Some(thumb.png),
+            None => {
+                self.unusable(url);
+                None
+            }
+        }
     }
 
     /// Get logo bytes only if already cached (no network request)
@@ -106,13 +141,27 @@ impl LogoService {
     /// Ensure a logo is cached, downloading if necessary
     ///
     /// Returns:
-    /// - `Ok(true)` if the logo was downloaded and cached
+    /// - `Ok(true)` if the logo was downloaded (or converted) and cached,
+    ///   here or by another fetch this one waited for
     /// - `Ok(false)` if the logo was already cached
     /// - `Err` if there's no logo URL or the download failed
     pub fn ensure_cached<T: HasLogo>(&self, item: &T) -> Result<bool> {
-        // Already cached?
-        if self.cache.has_logo(item) {
+        let key = item.logo_cache_key();
+        if self.cache.state(&key) == CacheState::Ready {
             return Ok(false);
+        }
+        let _claim = self.claim(&key);
+        match self.cache.state(&key) {
+            // Another fetch brought it meanwhile
+            CacheState::Ready => return Ok(true),
+            // Cached by an older build: shrunk here, off the UI thread
+            CacheState::NeedsConversion => {
+                if let Some(thumb) = self.cache.convert(&key) {
+                    thumb.saved?;
+                    return Ok(true);
+                }
+            }
+            CacheState::Absent => {}
         }
 
         // Get URL
@@ -122,21 +171,56 @@ impl LogoService {
 
         // Fetch and cache
         let data = self.download(url)?;
+        let Some(thumb) = self.cache.store_thumbnail(&key, &data) else {
+            self.unusable(url);
+            return Err(AppError::Image(format!("{url} is not an image")));
+        };
         // A cache that can't be written would have it downloaded on every
         // look
-        self.cache
-            .put_logo(item, &data)
-            .inspect_err(|e| self.failed.record(url, e))?;
+        thumb.saved.inspect_err(|e| self.failed.record(url, e))?;
 
         Ok(true)
     }
 
+    /// `url` gave data that isn't an image we can show (a web page, an
+    /// SVG): nothing is cached, and it isn't fetched again this session
+    fn unusable(&self, url: &str) {
+        self.failed.record_unusable(url);
+    }
+
+    /// Fetch `key`'s logo on this thread alone. The play path, the poll and
+    /// the prefetch can all want the same logo at once: the later ones wait
+    /// here, then find it cached (or failed) instead of downloading it too.
+    fn claim(&self, key: &str) -> Claim<'_> {
+        let mut fetching = self.lock_fetching();
+        while fetching.contains(key) {
+            fetching = self
+                .fetched
+                .wait(fetching)
+                .unwrap_or_else(|e| e.into_inner());
+        }
+        fetching.insert(key.to_string());
+        Claim {
+            service: self,
+            key: key.to_string(),
+        }
+    }
+
+    fn lock_fetching(&self) -> std::sync::MutexGuard<'_, HashSet<String>> {
+        self.fetching.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Whether `item` has a logo to fetch: it has a URL, isn't cached, and
-    /// hasn't failed lately
+    /// hasn't failed lately. A logo cached by an older build, still to be
+    /// converted, counts too: [`prefetch`](Self::prefetch) converts it.
     pub fn is_missing<T: HasLogo>(&self, item: &T) -> bool {
-        item.logo_url()
-            .is_some_and(|url| !url.is_empty() && !self.failed.has_failed(url))
-            && !self.cache.has_logo(item)
+        match self.cache.state(&item.logo_cache_key()) {
+            CacheState::Ready => false,
+            CacheState::NeedsConversion => true,
+            CacheState::Absent => item
+                .logo_url()
+                .is_some_and(|url| !url.is_empty() && !self.failed.has_failed(url)),
+        }
     }
 
     /// [`prefetch`](Self::prefetch) `items` on a thread of its own, then
@@ -177,8 +261,9 @@ impl LogoService {
 
     /// Prefetch logos for multiple items
     ///
-    /// Downloads and caches logos that aren't already cached.
-    /// Returns the number of logos successfully fetched.
+    /// Downloads and caches logos that aren't already cached, and converts
+    /// the ones an older build cached. Returns the number of logos
+    /// successfully fetched or converted.
     ///
     /// This is a blocking operation - for background prefetching,
     /// call this from a separate thread.
@@ -312,13 +397,24 @@ impl LogoService {
     /// Convenience method that combines get() with decode_to_rgba().
     pub fn get_rgba<T: HasLogo>(&self, item: &T) -> Option<(Vec<u8>, u32, u32)> {
         let data = self.get(item)?;
-        self.decode_to_rgba(&data).ok()
+        self.decode_cached(item, &data)
     }
 
     /// Get cached logo as RGBA pixels (no network request)
     pub fn get_cached_rgba<T: HasLogo>(&self, item: &T) -> Option<(Vec<u8>, u32, u32)> {
         let data = self.get_cached(item)?;
-        self.decode_to_rgba(&data).ok()
+        self.decode_cached(item, &data)
+    }
+
+    /// Decode `item`'s cached logo. One that fails to decode (what older
+    /// builds kept of a web page, say) is deleted, so it is fetched again,
+    /// and then not kept if it still isn't an image.
+    fn decode_cached<T: HasLogo>(&self, item: &T, data: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+        let decoded = self.decode_to_rgba(data).ok();
+        if decoded.is_none() {
+            self.cache.delete_logo(item);
+        }
+        decoded
     }
 }
 
@@ -628,6 +724,93 @@ mod tests {
         let station = Station::new("Wide", "http://wide.test/stream").with_logo(&url);
         let (_, w, h) = service.get_rgba(&station).unwrap();
         assert_eq!((w, h), (LOGO_MAX_SIZE, LOGO_MAX_SIZE / 2));
+    }
+
+    #[test]
+    fn a_logo_cached_by_an_older_build_is_converted_by_the_prefetch() {
+        use crate::data::cache::LOGO_MAX_SIZE;
+        let cache = temp_cache();
+        let dir = cache.dir().to_path_buf();
+        let service = LogoService::with_cache(cache).unwrap();
+        // No logo URL: nothing to download, only the old entry to convert
+        let station = Station::new("Old", "http://old.test/stream");
+        std::fs::write(
+            dir.join(format!("{}.png", station.logo_cache_key())),
+            png(400, 400),
+        )
+        .unwrap();
+
+        // What the UI thread sees: no logo yet, and one to fetch
+        assert!(service.get_cached_rgba(&station).is_none());
+        assert!(service.is_missing(&station));
+
+        assert_eq!(service.prefetch(std::slice::from_ref(&station)), 1);
+        let (_, w, h) = service.get_cached_rgba(&station).unwrap();
+        assert_eq!((w, h), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        assert!(!service.is_missing(&station));
+    }
+
+    #[test]
+    fn a_page_instead_of_a_logo_is_not_cached_or_fetched_again() {
+        use crate::network::test_http::{ok, serve};
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        for path in ["prefetched.png", "played.png"] {
+            let server = serve(ok(b"<html>Moved</html>", true), Duration::ZERO);
+            let url = format!("{server}/{path}");
+            let station = Station::new(path, format!("http://{path}.test/stream")).with_logo(&url);
+            if path == "prefetched.png" {
+                assert!(service.ensure_cached(&station).is_err());
+            } else {
+                assert!(service.get_rgba(&station).is_none());
+            }
+            assert!(!service.is_cached(&station));
+            assert!(service.failed.has_failed(&url));
+            assert!(!service.is_missing(&station));
+        }
+    }
+
+    #[test]
+    fn a_cached_logo_that_fails_to_decode_is_dropped() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let station = Station::new("Junk", "http://junk.test/stream")
+            .with_logo("http://logo.invalid/junk.png");
+        // What older builds kept of a web page
+        let file = service
+            .cache()
+            .dir()
+            .join(format!("{}.png", station.logo_cache_key()));
+        std::fs::write(&file, b"<html>Moved</html>").unwrap();
+
+        assert!(service.get_cached_rgba(&station).is_none());
+        assert!(!file.exists());
+        // So it is fetched again
+        assert!(service.is_missing(&station));
+    }
+
+    #[test]
+    fn a_logo_wanted_three_times_at_once_is_downloaded_once() {
+        use crate::network::test_http::{ok, serve_counted};
+        let service = Arc::new(LogoService::with_cache(temp_cache()).unwrap());
+        let (server, requests) = serve_counted(ok(&png(8, 8), true), Duration::from_millis(300));
+        let station = Station::new("Popular", "http://popular.test/stream")
+            .with_logo(format!("{server}/logo.png").as_str());
+
+        // The prefetch, the play path and the poll
+        let fetches: Vec<_> = (0..3)
+            .map(|i| {
+                let service = service.clone();
+                let station = station.clone();
+                std::thread::spawn(move || match i {
+                    0 => service.ensure_cached(&station).is_ok(),
+                    _ => service.get_rgba(&station).is_some(),
+                })
+            })
+            .collect();
+        for fetch in fetches {
+            assert!(fetch.join().unwrap());
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(service.lock_fetching().is_empty());
     }
 
     #[test]

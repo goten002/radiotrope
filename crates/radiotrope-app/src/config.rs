@@ -38,9 +38,28 @@ pub mod providers {
     /// Click counts, new stations and broken-stream checks change daily.
     pub const STATION_CACHE_TTL: Duration = Duration::from_secs(12 * 3600);
 
-    /// Cached responses older than this are deleted at startup. Until then
-    /// they are still used when the directory cannot be reached.
+    /// Cached responses older than this are deleted (at startup and once a
+    /// day). Until then they are still used when the directory cannot be
+    /// reached.
     pub const API_CACHE_MAX_AGE: Duration = Duration::from_secs(30 * 24 * 3600);
+}
+
+/// The disk caches (API responses, logos)
+pub mod caches {
+    use std::time::Duration;
+
+    /// How often the caches are trimmed while the app runs (they are also
+    /// trimmed at startup)
+    pub const PRUNE_EVERY: Duration = Duration::from_secs(24 * 3600);
+
+    /// A temp file a write left behind (a crash before its rename) is
+    /// deleted once it is this old. A write in progress never takes this
+    /// long.
+    pub const TEMP_FILE_MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+    /// The cached logo of a station that isn't a favorite is kept at least
+    /// this long: it may be the one playing, or about to be starred
+    pub const ORPHAN_LOGO_MIN_AGE: Duration = Duration::from_secs(3600);
 }
 
 /// Station logos
@@ -87,6 +106,10 @@ pub mod ui {
 
     /// Listening time is saved in steps of this long while a station plays
     pub const LISTEN_CREDIT_SECS: u64 = 60;
+
+    /// Listening time added to a favorite is saved this long after, on a
+    /// thread of its own
+    pub const FAVORITES_SAVE_DELAY: Duration = Duration::from_secs(2);
 
     /// The most listening time one tick of the UI's poll can add. The poll
     /// runs every 200 ms; a longer gap is the computer asleep (on Windows

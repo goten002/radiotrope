@@ -5,10 +5,13 @@
 //!
 //! Decodable logos are stored as PNG thumbnails no larger than
 //! [`LOGO_MAX_SIZE`], so loading one never decodes a full-size image and the
-//! lookup hits `<id>.png` first. Data the `image` crate cannot decode (e.g.
-//! SVG) is stored as-is with an extension guessed from its content.
+//! lookup hits `<id>.png` first. The logo services store nothing else
+//! ([`ImageCache::store_thumbnail`]); [`ImageCache::put`] keeps data the
+//! `image` crate cannot decode (e.g. SVG) as-is, with an extension guessed
+//! from its content.
 
 use crate::config::app::NAME;
+use crate::config::caches::TEMP_FILE_MAX_AGE;
 use crate::config::logos::{MAX_DECODE_BYTES, MAX_DIMENSION};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
@@ -17,6 +20,7 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, ImageReader};
@@ -51,6 +55,25 @@ pub fn ensure_cache_dir() -> Result<PathBuf> {
         AppError::Config(format!("Failed to create cache directory {:?}: {}", dir, e))
     })?;
     Ok(dir)
+}
+
+/// What the cache holds for an id
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheState {
+    /// Nothing
+    Absent,
+    /// A logo ready to show (or data kept as-is)
+    Ready,
+    /// A logo cached before logos were stored as thumbnails, still to be
+    /// shrunk by [`ImageCache::convert`]
+    NeedsConversion,
+}
+
+/// A logo shrunk to a PNG thumbnail, and how writing it to the cache went
+/// (the thumbnail is there either way)
+pub struct Thumbnail {
+    pub png: Vec<u8>,
+    pub saved: Result<()>,
 }
 
 /// Image cache manager for station logos
@@ -139,18 +162,45 @@ impl ImageCache {
 
     /// Load cached image data
     ///
-    /// Entries cached before logos were stored as thumbnails (any non-PNG
-    /// format, or larger than [`LOGO_MAX_SIZE`]) are converted on first read.
+    /// An entry cached before logos were stored as thumbnails (any non-PNG
+    /// format, or larger than [`LOGO_MAX_SIZE`]) isn't returned: shrinking
+    /// it is too slow for the UI thread, so a background thread does it
+    /// with [`convert`](Self::convert).
     pub fn get(&self, id: &str) -> Option<Vec<u8>> {
         let path = self.find_cached_path(id)?;
         let data = fs::read(&path).ok()?;
-        if needs_thumbnail(&data) {
-            if let Some(thumb) = make_thumbnail(&data) {
-                let _ = self.write_png(id, &thumb);
-                return Some(thumb);
-            }
+        (!needs_thumbnail(ImageReader::new(Cursor::new(&data)))).then_some(data)
+    }
+
+    /// Whether a logo is cached for `id`, and whether it is ready or still
+    /// to be converted. Only reads the file's header.
+    pub fn state(&self, id: &str) -> CacheState {
+        let Some(path) = self.find_cached_path(id) else {
+            return CacheState::Absent;
+        };
+        match ImageReader::open(&path).map(needs_thumbnail) {
+            Ok(true) => CacheState::NeedsConversion,
+            Ok(false) => CacheState::Ready,
+            Err(_) => CacheState::Absent,
         }
-        Some(data)
+    }
+
+    /// Shrink an entry cached before logos were stored as thumbnails to a
+    /// PNG thumbnail. `None` when `id` has no such entry. Slow: for
+    /// background threads.
+    pub fn convert(&self, id: &str) -> Option<Thumbnail> {
+        let path = self.find_cached_path(id)?;
+        let data = fs::read(&path).ok()?;
+        if !needs_thumbnail(ImageReader::new(Cursor::new(&data))) {
+            return None;
+        }
+        let Some(png) = make_thumbnail(&data) else {
+            // Only its header was fine: it is fetched again
+            let _ = fs::remove_file(&path);
+            return None;
+        };
+        let saved = self.write_png(id, &png).map(|_| ());
+        Some(Thumbnail { png, saved })
     }
 
     /// Save image data to cache
@@ -249,9 +299,11 @@ impl ImageCache {
 
     /// Clean up orphaned cached images
     ///
-    /// Removes cached images that don't belong to any of the provided valid IDs.
-    /// Returns the number of files removed.
-    pub fn cleanup_orphaned(&self, valid_ids: &HashSet<String>) -> usize {
+    /// Removes cached images that don't belong to any of the provided valid
+    /// IDs and were written or touched at least `min_age` ago. Returns the
+    /// number of files removed. Temp files a write left behind are removed
+    /// too (not counted).
+    pub fn cleanup_orphaned(&self, valid_ids: &HashSet<String>, min_age: Duration) -> usize {
         let entries = match fs::read_dir(&self.cache_dir) {
             Ok(entries) => entries,
             Err(_) => return 0,
@@ -260,13 +312,19 @@ impl ImageCache {
         let mut removed = 0;
         for entry in entries.flatten() {
             let path = entry.path();
+            if remove_if_stale_temp(&entry) {
+                continue;
+            }
 
             // Only process image files
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
                     // Extract ID from filename (filename without extension)
                     if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
-                        if !valid_ids.contains(filename) && fs::remove_file(&path).is_ok() {
+                        if !valid_ids.contains(filename)
+                            && is_older_than(&entry, min_age)
+                            && fs::remove_file(&path).is_ok()
+                        {
                             removed += 1;
                         }
                     }
@@ -319,9 +377,14 @@ impl ImageCache {
     /// Unlike [`put`](Self::put), data the `image` crate can't decode is not
     /// stored, and `None` is returned.
     pub fn put_thumbnail(&self, id: &str, data: &[u8]) -> Option<Vec<u8>> {
+        self.store_thumbnail(id, data).map(|thumb| thumb.png)
+    }
+
+    /// [`put_thumbnail`](Self::put_thumbnail), telling how the write went
+    pub fn store_thumbnail(&self, id: &str, data: &[u8]) -> Option<Thumbnail> {
         let png = make_thumbnail(data)?;
-        let _ = self.write_png(id, &png);
-        Some(png)
+        let saved = self.write_png(id, &png).map(|_| ());
+        Some(Thumbnail { png, saved })
     }
 
     /// Mark a cached image as just used, so [`remove_unused`](Self::remove_unused)
@@ -336,7 +399,8 @@ impl ImageCache {
 
     /// Delete cached images not written or touched for longer than `age`
     ///
-    /// Returns how many were removed.
+    /// Returns how many were removed. Temp files a write left behind are
+    /// removed too (not counted).
     pub fn remove_unused(&self, age: std::time::Duration) -> usize {
         let Ok(entries) = fs::read_dir(&self.cache_dir) else {
             return 0;
@@ -347,6 +411,9 @@ impl ImageCache {
         entries
             .flatten()
             .filter(|entry| {
+                if remove_if_stale_temp(entry) {
+                    return false;
+                }
                 let path = entry.path();
                 let is_image = path
                     .extension()
@@ -486,8 +553,8 @@ impl ImageCache {
 /// Whether cached data is a decodable image not yet stored as a thumbnail
 ///
 /// Only reads the image header, so it is cheap for data that is already fine.
-fn needs_thumbnail(data: &[u8]) -> bool {
-    let Ok(reader) = ImageReader::new(Cursor::new(data)).with_guessed_format() else {
+fn needs_thumbnail<R: std::io::BufRead + std::io::Seek>(reader: ImageReader<R>) -> bool {
+    let Ok(reader) = reader.with_guessed_format() else {
         return false;
     };
     let is_png = reader.format() == Some(ImageFormat::Png);
@@ -495,6 +562,34 @@ fn needs_thumbnail(data: &[u8]) -> bool {
         Ok((w, h)) => !is_png || w > LOGO_MAX_SIZE || h > LOGO_MAX_SIZE,
         Err(_) => false,
     }
+}
+
+/// Whether `entry` is a temp file of [`ImageCache::write_png`]. One older
+/// than [`TEMP_FILE_MAX_AGE`] was left by a crash before its rename, and is
+/// removed.
+fn remove_if_stale_temp(entry: &fs::DirEntry) -> bool {
+    let path = entry.path();
+    if path.extension().is_none_or(|e| e != "tmp") {
+        return false;
+    }
+    if is_older_than(entry, TEMP_FILE_MAX_AGE) {
+        let _ = fs::remove_file(&path);
+    }
+    true
+}
+
+/// Whether `entry` was last written at least `age` ago. A time in the
+/// future (a clock change) counts as new.
+fn is_older_than(entry: &fs::DirEntry, age: Duration) -> bool {
+    age.is_zero()
+        || entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| {
+                std::time::SystemTime::now()
+                    .duration_since(modified)
+                    .is_ok_and(|elapsed| elapsed >= age)
+            })
 }
 
 /// Decode a logo, refusing anything larger than [`MAX_DIMENSION`] a side
@@ -667,6 +762,38 @@ mod tests {
     }
 
     #[test]
+    fn stale_temp_files_are_removed_by_both_cleanups() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        let long_ago = std::time::SystemTime::now() - TEMP_FILE_MAX_AGE * 2;
+        let make = |name: &str, old: bool| {
+            let path = dir.join(name);
+            fs::write(&path, b"x").unwrap();
+            if old {
+                fs::File::options()
+                    .write(true)
+                    .open(&path)
+                    .unwrap()
+                    .set_modified(long_ago)
+                    .unwrap();
+            }
+            path
+        };
+
+        let (old, new) = (make("a.1.0.tmp", true), make("a.1.1.tmp", false));
+        assert_eq!(cache.cleanup_orphaned(&HashSet::new(), Duration::ZERO), 0);
+        assert!(!old.exists());
+        // A write still in progress
+        assert!(new.exists());
+
+        let old = make("b.1.0.tmp", true);
+        assert_eq!(cache.remove_unused(std::time::Duration::from_secs(3600)), 0);
+        assert!(!old.exists() && new.exists());
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
     fn test_cache_creation() {
         let dir = temp_cache_dir();
         let cache = ImageCache::with_dir(dir.clone()).unwrap();
@@ -827,7 +954,7 @@ mod tests {
         // Startup: rename, then clean up
         assert!(cache.rename_id(&legacy_url_to_id(url), &url_to_id(url)));
         let valid: HashSet<String> = [url_to_id(url)].into_iter().collect();
-        assert_eq!(cache.cleanup_orphaned(&valid), 0);
+        assert_eq!(cache.cleanup_orphaned(&valid, Duration::ZERO), 0);
         assert!(cache.has(&url_to_id(url)));
 
         cleanup_dir(&dir);
@@ -851,13 +978,34 @@ mod tests {
             .into_iter()
             .collect();
 
-        let removed = cache.cleanup_orphaned(&valid_ids);
+        let removed = cache.cleanup_orphaned(&valid_ids, Duration::ZERO);
         assert_eq!(removed, 2);
 
         assert!(cache.has("keep1"));
         assert!(cache.has("keep2"));
         assert!(!cache.has("orphan1"));
         assert!(!cache.has("orphan2"));
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn a_new_orphan_is_spared() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        for id in ["new", "old"] {
+            cache.put_thumbnail(id, &png(8)).unwrap();
+        }
+        fs::File::options()
+            .write(true)
+            .open(dir.join("old.png"))
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(7200))
+            .unwrap();
+
+        let hour = Duration::from_secs(3600);
+        assert_eq!(cache.cleanup_orphaned(&HashSet::new(), hour), 1);
+        assert!(cache.has("new") && !cache.has("old"));
 
         cleanup_dir(&dir);
     }
@@ -1273,7 +1421,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_converts_legacy_entry() {
+    fn a_legacy_entry_is_left_to_convert() {
         let dir = temp_cache_dir();
         let cache = ImageCache::with_dir(dir.clone()).unwrap();
 
@@ -1284,16 +1432,42 @@ mod tests {
         )
         .unwrap();
 
-        let data = cache.get("thumb_legacy").unwrap();
-        assert_eq!(dimensions(&data), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        // The UI thread's lookups don't convert it
+        assert!(cache.get("thumb_legacy").is_none());
+        assert_eq!(cache.state("thumb_legacy"), CacheState::NeedsConversion);
+        assert!(dir.join("thumb_legacy.jpg").exists());
+
+        let thumb = cache.convert("thumb_legacy").unwrap();
+        assert!(thumb.saved.is_ok());
+        assert_eq!(dimensions(&thumb.png), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
         assert!(!dir.join("thumb_legacy.jpg").exists());
-        assert_eq!(fs::read(dir.join("thumb_legacy.png")).unwrap(), data);
+        assert_eq!(fs::read(dir.join("thumb_legacy.png")).unwrap(), thumb.png);
+        assert_eq!(cache.state("thumb_legacy"), CacheState::Ready);
+        assert_eq!(cache.get("thumb_legacy").unwrap(), thumb.png);
+        // Nothing left to convert
+        assert!(cache.convert("thumb_legacy").is_none());
 
         cleanup_dir(&dir);
     }
 
     #[test]
-    fn test_get_converts_legacy_large_png() {
+    fn a_legacy_entry_that_fails_to_decode_is_dropped() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        // A whole header, then the file stops
+        let mut cut = encode_image(400, ImageFormat::Png);
+        cut.truncate(100);
+        fs::write(dir.join("cut.png"), cut).unwrap();
+
+        assert_eq!(cache.state("cut"), CacheState::NeedsConversion);
+        assert!(cache.convert("cut").is_none());
+        assert_eq!(cache.state("cut"), CacheState::Absent);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn a_legacy_large_png_is_left_to_convert() {
         let dir = temp_cache_dir();
         let cache = ImageCache::with_dir(dir.clone()).unwrap();
 
@@ -1303,9 +1477,12 @@ mod tests {
         )
         .unwrap();
 
-        let data = cache.get("thumb_big_png").unwrap();
-        assert_eq!(dimensions(&data), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
-        assert_eq!(fs::read(dir.join("thumb_big_png.png")).unwrap(), data);
+        assert!(cache.get("thumb_big_png").is_none());
+        assert_eq!(cache.state("thumb_big_png"), CacheState::NeedsConversion);
+        let thumb = cache.convert("thumb_big_png").unwrap();
+        assert_eq!(dimensions(&thumb.png), (LOGO_MAX_SIZE, LOGO_MAX_SIZE));
+        assert_eq!(fs::read(dir.join("thumb_big_png.png")).unwrap(), thumb.png);
+        assert_eq!(cache.state("missing"), CacheState::Absent);
 
         cleanup_dir(&dir);
     }
@@ -1319,6 +1496,8 @@ mod tests {
         fs::write(dir.join("thumb_ok.png"), &original).unwrap();
 
         assert_eq!(cache.get("thumb_ok").unwrap(), original);
+        assert_eq!(cache.state("thumb_ok"), CacheState::Ready);
+        assert!(cache.convert("thumb_ok").is_none());
 
         cleanup_dir(&dir);
     }
