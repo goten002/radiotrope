@@ -1118,6 +1118,8 @@ mod tests {
     #[test]
     fn recording_bitrate_choice() {
         assert_eq!(recording_kbps(Some(128), Some(64)), 128);
+        assert_eq!(recording_kbps(Some(320), Some(128)), 320);
+        assert_eq!(recording_kbps(None, Some(320)), 320);
         assert_eq!(recording_kbps(None, Some(64)), 64);
         assert_eq!(recording_kbps(None, None), 256);
         assert_eq!(recording_kbps(None, Some(0)), 256);

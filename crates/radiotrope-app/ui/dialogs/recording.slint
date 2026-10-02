@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Field, Toggle, ButtonKeys, FocusRing } from "../components.slint";
+import { DialogShell, Field, Toggle, ButtonKeys, FocusRing, Dropdown } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // One option of a Picker
@@ -133,6 +133,14 @@ export component RecordingSettingsDialog inherits Rectangle {
     callback bitrate-changed(int);
 
     property <bool> edited: root.edit-path != root.folder;
+    // The Bitrate list's values, Auto first, and where the saved one sits
+    property <[int]> bitrates: [0, 96, 128, 192, 256, 320];
+    property <int> bitrate-index: root.bitrate == 96 ? 1
+        : root.bitrate == 128 ? 2
+        : root.bitrate == 192 ? 3
+        : root.bitrate == 256 ? 4
+        : root.bitrate == 320 ? 5
+        : 0;
 
     public function open() {
         root.edit-path = root.folder;
@@ -177,20 +185,17 @@ export component RecordingSettingsDialog inherits Rectangle {
 
             Field {
                 label: "Bitrate";
-                Picker {
-                    choices: [
-                        { id: "0", label: "Auto" },
-                        { id: "96", label: "96" },
-                        { id: "128", label: "128" },
-                        { id: "192", label: "192" },
-                        { id: "256", label: "256" },
-                    ];
+                Dropdown {
+                    width: 120px;
+                    // As tall as the Format picker beside it
+                    height: 36px;
+                    horizontal-stretch: 0;
+                    items: ["Auto", "96 kbps", "128 kbps", "192 kbps", "256 kbps", "320 kbps"];
+                    selected: root.bitrate-index;
                     // WAV is uncompressed, so it has no bitrate to pick
                     enabled: root.format != "wav";
-                    option-width: 42px;
-                    selected: root.bitrate;
-                    changed(id) => {
-                        root.bitrate = id.to-float();
+                    changed(index) => {
+                        root.bitrate = root.bitrates[index];
                         root.bitrate-changed(root.bitrate);
                     }
                 }
