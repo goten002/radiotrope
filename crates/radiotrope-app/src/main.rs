@@ -2846,11 +2846,27 @@ fn open_folder(dir: &std::path::Path) {
     } else {
         "xdg-open"
     };
-    match std::process::Command::new(program).arg(dir).spawn() {
+    let mut command = std::process::Command::new(program);
+    #[cfg(windows)]
+    command.arg(explorer_path(dir));
+    #[cfg(not(windows))]
+    command.arg(dir);
+    match command.spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || child.wait());
         }
         Err(e) => eprintln!("Failed to open {}: {e}", dir.display()),
+    }
+}
+
+/// `dir` as Explorer takes it: given forward slashes ("C:/Users/..."), as a
+/// typed or saved folder can have, it opens Documents instead
+#[cfg(any(windows, test))]
+fn explorer_path(dir: &std::path::Path) -> std::ffi::OsString {
+    match dir.to_str() {
+        Some(text) => text.replace('/', "\\").into(),
+        // Not Unicode, so not typed in: left as it is
+        None => dir.as_os_str().to_owned(),
     }
 }
 
@@ -3718,4 +3734,20 @@ fn format_codec_line(s: &AppSnapshot) -> String {
         });
     }
     parts.join(" \u{2022} ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explorer_gets_backslashes() {
+        let path = |p: &str| explorer_path(std::path::Path::new(p));
+        assert_eq!(
+            path("C:/Users/José/Music/Radiotrope"),
+            r"C:\Users\José\Music\Radiotrope"
+        );
+        assert_eq!(path(r"\\nas\music/Radiotrope"), r"\\nas\music\Radiotrope");
+        assert_eq!(path(r"D:\Recordings"), r"D:\Recordings");
+    }
 }
