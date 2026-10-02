@@ -4,19 +4,19 @@ import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing, PopupCard } from "../
 component EqFader inherits Rectangle {
     in property <string> label;
     in-out property <float> value: 0;
-    // The EQ is off: grey instead of the accent, but it still moves, so
-    // the curve can be set up before turning the EQ on
-    in property <bool> dimmed: false;
+    // The EQ is off: grey instead of the accent, and it doesn't move. It
+    // keeps showing its value.
+    in property <bool> enabled: true;
     callback value-changed(float);
 
-    property <color> tint: root.dimmed ? Theme.text-tertiary : Theme.accent;
+    property <color> tint: root.enabled ? Theme.accent : Theme.text-tertiary;
 
     horizontal-stretch: 1;
     height: 220px;
 
     // Like the volume slider: the knob grows under the pointer and a
     // bubble shows the value while hovering, dragging or scrolling
-    property <bool> active: track-touch.has-hover || track-touch.pressed;
+    property <bool> active: root.enabled && (track-touch.has-hover || track-touch.pressed);
     property <length> knob: root.active ? 18px : 14px;
     animate knob { duration: Theme.fast; }
     // Keeps the bubble up briefly after a scroll or key press
@@ -27,6 +27,7 @@ component EqFader inherits Rectangle {
 
     forward-focus: keys;
     accessible-role: slider;
+    accessible-enabled: root.enabled;
     accessible-label: root.label == "Pre" ? "Preamp" : root.label + " Hz";
     accessible-value: (Math.round(root.value * 10) > 0 ? "+" : "") + Math.round(root.value * 10) / 10 + " dB";
     accessible-value-minimum: -12;
@@ -37,6 +38,9 @@ component EqFader inherits Rectangle {
     accessible-action-set-value(v) => { root.set(v.to-float()); }
 
     function set(v: float) {
+        if !root.enabled {
+            return;
+        }
         root.value = clamp(v, -12.0, 12.0);
         root.value-changed(root.value);
         root.nudged = true;
@@ -135,7 +139,8 @@ component EqFader inherits Rectangle {
 
             // Drag area
             track-touch := TouchArea {
-                mouse-cursor: pointer;
+                enabled: root.enabled;
+                mouse-cursor: root.enabled ? pointer : default;
                 pointer-event(e) => {
                     if e.kind == PointerEventKind.down {
                         root.key-focus = false;
@@ -209,6 +214,7 @@ component EqFader inherits Rectangle {
     // Up/Down (0.5 dB, 0.1 with Shift), Page Up/Down (3 dB) and Home/End
     // once the fader has focus
     keys := FocusScope {
+        enabled: root.enabled;
         focus-on-click: false;
         focus-gained(reason) => {
             if reason == FocusReason.tab-navigation {
@@ -368,26 +374,33 @@ export component EqualizerDialog inherits Rectangle {
             }
 
             // Preset dropdown; Space, Enter or Down opens it once reached
-            // with Tab
+            // with Tab. Greyed out while the EQ is off, like the faders.
             Rectangle {
                 width: 160px;
                 height: 30px;
                 border-radius: Theme.radius-md;
-                background: preset-dd-touch.has-hover
+                background: root.eq-enabled && preset-dd-touch.has-hover
                     ? Theme.menu-hover
                     : Theme.elevated;
                 animate background { duration: Theme.fast; }
 
                 accessible-role: combobox;
                 accessible-label: "Preset";
+                accessible-enabled: root.eq-enabled;
                 accessible-value: root.preset-name == "" ? "Custom" : root.preset-name;
-                accessible-action-default => { preset-popup.show(); }
+                accessible-action-default => {
+                    if root.eq-enabled {
+                        preset-popup.show();
+                    }
+                }
 
                 preset-dd-touch := TouchArea {
+                    enabled: root.eq-enabled;
                     clicked => { preset-popup.show(); }
                 }
 
                 preset-keys := FocusScope {
+                    enabled: root.eq-enabled;
                     focus-on-click: false;
                     key-pressed(event) => {
                         if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
@@ -408,7 +421,7 @@ export component EqualizerDialog inherits Rectangle {
 
                     Text {
                         text: root.preset-name == "" ? "Custom" : root.preset-name;
-                        color: Theme.text-primary;
+                        color: root.eq-enabled ? Theme.text-primary : Theme.disabled-text;
                         font-size: Theme.font-base;
                         vertical-alignment: center;
                         horizontal-stretch: 1;
@@ -422,7 +435,7 @@ export component EqualizerDialog inherits Rectangle {
 
                         Text {
                             text: "\u{2304}";
-                            color: Theme.text-secondary;
+                            color: root.eq-enabled ? Theme.text-secondary : Theme.disabled-text;
                             font-size: Theme.font-lg;
                             y: (parent.height - self.preferred-height) / 2 - 2px;
                         }
@@ -518,7 +531,7 @@ export component EqualizerDialog inherits Rectangle {
             // Preamp fader
             EqFader {
                 label: "Pre";
-                dimmed: !root.eq-enabled;
+                enabled: root.eq-enabled;
                 value <=> root.preamp-gain;
                 value-changed(v) => { root.preamp-changed(v); }
             }
@@ -535,16 +548,16 @@ export component EqualizerDialog inherits Rectangle {
             }
 
             // 10 band faders — each stretches equally
-            EqFader { label: "40"; dimmed: !root.eq-enabled; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
-            EqFader { label: "64"; dimmed: !root.eq-enabled; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
-            EqFader { label: "125"; dimmed: !root.eq-enabled; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
-            EqFader { label: "250"; dimmed: !root.eq-enabled; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
-            EqFader { label: "500"; dimmed: !root.eq-enabled; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
-            EqFader { label: "1K"; dimmed: !root.eq-enabled; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
-            EqFader { label: "2K"; dimmed: !root.eq-enabled; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
-            EqFader { label: "4K"; dimmed: !root.eq-enabled; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
-            EqFader { label: "8K"; dimmed: !root.eq-enabled; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
-            EqFader { label: "12K"; dimmed: !root.eq-enabled; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
+            EqFader { label: "40"; enabled: root.eq-enabled; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
+            EqFader { label: "64"; enabled: root.eq-enabled; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
+            EqFader { label: "125"; enabled: root.eq-enabled; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
+            EqFader { label: "250"; enabled: root.eq-enabled; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
+            EqFader { label: "500"; enabled: root.eq-enabled; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
+            EqFader { label: "1K"; enabled: root.eq-enabled; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
+            EqFader { label: "2K"; enabled: root.eq-enabled; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
+            EqFader { label: "4K"; enabled: root.eq-enabled; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
+            EqFader { label: "8K"; enabled: root.eq-enabled; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
+            EqFader { label: "12K"; enabled: root.eq-enabled; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
         }
     }
 }
