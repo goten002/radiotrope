@@ -27,8 +27,8 @@ use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::{
-    FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, RECORDING_NOTICE_TIME,
-    SEARCH_PAGE_SIZE, SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT,
+    FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS, PLAY_TAKE_TIMEOUT,
+    RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT,
 };
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
@@ -43,6 +43,7 @@ use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 use app::controller::AppController;
 use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
+use app::picked_station::PendingPick;
 use app::shown_station::ShownStation;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
@@ -1500,15 +1501,20 @@ fn main() {
 
             // try_lock: skip this tick if controller holds the lock
             let Ok(s) = poll_state.try_lock() else { return };
+            let picked = PENDING_PICK.with(|p| {
+                p.borrow_mut()
+                    .waiting(s.play_seq, Instant::now(), PLAY_TAKE_TIMEOUT)
+                    .cloned()
+            });
             // Copy all data under lock, then drop before touching UI
-            let station_name: slint::SharedString =
-                s.station_name.as_deref().unwrap_or("Radiotrope").into();
-            let codec_info: slint::SharedString = format_codec_line(&s).into();
-            let status_text: slint::SharedString = s.status_text.as_ref().into();
-            let is_error = s.is_error;
-            let is_loading = s.is_resolving || s.status_text == "Connecting...";
-            let is_playing = s.playback == PlaybackState::Playing;
-            let now_playing: slint::SharedString = if !s.title.is_empty() {
+            let mut station_name: slint::SharedString =
+                s.station_name.as_deref().unwrap_or(UNNAMED_STATION).into();
+            let mut codec_info: slint::SharedString = format_codec_line(&s).into();
+            let mut status_text: slint::SharedString = s.status_text.as_ref().into();
+            let mut is_error = s.is_error;
+            let mut is_loading = s.is_resolving || s.status_text == "Connecting...";
+            let mut is_playing = s.playback == PlaybackState::Playing;
+            let mut now_playing: slint::SharedString = if !s.title.is_empty() {
                 if !s.artist.is_empty() {
                     format!("{} - {}", s.artist, s.title).into()
                 } else {
@@ -1519,7 +1525,8 @@ fn main() {
             };
             let volume = s.volume;
             let is_muted = s.is_muted;
-            let station_url: Option<slint::SharedString> = s.station_url.as_deref().map(Into::into);
+            let mut station_url: Option<slint::SharedString> =
+                s.station_url.as_deref().map(Into::into);
             // Given with the Play, by the UI or an agent
             let station_logo = s.station_logo_url.clone();
             let station_country = s.station_country.clone();
@@ -1534,6 +1541,20 @@ fn main() {
             let recording = s.recording.clone();
             let recording_notice = s.recording_notice.clone();
             drop(s);
+
+            // A station picked here that the controller hasn't taken up
+            // yet shows as starting: the state still holds the old one,
+            // playing
+            if let Some(picked) = picked {
+                station_name = picked.name.as_deref().unwrap_or(UNNAMED_STATION).into();
+                codec_info = AWAITING_STREAM.into();
+                status_text = STARTING_STATUS.into();
+                is_error = false;
+                is_loading = true;
+                is_playing = false;
+                now_playing = Default::default();
+                station_url = Some(picked.url.as_str().into());
+            }
 
             show_recording_state(
                 &ui,
@@ -3153,6 +3174,8 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
 thread_local! {
     /// The station the player shows, numbered (see [`ShownStation`])
     static SHOWN_STATION: std::cell::RefCell<ShownStation> = Default::default();
+    /// A station picked here that the controller hasn't taken up yet
+    static PENDING_PICK: std::cell::RefCell<PendingPick> = Default::default();
 }
 
 /// The player now shows the station at `url`. Returns its number, for the
@@ -3180,16 +3203,21 @@ fn play_station_with_metadata(
     req: PlayMetadata,
 ) {
     // A favorite's URL, name and logo take priority over the caller's
-    let PlayMetadata {
-        url,
-        name,
-        logo_url,
-        country,
-        ..
-    } = favorites
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .resolve_play(req);
+    let (
+        PlayMetadata {
+            url,
+            name,
+            logo_url,
+            country,
+            ..
+        },
+        is_favorite,
+    ) = {
+        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+        let play = favs.resolve_play(req);
+        let is_favorite = favs.is_favorite(&play.url);
+        (play, is_favorite)
+    };
 
     // A second click on the same station right after the first is ignored:
     // a touchpad can turn one tap into two, which restarted the stream.
@@ -3229,6 +3257,18 @@ fn play_station_with_metadata(
         ui.set_current_logo(Default::default());
     }
 
+    // The controller takes up the Play only after stopping the old
+    // station; the poll shows this one as starting until then. Its number
+    // is read before the Play goes out, which may be taken at once.
+    let play_seq = shared_state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .play_seq;
+    PENDING_PICK.with(|p| {
+        p.borrow_mut()
+            .pick(play_seq, &url, name.clone(), Instant::now())
+    });
+
     // Send play command
     cmd_tx.send(app::state::AppCommand::Play {
         url: url.clone(),
@@ -3237,8 +3277,16 @@ fn play_station_with_metadata(
         country: country.clone(),
         taken: None,
     });
-    // Show it as connecting right away (the Play button turns into Stop),
-    // not only at the next state poll
+    // Show it as starting right away, in the header, the favorites and the
+    // Play button (it turns into Stop), not only at the next state poll
+    ui.set_station_url(url.as_str().into());
+    ui.set_station_name(name.as_deref().unwrap_or(UNNAMED_STATION).into());
+    ui.set_codec_info(AWAITING_STREAM.into());
+    ui.set_status_text(STARTING_STATUS.into());
+    ui.set_is_error(false);
+    ui.set_is_playing(false);
+    ui.set_now_playing_title(Default::default());
+    ui.set_is_station_favorited(is_favorite);
     ui.set_is_loading(true);
 
     // Save settings (persists last_station, volume, eq, etc.)
@@ -3948,9 +3996,18 @@ fn refresh_favorites(
     }
 }
 
+/// The name shown for a stream without one
+const UNNAMED_STATION: &str = "Radiotrope";
+
+/// The status of a station that is starting (as the controller sets it)
+const STARTING_STATUS: &str = "Resolving...";
+
+/// The codec line of a station not playing yet
+const AWAITING_STREAM: &str = "Awaiting stream";
+
 fn format_codec_line(s: &AppSnapshot) -> String {
     if s.codec_name.is_empty() {
-        return "Awaiting stream".to_string();
+        return AWAITING_STREAM.to_string();
     }
     let mut parts = Vec::new();
     if s.stream_type == "HLS" {
