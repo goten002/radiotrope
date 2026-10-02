@@ -2924,7 +2924,12 @@ fn open_folder(dir: &std::path::Path) {
 
 /// Persist current app state to settings.json
 fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
-    let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+    // A copy: the controller and agents aren't kept waiting on the state
+    // while the file is read and written
+    let s = shared_state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
     settings.volume = s.volume;
     settings.muted = s.is_muted;
@@ -2980,7 +2985,6 @@ fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
         }
     }
 
-    drop(s);
     let _ = settings.save();
 }
 
