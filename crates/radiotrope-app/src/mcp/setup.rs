@@ -70,17 +70,12 @@ impl AgentApp {
 
     /// Help shown next to the line for this computer, if any
     pub fn local_note(self) -> &'static str {
-        self.local_note_for(SHELL)
-    }
-
-    fn local_note_for(self, shell: Shell) -> &'static str {
         match self {
             AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
             AgentApp::ClaudeDesktop => {
                 "Add to claude_desktop_config.json (Settings > Developer > Edit Config), \
                  then restart Claude Desktop."
             }
-            AgentApp::VsCode if shell == Shell::Windows => COMMAND_PROMPT,
             _ => "",
         }
     }
@@ -88,38 +83,27 @@ impl AgentApp {
     /// Help shown next to the network line, if any; `token` says whether
     /// the line carries one
     pub fn network_note(self, token: bool) -> &'static str {
-        self.network_note_for(token, SHELL)
-    }
-
-    fn network_note_for(self, token: bool, shell: Shell) -> &'static str {
         match self {
             AgentApp::Codex if token => {
                 "Codex reads the token from the RADIOTROPE_TOKEN environment variable: \
                  set it to the token above."
             }
             AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
-            AgentApp::VsCode if shell == Shell::Windows => COMMAND_PROMPT,
             _ => "",
         }
     }
 }
 
-/// The note for a Windows line that only Command Prompt reads right
-const COMMAND_PROMPT: &str =
-    "Run it in Command Prompt: PowerShell reads the quotes inside it differently.";
-
 /// How the line is quoted: for a Unix shell (sh, bash, zsh), or for
-/// Command Prompt on Windows. PowerShell reads Command Prompt's double
-/// quotes the same way, except for the escaped ones inside VS Code's JSON,
-/// so that line says which one to use.
+/// PowerShell, the terminal Windows opens
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shell {
     Unix,
-    Windows,
+    PowerShell,
 }
 
 const SHELL: Shell = if cfg!(windows) {
-    Shell::Windows
+    Shell::PowerShell
 } else {
     Shell::Unix
 };
@@ -225,17 +209,45 @@ fn vscode_line(server: serde_json::Value, shell: Shell) -> String {
     let server = server.to_string();
     match shell {
         Shell::Unix => format!("code --add-mcp {}", quote(&server, shell)),
-        // As in VS Code's own docs: double quotes, inner ones escaped. Only
-        // Command Prompt reads these as meant (see COMMAND_PROMPT).
-        Shell::Windows => format!("code --add-mcp \"{}\"", server.replace('"', "\\\"")),
+        // `code` is VS Code's code.cmd, which reads its command line the
+        // Windows way: a bare " only quotes and is dropped, so the JSON's
+        // own quotes come as \". PowerShell's --% hands the rest of the
+        // line over as it is; without it Windows PowerShell 5.1 splits the
+        // JSON at a space.
+        Shell::PowerShell => format!("code --% --add-mcp \"{}\"", windows_arg(&server)),
     }
+}
+
+/// `text` as a Windows program reads it back as one argument from its
+/// command line: each " as \", and the backslashes right before it doubled
+fn windows_arg(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + 16);
+    let mut backslashes = 0;
+    for c in text.chars() {
+        match c {
+            '\\' => backslashes += 1,
+            '"' => {
+                out.extend(std::iter::repeat_n('\\', backslashes * 2 + 1));
+                backslashes = 0;
+            }
+            _ => {
+                out.extend(std::iter::repeat_n('\\', backslashes));
+                backslashes = 0;
+            }
+        }
+        if c != '\\' {
+            out.push(c);
+        }
+    }
+    out.extend(std::iter::repeat_n('\\', backslashes));
+    out
 }
 
 /// One word for the shell: as it is when nothing in it is special there,
 /// otherwise quoted. A Unix shell gets single quotes, inside which only a
 /// single quote needs care (`'\''`: end, an escaped quote, start again), so
-/// `$`, backticks and spaces stay as they are. Command Prompt gets double
-/// quotes, which a Windows path never contains.
+/// `$`, backticks and spaces stay as they are. PowerShell's single quotes
+/// work the same way, with a single quote doubled inside them.
 fn quote(word: &str, shell: Shell) -> String {
     let plain = |c: char| c.is_ascii_alphanumeric() || "/._-:".contains(c);
     match shell {
@@ -245,10 +257,10 @@ fn quote(word: &str, shell: Shell) -> String {
             word.to_string()
         }
         Shell::Unix => format!("'{}'", word.replace('\'', r"'\''")),
-        Shell::Windows if !word.is_empty() && word.chars().all(|c| plain(c) || c == '\\') => {
+        Shell::PowerShell if !word.is_empty() && word.chars().all(|c| plain(c) || c == '\\') => {
             word.to_string()
         }
-        Shell::Windows => format!("\"{word}\""),
+        Shell::PowerShell => format!("'{}'", word.replace('\'', "''")),
     }
 }
 
@@ -285,9 +297,9 @@ mod tests {
             local_line_for(
                 AgentApp::ClaudeCode,
                 r"C:\Program Files\Radiotrope\radiotrope.exe",
-                Shell::Windows
+                Shell::PowerShell
             ),
-            r#"claude mcp add radiotrope -- "C:\Program Files\Radiotrope\radiotrope.exe" --mcp"#
+            r"claude mcp add radiotrope -- 'C:\Program Files\Radiotrope\radiotrope.exe' --mcp"
         );
         assert_eq!(
             network_line_for(AgentApp::ClaudeCode, URL, Some(""), Shell::Unix).unwrap(),
@@ -303,7 +315,7 @@ mod tests {
         let local: serde_json::Value = serde_json::from_str(&local_line_for(
             AgentApp::ClaudeDesktop,
             exe,
-            Shell::Windows,
+            Shell::PowerShell,
         ))
         .unwrap();
         assert_eq!(local["mcpServers"]["radiotrope"]["command"], exe);
@@ -355,11 +367,11 @@ mod tests {
             r"claude mcp add radiotrope -- '/home/o'\''neil/radiotrope' --mcp"
         );
         assert_eq!(
-            line(r"C:\Tools&More\radiotrope.exe", Shell::Windows),
-            r#"claude mcp add radiotrope -- "C:\Tools&More\radiotrope.exe" --mcp"#
+            line(r"C:\Tools&More\radiotrope.exe", Shell::PowerShell),
+            r"claude mcp add radiotrope -- 'C:\Tools&More\radiotrope.exe' --mcp"
         );
         assert_eq!(
-            line(r"C:\radiotrope\radiotrope.exe", Shell::Windows),
+            line(r"C:\radiotrope\radiotrope.exe", Shell::PowerShell),
             r"claude mcp add radiotrope -- C:\radiotrope\radiotrope.exe --mcp"
         );
         // VS Code's JSON keeps working with a quote in the path
@@ -371,33 +383,92 @@ mod tests {
     }
 
     #[test]
-    fn only_the_windows_vs_code_lines_name_their_shell() {
-        for app in AgentApp::ALL {
-            let windows = app == AgentApp::VsCode;
-            assert_eq!(
-                app.local_note_for(Shell::Windows) == COMMAND_PROMPT,
-                windows
-            );
-            assert_eq!(
-                app.network_note_for(false, Shell::Windows) == COMMAND_PROMPT,
-                windows
-            );
-            assert_ne!(app.local_note_for(Shell::Unix), COMMAND_PROMPT);
-            assert_ne!(app.network_note_for(true, Shell::Unix), COMMAND_PROMPT);
-        }
-    }
-
-    #[test]
     fn vs_code_gets_its_json_quoted_for_the_shell() {
         let unix = local_line_for(AgentApp::VsCode, "/usr/bin/radiotrope", Shell::Unix);
         assert_eq!(
             unix,
             r#"code --add-mcp '{"args":["--mcp"],"command":"/usr/bin/radiotrope","name":"radiotrope"}'"#
         );
-        let windows = local_line_for(AgentApp::VsCode, r"C:\radiotrope.exe", Shell::Windows);
+        let windows = local_line_for(AgentApp::VsCode, r"C:\radiotrope.exe", Shell::PowerShell);
         assert_eq!(
             windows,
-            r#"code --add-mcp "{\"args\":[\"--mcp\"],\"command\":\"C:\\radiotrope.exe\",\"name\":\"radiotrope\"}""#
+            r#"code --% --add-mcp "{\"args\":[\"--mcp\"],\"command\":\"C:\\radiotrope.exe\",\"name\":\"radiotrope\"}""#
         );
+        // Backslashes right before a quote are doubled, the others kept
+        assert_eq!(windows_arg(r#"{"a":"x\\"}"#), r#"{\"a\":\"x\\\\\"}"#);
+        assert_eq!(windows_arg(r"a\b"), r"a\b");
+    }
+
+    /// The VS Code lines run in real PowerShell (Windows PowerShell 5.1 and
+    /// PowerShell 7). `code` here is a `code.cmd` like VS Code's own, which
+    /// hands its command line to Python: it reads it back the same way
+    /// VS Code does and prints the JSON it got.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_hands_vs_code_its_json_whole() {
+        use std::process::Command;
+        let has_python = Command::new("python").arg("--version").output();
+        if !has_python.is_ok_and(|out| out.status.success()) {
+            // The CI runner has it; a developer's PC may not
+            assert!(std::env::var_os("CI").is_none(), "Python is not on PATH");
+            eprintln!("Python is not on PATH: the PowerShell lines go untried");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("rt-vscode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("code.cmd"),
+            "@echo off\r\npython -c \"import sys; sys.stdout.write(sys.argv[2])\" %*\r\n",
+        )
+        .unwrap();
+        let path = format!("{};{}", dir.display(), std::env::var("PATH").unwrap());
+
+        let local = |exe: &str| {
+            (
+                local_line_for(AgentApp::VsCode, exe, Shell::PowerShell),
+                json!({ "name": "radiotrope", "command": exe, "args": ["--mcp"] }),
+            )
+        };
+        let network = |token: Option<&str>| {
+            let mut server = json!({ "name": "radiotrope", "type": "http", "url": URL });
+            if let Some(token) = token {
+                server["headers"] = json!({ "Authorization": format!("Bearer {token}") });
+            }
+            (
+                network_line_for(AgentApp::VsCode, URL, token, Shell::PowerShell).unwrap(),
+                server,
+            )
+        };
+        let cases = [
+            local(r"C:\radiotrope\radiotrope.exe"),
+            local(r"C:\Program Files\Radiotrope\radiotrope.exe"),
+            local(r"C:\Users\O'Neil\radiotrope.exe"),
+            network(Some("abc123")),
+            network(None),
+        ];
+        let script = dir.join("line.ps1");
+        let mut failed = Vec::new();
+        for shell in ["powershell", "pwsh"] {
+            for (line, server) in &cases {
+                std::fs::write(&script, line).unwrap();
+                let out = Command::new(shell)
+                    .args(["-NoProfile", "-NonInteractive"])
+                    .args(["-ExecutionPolicy", "Bypass", "-File"])
+                    .arg(&script)
+                    .env("PATH", &path)
+                    .output()
+                    .unwrap();
+                let got = String::from_utf8_lossy(&out.stdout);
+                if serde_json::from_str::<serde_json::Value>(&got)
+                    .ok()
+                    .as_ref()
+                    != Some(server)
+                {
+                    failed.push(format!("{shell}: {line} gave {got}"));
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(failed.is_empty(), "{failed:#?}");
     }
 }
