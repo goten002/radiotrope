@@ -2,8 +2,9 @@
 //!
 //! The file keeps the rate and channel count of the first audio; later
 //! changes are resampled and remixed to match. The RIFF sizes are written
-//! as zero at the start and filled in when the recording ends. WAV sizes
-//! are 32-bit, so a file stops growing just under 4 GiB.
+//! as zero at the start, brought up to date at each flush (so a file cut
+//! short by a crash reads to where it got) and set when the recording
+//! ends. WAV sizes are 32-bit, so a file stops growing just under 4 GiB.
 
 use super::resample::Resampler;
 use super::{AudioEncoder, RecordingTags};
@@ -25,6 +26,8 @@ pub(super) struct WavEncoder {
     resampler: Option<(u32, Resampler)>,
     scratch: Vec<f32>,
     full: bool,
+    /// The file can seek, so its sizes can be brought up to date as it grows
+    seekable: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -34,8 +37,9 @@ struct Format {
 }
 
 impl WavEncoder {
-    pub(super) fn new(tags: RecordingTags) -> Self {
+    pub(super) fn new(tags: RecordingTags, seekable: bool) -> Self {
         Self {
+            seekable,
             tags,
             format: None,
             header_len: 0,
@@ -151,6 +155,10 @@ impl AudioEncoder for WavEncoder {
         Ok(())
     }
 
+    fn patches_as_it_goes(&self) -> bool {
+        self.seekable && self.format.is_some()
+    }
+
     fn header_patches(&self) -> Vec<(u64, Vec<u8>)> {
         let data = self.data_bytes as u32;
         // RIFF size counts everything after its own 8 bytes
@@ -223,7 +231,7 @@ mod tests {
             artist: "Ab".into(),     // 2 + NUL: padded
             ..Default::default()
         };
-        let mut enc = WavEncoder::new(tags);
+        let mut enc = WavEncoder::new(tags, true);
         let mut out = Vec::new();
         enc.encode(44100, 2, &[0.5, -0.5, 1.5, -1.5], &mut out)
             .unwrap();

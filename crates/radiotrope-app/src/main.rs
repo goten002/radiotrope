@@ -1345,7 +1345,12 @@ fn main() {
                     viz.set_active(true);
                 }
                 // try_lock: skip this tick if engine/analyzer holds the lock
-                let Ok(a) = analysis.try_lock() else { return };
+                let Ok(mut a) = analysis.try_lock() else {
+                    return;
+                };
+                // On screen: keep the analyzer working it out (it stops
+                // soon after nobody shows it)
+                a.mark_shown();
                 let (vu_l, vu_r, spectrum) = (a.vu_left, a.vu_right, a.spectrum);
                 drop(a);
                 for (g, &level) in gated.iter_mut().zip(spectrum.iter()) {

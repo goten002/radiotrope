@@ -124,6 +124,10 @@ impl fmt::Debug for AudioCommand {
 pub enum AudioEvent {
     /// Playback started with codec info
     Playing(CodecInfo),
+    /// The playing station's codec name changed: an AAC stream moving
+    /// between AAC and AAC+, or a chained Ogg stream's next song in
+    /// another codec. The rest of the info is as `Playing` gave it.
+    CodecChanged(CodecInfo),
     /// Playback stopped
     Stopped,
     /// Playback paused
@@ -168,12 +172,20 @@ pub struct EngineEvent {
 }
 
 /// Audio analysis data for visualization (VU meters + spectrum)
+///
+/// The meters and spectrum are only worked out while someone shows them:
+/// whoever reads them for display calls [`AudioAnalysis::mark_shown`] each
+/// time. After [`UNSHOWN_GRACE_SECS`](crate::config::audio::UNSHOWN_GRACE_SECS)
+/// of audio without that, they stay as they are, and only `sample_count`
+/// (the health monitor's) carries on. A new station starts as shown.
 #[derive(Clone)]
 pub struct AudioAnalysis {
     pub vu_left: f32,
     pub vu_right: f32,
     pub spectrum: [f32; SPECTRUM_BANDS],
     pub sample_count: u64,
+    /// Counts [`AudioAnalysis::mark_shown`] calls
+    views: u64,
 }
 
 impl Default for AudioAnalysis {
@@ -183,6 +195,7 @@ impl Default for AudioAnalysis {
             vu_right: 0.0,
             spectrum: [0.0; SPECTRUM_BANDS],
             sample_count: 0,
+            views: 0,
         }
     }
 }
@@ -194,6 +207,17 @@ impl AudioAnalysis {
         self.vu_right = 0.0;
         self.spectrum = [0.0; SPECTRUM_BANDS];
         self.sample_count = 0;
+    }
+
+    /// Say that the meters and spectrum are on screen, so they keep being
+    /// worked out. Call it on each read for display.
+    pub fn mark_shown(&mut self) {
+        self.views = self.views.wrapping_add(1);
+    }
+
+    /// How many times [`AudioAnalysis::mark_shown`] was called
+    pub(crate) fn views(&self) -> u64 {
+        self.views
     }
 }
 
@@ -406,6 +430,7 @@ mod tests {
             vu_right: 0.8,
             spectrum: [0.3; SPECTRUM_BANDS],
             sample_count: 42,
+            ..Default::default()
         };
         analysis.reset();
         assert_eq!(analysis.vu_left, 0.0);
@@ -421,6 +446,7 @@ mod tests {
             vu_right: f32::MIN,
             spectrum: [f32::MAX; SPECTRUM_BANDS],
             sample_count: u64::MAX,
+            ..Default::default()
         };
         analysis.reset();
         assert_eq!(analysis.vu_left, 0.0);
@@ -436,6 +462,7 @@ mod tests {
             vu_right: 0.58,
             spectrum: [0.1; SPECTRUM_BANDS],
             sample_count: 999,
+            ..Default::default()
         };
         let cloned = analysis.clone();
         assert_eq!(cloned.vu_left, 0.42);
@@ -478,6 +505,7 @@ mod tests {
             vu_right: 1.0,
             spectrum: [1.0; SPECTRUM_BANDS],
             sample_count: 100,
+            ..Default::default()
         };
         analysis.reset();
         analysis.reset();

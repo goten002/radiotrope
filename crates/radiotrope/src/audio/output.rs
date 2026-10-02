@@ -78,12 +78,23 @@ impl SilentOutput {
         let thread = thread::Builder::new()
             .name("silent-output".to_string())
             .spawn(move || {
+                // Each pull on a schedule of its own, so the time spent
+                // pulling doesn't add up into lag behind real time
+                let mut next = Instant::now();
                 while !stopped.load(Ordering::Relaxed) {
                     // An empty mixer returns None until a player joins it
                     for _ in 0..samples {
                         source.next();
                     }
-                    thread::sleep(SILENT_PULL_INTERVAL);
+                    next += SILENT_PULL_INTERVAL;
+                    let now = Instant::now();
+                    match next.checked_duration_since(now) {
+                        Some(wait) => thread::sleep(wait),
+                        // Far behind (the machine was busy, or asleep):
+                        // carry on from now rather than race to catch up
+                        None if now - next > SILENT_PULL_INTERVAL * 10 => next = now,
+                        None => {}
+                    }
                 }
             })
             .map_err(|e| format!("Failed to start the silent output: {e}"))?;
@@ -119,6 +130,10 @@ pub(crate) struct OutputErrors {
     generation: Arc<AtomicU64>,
     /// The device generation this stream belongs to
     mine: u64,
+    /// Raised when this stream finds its device gone, current or not yet:
+    /// a loss in the first moments of an open, before it becomes the
+    /// current device, still counts (see [`OutputErrors::opened`])
+    gone: Arc<AtomicBool>,
     burst_start: Instant,
     burst: u32,
     last_logged: Option<Instant>,
@@ -130,10 +145,28 @@ impl OutputErrors {
             lost,
             generation,
             mine,
+            gone: Arc::new(AtomicBool::new(false)),
             burst_start: Instant::now(),
             burst: 0,
             last_logged: None,
         }
+    }
+
+    /// A copy for one stream: its own `gone`, the rest shared
+    fn for_stream(&self) -> Self {
+        Self {
+            gone: Arc::new(AtomicBool::new(false)),
+            ..self.clone()
+        }
+    }
+
+    /// The stream opened: it is the current device from now on. `lost`
+    /// starts as whether it has already found its device gone, so a loss
+    /// reported before now isn't wiped.
+    fn opened(&self) {
+        self.generation.store(self.mine, Ordering::SeqCst);
+        self.lost
+            .store(self.gone.load(Ordering::SeqCst), Ordering::SeqCst);
     }
 
     /// Called by cpal on the audio thread
@@ -147,9 +180,14 @@ impl OutputErrors {
             eprintln!("Audio output error: {err}");
             self.last_logged = Some(Instant::now());
         }
-        // An old device's stream can still report after it was replaced
-        if gone && self.generation.load(Ordering::SeqCst) == self.mine {
-            self.lost.store(true, Ordering::SeqCst);
+        if gone {
+            self.gone.store(true, Ordering::SeqCst);
+            // An old device's stream can still report after it was
+            // replaced; a new one's, before the open has finished, is
+            // taken in by `opened`
+            if self.generation.load(Ordering::SeqCst) == self.mine {
+                self.lost.store(true, Ordering::SeqCst);
+            }
         }
     }
 
@@ -230,18 +268,19 @@ impl DeviceOutputs {
         let errors = OutputErrors::new(lost.clone(), self.generation.clone(), mine);
         let open = |device: rodio::cpal::Device| {
             let id = device.id().ok();
-            let mut errors = errors.clone();
+            let errors = errors.for_stream();
+            let mut reporter = errors.clone();
             DeviceSinkBuilder::from_device(device)
                 .and_then(|builder| {
                     builder
-                        .with_error_callback(move |err| errors.report(err))
+                        .with_error_callback(move |err| reporter.report(err))
                         .open_sink_or_fallback()
                 })
-                .map(|sink| (sink, id))
+                .map(|sink| (sink, id, errors))
         };
 
         let host = rodio::cpal::default_host();
-        let (mut sink, id) = host
+        let (mut sink, id, errors) = host
             .default_output_device()
             .ok_or(DeviceSinkError::NoDevice)
             .and_then(open)
@@ -265,8 +304,7 @@ impl DeviceOutputs {
                     .ok_or(original)
             })
             .map_err(|e| e.to_string())?;
-        self.generation.store(mine, Ordering::SeqCst);
-        lost.store(false, Ordering::SeqCst);
+        errors.opened();
         sink.log_on_drop(false);
         let device = id.as_ref().map(ToString::to_string);
         self.last = id;
@@ -445,6 +483,72 @@ mod tests {
             errors.is_gone(&backend("glitch"), at)
         });
         assert!(!gone);
+    }
+
+    #[test]
+    fn a_loss_in_the_first_moments_of_an_open_is_kept() {
+        // The old device is generation 1, the stream being opened 2
+        let lost = Arc::new(AtomicBool::new(true));
+        let generation = Arc::new(AtomicU64::new(1));
+        let errors = OutputErrors::new(lost.clone(), generation.clone(), 2).for_stream();
+        let mut reporter = errors.clone();
+        // The new stream reports its device gone before the open returns
+        reporter.report(StreamError::DeviceNotAvailable);
+        assert_eq!(generation.load(Ordering::SeqCst), 1);
+        errors.opened();
+        assert_eq!(generation.load(Ordering::SeqCst), 2);
+        assert!(lost.load(Ordering::SeqCst), "the early loss was wiped");
+
+        // A stream that opened fine starts with no loss, and an old
+        // stream's errors no longer count
+        let errors = OutputErrors::new(lost.clone(), generation.clone(), 3).for_stream();
+        let mut old = OutputErrors::new(lost.clone(), generation.clone(), 2).for_stream();
+        errors.opened();
+        assert!(!lost.load(Ordering::SeqCst));
+        old.report(StreamError::DeviceNotAvailable);
+        assert!(!lost.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn the_silent_output_keeps_to_real_time() {
+        /// Endless stereo silence, counting the samples taken
+        struct Counted(Arc<AtomicU64>, NonZero<u32>);
+        impl Iterator for Counted {
+            type Item = f32;
+            fn next(&mut self) -> Option<f32> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Some(0.0)
+            }
+        }
+        impl rodio::Source for Counted {
+            fn current_span_len(&self) -> Option<usize> {
+                None
+            }
+            fn channels(&self) -> NonZero<u16> {
+                NonZero::new(2).unwrap()
+            }
+            fn sample_rate(&self) -> NonZero<u32> {
+                self.1
+            }
+            fn total_duration(&self) -> Option<Duration> {
+                None
+            }
+        }
+
+        let output = SilentOutput::open(1.0).unwrap();
+        // Count what it takes over half a second
+        let pulled = Arc::new(AtomicU64::new(0));
+        let rate = output.sample_rate;
+        output.mixer.add(Counted(pulled.clone(), rate));
+        let start = Instant::now();
+        thread::sleep(Duration::from_millis(500));
+        let frames = pulled.load(Ordering::Relaxed) as f64 / 2.0;
+        let secs = frames / f64::from(rate.get());
+        let elapsed = start.elapsed().as_secs_f64();
+        assert!(
+            (secs - elapsed).abs() < 0.05,
+            "took {secs:.3} s of audio in {elapsed:.3} s"
+        );
     }
 
     /// A watch on a default the test sets

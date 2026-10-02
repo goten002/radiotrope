@@ -202,7 +202,13 @@ struct BufferInner {
 struct BufferState {
     inner: Mutex<BufferInner>,
     data_available: Condvar,
+    /// Signalled when compaction makes room in a full buffer
+    space_available: Condvar,
 }
+
+/// Longest the producer waits for room in a full buffer without being
+/// woken (it is woken when the consumer makes room, and on a cancel)
+const PRODUCER_FULL_WAIT: Duration = Duration::from_millis(500);
 
 /// Creates a decoupled producer-consumer stream buffer.
 ///
@@ -245,15 +251,18 @@ impl StreamBuffer {
                 metrics: NetworkMetrics::new(),
             }),
             data_available: Condvar::new(),
+            space_available: Condvar::new(),
         });
 
-        // Wake a consumer waiting for data. Under the lock, so a consumer
-        // between its cancel check and its wait can't miss the wakeup.
+        // Wake a consumer waiting for data, and a producer waiting for
+        // room. Under the lock, so one between its cancel check and its
+        // wait can't miss the wakeup.
         let woken = Arc::downgrade(&state);
         cancel.on_cancel(move || {
             if let Some(state) = woken.upgrade() {
                 let _inner = state.inner.lock();
                 state.data_available.notify_all();
+                state.space_available.notify_all();
             }
         });
 
@@ -311,34 +320,35 @@ impl StreamBuffer {
                 Ok(0) => break, // EOF
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 Ok(n) => {
-                    // Retry loop: keep trying to write this chunk until buffer has space.
-                    // We must NOT re-read from the inner reader before writing this chunk,
-                    // or we'd lose the data we already read.
-                    loop {
+                    // Keep this chunk until the buffer has room for it: it
+                    // must not be lost by reading the next one first.
+                    let Ok(mut inner) = state.inner.lock() else {
+                        return; // Mutex poisoned
+                    };
+                    // Full (a paused player reads nothing): wait for the
+                    // consumer to make room, or for a cancel
+                    while inner.data.len() >= MAX_BUFFER_SIZE {
                         if cancel.is_cancelled() {
                             return;
                         }
-
-                        let mut inner = match state.inner.lock() {
-                            Ok(inner) => inner,
-                            Err(_) => return, // Mutex poisoned
+                        inner = match state
+                            .space_available
+                            .wait_timeout(inner, PRODUCER_FULL_WAIT)
+                        {
+                            Ok((inner, _)) => inner,
+                            Err(_) => return,
                         };
-
-                        // Enforce max buffer size: wait if buffer is full
-                        if inner.data.len() >= MAX_BUFFER_SIZE {
-                            drop(inner);
-                            cancel.sleep(Duration::from_millis(10));
-                            continue; // Retry writing this same chunk
-                        }
-
-                        inner.data.extend_from_slice(&chunk[..n]);
-                        inner.write_pos += n;
-                        inner.metrics.record_chunk(n);
-
-                        drop(inner);
-                        state.data_available.notify_all();
-                        break; // Chunk written, read next from inner reader
                     }
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+
+                    inner.data.extend_from_slice(&chunk[..n]);
+                    inner.write_pos += n;
+                    inner.metrics.record_chunk(n);
+
+                    drop(inner);
+                    state.data_available.notify_all();
                 }
                 Err(e) => {
                     if let Ok(mut inner) = state.inner.lock() {
@@ -414,6 +424,8 @@ impl StreamBufferReader {
                     inner.data.shrink_to(COMPACTION_THRESHOLD);
                     inner.base_offset += keep_from as u64;
                     inner.write_pos -= keep_from;
+                    // A producer waiting on a full buffer has room now
+                    self.state.space_available.notify_all();
                 }
             }
         }
@@ -949,6 +961,65 @@ mod tests {
 
         stop.cancel();
         handle.join().unwrap();
+    }
+
+    // --- StreamBuffer: a full buffer ---
+
+    /// Endless bytes, counting how many were read
+    struct Endless(Arc<AtomicU64>);
+
+    impl Read for Endless {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.fetch_add(buf.len() as u64, Ordering::SeqCst);
+            buf.fill(7);
+            Ok(buf.len())
+        }
+    }
+
+    impl Seek for Endless {
+        fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+            Ok(0)
+        }
+    }
+
+    #[test]
+    fn a_full_buffer_waits_for_room_and_a_cancel_ends_the_wait() {
+        let read = Arc::new(AtomicU64::new(0));
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (mut reader, handle, stop) =
+            StreamBuffer::new(Box::new(Endless(read.clone())), status, probing);
+        let filled = |read: &AtomicU64| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let mut last = read.load(Ordering::SeqCst);
+            loop {
+                thread::sleep(Duration::from_millis(50));
+                let now = read.load(Ordering::SeqCst);
+                if now == last {
+                    return now;
+                }
+                assert!(Instant::now() < deadline, "the buffer never filled");
+                last = now;
+            }
+        };
+        // Full: the producer holds one chunk more than fits, and stops
+        let full = filled(&read);
+        assert!(full >= MAX_BUFFER_SIZE as u64);
+        assert!(full <= (MAX_BUFFER_SIZE + 2 * PRODUCER_CHUNK_SIZE) as u64);
+
+        // Reading past the compaction point makes room: it carries on
+        let mut sink = vec![0u8; 64 * 1024];
+        let mut taken = 0;
+        while taken <= COMPACTION_THRESHOLD + sink.len() {
+            taken += reader.read(&mut sink).unwrap();
+        }
+        assert!(filled(&read) > full, "the producer wasn't woken");
+
+        // A cancel ends its wait at once
+        let cancelled = Instant::now();
+        stop.cancel();
+        handle.join().unwrap();
+        assert!(cancelled.elapsed() < Duration::from_millis(400));
     }
 
     // --- StreamBuffer: stop flag ---

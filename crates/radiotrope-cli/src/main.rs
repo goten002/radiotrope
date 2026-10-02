@@ -195,6 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             app.play_started_at = Some(Instant::now());
                         }
                     }
+                    AudioEvent::CodecChanged(info) => app.codec_info = Some(info),
                     AudioEvent::Stopped => {
                         app.status = "Stopped".to_string();
                         app.running = false;
@@ -331,7 +332,9 @@ fn restore_stderr(saved_stderr: libc::c_int) {
 }
 
 fn update_analysis(analysis: &Arc<Mutex<AudioAnalysis>>, app: &mut App) {
-    if let Ok(a) = analysis.lock() {
+    if let Ok(mut a) = analysis.lock() {
+        // The spectrum is on screen: keep it worked out
+        a.mark_shown();
         for (i, &band) in a.spectrum.iter().enumerate().take(16) {
             app.spectrum[i] = (band * 100.0).clamp(0.0, 100.0) as u64;
         }

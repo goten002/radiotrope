@@ -451,8 +451,9 @@ impl MetadataSink {
 }
 
 /// Holds offered updates until playback reaches them, then applies the
-/// arbiter. Runs until the receiver is dropped, or the stream's readers
-/// have stopped and every held update has been released.
+/// arbiter. Runs until the stream's readers have stopped and every held
+/// update has been released, or until an update finds the receiver gone.
+/// With nothing held it sleeps until the next update.
 fn run_scheduler(
     rx: Receiver<TimedMetadata>,
     out: Sender<StreamMetadata>,
@@ -465,7 +466,14 @@ fn run_scheduler(
     let mut producers_open = true;
 
     loop {
-        if producers_open {
+        if producers_open && pending.is_empty() {
+            // Nothing held back: no need to look at playback until the
+            // next update comes
+            match rx.recv() {
+                Ok(timed) => pending.push_back(timed),
+                Err(_) => producers_open = false,
+            }
+        } else if producers_open {
             match rx.recv_timeout(poll) {
                 Ok(timed) => pending.push_back(timed),
                 Err(RecvTimeoutError::Timeout) => {}

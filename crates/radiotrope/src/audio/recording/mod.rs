@@ -553,6 +553,13 @@ trait AudioEncoder {
     fn header_patches(&self) -> Vec<(u64, Vec<u8>)> {
         Vec::new()
     }
+
+    /// Whether [`AudioEncoder::header_patches`] also describe the file as
+    /// written so far, so they can go in at each flush: a recording cut
+    /// short by a crash then still reads to where it got
+    fn patches_as_it_goes(&self) -> bool {
+        false
+    }
 }
 
 /// Make the encoder for `format`. `seekable` says whether the file can be
@@ -566,7 +573,7 @@ fn new_encoder(
     match format {
         RecordingFormat::Mp3 => Box::new(mp3::Mp3Encoder::new(tags, kbps, seekable)),
         RecordingFormat::Opus => Box::new(opus::OpusEncoder::new(tags, kbps)),
-        RecordingFormat::Wav => Box::new(wav::WavEncoder::new(tags)),
+        RecordingFormat::Wav => Box::new(wav::WavEncoder::new(tags, seekable)),
     }
 }
 
@@ -648,6 +655,9 @@ fn write_recording<F: RecordingFile>(
         // Flush at least every FLUSH_INTERVAL, also while audio keeps
         // arriving, so a crash loses little
         if last_flush.elapsed() >= FLUSH_INTERVAL {
+            if encoder.patches_as_it_goes() {
+                patch_in_place(&mut out, &encoder.header_patches()).map_err(io_err)?;
+            }
             out.flush().map_err(io_err)?;
             last_flush = Instant::now();
         }
@@ -713,6 +723,20 @@ fn write_recording<F: RecordingFile>(
     })()
     .map_err(io_err);
     result.and(patched)
+}
+
+/// Write `patches` over what `out` holds, and carry on at the end
+fn patch_in_place<W: Write + Seek>(out: &mut W, patches: &[(u64, Vec<u8>)]) -> std::io::Result<()> {
+    if patches.is_empty() {
+        return Ok(());
+    }
+    let end = out.stream_position()?;
+    for (offset, patch) in patches {
+        out.seek(SeekFrom::Start(*offset))?;
+        out.write_all(patch)?;
+    }
+    out.seek(SeekFrom::Start(end))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1254,10 +1278,22 @@ mod tests {
             tx.send(pcm(vec![0.1; 1000])).unwrap();
             thread::sleep(Duration::from_millis(200));
         }
-        let on_disk = disk.data.lock().unwrap().len();
+        let on_disk = disk.data.lock().unwrap().clone();
         tx.send(WriterMsg::Finish).unwrap();
         writer.join().unwrap().unwrap();
-        assert!(on_disk > 0, "nothing reached the file after 1.6 s of audio");
+        assert!(
+            !on_disk.is_empty(),
+            "nothing reached the file after 1.6 s of audio"
+        );
+
+        // Cut short there (a crash): the header already gives the sizes
+        // of what was written, so the file reads to where it got
+        let riff = u32::from_le_bytes(on_disk[4..8].try_into().unwrap()) as usize;
+        assert_eq!(riff, on_disk.len() - 8, "RIFF size");
+        let data_at = on_disk.windows(4).position(|w| w == b"data").unwrap() + 8;
+        let data = u32::from_le_bytes(on_disk[data_at - 4..data_at].try_into().unwrap()) as usize;
+        assert_eq!(data, on_disk.len() - data_at, "data size");
+        assert!(data > 0);
     }
 
     /// Decode a recording to interleaved samples
