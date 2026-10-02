@@ -8,6 +8,8 @@ export global Platform {
     // Full screen on the Pi: no title bar or window buttons
     out property <bool> has-window-frame: false;
     // No system clipboard on the kiosk
+    // A system tray icon, and the View menu's tray options
+    out property <bool> has-tray: false;
     out property <bool> has-clipboard: false;
 }
 

@@ -35,8 +35,6 @@ rmcp = { version = "3.5", default-features = false, features = ["server", "macro
 schemars = "1"
 # One player per user: `--mcp` and later launches reach it over a local socket
 interprocess = { version = "2.4", features = ["tokio"] }
-# WiFi settings over iwd (embedded only)
-zbus = { version = "5", default-features = false, features = ["tokio"], optional = true }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "sync", "time", "net"] }
 tokio-util = "0.7"
 # Network MCP: Streamable HTTP, optionally over TLS (the system's TLS, as reqwest uses)
@@ -52,18 +50,28 @@ futures-core = "0.3"
 if-addrs = "0.15"
 getrandom = "0.3"
 rfd = { version = "0.17", optional = true }
+# The system tray icon (desktop): Win32 on Windows, D-Bus StatusNotifierItem
+# on Linux (ksni, no GTK)
+tray-icon = { version = "0.26", default-features = false, features = ["ksni"], optional = true }
 
 [target.'cfg(unix)'.dependencies]
 # Quit cleanly on SIGTERM, SIGINT and SIGHUP
 signal-hook = "0.3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# D-Bus: WiFi settings over iwd (embedded, on tokio) and whether the
+# desktop has a tray to show our icon in (desktop). The tray's own D-Bus
+# runs on async-io, which zbus's tokio would take over, so each build turns
+# on its own runtime in [features].
+zbus = { version = "5", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1"
 
 [features]
 default = ["desktop"]
-desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd"]
-embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:zbus", "zbus/blocking-api", "zbus/async-io"]
+embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "zbus/tokio"]
 
 [build-dependencies]
 slint-build = "1.18"
