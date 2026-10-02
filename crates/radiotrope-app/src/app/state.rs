@@ -68,11 +68,17 @@ impl AppCommand {
     /// The commands that set the equalizer as `settings` keep it, sent at
     /// startup. A saved preset brings its own preamp, as when it is picked:
     /// the saved one can be from a build where the preset's gains differed.
-    /// Custom gains get the saved preamp.
+    /// A preamp moved by hand on top of the preset is kept, and custom gains
+    /// get the saved preamp.
     pub fn restore_eq(settings: &Settings) -> Vec<AppCommand> {
         let mut commands = vec![AppCommand::SetEqEnabled(settings.eq_enabled)];
         match &settings.eq_preset_name {
-            Some(name) => commands.push(AppCommand::SetEqPreset(name.clone())),
+            Some(name) => {
+                commands.push(AppCommand::SetEqPreset(name.clone()));
+                if settings.eq_preamp_moved {
+                    commands.push(AppCommand::SetEqPreamp(settings.eq_preamp));
+                }
+            }
             None => {
                 commands.push(AppCommand::SetEqGains(settings.eq_gains));
                 commands.push(AppCommand::SetEqPreamp(settings.eq_preamp));
@@ -121,6 +127,8 @@ pub struct AppSnapshot {
     // Equalizer
     pub eq_gains: [f32; 10],
     pub eq_preamp: f32,
+    /// The preamp was moved by hand since the preset was picked
+    pub eq_preamp_moved: bool,
     pub eq_enabled: bool,
     pub eq_preset_name: Option<String>,
 
@@ -201,6 +209,7 @@ impl Default for AppSnapshot {
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
+            eq_preamp_moved: false,
             eq_enabled: false,
             eq_preset_name: Some("Flat".to_string()),
             recording: None,

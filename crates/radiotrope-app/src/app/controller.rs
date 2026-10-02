@@ -249,6 +249,7 @@ impl AppController {
                     state.eq_gains = preset.gains;
                     state.eq_preset_name = Some(preset.name.to_string());
                     state.eq_preamp = preamp;
+                    state.eq_preamp_moved = false;
                 }
             }
             AppCommand::SetEqGains(gains) => {
@@ -265,6 +266,7 @@ impl AppController {
                 }
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.eq_preamp = db;
+                state.eq_preamp_moved = true;
             }
             AppCommand::SetEqEnabled(on) => {
                 if let Some(engine) = &self.engine {
@@ -781,6 +783,41 @@ mod tests {
             assert_eq!(state.eq_preset_name.as_deref(), Some("Rock"));
             assert_eq!(state.eq_gains, rock.gains);
             assert_eq!(state.eq_preamp, rock.preamp_db());
+        }
+
+        #[test]
+        fn a_preamp_moved_on_a_preset_is_kept() {
+            let (mut controller, state) = controller_and_state();
+            controller.handle_command(AppCommand::SetEqPreset("Rock".into()));
+            assert!(!state.lock().unwrap().eq_preamp_moved);
+            controller.handle_command(AppCommand::SetEqPreamp(-1.5));
+            // What the window saves on the way out
+            let s = state.lock().unwrap().clone();
+            assert!(s.eq_preamp_moved);
+            let settings = Settings {
+                eq_enabled: true,
+                eq_preset_name: s.eq_preset_name,
+                eq_gains: s.eq_gains,
+                eq_preamp: s.eq_preamp,
+                eq_preamp_moved: s.eq_preamp_moved,
+                ..Default::default()
+            };
+
+            let state = restored(&settings);
+            assert_eq!(state.eq_preset_name.as_deref(), Some("Rock"));
+            assert_eq!(state.eq_preamp, -1.5);
+            assert!(state.eq_preamp_moved);
+
+            // Picking the preset again brings its own preamp back
+            let (mut controller, state) = controller_and_state();
+            for command in AppCommand::restore_eq(&settings) {
+                controller.handle_command(command);
+            }
+            controller.handle_command(AppCommand::SetEqPreset("Rock".into()));
+            let state = state.lock().unwrap();
+            let rock = radiotrope::audio::find_preset("Rock").unwrap();
+            assert_eq!(state.eq_preamp, rock.preamp_db());
+            assert!(!state.eq_preamp_moved);
         }
 
         #[test]
