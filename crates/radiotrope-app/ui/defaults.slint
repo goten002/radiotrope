@@ -34,7 +34,7 @@ export global Theme {
     out property <color> text-tertiary: dark-mode ? #8b8e95 : #696c73;
 
     // ── Accent ──
-    // Default accent, also what "Reset to default" goes back to
+    // Default accent, also what "Restore Default" goes back to
     out property <color> accent-default: #f7931e;
     // Colours offered in the Accent Color dialog, two rows of five
     out property <[color]> accent-swatches: [
@@ -115,6 +115,16 @@ export global Theme {
     // ── Motion ──
     out property <duration> fast: 120ms;
     out property <duration> normal: 180ms;
+    // Status animations, one cycle each. The bouncing now-playing bars:
+    // the first bar, and how much slower each next one is
+    out property <duration> bars-period: 520ms;
+    out property <duration> bars-period-step: 140ms;
+    // A pulsing status dot
+    out property <duration> pulse-period: 1400ms;
+    // One turn of a loading spinner
+    out property <duration> spin-period: 900ms;
+    // The visualizer's tuning needle crossing the dial once
+    out property <duration> tune-period: 1600ms;
 
     // ── Contrast (WCAG 2) ──
     // Relative luminance: 0 for black, 1 for white
@@ -210,4 +220,7 @@ export global Defaults {
     // move this often (25 times a second): smooth to the eye, and a
     // playing station doesn't redraw the window on every frame
     out property <duration> motion-step: 40ms;
+    // A favorite dragged near the list's top or bottom scrolls the list
+    // this often (60 times a second)
+    out property <duration> drag-scroll-step: 16ms;
 }

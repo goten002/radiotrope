@@ -1,10 +1,15 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing } from "../components.slint";
+import { DialogShell, Icon, Toggle, ButtonKeys, FocusRing, PopupCard } from "../components.slint";
 
 component EqFader inherits Rectangle {
     in property <string> label;
     in-out property <float> value: 0;
+    // The EQ is off: grey instead of the accent, but it still moves, so
+    // the curve can be set up before turning the EQ on
+    in property <bool> dimmed: false;
     callback value-changed(float);
+
+    property <color> tint: root.dimmed ? Theme.text-tertiary : Theme.accent;
 
     horizontal-stretch: 1;
     height: 220px;
@@ -96,7 +101,8 @@ component EqFader inherits Rectangle {
                 y: thumb-y < center-y ? thumb-y : center-y;
                 width: 5px;
                 height: thumb-y < center-y ? center-y - thumb-y : thumb-y - center-y;
-                background: Theme.accent;
+                background: root.tint;
+                animate background { duration: Theme.normal; }
                 border-radius: 2.5px;
             }
 
@@ -109,7 +115,8 @@ component EqFader inherits Rectangle {
                 width: root.knob;
                 height: root.knob;
                 border-radius: root.knob / 2;
-                background: Theme.accent;
+                background: root.tint;
+                animate background { duration: Theme.normal; }
 
                 // Inner highlight dot
                 Rectangle {
@@ -248,7 +255,7 @@ component PresetItem inherits Rectangle {
     property <bool> lit: item-touch.has-hover || keys.has-focus;
 
     height: 26px;
-    border-radius: 4px;
+    border-radius: Theme.radius-sm;
     background: root.lit ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
 
@@ -310,8 +317,19 @@ component PresetGroupLabel inherits Rectangle {
     }
 }
 
+// A column of the preset menu: its heading and its presets
+export struct EqPresetGroup {
+    title: string,
+    names: [string],
+}
+
 export component EqualizerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    // The presets, from the engine's list (set from Rust): the ones shown
+    // on their own at the top (Flat), then a column per group
+    in property <[string]> top-presets;
+    in property <[EqPresetGroup]> preset-groups;
+    property <length> preset-column-width: 140px;
     in-out property <bool> eq-enabled: false;
     in-out property <string> preset-name: "Flat";
     in-out property <float> preamp-gain: 0;
@@ -354,7 +372,7 @@ export component EqualizerDialog inherits Rectangle {
             Rectangle {
                 width: 160px;
                 height: 30px;
-                border-radius: 6px;
+                border-radius: Theme.radius-md;
                 background: preset-dd-touch.has-hover
                     ? Theme.menu-hover
                     : Theme.elevated;
@@ -416,21 +434,22 @@ export component EqualizerDialog inherits Rectangle {
                 preset-popup := PopupWindow {
                     x: 0;
                     y: 30px;
-                    width: 3 * 140px + 2 * 4px + 2 * 4px;
+                    // The columns, the gaps between them and the padding
+                    width: root.preset-groups.length * (root.preset-column-width + 4px) + 4px;
 
-                    Rectangle {
-                        background: Theme.popup-bg;
-                        border-radius: Theme.radius-md;
-                        border-width: 1px;
-                        border-color: Theme.hairline;
-                        drop-shadow-blur: 8px;
-                        drop-shadow-color: Theme.shadow-soft;
-
+                    PopupCard {
                         VerticalLayout {
                             padding: 4px;
                             spacing: 4px;
 
-                            PresetItem { name: "Flat"; is-selected: root.preset-name == "Flat"; clicked => { preset-popup.close(); root.preset-selected("Flat"); } }
+                            for name in root.top-presets: PresetItem {
+                                name: name;
+                                is-selected: root.preset-name == name;
+                                clicked => {
+                                    preset-popup.close();
+                                    root.preset-selected(name);
+                                }
+                            }
 
                             Rectangle {
                                 height: 1px;
@@ -440,34 +459,17 @@ export component EqualizerDialog inherits Rectangle {
                             HorizontalLayout {
                                 spacing: 4px;
 
-                                VerticalLayout {
-                                    width: 140px;
-                                    PresetGroupLabel { text: "Listening"; }
-                                    PresetItem { name: "Voice"; is-selected: root.preset-name == "Voice"; clicked => { preset-popup.close(); root.preset-selected("Voice"); } }
-                                    PresetItem { name: "Small Speakers"; is-selected: root.preset-name == "Small Speakers"; clicked => { preset-popup.close(); root.preset-selected("Small Speakers"); } }
-                                    PresetItem { name: "Quiet Listening"; is-selected: root.preset-name == "Quiet Listening"; clicked => { preset-popup.close(); root.preset-selected("Quiet Listening"); } }
-                                    PresetItem { name: "Soften Highs"; is-selected: root.preset-name == "Soften Highs"; clicked => { preset-popup.close(); root.preset-selected("Soften Highs"); } }
-                                    Rectangle { vertical-stretch: 1; }
-                                }
-
-                                VerticalLayout {
-                                    width: 140px;
-                                    PresetGroupLabel { text: "Tone"; }
-                                    PresetItem { name: "Warm"; is-selected: root.preset-name == "Warm"; clicked => { preset-popup.close(); root.preset-selected("Warm"); } }
-                                    PresetItem { name: "Bright"; is-selected: root.preset-name == "Bright"; clicked => { preset-popup.close(); root.preset-selected("Bright"); } }
-                                    PresetItem { name: "Bass Lift"; is-selected: root.preset-name == "Bass Lift"; clicked => { preset-popup.close(); root.preset-selected("Bass Lift"); } }
-                                    PresetItem { name: "Bass Cut"; is-selected: root.preset-name == "Bass Cut"; clicked => { preset-popup.close(); root.preset-selected("Bass Cut"); } }
-                                    Rectangle { vertical-stretch: 1; }
-                                }
-
-                                VerticalLayout {
-                                    width: 140px;
-                                    PresetGroupLabel { text: "Music"; }
-                                    PresetItem { name: "Electronic"; is-selected: root.preset-name == "Electronic"; clicked => { preset-popup.close(); root.preset-selected("Electronic"); } }
-                                    PresetItem { name: "Hip-Hop"; is-selected: root.preset-name == "Hip-Hop"; clicked => { preset-popup.close(); root.preset-selected("Hip-Hop"); } }
-                                    PresetItem { name: "Rock"; is-selected: root.preset-name == "Rock"; clicked => { preset-popup.close(); root.preset-selected("Rock"); } }
-                                    PresetItem { name: "Acoustic"; is-selected: root.preset-name == "Acoustic"; clicked => { preset-popup.close(); root.preset-selected("Acoustic"); } }
-                                    PresetItem { name: "Vocal Pop"; is-selected: root.preset-name == "Vocal Pop"; clicked => { preset-popup.close(); root.preset-selected("Vocal Pop"); } }
+                                for group in root.preset-groups: VerticalLayout {
+                                    width: root.preset-column-width;
+                                    PresetGroupLabel { text: group.title; }
+                                    for name in group.names: PresetItem {
+                                        name: name;
+                                        is-selected: root.preset-name == name;
+                                        clicked => {
+                                            preset-popup.close();
+                                            root.preset-selected(name);
+                                        }
+                                    }
                                     Rectangle { vertical-stretch: 1; }
                                 }
                             }
@@ -514,6 +516,7 @@ export component EqualizerDialog inherits Rectangle {
             // Preamp fader
             EqFader {
                 label: "Pre";
+                dimmed: !root.eq-enabled;
                 value <=> root.preamp-gain;
                 value-changed(v) => { root.preamp-changed(v); }
             }
@@ -530,16 +533,16 @@ export component EqualizerDialog inherits Rectangle {
             }
 
             // 10 band faders — each stretches equally
-            EqFader { label: "40"; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
-            EqFader { label: "64"; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
-            EqFader { label: "125"; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
-            EqFader { label: "250"; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
-            EqFader { label: "500"; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
-            EqFader { label: "1K"; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
-            EqFader { label: "2K"; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
-            EqFader { label: "4K"; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
-            EqFader { label: "8K"; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
-            EqFader { label: "12K"; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
+            EqFader { label: "40"; dimmed: !root.eq-enabled; value <=> root.band0; value-changed(v) => { root.band-changed(0, v); } }
+            EqFader { label: "64"; dimmed: !root.eq-enabled; value <=> root.band1; value-changed(v) => { root.band-changed(1, v); } }
+            EqFader { label: "125"; dimmed: !root.eq-enabled; value <=> root.band2; value-changed(v) => { root.band-changed(2, v); } }
+            EqFader { label: "250"; dimmed: !root.eq-enabled; value <=> root.band3; value-changed(v) => { root.band-changed(3, v); } }
+            EqFader { label: "500"; dimmed: !root.eq-enabled; value <=> root.band4; value-changed(v) => { root.band-changed(4, v); } }
+            EqFader { label: "1K"; dimmed: !root.eq-enabled; value <=> root.band5; value-changed(v) => { root.band-changed(5, v); } }
+            EqFader { label: "2K"; dimmed: !root.eq-enabled; value <=> root.band6; value-changed(v) => { root.band-changed(6, v); } }
+            EqFader { label: "4K"; dimmed: !root.eq-enabled; value <=> root.band7; value-changed(v) => { root.band-changed(7, v); } }
+            EqFader { label: "8K"; dimmed: !root.eq-enabled; value <=> root.band8; value-changed(v) => { root.band-changed(8, v); } }
+            EqFader { label: "12K"; dimmed: !root.eq-enabled; value <=> root.band9; value-changed(v) => { root.band-changed(9, v); } }
         }
     }
 }

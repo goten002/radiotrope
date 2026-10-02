@@ -1,7 +1,7 @@
 import { Theme } from "defaults.slint";
 import { Visualization } from "visualization.slint";
 import { Chip, IconButton, Icon } from "components.slint";
-import { LogoFog, LogoFogLayer } from "logo-fog.slint";
+import { LogoFog, LogoFogLayer, Fog } from "logo-fog.slint";
 
 export component Playback inherits Rectangle {
     in property <string> station-name;
@@ -64,7 +64,7 @@ export component Playback inherits Rectangle {
                 drop-shadow-color: Theme.shadow-soft;
                 clip: true;
 
-                if root.station-logo.width > 0: LogoFogLayer {
+                if root.station-logo.width > 0 && Fog.shown(root.station-logo-fog): LogoFogLayer {
                     fog: root.station-logo-fog;
                 }
 

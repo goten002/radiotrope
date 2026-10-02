@@ -57,7 +57,6 @@ component ColorSwatch inherits Rectangle {
 
 export component AccentColorDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
-    in-out property <color> selected-color <=> Theme.accent-base;
 
     callback color-changed(color);
     callback custom-hex-requested(string);
@@ -136,7 +135,7 @@ export component AccentColorDialog inherits Rectangle {
             alignment: end;
 
             SecondaryButton {
-                label: "Reset to default";
+                label: "Restore Default";
                 clicked => {
                     Theme.accent-base = Theme.accent-default;
                     Theme.panel-gradient = true;

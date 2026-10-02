@@ -55,6 +55,29 @@ export component FocusRing inherits Rectangle {
     }
 }
 
+// Background of a menu or a hover bubble: the popup colour, a hairline
+// edge and a soft shadow. Put the content inside.
+export component PopupCard inherits Rectangle {
+    background: Theme.popup-bg;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    drop-shadow-blur: 8px;
+    drop-shadow-offset-y: 2px;
+    drop-shadow-color: Theme.shadow-soft;
+}
+
+// Line between groups of menu items
+export component MenuSeparator inherits Rectangle {
+    height: 9px;
+
+    Rectangle {
+        y: 4px;
+        height: 1px;
+        background: Theme.menu-hover;
+    }
+}
+
 // Keyboard side of a button: takes focus by Tab (a click doesn't move the
 // focus) and presses the button on Space or Enter
 export component ButtonKeys inherits FocusScope {
@@ -80,7 +103,7 @@ export component NowPlayingBars inherits HorizontalLayout {
         alignment: end;
         Rectangle {
             width: 3px;
-            height: 3px + 9px * abs(sin(Motion.tick / (520ms + i * 140ms) * 180deg + i * 50deg));
+            height: 3px + 9px * abs(sin(Motion.tick / (Theme.bars-period + i * Theme.bars-period-step) * 180deg + i * 50deg));
             border-radius: 1.5px;
             background: Theme.accent;
         }
@@ -355,7 +378,7 @@ export component Chip inherits Rectangle {
                 height: 6px;
                 border-radius: 3px;
                 background: root.tone;
-                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / 1400ms * 180deg)) : 1;
+                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / Theme.pulse-period * 180deg)) : 1;
             }
         }
 
@@ -789,7 +812,7 @@ export component InfoTip inherits Rectangle {
     }
 
     // Same style as the other hover bubbles
-    Rectangle {
+    PopupCard {
         visible: self.opacity > 0;
         opacity: root.open ? 1 : 0;
         animate opacity { duration: Theme.fast; }
@@ -797,13 +820,6 @@ export component InfoTip inherits Rectangle {
         height: tip-layout.preferred-height;
         x: root.width - self.width;
         y: -self.height - 6px;
-        background: Theme.popup-bg;
-        border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.hairline;
-        drop-shadow-blur: 8px;
-        drop-shadow-offset-y: 2px;
-        drop-shadow-color: Theme.shadow-soft;
 
         tip-layout := VerticalLayout {
             padding-left: 12px;
@@ -893,18 +909,11 @@ export struct AgentRow {
 // The agents chip's list, in the same style as the other hover bubbles:
 // a caption, then one row per agent with where it calls from and whether
 // it is connected or when it last called
-export component AgentsBubble inherits Rectangle {
+export component AgentsBubble inherits PopupCard {
     in property <[AgentRow]> agents;
 
     width: max(Defaults.info-tip-width, bubble.preferred-width);
     height: bubble.preferred-height;
-    background: Theme.popup-bg;
-    border-radius: Theme.radius-md;
-    border-width: 1px;
-    border-color: Theme.hairline;
-    drop-shadow-blur: 8px;
-    drop-shadow-offset-y: 2px;
-    drop-shadow-color: Theme.shadow-soft;
 
     bubble := VerticalLayout {
         padding-left: 12px;
