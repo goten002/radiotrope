@@ -67,6 +67,12 @@ export component App inherits Window {
     // Listening stats on favorites rows (View menu)
     in-out property <bool> show-station-stats: true;
     in-out property <bool> show-visualizer <=> playback.show-visualizer;
+    // The visualizer was shown or hidden, or the statistics dialog opened or
+    // closed: Rust runs the timers that feed them only while they show
+    callback live-views-changed();
+    out property <bool> stats-open: stats-dialog.show-dialog;
+    changed show-visualizer => { root.live-views-changed(); }
+    changed stats-open => { root.live-views-changed(); }
     callback load-top-stations();
     callback load-countries();
     callback open-url(string);
