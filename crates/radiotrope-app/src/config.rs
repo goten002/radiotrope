@@ -121,6 +121,13 @@ pub mod ui {
     /// (e.g. on an audio device that doesn't answer).
     pub const SHUTDOWN_SEND_TIMEOUT: Duration = Duration::from_secs(1);
 
+    /// How long the window shows a picked station as starting while the
+    /// controller hasn't taken its Play. It stops the old station first,
+    /// and the recorder may take its whole stop timeout to finish that
+    /// one's file.
+    pub const PLAY_TAKE_TIMEOUT: Duration =
+        radiotrope::audio::recording::STOP_TIMEOUT.saturating_add(Duration::from_secs(5));
+
     /// The longest wait at exit for the controller to finish: the recorder
     /// may take its whole stop timeout to finish a file on a slow drive,
     /// and the engine then shuts down
