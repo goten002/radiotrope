@@ -85,6 +85,11 @@ pub fn sniff_playlist(content_type: Option<&str>, head: &[u8]) -> PlaylistCheck 
     }
 }
 
+/// Whether a reply's `Content-Type` is a web page's
+pub(crate) fn is_web_page(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|v| v.trim_start().to_ascii_lowercase().starts_with("text/html"))
+}
+
 /// Where a station's playlists lead
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Target {
