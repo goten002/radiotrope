@@ -436,7 +436,9 @@ impl AppController {
                 eprintln!("Stream resolution failed: {e}");
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.playback = PlaybackState::Stopped;
-                state.station_url = None;
+                // The station stays the current one, showing its error: the
+                // window shows the station it has, so clearing it left the
+                // error on the one played before (a favorite, say)
                 state.last_error = Some(e.clone());
                 state.is_resolving = false;
                 state.status_text = format!("Error: {e}").into();
@@ -872,6 +874,29 @@ mod tests {
                 .expect("the cancelled resolve must end at once");
             assert!(matches!(cmd, AppCommand::InternalStreamResolved { .. }));
             cmd
+        }
+
+        #[test]
+        fn a_station_that_fails_to_resolve_stays_the_current_one() {
+            let (mut controller, state) = controller();
+            // Nothing listens there, so the resolve fails at once
+            let url = "http://127.0.0.1:1/dead.mp3";
+            controller.start_stream(url, Some("Dead FM".into()), None, None);
+            let resolved = controller
+                .cmd_rx
+                .recv_timeout(Duration::from_secs(20))
+                .expect("the resolve must fail");
+            assert!(matches!(
+                resolved,
+                AppCommand::InternalStreamResolved { .. }
+            ));
+            controller.handle_command(resolved);
+
+            let state = state.lock().unwrap();
+            assert!(state.is_error, "{}", state.status_text);
+            assert_eq!(state.playback, PlaybackState::Stopped);
+            assert_eq!(state.station_url.as_deref(), Some(url));
+            assert_eq!(state.station_name.as_deref(), Some("Dead FM"));
         }
 
         #[test]
