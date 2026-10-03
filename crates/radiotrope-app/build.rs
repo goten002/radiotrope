@@ -11,7 +11,10 @@ fn main() {
     };
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let config = slint_build::CompilerConfiguration::new()
-        .with_style("fluent-dark".into())
+        // Plain "fluent", not "fluent-dark": a "-dark" style fixes the
+        // system colour scheme to dark when the UI is compiled, and the
+        // System theme reads it (Palette.color-scheme) to follow the OS
+        .with_style("fluent".into())
         .with_library_paths(
             [("platform".to_string(), manifest_dir.join(platform))]
                 .into_iter()

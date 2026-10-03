@@ -103,6 +103,8 @@ component CheckMenuItem inherits Rectangle {
     in property <string> label;
     in property <image> icon;
     in property <bool> checked;
+    // A faint note on the right, before the tick ("Dark")
+    in property <string> hint;
     // Greyed out and not clickable when false
     in property <bool> enabled: true;
     callback clicked();
@@ -159,6 +161,14 @@ component CheckMenuItem inherits Rectangle {
             color: !root.enabled ? Theme.disabled-text
                 : root.lit ? Theme.text-primary : Theme.menu-text;
             font-size: Theme.font-base;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Theme.disabled-text;
+            font-size: Theme.font-sm;
             vertical-alignment: center;
             accessible-role: none;
         }
@@ -581,22 +591,36 @@ export component MenuBar inherits Rectangle {
             view-popup-layout := VerticalLayout {
                 padding: 4px;
 
+                // Follows the OS; the hint says what it reports right now
+                CheckMenuItem {
+                    label: "System Theme";
+                    icon: @image-url("icons/desktop.svg");
+                    hint: !Platform.has-system-theme ? "Not available"
+                        : !Theme.system-known ? "Not reported"
+                        : Theme.system-dark ? "Dark" : "Light";
+                    enabled: Platform.has-system-theme;
+                    checked: Theme.theme-mode == "system";
+                    clicked => {
+                        view-popup.close();
+                        Theme.theme-mode = "system";
+                    }
+                }
                 CheckMenuItem {
                     label: "Dark Theme";
                     icon: @image-url("icons/moon.svg");
-                    checked: Theme.dark-mode;
+                    checked: Theme.theme-mode == "dark";
                     clicked => {
                         view-popup.close();
-                        Theme.dark-mode = true;
+                        Theme.theme-mode = "dark";
                     }
                 }
                 CheckMenuItem {
                     label: "Light Theme";
                     icon: @image-url("icons/sun.svg");
-                    checked: !Theme.dark-mode;
+                    checked: Theme.theme-mode == "light";
                     clicked => {
                         view-popup.close();
-                        Theme.dark-mode = false;
+                        Theme.theme-mode = "light";
                     }
                 }
                 MenuSeparator {}

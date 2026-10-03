@@ -155,6 +155,28 @@ pub fn set_system_frame(window: &slint::Window, framed: bool) {
     let _ = (window, framed);
 }
 
+/// Colour the system title bar for the View menu's theme (`"system"`,
+/// `"dark"` or `"light"`). Only Windows needs it: its title bar follows the
+/// OS app mode, which a picked Dark or Light theme may not match.
+///
+/// winit's `set_theme` on Windows only recolours the frame: the window keeps
+/// following the OS (ThemeChanged still arrives, so System Theme and its
+/// hint stay live), but an OS switch recolours the frame back to the OS
+/// theme, so this runs again then too. On Linux, Slint gives the frame the
+/// desktop's theme itself.
+pub fn set_title_bar_theme(window: &slint::Window, mode: &str) {
+    #[cfg(target_os = "windows")]
+    window.with_winit_window(|w| {
+        w.set_theme(match mode {
+            "dark" => Some(winit::window::Theme::Dark),
+            "light" => Some(winit::window::Theme::Light),
+            _ => None,
+        })
+    });
+    #[cfg(not(target_os = "windows"))]
+    let _ = (window, mode);
+}
+
 /// Opens the system window menu at `(x, y)` (logical, window coordinates).
 ///
 /// Called on the right button's press and on its release: Wayland needs the

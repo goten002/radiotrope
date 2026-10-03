@@ -17,6 +17,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 - Equalizer presets in groups, with an automatic preamp and new 40 Hz and 12 kHz shelves.
 - "AAC+" label for HE-AAC stations.
 - Wave and Dot Matrix visualizer modes, visualizers coloured from the station logo, and a View menu switch to turn the visualizer off.
+- System Theme in the View menu: the app follows the light or dark setting of Windows or the Linux desktop (GNOME, KDE and others, X11 or Wayland) and switches live when it changes. New installs start on it; a saved Dark or Light choice is kept.
 - Station browser: logos in the list, clear errors with retry, and switching to another radio-browser server when one fails.
 - A soft fog behind dark or light transparent logos that would otherwise vanish on the tile.
 - Keyboard use and screen reader names for the controls, and touch support for the bubbles.
