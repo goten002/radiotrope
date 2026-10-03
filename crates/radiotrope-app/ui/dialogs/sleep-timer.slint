@@ -1,0 +1,164 @@
+import { Theme, Defaults } from "../defaults.slint";
+import { StyledLineEdit } from "../styled-line-edit.slint";
+import { SecondaryButton } from "../buttons.slint";
+import { DialogShell, Toggle, PickerOption } from "../components.slint";
+
+// Stops playback after a while: one click on a length starts it, another
+// length replaces it. Saves as it changes, like the other settings.
+export component SleepTimerDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    // A timer runs
+    in property <bool> active;
+    // Time left, "23:12" or "1:02:03"
+    in property <string> left;
+    // When it stops, "23:30"
+    in property <string> until;
+    in-out property <bool> fade: true;
+    // The length last started, to mark its button
+    in-out property <int> picked-minutes: 0;
+
+    callback start(int);
+    callback extend(int);
+    callback turn-off();
+    callback fade-toggled(bool);
+
+    property <string> custom;
+    property <string> error;
+    property <[int]> lengths: [15, 30, 45, 60, 90, 120];
+    property <[string]> labels: ["15 min", "30 min", "45 min", "1 h", "1 h 30", "2 h"];
+
+    public function open() {
+        root.custom = "";
+        root.error = "";
+        root.show-dialog = true;
+    }
+
+    function start-custom() {
+        // Whole minutes, 1 to 24 hours
+        if root.custom.is-float() && root.custom.to-float() >= 1 && root.custom.to-float() <= 1440 {
+            root.error = "";
+            root.picked-minutes = round(root.custom.to-float());
+            root.start(root.picked-minutes);
+        } else {
+            root.error = "Type the minutes, from 1 to 1440";
+        }
+    }
+
+    if show-dialog: DialogShell {
+        title: "Sleep Timer";
+        subtitle: "Stops playback when the time is up";
+        card-width: Defaults.sleep-timer-width;
+        close-requested => { root.show-dialog = false; }
+
+        // Time left, large, or what a click does
+        VerticalLayout {
+            spacing: 2px;
+
+            Text {
+                text: root.active ? root.left : "Off";
+                color: root.active ? Theme.text-primary : Theme.text-secondary;
+                font-size: 30px;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.active ? "Stops at " + root.until : "Pick how long to keep playing";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                horizontal-alignment: center;
+            }
+        }
+
+        // The lengths, as a row of choices that wraps to two at need
+        Rectangle {
+            background: Theme.elevated;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            height: lengths-row.preferred-height;
+
+            lengths-row := HorizontalLayout {
+                padding: 3px;
+                spacing: 3px;
+
+                for minutes[i] in root.lengths: PickerOption {
+                    label: root.labels[i];
+                    option-width: 48px;
+                    horizontal-stretch: 1;
+                    selected: root.active && root.picked-minutes == minutes;
+                    clicked => {
+                        root.picked-minutes = minutes;
+                        root.error = "";
+                        root.start(minutes);
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            StyledLineEdit {
+                width: 120px;
+                placeholder-text: "Minutes";
+                text <=> root.custom;
+                accepted => { root.start-custom(); }
+                edited => { root.error = ""; }
+            }
+            SecondaryButton {
+                label: "Start";
+                enabled: root.custom != "";
+                clicked => { root.start-custom(); }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            SecondaryButton {
+                label: "+15 min";
+                enabled: root.active;
+                clicked => { root.extend(15); }
+            }
+            SecondaryButton {
+                label: "Turn Off";
+                enabled: root.active;
+                clicked => {
+                    root.picked-minutes = 0;
+                    root.turn-off();
+                }
+            }
+        }
+
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.danger;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.hairline;
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+
+            Toggle {
+                label: "Fade out";
+                checked <=> root.fade;
+                toggled(on) => { root.fade-toggled(on); }
+            }
+            // Lines up with the label (36px switch + 8px gap)
+            HorizontalLayout {
+                padding-left: 44px;
+
+                Text {
+                    text: "Lower the volume over the last minute.";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-md;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

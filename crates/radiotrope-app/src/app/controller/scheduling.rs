@@ -18,6 +18,7 @@ use radiotrope_app::data::schedule::{
 };
 use radiotrope_app::data::storage;
 
+use super::alarm_tone::AlarmTone;
 use super::AppController;
 use crate::app::state::{NextRun, ScheduleReply, ScheduledNow, SleepTimerInfo};
 
@@ -33,6 +34,12 @@ pub const RETRY_AFTER: Duration = Duration::from_secs(30);
 /// How long an alarm with no end is looked after: its station tried again
 /// if it fails. After that it is the user's.
 pub const ALARM_WATCH_SECS: i64 = 10 * 60;
+
+/// How long an alarm waits for its station before it beeps instead
+pub const BEEP_AFTER_SECS: i64 = 30;
+
+/// The beep is at least this loud, whatever volume the alarm set
+pub const BEEP_VOLUME: f32 = 0.5;
 
 /// Gives a station's logo as PNG, for a scheduled recording's cover art
 pub type CoverSource = Box<dyn Fn(&ScheduledStation) -> Option<Vec<u8>> + Send>;
@@ -50,6 +57,10 @@ pub(super) struct ActiveEntry {
     /// The station (by `play_seq`) a recording was last started for: a
     /// recording that can't start isn't tried every second
     record_tried: u64,
+    /// Its station has played
+    heard: bool,
+    /// Its station didn't start, and the alarm beeps instead
+    beeping: bool,
 }
 
 /// The sleep timer
@@ -171,6 +182,34 @@ impl AppController {
             until: now + TimeDelta::minutes(m.min(schedule::MAX_MINUTES).into()),
             fade,
         });
+        self.apply_volume(&now);
+        self.publish_schedule(&now);
+    }
+
+    pub(super) fn extend_sleep_timer(&mut self, minutes: u32) {
+        let now = Local::now();
+        let minutes = TimeDelta::minutes(minutes.min(schedule::MAX_MINUTES).into());
+        match self.sleep.as_mut() {
+            Some(sleep) => {
+                let longest = now + TimeDelta::minutes(schedule::MAX_MINUTES.into());
+                sleep.until = (sleep.until + minutes).min(longest);
+            }
+            None => {
+                self.sleep = Some(SleepTimer {
+                    until: now + minutes,
+                    fade: true,
+                })
+            }
+        }
+        self.apply_volume(&now);
+        self.publish_schedule(&now);
+    }
+
+    pub(super) fn set_sleep_fade(&mut self, fade: bool) {
+        if let Some(sleep) = self.sleep.as_mut() {
+            sleep.fade = fade;
+        }
+        let now = Local::now();
         self.apply_volume(&now);
         self.publish_schedule(&now);
     }
@@ -315,6 +354,8 @@ impl AppController {
             started: *now,
             retry_at: None,
             record_tried: 0,
+            heard: false,
+            beeping: false,
         });
     }
 
@@ -330,9 +371,19 @@ impl AppController {
         }
         // An alarm with no end is the user's after a while
         if active.until.is_none() && (*now - active.started).num_seconds() >= ALARM_WATCH_SECS {
+            let beeping = active.beeping;
             self.active = None;
+            if beeping {
+                self.stop_playback();
+            }
             return;
         }
+        // The beep goes on until the user or the entry's end stops it
+        if active.beeping {
+            return;
+        }
+        let waited = (*now - active.started).num_seconds();
+        let heard = active.heard;
 
         let (playback, resolving, play_seq, recording) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -351,6 +402,7 @@ impl AppController {
         if playback == PlaybackState::Playing {
             if let Some(active) = self.active.as_mut() {
                 active.retry_at = None;
+                active.heard = true;
             }
             if record && !recording && record_tried != play_seq {
                 if let Some(active) = self.active.as_mut() {
@@ -358,6 +410,9 @@ impl AppController {
                 }
                 self.record_for_schedule(station.as_ref());
             }
+        } else if !record && !heard && waited >= BEEP_AFTER_SECS {
+            // The alarm must wake someone
+            self.start_alarm_tone(now);
         } else if playback == PlaybackState::Stopped && !resolving {
             // The station failed (the engine already tried for a while)
             match retry_at {
@@ -382,6 +437,43 @@ impl AppController {
                 Some(_) => {}
             }
         }
+    }
+
+    /// Beep in place of an alarm's station that hasn't started
+    fn start_alarm_tone(&mut self, now: &DateTime<Local>) {
+        let Some(active) = self.active.as_mut() else {
+            return;
+        };
+        active.beeping = true;
+        let name = active
+            .entry
+            .station
+            .as_ref()
+            .map(|s| s.name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "The station".into());
+        self.fade_in = None;
+        // Stop the station or its resolve; the beep's own events are
+        // ignored, as no station is current
+        self.cancel_stream();
+        self.metadata_rx = None;
+        self.stream_failed = false;
+        if let Some(engine) = &self.engine {
+            engine.stop();
+            engine.play(Box::new(AlarmTone::new()), Some("wav".into()), None);
+        }
+        {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            state.is_resolving = false;
+            state.playback = PlaybackState::Playing;
+            state.alarm_beep = true;
+            state.status_text = format!("{name} didn't start, the alarm beeps instead").into();
+            state.is_error = true;
+            state.title.clear();
+            state.artist.clear();
+            state.codec_name.clear();
+        }
+        self.apply_volume(now);
     }
 
     fn record_for_schedule(&mut self, station: Option<&ScheduledStation>) {
@@ -468,6 +560,8 @@ impl AppController {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if state.is_muted {
                 0.0
+            } else if state.alarm_beep {
+                state.volume.max(BEEP_VOLUME)
             } else {
                 state.volume * gain
             }
@@ -668,6 +762,78 @@ mod tests {
     }
 
     #[test]
+    fn an_alarm_whose_station_does_not_start_beeps_until_stopped() {
+        let (mut controller, state) = controller();
+        state.lock().unwrap().volume = 0.2;
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                fade: true,
+                ..entry(Action::Play)
+            },
+        );
+        controller.run_schedule(at);
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS - 1));
+        assert!(!state.lock().unwrap().alarm_beep);
+
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS));
+        {
+            let s = state.lock().unwrap();
+            assert!(s.alarm_beep);
+            assert_eq!(s.playback, PlaybackState::Playing);
+            assert!(s.status_text.contains("Jazz FM didn't start"));
+        }
+        // Loud enough to hear, and no fade holds it down
+        assert_eq!(controller.engine_volume, Some(BEEP_VOLUME));
+
+        // It isn't retried over the beep, and Stop silences it
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS + 40));
+        assert!(state.lock().unwrap().alarm_beep);
+        controller.handle_command(AppCommand::Stop);
+        let s = state.lock().unwrap();
+        assert!(!s.alarm_beep);
+        assert_eq!(s.playback, PlaybackState::Stopped);
+        drop(s);
+        assert_eq!(controller.engine_volume, Some(0.2));
+    }
+
+    #[test]
+    fn the_beep_ends_with_the_alarm_watch_and_a_heard_station_never_beeps() {
+        let (mut controller, state) = controller();
+        let (_, at) = save(&mut controller, entry(Action::Play));
+        controller.run_schedule(at);
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS));
+        assert!(state.lock().unwrap().alarm_beep);
+        controller.run_schedule(at + TimeDelta::seconds(ALARM_WATCH_SECS));
+        assert!(!state.lock().unwrap().alarm_beep);
+        assert_eq!(state.lock().unwrap().playback, PlaybackState::Stopped);
+        assert!(controller.active.is_none());
+
+        // Heard, then dropped out: the retry, not a beep
+        let (mut controller, state) = self::controller();
+        let (_, at) = save(&mut controller, entry(Action::Play));
+        controller.run_schedule(at);
+        playing(&state);
+        controller.run_schedule(at + TimeDelta::seconds(5));
+        state.lock().unwrap().playback = PlaybackState::Stopped;
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS + 5));
+        assert!(!state.lock().unwrap().alarm_beep);
+
+        // A recording doesn't beep
+        let (mut controller, state) = self::controller();
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                end: End::After { minutes: 30 },
+                ..entry(Action::Record)
+            },
+        );
+        controller.run_schedule(at);
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS + 5));
+        assert!(!state.lock().unwrap().alarm_beep);
+    }
+
+    #[test]
     fn an_alarm_plays_its_station_at_its_volume_and_rises() {
         let (mut controller, state) = controller();
         {
@@ -756,7 +922,7 @@ mod tests {
         controller.run_schedule(at + TimeDelta::seconds(1));
         assert_eq!(state.lock().unwrap().play_seq, first);
         controller.active.as_mut().unwrap().retry_at = Some(Instant::now());
-        controller.run_schedule(at + TimeDelta::seconds(31));
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS - 1));
         assert_eq!(state.lock().unwrap().play_seq, first + 1);
     }
 

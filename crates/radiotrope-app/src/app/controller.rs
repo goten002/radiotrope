@@ -21,9 +21,10 @@ use radiotrope_app::data::recordings;
 
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
+mod alarm_tone;
 mod scheduling;
 
-pub use scheduling::CoverSource;
+pub use scheduling::{clash_message, CoverSource};
 
 /// How often the schedule's clock is read while something is scheduled
 const SCHEDULE_POLL: Duration = Duration::from_secs(1);
@@ -248,6 +249,8 @@ impl AppController {
                 self.stop_playback();
             }
             AppCommand::SetSleepTimer { minutes, fade } => self.set_sleep_timer(minutes, fade),
+            AppCommand::ExtendSleepTimer(minutes) => self.extend_sleep_timer(minutes),
+            AppCommand::SetSleepFade(fade) => self.set_sleep_fade(fade),
             AppCommand::SaveScheduleEntry { entry, reply } => {
                 self.save_schedule_entry(entry, reply)
             }
@@ -374,11 +377,17 @@ impl AppController {
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         // A station still resolving doesn't start after the stop
         state.is_resolving = false;
+        let was_beeping = std::mem::take(&mut state.alarm_beep);
         state.playback = PlaybackState::Stopped;
         state.status_text = "Stopped".into();
         state.is_error = false;
         state.title.clear();
         state.artist.clear();
+        drop(state);
+        // The beep's volume floor is gone
+        if was_beeping {
+            self.apply_volume(&chrono::Local::now());
+        }
     }
 
     /// Resolve the stream on a worker thread, then send the result back.
@@ -420,6 +429,7 @@ impl AppController {
             state.artist.clear();
             state.last_error = None;
             state.is_resolving = true;
+            state.alarm_beep = false;
             state.codec_name.clear();
             state.stream_type.clear();
             state.sample_rate = 0;

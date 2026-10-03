@@ -27,6 +27,13 @@ export component Playback inherits Rectangle {
     // A "Saved ..." notice opens the recordings folder when clicked
     in property <bool> can-open-recordings;
     callback open-recordings-folder();
+    // Time left on the sleep timer, "23:12" ("" when none runs)
+    in property <string> sleep-left;
+    // The scheduled entry playing now ("" when none), and its end
+    in property <string> schedule-running;
+    in property <string> schedule-running-detail;
+    callback open-sleep-timer();
+    callback open-schedule();
     callback toggle-favorite();
     in-out property <string> viz-mode: "wave";
     // Off (View > Visualizer), the tile is left out of the header
@@ -129,6 +136,22 @@ export component Playback inherits Rectangle {
                     steady: root.is-recording;
                     clickable: !root.is-recording && !root.recording-notice-error && root.can-open-recordings;
                     clicked => { root.open-recordings-folder(); }
+                }
+
+                if root.schedule-running != "": Chip {
+                    text: root.schedule-running;
+                    detail: root.schedule-running-detail;
+                    tone: Theme.accent-text;
+                    clickable: true;
+                    clicked => { root.open-schedule(); }
+                }
+
+                if root.sleep-left != "": Chip {
+                    text: "Sleep " + root.sleep-left;
+                    tone: Theme.text-secondary;
+                    steady: true;
+                    clickable: true;
+                    clicked => { root.open-sleep-timer(); }
                 }
 
                 // Takes the spare width, so a long status elides in the chip
