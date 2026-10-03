@@ -139,6 +139,9 @@ pub struct AppSnapshot {
     /// An alarm's station didn't start and the alarm beeps instead.
     /// `playback` is Playing, so Stop silences it, but the station isn't.
     pub alarm_beep: bool,
+    /// How loud the fades (an entry's fade in, a fading Stop, the Sleep
+    /// Timer's fade out) let the station play now, from 0 to 1
+    pub fade_gain: f32,
     /// Counts the stations started, so a caller can tell when its own Play
     /// has been taken up
     pub play_seq: u64,
@@ -276,6 +279,7 @@ impl Default for AppSnapshot {
             last_error: None,
             is_resolving: false,
             alarm_beep: false,
+            fade_gain: 1.0,
             play_seq: 0,
             codec_name: String::new(),
             stream_type: String::new(),

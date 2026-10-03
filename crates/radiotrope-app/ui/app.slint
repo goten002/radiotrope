@@ -206,6 +206,8 @@ export component App inherits Window {
     in-out property <bool> is-playing;
     in-out property <string> now-playing-title;
     in-out property <float> volume: 1.0;
+    // How loud a fade (Scheduler or Sleep Timer) lets it play now, 0–1
+    in-out property <float> volume-level: 1.0;
     in-out property <bool> is-muted;
     in-out property <string> station-url;
     in-out property <image> current-logo;
@@ -483,6 +485,7 @@ export component App inherits Window {
                 has-station: root.station-url != "";
                 now-playing-title: root.now-playing-title;
                 volume <=> root.volume;
+                volume-level: root.volume-level;
                 is-muted <=> root.is-muted;
                 play-clicked => { root.play-url(root.station-url); }
                 stop-clicked => { root.stop-clicked(); }

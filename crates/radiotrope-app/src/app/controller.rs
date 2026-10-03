@@ -82,6 +82,8 @@ pub struct AppController {
     active: Option<scheduling::ActiveEntry>,
     sleep: Option<scheduling::SleepTimer>,
     fade_in: Option<scheduling::FadeIn>,
+    /// A fading Stop whose fade the user ended by moving the volume
+    stop_fade_skipped: Option<chrono::DateTime<chrono::Local>>,
     /// Gives a scheduled recording its cover art
     cover_source: Option<CoverSource>,
     /// The volume last given to the engine
@@ -119,6 +121,7 @@ impl AppController {
             active: None,
             sleep: None,
             fade_in: None,
+            stop_fade_skipped: None,
             cover_source: None,
             engine_volume: None,
             resume: None,

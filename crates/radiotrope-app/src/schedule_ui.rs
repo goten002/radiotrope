@@ -35,7 +35,7 @@ thread_local! {
     static COUNTED_DOWN: RefCell<Option<NextRun>> = const { RefCell::new(None) };
     /// The label saying what started was clicked away
     static STARTED_DISMISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// The fallback sound label was clicked away (until the beep ends)
+    /// The alarm mode label was clicked away (until the beep ends)
     static BEEP_DISMISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
@@ -43,7 +43,7 @@ thread_local! {
 #[derive(Debug, Default, PartialEq)]
 struct Label {
     text: String,
-    /// For the fallback sound: a bell instead of the calendar
+    /// For alarm mode (the fallback sound): a bell instead of the calendar
     bell: bool,
     /// Only news about what happened, so a click closes it
     closable: bool,
@@ -450,6 +450,7 @@ fn entry_at(
 pub struct View {
     sleep: Option<SleepTimerInfo>,
     alarm_beep: bool,
+    fade_gain: f32,
     scheduled: Option<ScheduledNow>,
     next_run: Option<NextRun>,
     /// The list's version, and the entries when it is not the one shown
@@ -464,6 +465,7 @@ impl View {
         View {
             sleep: s.sleep.clone(),
             alarm_beep: s.alarm_beep,
+            fade_gain: s.fade_gain,
             scheduled: s.scheduled.clone(),
             next_run: s.next_run.clone(),
             seq,
@@ -490,6 +492,11 @@ pub fn show_state(ui: &App, view: View) {
                 ui.set_sleep_active(false);
             }
         }
+    }
+
+    // The volume bar's fill follows a fade, the knob stays at the volume
+    if (ui.get_volume_level() - view.fade_gain).abs() > 0.001 {
+        ui.set_volume_level(view.fade_gain);
     }
 
     let label = schedule_label(&view, &now);
@@ -522,7 +529,7 @@ pub fn show_state(ui: &App, view: View) {
     }
 }
 
-/// Close the label that says what started, or the fallback sound one
+/// Close the label that says what started, or the alarm mode one
 fn dismiss_label(bell: bool) {
     if bell {
         BEEP_DISMISSED.set(true);
@@ -532,12 +539,12 @@ fn dismiss_label(bell: bool) {
 }
 
 /// The Scheduler's label: a countdown before an entry, what started just
-/// after, or the fallback sound playing. The last two close on a click.
+/// after, or alarm mode (the fallback sound playing). The last two close on a click.
 fn schedule_label(view: &View, now: &DateTime<Local>) -> Label {
     if view.alarm_beep {
         if !BEEP_DISMISSED.get() {
             return Label {
-                text: "Fallback sound".into(),
+                text: "Alarm mode".into(),
                 bell: true,
                 closable: true,
             };
@@ -688,6 +695,7 @@ mod tests {
         let view = |next: Option<NextRun>, running: Option<u64>, beep: bool| View {
             sleep: None,
             alarm_beep: beep,
+            fade_gain: 1.0,
             scheduled: running.map(|id| ScheduledNow {
                 id,
                 title: String::new(),
@@ -725,7 +733,7 @@ mod tests {
             schedule_label(&view(None, Some(4), false), &(at + TimeDelta::seconds(3))).closable
         );
         assert_eq!(label(&view(None, Some(4), false), 15), "");
-        assert_eq!(label(&view(None, Some(4), true), 30), "Fallback sound");
+        assert_eq!(label(&view(None, Some(4), true), 30), "Alarm mode");
         assert!(schedule_label(&view(None, None, true), &at).bell);
 
         // Skipped: nothing claims it started
@@ -743,12 +751,12 @@ mod tests {
         );
         assert_eq!(label(&view(None, Some(4), false), 1), "Play · Jazz FM");
 
-        // The fallback sound label stays closed until the beep ends
-        assert_eq!(label(&view(None, Some(4), true), 30), "Fallback sound");
+        // The alarm mode label stays closed until the beep ends
+        assert_eq!(label(&view(None, Some(4), true), 30), "Alarm mode");
         dismiss_label(true);
         assert_eq!(label(&view(None, Some(4), true), 31), "");
         label(&view(None, Some(4), false), 40);
-        assert_eq!(label(&view(None, Some(4), true), 41), "Fallback sound");
+        assert_eq!(label(&view(None, Some(4), true), 41), "Alarm mode");
     }
 
     #[test]
