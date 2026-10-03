@@ -1,5 +1,5 @@
-//! The window's side of the schedule: the Sleep Timer and Schedule
-//! dialogs, and the chips that show what runs
+//! The window's side of the schedule: the Timer and Scheduler dialogs,
+//! and the labels under the station name
 //!
 //! The controller keeps the entries and runs them; this sends it the
 //! changes and shows what it has. A draft is checked here first, with the
@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use chrono::Local;
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeDelta, Timelike};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
@@ -18,6 +18,7 @@ use crate::app::controller::clash_message;
 use crate::app::state::{AppCommand, AppSnapshot, NextRun, ScheduledNow, SleepTimerInfo};
 use crate::app::ui_sender::UiSender;
 use crate::{App, ScheduleDraft, ScheduleRow};
+use radiotrope_app::config::ui::{SCHEDULE_COUNTDOWN_SECS, SCHEDULE_DATES, SCHEDULE_LABEL_SECS};
 
 /// Volumes the dialog offers after "Keep current" and "Silent", in percent
 const VOLUMES: [u32; 10] = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100];
@@ -30,6 +31,8 @@ thread_local! {
     static STATIONS: RefCell<Vec<ScheduledStation>> = const { RefCell::new(Vec::new()) };
     /// The schedule shown, by `schedule_seq`
     static SHOWN_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
+    /// The entry the label last counted down to, to say when it started
+    static COUNTED_DOWN: RefCell<Option<NextRun>> = const { RefCell::new(None) };
 }
 
 pub fn setup(
@@ -51,10 +54,6 @@ pub fn setup(
                 fade: ui.get_sleep_fade(),
             });
         }
-    });
-    ui.on_sleep_extend({
-        let cmd_tx = cmd_tx.clone();
-        move |minutes| cmd_tx.send(AppCommand::ExtendSleepTimer(minutes.max(1) as u32))
     });
     ui.on_sleep_off({
         let cmd_tx = cmd_tx.clone();
@@ -92,6 +91,7 @@ pub fn setup(
                 })
             };
             set_stations(&ui, offered_stations(&ui, playing));
+            set_dates(&ui, Local::now().date_naive());
             // The list redraws from the state on the next poll
             SHOWN_SEQ.set(u64::MAX);
         }
@@ -188,9 +188,53 @@ fn set_stations(ui: &App, stations: Vec<ScheduledStation>) {
     STATIONS.with(|list| *list.borrow_mut() = stations);
 }
 
-/// The dialog's form for `entry`, or a new one (an alarm at 07:00 on
-/// weekdays, for the station playing)
+/// The days a one-off can be set for, and today's place in the week
+fn set_dates(ui: &App, today: NaiveDate) {
+    let dates: Vec<SharedString> = (0..SCHEDULE_DATES)
+        .map(|n| date_label(today, today + TimeDelta::days(n)).into())
+        .collect();
+    ui.set_schedule_dates(ModelRc::from(Rc::new(VecModel::from(dates))));
+    ui.set_schedule_today(today.weekday().num_days_from_monday() as i32);
+}
+
+/// "Today, Fri 3 Oct", "Tomorrow, Sat 4 Oct", "Sun 5 Oct"
+fn date_label(today: NaiveDate, date: NaiveDate) -> String {
+    let day = date.format("%a %-d %b");
+    match (date - today).num_days() {
+        0 => format!("Today, {day}"),
+        1 => format!("Tomorrow, {day}"),
+        _ => day.to_string(),
+    }
+}
+
+/// Only today's day picked, for a switch to Weekly
+fn today_only(today: NaiveDate) -> [bool; 7] {
+    let mut days = [false; 7];
+    days[today.weekday().num_days_from_monday() as usize] = true;
+    days
+}
+
+/// A new entry starts at the next full hour: today, or tomorrow when that
+/// is past midnight
+fn next_full_hour(now: &DateTime<Local>) -> (ClockTime, i32) {
+    let hour = (now.hour() + 1) % 24;
+    let start = ClockTime::new(hour, 0).unwrap_or_default();
+    (start, if hour == 0 { 1 } else { 0 })
+}
+
+/// An hour after `start`, for an end at a time
+fn hour_after(start: ClockTime) -> String {
+    ClockTime::new((start.hour() + 1) % 24, start.minute())
+        .unwrap_or(start)
+        .to_string()
+}
+
+/// The dialog's form for `entry`, or a new one (Play once, at the next
+/// full hour, for the station playing)
 fn draft_of(ui: &App, entry: Option<&Entry>) -> ScheduleDraft {
+    let now = Local::now();
+    let today = now.date_naive();
+    set_dates(ui, today);
     let Some(entry) = entry else {
         let playing = ui.get_station_url();
         let station = STATIONS.with(|list| {
@@ -199,17 +243,21 @@ fn draft_of(ui: &App, entry: Option<&Entry>) -> ScheduleDraft {
                 .position(|s| s.url == playing.as_str())
                 .unwrap_or(0)
         });
+        let (start, date) = next_full_hour(&now);
         return ScheduleDraft {
             id: 0,
             action: "play".into(),
             station: station as i32,
-            start: "07:00".into(),
-            days: days_model(Days::WEEKDAYS),
+            start: start.to_string().into(),
+            once: true,
+            date,
+            days: ModelRc::from(Rc::new(VecModel::from(today_only(today).to_vec()))),
             end_kind: "never".into(),
             end_after: DEFAULT_MINUTES.to_string().into(),
-            end_at: String::new().into(),
+            end_at: hour_after(start).into(),
             volume: 0,
             fade: true,
+            fallback: true,
         };
     };
     // The entry's station is offered even when it is no favorite now
@@ -228,21 +276,36 @@ fn draft_of(ui: &App, entry: Option<&Entry>) -> ScheduleDraft {
     let stations = STATIONS.with(|list| list.borrow().clone());
     set_stations(ui, stations);
     let (end_kind, end_after, end_at) = match entry.end {
-        End::Never => ("never", DEFAULT_MINUTES.to_string(), String::new()),
-        End::After { minutes } => ("after", minutes.to_string(), String::new()),
+        End::Never => (
+            "never",
+            DEFAULT_MINUTES.to_string(),
+            hour_after(entry.start),
+        ),
+        End::After { minutes } => ("after", minutes.to_string(), hour_after(entry.start)),
         End::At { time } => ("at", DEFAULT_MINUTES.to_string(), time.to_string()),
     };
+    let once = entry.days.is_once();
+    let date = entry
+        .date
+        .map_or(0, |d| (d - today).num_days().clamp(0, SCHEDULE_DATES - 1)) as i32;
     ScheduleDraft {
         id: entry.id as i32,
         action: entry.action.id().into(),
         station: station.unwrap_or(0) as i32,
         start: entry.start.to_string().into(),
-        days: days_model(entry.days),
+        once,
+        date,
+        days: if once {
+            ModelRc::from(Rc::new(VecModel::from(today_only(today).to_vec())))
+        } else {
+            days_model(entry.days)
+        },
         end_kind: end_kind.into(),
         end_after: end_after.into(),
         end_at: end_at.into(),
         volume: volume_index(entry.volume),
         fade: entry.fade,
+        fallback: entry.fallback,
     }
 }
 
@@ -275,13 +338,34 @@ fn volume_of(index: i32) -> Option<f32> {
 
 /// The entry the dialog's form describes, or what is wrong with it
 fn entry_of(draft: &ScheduleDraft, entries: &[Entry]) -> Result<Entry, String> {
+    entry_at(draft, entries, &Local::now())
+}
+
+fn entry_at(
+    draft: &ScheduleDraft,
+    entries: &[Entry],
+    now: &DateTime<Local>,
+) -> Result<Entry, String> {
     let action = Action::from_id(draft.action.as_str()).ok_or("Pick what to do")?;
     let start = ClockTime::parse(draft.start.as_str())
         .ok_or("Type the start as hours and minutes, like 07:30")?;
-    let flags: Vec<bool> = draft.days.iter().collect();
     let mut days = [false; 7];
-    for (day, on) in days.iter_mut().zip(flags) {
-        *day = on;
+    if !draft.once {
+        for (day, on) in days.iter_mut().zip(draft.days.iter()) {
+            *day = on;
+        }
+        if !days.contains(&true) {
+            return Err("Pick at least one day".into());
+        }
+    }
+    let today = now.date_naive();
+    let date = draft
+        .once
+        .then(|| today + TimeDelta::days(draft.date.clamp(0, SCHEDULE_DATES as i32 - 1).into()));
+    if date == Some(today) && schedule::local_at(&Local, today, start) <= *now {
+        return Err(format!(
+            "{start} has already passed today. Pick a later time or another day."
+        ));
     }
     let end = match (action, draft.end_kind.as_str()) {
         (Action::Stop, _) | (_, "never") => End::Never,
@@ -304,7 +388,6 @@ fn entry_of(draft: &ScheduleDraft, entries: &[Entry]) -> Result<Entry, String> {
         let station = STATIONS.with(|list| list.borrow().get(draft.station as usize).cloned());
         Some(station.ok_or("Pick a station")?)
     };
-    let previous = entries.iter().find(|e| e.id == draft.id as u64);
     let entry = Entry {
         id: draft.id.max(0) as u64,
         enabled: true,
@@ -312,18 +395,16 @@ fn entry_of(draft: &ScheduleDraft, entries: &[Entry]) -> Result<Entry, String> {
         station,
         start,
         days: Days::from_flags(days),
-        // A one-off keeps the day it was set for, if still ahead
-        date: previous.and_then(|e| e.date),
+        date,
         end,
         volume: volume_of(draft.volume),
         fade: draft.fade && action != Action::Record,
+        fallback: draft.fallback,
         armed_from: 0,
     }
-    .tidied(&Local::now());
+    .tidied(now);
     entry.check()?;
-    if let Some(other) =
-        schedule::clashing_recording(entries, &entry, Local::now().date_naive(), &Local)
-    {
+    if let Some(other) = schedule::clashing_recording(entries, &entry, today, &Local) {
         return Err(clash_message(other));
     }
     Ok(entry)
@@ -332,6 +413,7 @@ fn entry_of(draft: &ScheduleDraft, entries: &[Entry]) -> Result<Entry, String> {
 /// What the window shows of the schedule, copied under the state's lock
 pub struct View {
     sleep: Option<SleepTimerInfo>,
+    alarm_beep: bool,
     scheduled: Option<ScheduledNow>,
     next_run: Option<NextRun>,
     /// The list's version, and the entries when it is not the one shown
@@ -345,6 +427,7 @@ impl View {
         let seq = s.schedule_seq ^ running_id.unwrap_or(0).rotate_left(32);
         View {
             sleep: s.sleep.clone(),
+            alarm_beep: s.alarm_beep,
             scheduled: s.scheduled.clone(),
             next_run: s.next_run.clone(),
             seq,
@@ -362,6 +445,8 @@ pub fn show_state(ui: &App, view: View) {
             let left = (sleep.until - now).num_seconds().max(0);
             ui.set_sleep_active(true);
             ui.set_sleep_left(clock_text(left).into());
+            ui.set_sleep_left_secs(left as i32);
+            ui.set_sleep_length(sleep.minutes as i32);
             ui.set_sleep_until(sleep.until.format("%H:%M").to_string().into());
         }
         None => {
@@ -371,25 +456,12 @@ pub fn show_state(ui: &App, view: View) {
         }
     }
 
-    let (running, detail) = match &view.scheduled {
-        Some(now_running) => (
-            if now_running.record {
-                "Scheduled".to_string()
-            } else {
-                "Alarm".to_string()
-            },
-            now_running
-                .until
-                .map(|until| format!("until {}", until.format("%H:%M")))
-                .unwrap_or_default(),
-        ),
-        None => (String::new(), String::new()),
-    };
-    if ui.get_schedule_running() != running.as_str() {
-        ui.set_schedule_running(running.into());
+    let (label, bell) = schedule_label(&view, &now);
+    if ui.get_schedule_label() != label.as_str() {
+        ui.set_schedule_label(label.into());
     }
-    if ui.get_schedule_running_detail() != detail.as_str() {
-        ui.set_schedule_running_detail(detail.into());
+    if ui.get_schedule_label_bell() != bell {
+        ui.set_schedule_label_bell(bell);
     }
 
     let next = view
@@ -411,6 +483,64 @@ pub fn show_state(ui: &App, view: View) {
     }
 }
 
+/// The Scheduler's label: a countdown before an entry, what started just
+/// after, or the fallback sound playing. Also says whether it is the bell.
+fn schedule_label(view: &View, now: &DateTime<Local>) -> (String, bool) {
+    if view.alarm_beep {
+        return ("Fallback sound".into(), true);
+    }
+    if let Some(next) = &view.next_run {
+        let left = (next.at - *now).num_milliseconds();
+        if left > 0 && left <= SCHEDULE_COUNTDOWN_SECS * 1000 {
+            COUNTED_DOWN.with(|c| *c.borrow_mut() = Some(next.clone()));
+            // Rounded up: "in 0:01" until it starts
+            let secs = (left + 999) / 1000;
+            return (
+                format!("{} in {}", verb(next.action), clock_text(secs)),
+                false,
+            );
+        }
+    }
+    let started = COUNTED_DOWN.with(|c| c.borrow().clone());
+    if let Some(entry) = started {
+        let since = (*now - entry.at).num_seconds();
+        // A play or recording that was skipped (a recording ran) says nothing
+        let ran = entry.action == Action::Stop
+            || view.scheduled.as_ref().is_some_and(|s| s.id == entry.id);
+        if (0..SCHEDULE_LABEL_SECS).contains(&since) && ran {
+            return (
+                match entry.action {
+                    Action::Stop => "Stopped playback".into(),
+                    action => format!("{} · {}", verb(action), entry.station),
+                },
+                false,
+            );
+        }
+        if since >= SCHEDULE_LABEL_SECS {
+            COUNTED_DOWN.with(|c| *c.borrow_mut() = None);
+        }
+    }
+    (String::new(), false)
+}
+
+fn verb(action: Action) -> &'static str {
+    match action {
+        Action::Play => "Play",
+        Action::Record => "Record",
+        Action::Stop => "Stop",
+    }
+}
+
+/// The station's name, or what a Stop does, for the list
+fn row_title(entry: &Entry) -> String {
+    match &entry.station {
+        _ if entry.action == Action::Stop => "Stop playback".into(),
+        Some(station) if !station.name.is_empty() => station.name.clone(),
+        Some(station) => station.url.clone(),
+        None => "No station".into(),
+    }
+}
+
 /// The list's rows, by start time
 fn rows(entries: &[Entry], running: Option<u64>) -> Vec<ScheduleRow> {
     let mut entries: Vec<&Entry> = entries.iter().collect();
@@ -421,7 +551,8 @@ fn rows(entries: &[Entry], running: Option<u64>) -> Vec<ScheduleRow> {
             id: e.id as i32,
             enabled: e.enabled,
             time: e.start.to_string().into(),
-            title: e.title().into(),
+            action: e.action.id().into(),
+            title: row_title(e).into(),
             details: e.details().into(),
             running: running == Some(e.id),
         })
@@ -441,6 +572,7 @@ fn clock_text(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
 
     #[test]
     fn volumes_round_trip_through_the_list() {
@@ -453,6 +585,83 @@ mod tests {
         assert_eq!(volume_of(11), Some(1.0));
         // A volume set by an agent shows as the next step up
         assert_eq!(volume_index(Some(0.35)), 5);
+    }
+
+    #[test]
+    fn a_new_entry_starts_at_the_next_full_hour() {
+        let at = |h, m| Local.with_ymd_and_hms(2026, 10, 3, h, m, 0).unwrap();
+        assert_eq!(
+            next_full_hour(&at(15, 52)),
+            (ClockTime::new(16, 0).unwrap(), 0)
+        );
+        assert_eq!(
+            next_full_hour(&at(15, 0)),
+            (ClockTime::new(16, 0).unwrap(), 0)
+        );
+        // Past midnight: tomorrow
+        assert_eq!(
+            next_full_hour(&at(23, 10)),
+            (ClockTime::new(0, 0).unwrap(), 1)
+        );
+        assert_eq!(hour_after(ClockTime::new(23, 30).unwrap()), "00:30");
+        let today = at(12, 0).date_naive();
+        assert_eq!(date_label(today, today), "Today, Sat 3 Oct");
+        assert_eq!(
+            date_label(today, today + TimeDelta::days(1)),
+            "Tomorrow, Sun 4 Oct"
+        );
+        assert_eq!(date_label(today, today + TimeDelta::days(2)), "Mon 5 Oct");
+        assert_eq!(
+            today_only(today),
+            [false, false, false, false, false, true, false]
+        );
+    }
+
+    #[test]
+    fn the_scheduler_label_counts_down_then_says_what_started() {
+        let at = Local.with_ymd_and_hms(2026, 10, 3, 7, 0, 0).unwrap();
+        let next = NextRun {
+            id: 4,
+            at,
+            title: "Play Jazz FM".into(),
+            action: Action::Play,
+            station: "Jazz FM".into(),
+        };
+        let view = |next: Option<NextRun>, running: Option<u64>, beep: bool| View {
+            sleep: None,
+            alarm_beep: beep,
+            scheduled: running.map(|id| ScheduledNow {
+                id,
+                title: String::new(),
+                until: None,
+                record: false,
+            }),
+            next_run: next,
+            seq: 0,
+            entries: None,
+        };
+        COUNTED_DOWN.with(|c| *c.borrow_mut() = None);
+        let label = |v: &View, secs: i64| schedule_label(v, &(at + TimeDelta::seconds(secs))).0;
+
+        assert_eq!(label(&view(Some(next.clone()), None, false), -11), "");
+        assert_eq!(
+            label(&view(Some(next.clone()), None, false), -10),
+            "Play in 0:10"
+        );
+        assert_eq!(
+            label(&view(Some(next.clone()), None, false), -1),
+            "Play in 0:01"
+        );
+        // Started: the next run moved on to tomorrow
+        assert_eq!(label(&view(None, Some(4), false), 0), "Play · Jazz FM");
+        assert_eq!(label(&view(None, Some(4), false), 9), "Play · Jazz FM");
+        assert_eq!(label(&view(None, Some(4), false), 10), "");
+        assert_eq!(label(&view(None, Some(4), true), 30), "Fallback sound");
+        assert!(schedule_label(&view(None, None, true), &at).1);
+
+        // Skipped: nothing claims it started
+        label(&view(Some(next.clone()), None, false), -5);
+        assert_eq!(label(&view(None, None, false), 1), "");
     }
 
     #[test]
@@ -476,12 +685,15 @@ mod tests {
             action: action.into(),
             station: 0,
             start: "20:00".into(),
+            once: false,
+            date: 0,
             days: days_model(Days::WEEKENDS),
             end_kind: end_kind.into(),
             end_after: "90".into(),
             end_at: "22:00".into(),
             volume: 0,
             fade: true,
+            fallback: true,
         };
         let entry = entry_of(&draft("record", "at"), &[]).unwrap();
         assert_eq!(
@@ -511,6 +723,28 @@ mod tests {
         assert!(entry_of(&bad, &[])
             .unwrap_err()
             .starts_with("Type the length"));
+
+        let mut weekly = draft("play", "never");
+        weekly.days = days_model(Days::ONCE);
+        assert_eq!(entry_of(&weekly, &[]).unwrap_err(), "Pick at least one day");
+
+        // Once, today or a day picked further on; a time gone today is refused
+        let now = Local.with_ymd_and_hms(2026, 10, 3, 15, 52, 0).unwrap();
+        let mut once = draft("play", "never");
+        once.once = true;
+        once.start = "16:00".into();
+        let entry = entry_at(&once, &[], &now).unwrap();
+        assert!(entry.days.is_once());
+        assert_eq!(entry.date, Some(now.date_naive()));
+        once.start = "15:00".into();
+        assert!(entry_at(&once, &[], &now)
+            .unwrap_err()
+            .starts_with("15:00 has already passed today"));
+        once.date = 2;
+        let entry = entry_at(&once, &[], &now).unwrap();
+        assert_eq!(entry.date, Some(now.date_naive() + TimeDelta::days(2)));
+        once.fallback = false;
+        assert!(!entry_at(&once, &[], &now).unwrap().fallback);
 
         // A second recording at the same time
         let mut first = entry_of(&draft("record", "at"), &[]).unwrap();

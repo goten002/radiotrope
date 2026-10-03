@@ -95,6 +95,15 @@ pub mod ui {
     /// panel, or GNOME's AppIndicator extension, can come and go)
     pub const TRAY_HOST_CHECK: Duration = Duration::from_secs(2);
 
+    /// The Scheduler's label counts down this long before an entry starts
+    pub const SCHEDULE_COUNTDOWN_SECS: i64 = 10;
+
+    /// ... and says what started for this long after
+    pub const SCHEDULE_LABEL_SECS: i64 = 10;
+
+    /// A one-off entry can be set this many days ahead (today first)
+    pub const SCHEDULE_DATES: i64 = 14;
+
     /// The tray menu lists this many favorites
     pub const TRAY_FAVORITES: usize = 15;
 

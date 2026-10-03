@@ -1,10 +1,63 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { SecondaryButton } from "../buttons.slint";
+import { SecondaryButton, DangerButton } from "../buttons.slint";
 import { DialogShell, Toggle, PickerOption } from "../components.slint";
 
-// Stops playback after a while: one click on a length starts it, another
-// length replaces it. Saves as it changes, like the other settings.
+// A whole number field: type it, or step it with Up and Down or the wheel
+component NumberField inherits FocusScope {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <int> step: 1;
+    in property <int> maximum: 99;
+    callback accepted();
+    callback edited();
+
+    width: 64px;
+    height: 36px;
+
+    function bump(by: int) {
+        let now = root.text.is-float() ? round(root.text.to-float()) : 0;
+        root.text = max(0, min(root.maximum, now + by));
+        root.edited();
+    }
+
+    capture-key-pressed(event) => {
+        if event.text == Key.UpArrow {
+            root.bump(root.step);
+            return accept;
+        }
+        if event.text == Key.DownArrow {
+            root.bump(-root.step);
+            return accept;
+        }
+        reject
+    }
+
+    TouchArea {
+        scroll-event(event) => {
+            if event.delta-y > 0 {
+                root.bump(root.step);
+                return accept;
+            }
+            if event.delta-y < 0 {
+                root.bump(-root.step);
+                return accept;
+            }
+            reject
+        }
+
+        StyledLineEdit {
+            width: parent.width;
+            placeholder-text: root.placeholder;
+            text <=> root.text;
+            accepted => { root.accepted(); }
+            edited => { root.edited(); }
+        }
+    }
+}
+
+// Stops playback after a while. While off it offers lengths to start
+// with; while running it shows the time left, Restart and Stop Timer.
 export component SleepTimerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // A timer runs
@@ -13,126 +66,198 @@ export component SleepTimerDialog inherits Rectangle {
     in property <string> left;
     // When it stops, "23:30"
     in property <string> until;
+    // Seconds left and the length it started with, for the bar
+    in property <int> left-secs;
+    in property <int> length-minutes;
     in-out property <bool> fade: true;
-    // The length last started, to mark its button
-    in-out property <int> picked-minutes: 0;
 
     callback start(int);
-    callback extend(int);
     callback turn-off();
     callback fade-toggled(bool);
 
-    property <string> custom;
+    property <string> hours;
+    property <string> minutes;
     property <string> error;
     property <[int]> lengths: [15, 30, 45, 60, 90, 120];
     property <[string]> labels: ["15 min", "30 min", "45 min", "1 h", "1 h 30", "2 h"];
 
     public function open() {
-        root.custom = "";
+        root.hours = "";
+        root.minutes = "";
         root.error = "";
         root.show-dialog = true;
     }
 
+    // "1 h 30 min", "45 min", "2 h"
+    pure function length-label(total: int) -> string {
+        let h = floor(total / 60);
+        let m = mod(total, 60);
+        if h == 0 {
+            return m + " min";
+        }
+        if m == 0 {
+            return h + " h";
+        }
+        h + " h " + m + " min"
+    }
+
     function start-custom() {
-        // Whole minutes, 1 to 24 hours
-        if root.custom.is-float() && root.custom.to-float() >= 1 && root.custom.to-float() <= 1440 {
-            root.error = "";
-            root.picked-minutes = round(root.custom.to-float());
-            root.start(root.picked-minutes);
+        let h = root.hours == "" ? 0 : root.hours.is-float() ? round(root.hours.to-float()) : -1;
+        let m = root.minutes == "" ? 0 : root.minutes.is-float() ? round(root.minutes.to-float()) : -1;
+        if h < 0 || m < 0 {
+            root.error = "Type whole hours and minutes";
+        } else if h * 60 + m < 1 || h * 60 + m > 1440 {
+            root.error = "Pick from 1 minute to 24 hours";
         } else {
-            root.error = "Type the minutes, from 1 to 1440";
+            root.error = "";
+            root.start(h * 60 + m);
         }
     }
 
     if show-dialog: DialogShell {
-        title: "Sleep Timer";
-        subtitle: "Stops playback when the time is up";
+        title: "Timer";
         card-width: Defaults.sleep-timer-width;
         close-requested => { root.show-dialog = false; }
 
-        // Time left, large, or what a click does
-        VerticalLayout {
-            spacing: 2px;
+        // ── Off: pick a length ──
+        if !root.active: VerticalLayout {
+            spacing: 6px;
 
             Text {
-                text: root.active ? root.left : "Off";
-                color: root.active ? Theme.text-primary : Theme.text-secondary;
-                font-size: 30px;
+                text: "Start now for";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+            }
+            Rectangle {
+                background: Theme.elevated;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.hairline;
+                height: lengths-row.preferred-height;
+
+                lengths-row := HorizontalLayout {
+                    padding: 3px;
+                    spacing: 3px;
+
+                    for length[i] in root.lengths: PickerOption {
+                        label: root.labels[i];
+                        option-width: 48px;
+                        horizontal-stretch: 1;
+                        clicked => {
+                            root.error = "";
+                            root.start(length);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !root.active: VerticalLayout {
+            spacing: 6px;
+
+            Text {
+                text: "Or a length of your own";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+            }
+            HorizontalLayout {
+                spacing: 8px;
+
+                NumberField {
+                    text <=> root.hours;
+                    placeholder: "0";
+                    maximum: 24;
+                    accepted => { root.start-custom(); }
+                    edited => { root.error = ""; }
+                }
+                Text {
+                    text: "h";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-base;
+                    vertical-alignment: center;
+                }
+                NumberField {
+                    text <=> root.minutes;
+                    placeholder: "30";
+                    step: 5;
+                    maximum: 59;
+                    accepted => { root.start-custom(); }
+                    edited => { root.error = ""; }
+                }
+                Text {
+                    text: "min";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-base;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                VerticalLayout {
+                    alignment: center;
+                    DangerButton {
+                        label: "Start";
+                        icon: @image-url("../icons/play.svg");
+                        tone: Theme.success;
+                        enabled: root.hours != "" || root.minutes != "";
+                        clicked => { root.start-custom(); }
+                    }
+                }
+            }
+
+            if root.error != "": Text {
+                text: root.error;
+                color: Theme.danger;
+                font-size: Theme.font-md;
+                wrap: word-wrap;
+            }
+        }
+
+        // ── Running: the time left ──
+        if root.active: VerticalLayout {
+            spacing: 4px;
+
+            Text {
+                text: root.left;
+                color: Theme.text-primary;
+                font-size: 34px;
                 font-weight: 600;
                 horizontal-alignment: center;
             }
             Text {
-                text: root.active ? "Stops at " + root.until : "Pick how long to keep playing";
+                text: "Stops at " + root.until;
                 color: Theme.text-secondary;
                 font-size: Theme.font-md;
                 horizontal-alignment: center;
             }
         }
 
-        // The lengths, as a row of choices that wraps to two at need
-        Rectangle {
+        if root.active: Rectangle {
+            height: 4px;
+            border-radius: 2px;
             background: Theme.elevated;
-            border-radius: Theme.radius-md;
-            border-width: 1px;
-            border-color: Theme.hairline;
-            height: lengths-row.preferred-height;
 
-            lengths-row := HorizontalLayout {
-                padding: 3px;
-                spacing: 3px;
-
-                for minutes[i] in root.lengths: PickerOption {
-                    label: root.labels[i];
-                    option-width: 48px;
-                    horizontal-stretch: 1;
-                    selected: root.active && root.picked-minutes == minutes;
-                    clicked => {
-                        root.picked-minutes = minutes;
-                        root.error = "";
-                        root.start(minutes);
-                    }
-                }
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.left-secs / max(1, root.length-minutes * 60), 0, 1);
+                border-radius: 2px;
+                background: Theme.info;
             }
         }
 
-        HorizontalLayout {
+        if root.active: HorizontalLayout {
             spacing: 8px;
 
-            StyledLineEdit {
-                width: 120px;
-                placeholder-text: "Minutes";
-                text <=> root.custom;
-                accepted => { root.start-custom(); }
-                edited => { root.error = ""; }
-            }
             SecondaryButton {
-                label: "Start";
-                enabled: root.custom != "";
-                clicked => { root.start-custom(); }
+                label: "Restart " + root.length-label(root.length-minutes);
+                clicked => { root.start(root.length-minutes); }
             }
-
             Rectangle { horizontal-stretch: 1; }
-
-            SecondaryButton {
-                label: "+15 min";
-                enabled: root.active;
-                clicked => { root.extend(15); }
+            DangerButton {
+                label: "Stop Timer";
+                icon: @image-url("../icons/stop.svg");
+                clicked => { root.turn-off(); }
             }
-            SecondaryButton {
-                label: "Turn Off";
-                enabled: root.active;
-                clicked => {
-                    root.picked-minutes = 0;
-                    root.turn-off();
-                }
-            }
-        }
-
-        if root.error != "": Text {
-            text: root.error;
-            color: Theme.danger;
-            font-size: Theme.font-md;
-            wrap: word-wrap;
         }
 
         Rectangle {
@@ -140,25 +265,10 @@ export component SleepTimerDialog inherits Rectangle {
             background: Theme.hairline;
         }
 
-        VerticalLayout {
-            spacing: 2px;
-
-            Toggle {
-                label: "Fade out";
-                checked <=> root.fade;
-                toggled(on) => { root.fade-toggled(on); }
-            }
-            // Lines up with the label (36px switch + 8px gap)
-            HorizontalLayout {
-                padding-left: 44px;
-
-                Text {
-                    text: "Lower the volume over the last minute.";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-md;
-                    wrap: word-wrap;
-                }
-            }
+        Toggle {
+            label: "Fade out";
+            checked <=> root.fade;
+            toggled(on) => { root.fade-toggled(on); }
         }
     }
 }

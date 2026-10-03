@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use radiotrope::audio::{PlaybackState, RecordingFormat};
-use radiotrope_app::data::schedule::Entry;
+use radiotrope_app::data::schedule::{Action, Entry};
 use radiotrope_app::data::settings::Settings;
 
 /// Told whether a schedule change was made, or why not
@@ -69,8 +69,6 @@ pub enum AppCommand {
         /// Lower the volume over the last minute
         fade: bool,
     },
-    /// Give the running sleep timer this many more minutes (or start one)
-    ExtendSleepTimer(u32),
     /// Fade out at the end of the sleep timer, or not
     SetSleepFade(bool),
     /// Add an entry (id 0) or replace the one with its id. Told the id.
@@ -195,6 +193,8 @@ pub struct AppSnapshot {
 pub struct SleepTimerInfo {
     pub until: DateTime<Local>,
     pub fade: bool,
+    /// The length it was started with, for Restart
+    pub minutes: u32,
 }
 
 /// The entry playing or recording now
@@ -214,6 +214,9 @@ pub struct NextRun {
     pub at: DateTime<Local>,
     /// "Play Jazz FM"
     pub title: String,
+    pub action: Action,
+    /// Its station's name ("" for Stop)
+    pub station: String,
 }
 
 /// The choices of the Recording Settings dialog. Kept in memory, so an

@@ -344,6 +344,8 @@ export component Chip inherits Rectangle {
     in property <color> tone: Theme.text-secondary;
     // Show a dot before the text (e.g. a live status)
     in property <bool> dot: false;
+    // Optional icon before the text, in the chip's tone
+    in property <image> icon;
     in property <bool> pulse: false;
     // Clickable chips get a pointer and a stronger background on hover
     in property <bool> clickable: false;
@@ -370,6 +372,16 @@ export component Chip inherits Rectangle {
         width: parent.width - 16px;
         spacing: 5px;
         alignment: start;
+
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 11px;
+                height: 11px;
+                source: root.icon;
+                colorize: root.tone;
+            }
+        }
 
         if root.dot: VerticalLayout {
             alignment: center;
@@ -1101,6 +1113,9 @@ export component PickerOption inherits Rectangle {
     in property <bool> selected;
     in property <bool> enabled: true;
     in property <length> option-width: 56px;
+    // Optional icon before the label, red for a recording's dot
+    in property <image> icon;
+    in property <bool> red-icon: false;
     callback clicked();
 
     min-width: root.option-width;
@@ -1124,15 +1139,34 @@ export component PickerOption inherits Rectangle {
         }
     }
 
-    Text {
-        text: root.label;
-        color: !root.enabled ? Theme.disabled-text
-            : root.selected ? Theme.on-accent : Theme.text-primary;
-        font-size: Theme.font-base;
-        font-weight: root.selected ? 600 : 400;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        accessible-role: none;
+    HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        padding-left: root.icon.width > 0 ? 8px : 0px;
+        padding-right: root.icon.width > 0 ? 10px : 0px;
+
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 11px;
+                height: 11px;
+                source: root.icon;
+                colorize: !root.enabled ? Theme.disabled-text
+                    : root.red-icon ? Theme.danger
+                    : root.selected ? Theme.on-accent : Theme.text-primary;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: !root.enabled ? Theme.disabled-text
+                : root.selected ? Theme.on-accent : Theme.text-primary;
+            font-size: Theme.font-base;
+            font-weight: root.selected ? 600 : 400;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
     }
 
     touch := TouchArea {
@@ -1154,6 +1188,11 @@ export component PickerOption inherits Rectangle {
 export struct PickerChoice {
     id: string,
     label: string,
+    // Optional icon before the label
+    icon: image,
+    red-icon: bool,
+    // Greyed out while the rest can be picked
+    disabled: bool,
 }
 
 // A row of options, one selected
@@ -1180,8 +1219,10 @@ export component Picker inherits HorizontalLayout {
 
             for choice in root.choices: PickerOption {
                 label: choice.label;
+                icon: choice.icon;
+                red-icon: choice.red-icon && root.selected != choice.id;
                 selected: root.selected == choice.id;
-                enabled: root.enabled;
+                enabled: root.enabled && !choice.disabled;
                 option-width: root.option-width;
                 clicked => {
                     if root.selected != choice.id {

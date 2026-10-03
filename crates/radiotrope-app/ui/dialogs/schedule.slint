@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { DialogShell, Field, Toggle, Dropdown, Picker, PickerOption, IconButton } from "../components.slint";
+import { DialogShell, Field, Toggle, Dropdown, Picker, PickerOption, IconButton, Icon, InfoTip } from "../components.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
 // One entry, as the list shows it
@@ -10,7 +10,9 @@ export struct ScheduleRow {
     enabled: bool,
     // "07:00"
     time: string,
-    // "Play Jazz FM"
+    // "play", "record" or "stop", for its icon
+    action: string,
+    // The station, or "Stop playback"
     title: string,
     // "Weekdays · for 1 h · fade in"
     details: string,
@@ -28,7 +30,11 @@ export struct ScheduleDraft {
     station: int,
     // "07:00"
     start: string,
-    // Monday first; none picked is once
+    // Runs once, on the day picked in the date list; else weekly on `days`
+    once: bool,
+    // Index in the date list: 0 is today
+    date: int,
+    // Monday first
     days: [bool],
     // "never", "after" or "at"
     end-kind: string,
@@ -39,6 +45,8 @@ export struct ScheduleDraft {
     // Index in the volume list: 0 keeps the current one
     volume: int,
     fade: bool,
+    // Play: beep if the station doesn't start
+    fallback: bool,
 }
 
 // A switch on its own, for a list row
@@ -102,6 +110,20 @@ component EntryRow inherits Rectangle {
 
         VerticalLayout {
             alignment: center;
+            Icon {
+                width: 12px;
+                height: 12px;
+                source: root.entry.action == "record" ? @image-url("../icons/circle.svg")
+                    : root.entry.action == "stop" ? @image-url("../icons/stop.svg")
+                    : @image-url("../icons/play.svg");
+                colorize: !root.entry.enabled ? Theme.text-tertiary
+                    : root.entry.action == "record" ? Theme.danger
+                    : root.entry.action == "play" ? Theme.accent-text : Theme.text-secondary;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
             spacing: 1px;
             horizontal-stretch: 1;
 
@@ -145,7 +167,7 @@ component EntryRow inherits Rectangle {
 
 // A day of the week to switch on or off
 component DayChoice inherits PickerOption {
-    option-width: 38px;
+    option-width: 40px;
     horizontal-stretch: 1;
 }
 
@@ -158,6 +180,10 @@ export component ScheduleDialog inherits Rectangle {
     in property <string> next;
     // Stations to pick from (favorites, and the one playing)
     in property <[string]> stations;
+    // Days a one-off can be on: "Today", "Tomorrow", "Sun 5 Oct", ...
+    in property <[string]> dates;
+    // Today's place in the week, Monday 0
+    in property <int> today;
 
     // A blank draft (id 0) or the entry's
     callback draft(int) -> ScheduleDraft;
@@ -178,10 +204,13 @@ export component ScheduleDialog inherits Rectangle {
     property <string> end-at;
     property <int> volume;
     property <bool> fade;
+    property <bool> fallback;
+    property <string> repeat: "once";
+    property <int> date;
     property <[bool]> days: [false, false, false, false, false, false, false];
     property <string> error;
     property <int> confirm-remove: 0;
-    property <[string]> day-labels: ["M", "T", "W", "T", "F", "S", "S"];
+    property <[string]> day-labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     property <[string]> day-names: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
     public function open() {
@@ -198,6 +227,9 @@ export component ScheduleDialog inherits Rectangle {
         root.station = draft.station;
         root.start = draft.start;
         root.days = draft.days;
+        root.repeat = draft.once ? "once" : "weekly";
+        root.date = draft.date;
+        root.fallback = draft.fallback;
         root.end-kind = draft.end-kind;
         root.end-after = draft.end-after;
         root.end-at = draft.end-at;
@@ -214,12 +246,15 @@ export component ScheduleDialog inherits Rectangle {
             action: root.action,
             station: root.station,
             start: root.start,
+            once: root.repeat == "once",
+            date: root.date,
             days: root.days,
             end-kind: root.end-kind,
             end-after: root.end-after,
             end-at: root.end-at,
             volume: root.volume,
             fade: root.fade,
+            fallback: root.fallback,
         });
         if root.error == "" {
             root.editing = false;
@@ -227,20 +262,39 @@ export component ScheduleDialog inherits Rectangle {
     }
 
     if show-dialog: DialogShell {
-        title: !root.editing ? "Schedule"
-            : root.edit-id == 0 ? "Add to Schedule" : "Edit Schedule";
-        subtitle: root.editing ? "" : "Changes are saved as you make them";
+        title: !root.editing ? "Scheduler"
+            : root.edit-id == 0 ? "Add to Scheduler" : "Edit Scheduler Entry";
         card-width: Defaults.schedule-width;
         show-back: root.editing;
         back-requested => { root.editing = false; }
         close-requested => { root.show-dialog = false; }
 
         // ── The list ──
-        if !root.editing && root.rows.length == 0: Text {
-            text: "Nothing scheduled yet. Add an alarm, a recording or a bedtime stop.";
-            color: Theme.text-secondary;
-            font-size: Theme.font-base;
-            wrap: word-wrap;
+        if !root.editing && root.rows.length == 0: Rectangle {
+            height: Defaults.schedule-empty-height;
+            border-radius: Theme.radius-md;
+            background: Theme.elevated;
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 10px;
+
+                HorizontalLayout {
+                    alignment: center;
+                    Icon {
+                        width: 34px;
+                        height: 34px;
+                        source: @image-url("../icons/calendar-days.svg");
+                        colorize: Theme.text-tertiary;
+                    }
+                }
+                Text {
+                    text: "Nothing scheduled yet";
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-lg;
+                    horizontal-alignment: center;
+                }
+            }
         }
 
         if !root.editing && root.rows.length > 0: Rectangle {
@@ -302,16 +356,16 @@ export component ScheduleDialog inherits Rectangle {
 
         // ── The form ──
         if root.editing: HorizontalLayout {
-            spacing: 16px;
+            spacing: 12px;
 
             Field {
                 label: "Action";
                 horizontal-stretch: 0;
                 Picker {
                     choices: [
-                        { id: "play", label: "Play" },
-                        { id: "record", label: "Record" },
-                        { id: "stop", label: "Stop" },
+                        { id: "play", label: "Play", icon: @image-url("../icons/play.svg") },
+                        { id: "record", label: "Record", icon: @image-url("../icons/circle.svg"), red-icon: true },
+                        { id: "stop", label: "Stop", icon: @image-url("../icons/stop.svg") },
                     ];
                     selected <=> root.action;
                     changed(id) => {
@@ -326,6 +380,7 @@ export component ScheduleDialog inherits Rectangle {
 
             Field {
                 label: "Station";
+                horizontal-stretch: 1;
                 Dropdown {
                     height: 36px;
                     items: root.stations.length > 0 ? root.stations : ["No favorites yet"];
@@ -357,22 +412,15 @@ export component ScheduleDialog inherits Rectangle {
 
                     Picker {
                         choices: [
-                            { id: "never", label: "Never" },
+                            // A recording always has an end
+                            { id: "never", label: "Never", disabled: root.action == "record" },
                             { id: "after", label: "After" },
                             { id: "at", label: "At" },
                         ];
                         horizontal-stretch: 0;
                         enabled: root.action != "stop";
                         selected <=> root.end-kind;
-                        changed(id) => {
-                            // A recording always has an end
-                            if id == "never" && root.action == "record" {
-                                root.error = "A recording needs an end";
-                                root.end-kind = "after";
-                            } else {
-                                root.error = "";
-                            }
-                        }
+                        changed => { root.error = ""; }
                     }
                     if root.end-kind == "after": StyledLineEdit {
                         width: 70px;
@@ -405,7 +453,36 @@ export component ScheduleDialog inherits Rectangle {
         if root.editing: Field {
             label: "Repeat";
 
-            Rectangle {
+            HorizontalLayout {
+                spacing: 8px;
+
+                Picker {
+                    choices: [
+                        { id: "once", label: "Once" },
+                        { id: "weekly", label: "Weekly" },
+                    ];
+                    horizontal-stretch: 0;
+                    selected <=> root.repeat;
+                    changed(id) => {
+                        root.error = "";
+                        // Weekly starts from today's day
+                        if id == "weekly" && !(root.days[0] || root.days[1] || root.days[2]
+                            || root.days[3] || root.days[4] || root.days[5] || root.days[6]) {
+                            root.days[root.today] = true;
+                        }
+                    }
+                }
+                if root.repeat == "once": Dropdown {
+                    height: 36px;
+                    horizontal-stretch: 1;
+                    items: root.dates;
+                    selected <=> root.date;
+                    changed => { root.error = ""; }
+                }
+                if root.repeat == "weekly": Rectangle { horizontal-stretch: 1; }
+            }
+
+            if root.repeat == "weekly": Rectangle {
                 background: Theme.elevated;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
@@ -420,17 +497,12 @@ export component ScheduleDialog inherits Rectangle {
                         label: label;
                         accessible-label: root.day-names[i];
                         selected: root.days[i];
-                        clicked => { root.days[i] = !root.days[i]; }
+                        clicked => {
+                            root.error = "";
+                            root.days[i] = !root.days[i];
+                        }
                     }
                 }
-            }
-
-            Text {
-                text: root.days[0] || root.days[1] || root.days[2] || root.days[3]
-                    || root.days[4] || root.days[5] || root.days[6]
-                    ? "Every week on the days picked" : "Once, the next time it comes round";
-                color: Theme.text-secondary;
-                font-size: Theme.font-sm;
             }
         }
 
@@ -457,6 +529,27 @@ export component ScheduleDialog inherits Rectangle {
                     label: root.action == "stop" ? "Fade out" : "Fade in";
                     enabled: root.action != "record";
                     checked <=> root.fade;
+                }
+            }
+
+            VerticalLayout {
+                alignment: end;
+                padding-bottom: 4px;
+
+                HorizontalLayout {
+                    spacing: 6px;
+
+                    Toggle {
+                        label: "Fallback sound";
+                        enabled: root.action == "play";
+                        checked <=> root.fallback;
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        InfoTip {
+                            text: "If the station hasn't started 30 seconds after the start time, for example because it is down or there's no internet, a beep plays instead until you press Stop.";
+                        }
+                    }
                 }
             }
         }
