@@ -138,6 +138,9 @@ pub struct AppSnapshot {
     pub last_error: Option<String>,
     /// True while a stream is being resolved (not yet playing or failed)
     pub is_resolving: bool,
+    /// An alarm's station didn't start and the alarm beeps instead.
+    /// `playback` is Playing, so Stop silences it, but the station isn't.
+    pub alarm_beep: bool,
     /// Counts the stations started, so a caller can tell when its own Play
     /// has been taken up
     pub play_seq: u64,
@@ -269,6 +272,7 @@ impl Default for AppSnapshot {
             is_muted: false,
             last_error: None,
             is_resolving: false,
+            alarm_beep: false,
             play_seq: 0,
             codec_name: String::new(),
             stream_type: String::new(),

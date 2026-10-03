@@ -1577,6 +1577,7 @@ fn main() {
             let mut is_error = s.is_error;
             let mut is_loading = s.is_resolving || s.status_text == "Connecting...";
             let mut is_playing = s.playback == PlaybackState::Playing;
+            let alarm_beep = s.alarm_beep;
             let mut now_playing: slint::SharedString = if !s.title.is_empty() {
                 if !s.artist.is_empty() {
                     format!("{} - {}", s.artist, s.title).into()
@@ -1637,7 +1638,8 @@ fn main() {
             );
 
             // Credit listening time to the favorite being played
-            let playing_url = station_url.as_deref().filter(|_| is_playing);
+            // An alarm's beep isn't time on its station
+            let playing_url = station_url.as_deref().filter(|_| is_playing && !alarm_beep);
             track_listening(
                 &ui,
                 &poll_favs,

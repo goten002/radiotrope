@@ -21,6 +21,7 @@ use radiotrope_app::data::recordings;
 
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
+mod alarm_tone;
 mod scheduling;
 
 pub use scheduling::{clash_message, CoverSource};
@@ -376,11 +377,17 @@ impl AppController {
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         // A station still resolving doesn't start after the stop
         state.is_resolving = false;
+        let was_beeping = std::mem::take(&mut state.alarm_beep);
         state.playback = PlaybackState::Stopped;
         state.status_text = "Stopped".into();
         state.is_error = false;
         state.title.clear();
         state.artist.clear();
+        drop(state);
+        // The beep's volume floor is gone
+        if was_beeping {
+            self.apply_volume(&chrono::Local::now());
+        }
     }
 
     /// Resolve the stream on a worker thread, then send the result back.
@@ -422,6 +429,7 @@ impl AppController {
             state.artist.clear();
             state.last_error = None;
             state.is_resolving = true;
+            state.alarm_beep = false;
             state.codec_name.clear();
             state.stream_type.clear();
             state.sample_rate = 0;
