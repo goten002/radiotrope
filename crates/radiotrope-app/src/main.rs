@@ -7,6 +7,8 @@ mod instance;
 mod mcp;
 mod row_logos;
 #[cfg(feature = "desktop")]
+mod system_theme;
+#[cfg(feature = "desktop")]
 mod tray;
 #[cfg(feature = "desktop")]
 mod window_frame;
@@ -300,6 +302,22 @@ fn main() {
                     window_frame::set_title_bar_theme(ui.window(), &ui.get_theme_mode());
                 }
             });
+            // A Linux desktop's "no preference" (GNOME with Dark Style off)
+            // means its light theme; ask again whenever Slint's reading of
+            // the desktop changes, on a thread (D-Bus can be slow)
+            let ui_weak = ui.as_weak();
+            ui.on_system_scheme_changed(move || {
+                let ui_weak = ui_weak.clone();
+                std::thread::spawn(move || {
+                    let none = system_theme::no_preference();
+                    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                        ui.set_system_no_preference(none);
+                    });
+                });
+            });
+            // Asked once before the window shows, so a light GNOME desktop
+            // doesn't get a dark first frame (the portal gets PORTAL_ANSWER)
+            ui.set_system_no_preference(system_theme::no_preference());
             // The saved choice, once the window exists
             if theme != ThemeSetting::System {
                 let ui_weak = ui.as_weak();

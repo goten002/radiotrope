@@ -14,7 +14,12 @@ export global Theme {
     // What the OS reports, live: the Windows app mode, the Linux desktop's
     // dark style (freedesktop portal). Not known on the Pi or on desktops
     // that don't report it.
-    out property <bool> system-known: Palette.color-scheme != ColorScheme.unknown;
+    out property <bool> system-reported: Palette.color-scheme != ColorScheme.unknown;
+    // The Linux desktop answered "no preference", which Slint can't tell
+    // from no answer at all (set from Rust). GNOME says this when Dark
+    // Style is off: its light theme, so System is light then.
+    in property <bool> system-no-preference: false;
+    out property <bool> system-known: system-reported || system-no-preference;
     out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
     // System falls back to dark when the OS doesn't say
     out property <bool> dark-mode: theme-mode == "system"

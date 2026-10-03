@@ -95,6 +95,11 @@ pub mod ui {
     /// panel, or GNOME's AppIndicator extension, can come and go)
     pub const TRAY_HOST_CHECK: Duration = Duration::from_secs(2);
 
+    /// How long the Linux desktop's settings portal gets to answer whether
+    /// it has a light/dark preference. Startup waits for it at most this
+    /// long, so the first frame isn't dark on a light GNOME desktop.
+    pub const PORTAL_ANSWER: Duration = Duration::from_millis(500);
+
     /// The tray menu lists this many favorites
     pub const TRAY_FAVORITES: usize = 15;
 

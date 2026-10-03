@@ -254,6 +254,11 @@ export component App inherits Window {
     changed dark-mode => { root.logo-changed(); }
     // The choice or the OS theme changed: Rust matches the Windows title bar
     callback window-theme-changed();
+    // Linux: Rust asks the desktop again whether "no preference" is the answer
+    in-out property <bool> system-no-preference <=> Theme.system-no-preference;
+    callback system-scheme-changed();
+    property <bool> system-reported: Theme.system-reported;
+    changed system-reported => { root.system-scheme-changed(); }
     property <bool> system-dark: Theme.system-dark;
     changed theme-mode => { root.window-theme-changed(); }
     changed system-dark => { root.window-theme-changed(); }
