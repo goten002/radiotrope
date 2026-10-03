@@ -677,7 +677,7 @@ export component MenuBar inherits Rectangle {
                 if Platform.has-tray: MenuSeparator {}
                 if Platform.has-tray: CheckMenuItem {
                     label: "Show Tray Icon";
-                    icon: @image-url("icons/inbox.svg");
+                    icon: @image-url("icons/window-restore.svg");
                     checked: root.tray-icon;
                     clicked => {
                         root.tray-icon = !root.tray-icon;
@@ -687,7 +687,7 @@ export component MenuBar inherits Rectangle {
                 // Greyed with no tray to hide in; they keep their ticks
                 if Platform.has-tray: CheckMenuItem {
                     label: "Close to Tray";
-                    icon: @image-url("icons/right-to-bracket.svg");
+                    icon: @image-url("icons/rectangle-xmark.svg");
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.close-to-tray;
                     clicked => {
@@ -697,7 +697,7 @@ export component MenuBar inherits Rectangle {
                 }
                 if Platform.has-tray: CheckMenuItem {
                     label: "Minimize to Tray";
-                    icon: @image-url("icons/window-minimize.svg");
+                    icon: @image-url("icons/square-minus.svg");
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.hide-on-minimize;
                     clicked => {
