@@ -122,18 +122,20 @@ export component App inherits Window {
     in-out property <string> recording-format <=> recording-dialog.format;
     in-out property <int> recording-bitrate <=> recording-dialog.bitrate;
 
-    // Sleep timer
+    // Timer
     callback sleep-start(int);
-    callback sleep-extend(int);
     callback sleep-off();
     callback sleep-fade-toggled(bool);
     in-out property <bool> sleep-active;
     // Time left, "23:12", and when it stops, "23:30"
     in-out property <string> sleep-left;
     in-out property <string> sleep-until;
+    // Seconds left, and the length it started with in minutes
+    in-out property <int> sleep-left-secs;
+    in-out property <int> sleep-length;
     in-out property <bool> sleep-fade <=> sleep-dialog.fade;
 
-    // Schedule
+    // Scheduler
     callback schedule-opened();
     callback schedule-draft(int) -> ScheduleDraft;
     callback schedule-save(ScheduleDraft) -> string;
@@ -142,9 +144,14 @@ export component App inherits Window {
     in-out property <[ScheduleRow]> schedule-rows;
     in-out property <string> schedule-next;
     in-out property <[string]> schedule-stations;
-    // The entry playing or recording now, for its chip ("" when none)
-    in-out property <string> schedule-running;
-    in-out property <string> schedule-running-detail;
+    // Days a one-off can be on ("Today", "Tomorrow", "Sun 5 Oct", ...), and
+    // today's place in the week (Monday 0)
+    in-out property <[string]> schedule-dates;
+    in-out property <int> schedule-today;
+    // The Scheduler's label: "Play in 0:08", "Play · Jazz FM" ("" when none)
+    in-out property <string> schedule-label;
+    // The label is for the fallback sound (a bell, not the calendar)
+    in-out property <bool> schedule-label-bell;
 
     // Agents (MCP)
     callback agents-network-toggled(bool);
@@ -437,8 +444,8 @@ export component App inherits Window {
                     can-open-recordings: Platform.has-file-manager;
                     open-recordings-folder => { root.open-recordings-folder(); }
                     sleep-left: root.sleep-active ? root.sleep-left : "";
-                    schedule-running: root.schedule-running;
-                    schedule-running-detail: root.schedule-running-detail;
+                    schedule-label: root.schedule-label;
+                    schedule-label-bell: root.schedule-label-bell;
                     open-sleep-timer => { sleep-dialog.open(); }
                     open-schedule => { schedule-dialog.open(); }
                     toggle-favorite => { root.toggle-favorite(); }
@@ -604,8 +611,9 @@ export component App inherits Window {
             active: root.sleep-active;
             left: root.sleep-left;
             until: root.sleep-until;
+            left-secs: root.sleep-left-secs;
+            length-minutes: root.sleep-length;
             start(minutes) => { root.sleep-start(minutes); }
-            extend(minutes) => { root.sleep-extend(minutes); }
             turn-off() => { root.sleep-off(); }
             fade-toggled(on) => { root.sleep-fade-toggled(on); }
         }
@@ -614,6 +622,8 @@ export component App inherits Window {
             rows: root.schedule-rows;
             next: root.schedule-next;
             stations: root.schedule-stations;
+            dates: root.schedule-dates;
+            today: root.schedule-today;
             opened() => { root.schedule-opened(); }
             draft(id) => { return root.schedule-draft(id); }
             save(draft) => { return root.schedule-save(draft); }

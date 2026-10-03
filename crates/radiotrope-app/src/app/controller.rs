@@ -249,7 +249,6 @@ impl AppController {
                 self.stop_playback();
             }
             AppCommand::SetSleepTimer { minutes, fade } => self.set_sleep_timer(minutes, fade),
-            AppCommand::ExtendSleepTimer(minutes) => self.extend_sleep_timer(minutes),
             AppCommand::SetSleepFade(fade) => self.set_sleep_fade(fade),
             AppCommand::SaveScheduleEntry { entry, reply } => {
                 self.save_schedule_entry(entry, reply)

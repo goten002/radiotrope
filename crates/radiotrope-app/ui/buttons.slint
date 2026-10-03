@@ -113,15 +113,17 @@ export component DangerButton inherits Rectangle {
     in property <image> icon;
     // Greyed out and not clickable, but keeps its place
     in property <bool> enabled: true;
+    // Its colour: red, or Theme.success for a go button
+    in property <color> tone: Theme.danger;
     callback clicked();
 
     height: 34px;
     width: row.preferred-width + 28px;
     border-radius: Theme.radius-sm;
     background: !root.enabled ? Theme.disabled-bg
-                : touch.pressed ? Theme.danger.with-alpha(0.3)
-                : touch.has-hover ? Theme.danger.with-alpha(0.22)
-                : Theme.danger.with-alpha(0.14);
+                : touch.pressed ? root.tone.with-alpha(0.3)
+                : touch.has-hover ? root.tone.with-alpha(0.22)
+                : root.tone.with-alpha(0.14);
     animate background { duration: Theme.fast; }
     forward-focus: focus;
 
@@ -150,13 +152,13 @@ export component DangerButton inherits Rectangle {
                 source: root.icon;
                 width: 11px;
                 height: 11px;
-                colorize: root.enabled ? Theme.danger : Theme.disabled-text;
+                colorize: root.enabled ? root.tone : Theme.disabled-text;
             }
         }
 
         Text {
             text: root.label;
-            color: root.enabled ? Theme.danger : Theme.disabled-text;
+            color: root.enabled ? root.tone : Theme.disabled-text;
             font-size: Theme.font-base;
             font-weight: 600;
             vertical-alignment: center;

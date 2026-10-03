@@ -67,6 +67,8 @@ pub(super) struct ActiveEntry {
 pub(super) struct SleepTimer {
     until: DateTime<Local>,
     fade: bool,
+    /// The length it was started with
+    minutes: u32,
 }
 
 /// An alarm's rise from silence
@@ -128,6 +130,7 @@ impl AppController {
                     self.sleep = Some(SleepTimer {
                         until: now + TimeDelta::seconds(FADE_OUT_SECS),
                         fade: true,
+                        minutes: 1,
                     });
                 }
                 Decision::Stop { .. } => self.stop_for_schedule(),
@@ -178,29 +181,14 @@ impl AppController {
 
     pub(super) fn set_sleep_timer(&mut self, minutes: Option<u32>, fade: bool) {
         let now = Local::now();
-        self.sleep = minutes.filter(|m| *m > 0).map(|m| SleepTimer {
-            until: now + TimeDelta::minutes(m.min(schedule::MAX_MINUTES).into()),
-            fade,
+        self.sleep = minutes.filter(|m| *m > 0).map(|m| {
+            let minutes = m.min(schedule::MAX_MINUTES);
+            SleepTimer {
+                until: now + TimeDelta::minutes(minutes.into()),
+                fade,
+                minutes,
+            }
         });
-        self.apply_volume(&now);
-        self.publish_schedule(&now);
-    }
-
-    pub(super) fn extend_sleep_timer(&mut self, minutes: u32) {
-        let now = Local::now();
-        let minutes = TimeDelta::minutes(minutes.min(schedule::MAX_MINUTES).into());
-        match self.sleep.as_mut() {
-            Some(sleep) => {
-                let longest = now + TimeDelta::minutes(schedule::MAX_MINUTES.into());
-                sleep.until = (sleep.until + minutes).min(longest);
-            }
-            None => {
-                self.sleep = Some(SleepTimer {
-                    until: now + minutes,
-                    fade: true,
-                })
-            }
-        }
         self.apply_volume(&now);
         self.publish_schedule(&now);
     }
@@ -384,6 +372,7 @@ impl AppController {
         }
         let waited = (*now - active.started).num_seconds();
         let heard = active.heard;
+        let fallback = active.entry.fallback;
 
         let (playback, resolving, play_seq, recording) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
@@ -410,7 +399,7 @@ impl AppController {
                 }
                 self.record_for_schedule(station.as_ref());
             }
-        } else if !record && !heard && waited >= BEEP_AFTER_SECS {
+        } else if !record && fallback && !heard && waited >= BEEP_AFTER_SECS {
             // The alarm must wake someone
             self.start_alarm_tone(now);
         } else if playback == PlaybackState::Stopped && !resolving {
@@ -467,7 +456,7 @@ impl AppController {
             state.is_resolving = false;
             state.playback = PlaybackState::Playing;
             state.alarm_beep = true;
-            state.status_text = format!("{name} didn't start, the alarm beeps instead").into();
+            state.status_text = format!("{name} didn't start, playing the fallback sound").into();
             state.is_error = true;
             state.title.clear();
             state.artist.clear();
@@ -601,6 +590,7 @@ impl AppController {
         let sleep = self.sleep.as_ref().map(|s| SleepTimerInfo {
             until: s.until,
             fade: s.fade,
+            minutes: s.minutes,
         });
         let scheduled = self.active.as_ref().map(|a| ScheduledNow {
             id: a.entry.id,
@@ -612,6 +602,12 @@ impl AppController {
             id: e.id,
             at,
             title: e.title(),
+            action: e.action,
+            station: e
+                .station
+                .as_ref()
+                .map(|s| s.name.clone())
+                .unwrap_or_default(),
         });
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.sleep = sleep;
@@ -675,6 +671,7 @@ mod tests {
             end: End::Never,
             volume: None,
             fade: false,
+            fallback: true,
             armed_from: 0,
         }
     }
@@ -795,6 +792,31 @@ mod tests {
         assert_eq!(s.playback, PlaybackState::Stopped);
         drop(s);
         assert_eq!(controller.engine_volume, Some(0.2));
+    }
+
+    #[test]
+    fn an_alarm_without_the_fallback_sound_stays_quiet() {
+        let (mut controller, state) = controller();
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                fallback: false,
+                ..entry(Action::Play)
+            },
+        );
+        controller.run_schedule(at);
+        controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS + 5));
+        assert!(!state.lock().unwrap().alarm_beep);
+    }
+
+    #[test]
+    fn the_timer_keeps_its_length_for_restart() {
+        let (mut controller, state) = controller();
+        controller.handle_command(AppCommand::SetSleepTimer {
+            minutes: Some(45),
+            fade: true,
+        });
+        assert_eq!(state.lock().unwrap().sleep.as_ref().unwrap().minutes, 45);
     }
 
     #[test]

@@ -795,16 +795,16 @@ export component MenuBar inherits Rectangle {
                 }
                 MenuSeparator {}
                 MenuItem {
-                    label: "Sleep Timer";
-                    icon: @image-url("icons/moon.svg");
+                    label: "Timer";
+                    icon: @image-url("icons/hourglass-half.svg");
                     clicked => {
                         root.open-sleep-timer();
                         tools-popup.close();
                     }
                 }
                 MenuItem {
-                    label: "Schedule";
-                    icon: @image-url("icons/clock.svg");
+                    label: "Scheduler";
+                    icon: @image-url("icons/calendar-days.svg");
                     clicked => {
                         root.open-schedule();
                         tools-popup.close();

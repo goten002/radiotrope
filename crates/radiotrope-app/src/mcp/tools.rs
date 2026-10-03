@@ -310,6 +310,10 @@ pub struct AddScheduleArgs {
     /// play: rise from silence over 30 s; stop: fade out over a minute
     #[serde(default)]
     pub fade: bool,
+    /// play: beep instead if the station hasn't started after 30 s (it is
+    /// down or there is no internet). On unless set to false.
+    #[serde(default)]
+    pub fallback: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1319,7 +1323,7 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "Sleep timer",
+        title = "Timer",
         description = "Stop playback after some minutes, fading out over the last minute. \
                        0 minutes turns the timer off.",
         annotations(
@@ -1364,7 +1368,7 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "List the schedule",
+        title = "List the Scheduler entries",
         description = "The scheduled alarms, recordings and bedtime stops, with when each \
                        comes round next, and the sleep timer",
         annotations(read_only_hint = true, open_world_hint = false)
@@ -1384,7 +1388,7 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "Add to the schedule",
+        title = "Add to the Scheduler",
         description = "Schedule an alarm (play), a recording (record, needs end_at or \
                        end_after_minutes) or a bedtime stop (stop) at a local time, once or on \
                        chosen days. Recordings use the player's recording settings. Only one \
@@ -1460,6 +1464,7 @@ impl RadioTools {
             end,
             volume,
             fade: args.fade,
+            fallback: args.fallback.unwrap_or(true),
             armed_from: 0,
         };
         let title = entry.title();
@@ -1488,7 +1493,7 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "Remove from the schedule",
+        title = "Remove from the Scheduler",
         description = "Remove a scheduled entry by its id (ids come from list_schedule)",
         annotations(
             read_only_hint = false,
@@ -1514,7 +1519,7 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "Switch a schedule entry on or off",
+        title = "Switch a Scheduler entry on or off",
         description = "Switch a scheduled entry on or off without removing it",
         annotations(
             read_only_hint = false,

@@ -294,6 +294,10 @@ pub struct Entry {
     /// Play: rise from silence. Stop: fade out first.
     #[serde(default)]
     pub fade: bool,
+    /// Play: beep instead when the station hasn't started 30 s after the
+    /// start (it is down, or there is no internet)
+    #[serde(default = "yes")]
+    pub fallback: bool,
     /// Starts at or before this time (Unix seconds) don't run: the entry
     /// was made, changed or switched on after them, or already ran them
     #[serde(default)]
@@ -793,6 +797,7 @@ mod tests {
             end: End::Never,
             volume: None,
             fade: false,
+            fallback: true,
             armed_from: 0,
         }
     }
