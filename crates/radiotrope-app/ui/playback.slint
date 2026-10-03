@@ -33,6 +33,9 @@ export component Playback inherits Rectangle {
     // whether it is for the fallback sound
     in property <string> schedule-label;
     in property <bool> schedule-label-bell;
+    // The label tells what just happened, and a click closes it
+    in property <bool> schedule-label-closable;
+    callback schedule-label-dismiss();
     callback open-sleep-timer();
     callback open-schedule();
     callback toggle-favorite();
@@ -141,7 +144,7 @@ export component Playback inherits Rectangle {
 
                 if root.sleep-left != "": Chip {
                     text: "Timer " + root.sleep-left;
-                    icon: @image-url("icons/hourglass-half.svg");
+                    icon: @image-url("icons/book.svg");
                     tone: Theme.info;
                     steady: true;
                     clickable: true;
@@ -154,7 +157,15 @@ export component Playback inherits Rectangle {
                     tone: Theme.text-secondary;
                     steady: true;
                     clickable: true;
-                    clicked => { root.open-schedule(); }
+                    // After an entry started it is only news: a click closes it
+                    closable: root.schedule-label-closable;
+                    clicked => {
+                        if root.schedule-label-closable {
+                            root.schedule-label-dismiss();
+                        } else {
+                            root.open-schedule();
+                        }
+                    }
                 }
 
                 // Takes the spare width, so a long status elides in the chip

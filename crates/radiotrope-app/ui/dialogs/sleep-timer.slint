@@ -56,8 +56,9 @@ component NumberField inherits FocusScope {
     }
 }
 
-// Stops playback after a while. While off it offers lengths to start
-// with; while running it shows the time left, Restart and Stop Timer.
+// Stops playback after a while. While off it offers lengths that start
+// at once, or Custom for hours and minutes of your own; while running
+// it shows the time left, Restart and Stop Timer.
 export component SleepTimerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // A timer runs
@@ -78,13 +79,16 @@ export component SleepTimerDialog inherits Rectangle {
     property <string> hours;
     property <string> minutes;
     property <string> error;
+    // Custom picked: show the hours and minutes fields
+    property <bool> custom;
     property <[int]> lengths: [15, 30, 45, 60, 90, 120];
-    property <[string]> labels: ["15 min", "30 min", "45 min", "1 h", "1 h 30", "2 h"];
+    property <[string]> labels: ["15 min", "30 min", "45 min", "1 h", "1 h 30 min", "2 h"];
 
     public function open() {
         root.hours = "";
         root.minutes = "";
         root.error = "";
+        root.custom = false;
         root.show-dialog = true;
     }
 
@@ -115,7 +119,7 @@ export component SleepTimerDialog inherits Rectangle {
     }
 
     if show-dialog: DialogShell {
-        title: "Timer";
+        title: "Sleep Timer";
         card-width: Defaults.sleep-timer-width;
         close-requested => { root.show-dialog = false; }
 
@@ -141,25 +145,35 @@ export component SleepTimerDialog inherits Rectangle {
 
                     for length[i] in root.lengths: PickerOption {
                         label: root.labels[i];
-                        option-width: 48px;
+                        option-width: 44px;
                         horizontal-stretch: 1;
                         clicked => {
                             root.error = "";
                             root.start(length);
                         }
                     }
+                    PickerOption {
+                        label: "Custom";
+                        option-width: 44px;
+                        horizontal-stretch: 1;
+                        selected: root.custom;
+                        clicked => {
+                            root.error = "";
+                            root.custom = !root.custom;
+                            // Ready to start: 30 min, changed by typing or stepping
+                            if root.custom && root.hours == "" && root.minutes == "" {
+                                root.hours = "0";
+                                root.minutes = "30";
+                            }
+                        }
+                    }
                 }
             }
         }
 
-        if !root.active: VerticalLayout {
+        if !root.active && root.custom: VerticalLayout {
             spacing: 6px;
 
-            Text {
-                text: "Or a length of your own";
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
-            }
             HorizontalLayout {
                 spacing: 8px;
 
@@ -241,7 +255,7 @@ export component SleepTimerDialog inherits Rectangle {
                 x: 0;
                 width: parent.width * clamp(root.left-secs / max(1, root.length-minutes * 60), 0, 1);
                 border-radius: 2px;
-                background: Theme.info;
+                background: Theme.accent;
             }
         }
 
@@ -250,6 +264,7 @@ export component SleepTimerDialog inherits Rectangle {
 
             SecondaryButton {
                 label: "Restart " + root.length-label(root.length-minutes);
+                icon: @image-url("../icons/rotate-right.svg");
                 clicked => { root.start(root.length-minutes); }
             }
             Rectangle { horizontal-stretch: 1; }

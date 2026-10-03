@@ -123,7 +123,7 @@ impl View {
             (true, false) => format!("Radiotrope\n{station}\n{song}"),
         };
         if !p.sleep_until.is_empty() {
-            tooltip.push_str(&format!("\nTimer stops at {}", p.sleep_until));
+            tooltip.push_str(&format!("\nSleep Timer stops at {}", p.sleep_until));
         }
         let favorites = p
             .favorites
@@ -196,7 +196,7 @@ impl Tray {
         let mute = CheckMenuItem::with_id(MUTE, "Mute", true, false, None);
         let favorites = Submenu::new("Favorites", true);
         let record = MenuItem::with_id(RECORD, "Start Recording", false, None);
-        let sleep = Submenu::new("Timer", true);
+        let sleep = Submenu::new("Sleep Timer", true);
         for (minutes, label) in SLEEP_LENGTHS {
             let item = MenuItem::with_id(format!("{SLEEP}{minutes}"), label, true, None);
             sleep.append(&item).map_err(|e| e.to_string())?;
@@ -626,7 +626,7 @@ mod tests {
         let v = View::of(&p);
         assert!(v.sleeping);
         assert!(
-            v.tooltip.ends_with("\nTimer stops at 23:30"),
+            v.tooltip.ends_with("\nSleep Timer stops at 23:30"),
             "{}",
             v.tooltip
         );
