@@ -139,6 +139,11 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recording_bitrate: Option<u32>,
 
+    // === Sleep timer ===
+    /// The sleep timer lowers the volume over its last minute
+    #[serde(default = "default_true")]
+    pub sleep_fade: bool,
+
     // === Agents (MCP) ===
     /// Agents over the network may use the player
     #[serde(default)]
@@ -228,6 +233,7 @@ impl Default for Settings {
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,
             recording_bitrate: None,
+            sleep_fade: true,
             mcp_network: false,
             mcp_auth: McpAuth::None,
             mcp_address: default_mcp_address(),

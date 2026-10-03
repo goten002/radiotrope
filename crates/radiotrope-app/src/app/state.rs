@@ -69,6 +69,10 @@ pub enum AppCommand {
         /// Lower the volume over the last minute
         fade: bool,
     },
+    /// Give the running sleep timer this many more minutes (or start one)
+    ExtendSleepTimer(u32),
+    /// Fade out at the end of the sleep timer, or not
+    SetSleepFade(bool),
     /// Add an entry (id 0) or replace the one with its id. Told the id.
     SaveScheduleEntry {
         entry: Entry,

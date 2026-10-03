@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 
 ### Added
+- Scheduled playback in Tools > Schedule: alarms that start a station at a set time with a fade-in, timed recordings, and stops, once or on chosen days, with an end time or length and their own volume. A Sleep Timer in Tools and the tray stops playback after 15 minutes to 2 hours or any length, with a fade-out. Chips under the station show what is scheduled and when the sleep timer ends. The player must be open; it does not wake the computer.
 - `radiotrope-probe`, a station checker for people and schedulers: it listens to a station for a few seconds and reports whether it is on air, its codec and format, its sound level and what is playing, as text or JSON, with monitoring-style exit codes.
 - AI agents over MCP: one shared player for every local agent, 19 tools (play, search, favorites, volume, recording, sleep timer, schedule, status), an Agents dialog with setup lines for Claude Code, Claude Desktop, Cursor and Codex, and optional network access with a token.
 - Recording of the playing station to MP3, Opus or WAV, with or without the equalizer.

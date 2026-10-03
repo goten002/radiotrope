@@ -28,6 +28,16 @@ const MUTE: &str = "mute";
 const RECORD: &str = "record";
 const QUIT: &str = "quit";
 const FAVORITE: &str = "fav:";
+const SLEEP: &str = "sleep:";
+
+/// The sleep timer's lengths in the tray menu, in minutes
+const SLEEP_LENGTHS: [(u32, &str); 5] = [
+    (15, "15 min"),
+    (30, "30 min"),
+    (45, "45 min"),
+    (60, "1 h"),
+    (90, "1 h 30 min"),
+];
 
 /// What a click in the tray asks for
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +47,8 @@ enum Action {
     Mute,
     Record,
     Favorite(String),
+    /// Start the sleep timer for this many minutes; 0 turns it off
+    Sleep(u32),
     Quit,
 }
 
@@ -48,7 +60,10 @@ impl Action {
             MUTE => Action::Mute,
             RECORD => Action::Record,
             QUIT => Action::Quit,
-            _ => Action::Favorite(id.strip_prefix(FAVORITE)?.to_string()),
+            _ => match id.strip_prefix(SLEEP) {
+                Some(minutes) => Action::Sleep(minutes.parse().ok()?),
+                None => Action::Favorite(id.strip_prefix(FAVORITE)?.to_string()),
+            },
         })
     }
 }
@@ -65,6 +80,8 @@ struct Player {
     muted: bool,
     recording: bool,
     can_record: bool,
+    /// When the sleep timer stops playback ("23:30"), empty when off
+    sleep_until: String,
     /// (id, name, url), in the window's order
     favorites: Vec<(String, String, String)>,
 }
@@ -80,6 +97,8 @@ struct View {
     muted: bool,
     record_label: &'static str,
     can_record: bool,
+    /// The sleep timer runs: Off can be picked
+    sleeping: bool,
     /// (id, label, ticked)
     favorites: Vec<(String, String, bool)>,
 }
@@ -98,11 +117,14 @@ impl View {
         } else {
             station.clone()
         };
-        let tooltip = match (active, song.is_empty()) {
+        let mut tooltip = match (active, song.is_empty()) {
             (false, _) => "Radiotrope".to_string(),
             (true, true) => format!("Radiotrope\n{station}"),
             (true, false) => format!("Radiotrope\n{station}\n{song}"),
         };
+        if !p.sleep_until.is_empty() {
+            tooltip.push_str(&format!("\nSleep until {}", p.sleep_until));
+        }
         let favorites = p
             .favorites
             .iter()
@@ -126,6 +148,7 @@ impl View {
                 "Start Recording"
             },
             can_record: p.recording || p.can_record,
+            sleeping: !p.sleep_until.is_empty(),
             favorites,
         }
     }
@@ -156,6 +179,7 @@ struct Items {
     favorites: Submenu,
     favorite_items: Vec<CheckMenuItem>,
     record: MenuItem,
+    sleep_off: MenuItem,
 }
 
 struct Tray {
@@ -172,6 +196,15 @@ impl Tray {
         let mute = CheckMenuItem::with_id(MUTE, "Mute", true, false, None);
         let favorites = Submenu::new("Favorites", true);
         let record = MenuItem::with_id(RECORD, "Start Recording", false, None);
+        let sleep = Submenu::new("Sleep Timer", true);
+        for (minutes, label) in SLEEP_LENGTHS {
+            let item = MenuItem::with_id(format!("{SLEEP}{minutes}"), label, true, None);
+            sleep.append(&item).map_err(|e| e.to_string())?;
+        }
+        let sleep_off = MenuItem::with_id(format!("{SLEEP}0"), "Off", false, None);
+        sleep
+            .append_items(&[&PredefinedMenuItem::separator(), &sleep_off])
+            .map_err(|e| e.to_string())?;
         let quit = MenuItem::with_id(QUIT, "Quit Radiotrope", true, None);
         let menu = Menu::new();
         menu.append_items(&[
@@ -183,6 +216,7 @@ impl Tray {
             &mute,
             &favorites,
             &record,
+            &sleep,
             &PredefinedMenuItem::separator(),
             &quit,
         ])
@@ -206,6 +240,7 @@ impl Tray {
                 favorites,
                 favorite_items: Vec::new(),
                 record,
+                sleep_off,
             },
             shown: None,
         })
@@ -235,6 +270,9 @@ impl Tray {
         {
             items.record.set_text(view.record_label);
             items.record.set_enabled(view.can_record);
+        }
+        if old.is_none_or(|o| o.sleeping != view.sleeping) {
+            items.sleep_off.set_enabled(view.sleeping);
         }
         let same_list = old.is_some_and(|o| {
             o.favorites.len() == view.favorites.len()
@@ -391,6 +429,11 @@ fn player(ui: &App) -> Player {
         muted: ui.get_is_muted(),
         recording: ui.get_is_recording(),
         can_record: ui.get_can_record(),
+        sleep_until: if ui.get_sleep_active() {
+            ui.get_sleep_until().to_string()
+        } else {
+            String::new()
+        },
         favorites: favorites
             .iter()
             .map(|f| (f.id.to_string(), f.name.to_string(), f.url.to_string()))
@@ -435,6 +478,8 @@ fn act(ui: &App, action: Action, click: bool) {
                 ui.invoke_play_favorite(station);
             }
         }
+        Action::Sleep(0) => ui.invoke_sleep_off(),
+        Action::Sleep(minutes) => ui.invoke_sleep_start(minutes as i32),
         Action::Quit => quit(),
     }
     // Ticks set by the click itself are put right at once
@@ -568,6 +613,22 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn the_sleep_timer_shows_in_the_tooltip_and_can_be_turned_off() {
+        let off = View::of(&playing());
+        assert!(!off.sleeping);
+        let p = Player {
+            sleep_until: "23:30".into(),
+            ..playing()
+        };
+        let v = View::of(&p);
+        assert!(v.sleeping);
+        assert!(v.tooltip.ends_with("\nSleep until 23:30"), "{}", v.tooltip);
+        assert_eq!(Action::from_menu("sleep:30"), Some(Action::Sleep(30)));
+        assert_eq!(Action::from_menu("sleep:0"), Some(Action::Sleep(0)));
+        assert_eq!(Action::from_menu("sleep:x"), None);
     }
 
     #[test]

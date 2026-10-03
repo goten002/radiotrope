@@ -12,6 +12,8 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
+import { SleepTimerDialog } from "dialogs/sleep-timer.slint";
+import { ScheduleDialog, ScheduleRow, ScheduleDraft } from "dialogs/schedule.slint";
 import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
@@ -19,7 +21,7 @@ import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
-export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup }
+export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -119,6 +121,30 @@ export component App inherits Window {
     in-out property <bool> record-with-eq <=> recording-dialog.with-eq;
     in-out property <string> recording-format <=> recording-dialog.format;
     in-out property <int> recording-bitrate <=> recording-dialog.bitrate;
+
+    // Sleep timer
+    callback sleep-start(int);
+    callback sleep-extend(int);
+    callback sleep-off();
+    callback sleep-fade-toggled(bool);
+    in-out property <bool> sleep-active;
+    // Time left, "23:12", and when it stops, "23:30"
+    in-out property <string> sleep-left;
+    in-out property <string> sleep-until;
+    in-out property <bool> sleep-fade <=> sleep-dialog.fade;
+
+    // Schedule
+    callback schedule-opened();
+    callback schedule-draft(int) -> ScheduleDraft;
+    callback schedule-save(ScheduleDraft) -> string;
+    callback schedule-toggled(int, bool);
+    callback schedule-remove(int);
+    in-out property <[ScheduleRow]> schedule-rows;
+    in-out property <string> schedule-next;
+    in-out property <[string]> schedule-stations;
+    // The entry playing or recording now, for its chip ("" when none)
+    in-out property <string> schedule-running;
+    in-out property <string> schedule-running-detail;
 
     // Agents (MCP)
     callback agents-network-toggled(bool);
@@ -387,6 +413,8 @@ export component App inherits Window {
                     }
                     open-recordings-folder => { root.open-recordings-folder(); }
                     open-agents => { agents-dialog.open(); }
+                    open-sleep-timer => { sleep-dialog.open(); }
+                    open-schedule => { schedule-dialog.open(); }
                     menus-enabled: !root.dialog-open;
                     agent-count: root.agent-count;
                 }
@@ -408,6 +436,11 @@ export component App inherits Window {
                     recording-notice-error: root.recording-notice-error;
                     can-open-recordings: Platform.has-file-manager;
                     open-recordings-folder => { root.open-recordings-folder(); }
+                    sleep-left: root.sleep-active ? root.sleep-left : "";
+                    schedule-running: root.schedule-running;
+                    schedule-running-detail: root.schedule-running-detail;
+                    open-sleep-timer => { sleep-dialog.open(); }
+                    open-schedule => { schedule-dialog.open(); }
                     toggle-favorite => { root.toggle-favorite(); }
                 }
                 }
@@ -567,6 +600,27 @@ export component App inherits Window {
             bitrate-changed(kbps) => { root.recording-bitrate-changed(kbps); }
         }
 
+        sleep-dialog := SleepTimerDialog {
+            active: root.sleep-active;
+            left: root.sleep-left;
+            until: root.sleep-until;
+            start(minutes) => { root.sleep-start(minutes); }
+            extend(minutes) => { root.sleep-extend(minutes); }
+            turn-off() => { root.sleep-off(); }
+            fade-toggled(on) => { root.sleep-fade-toggled(on); }
+        }
+
+        schedule-dialog := ScheduleDialog {
+            rows: root.schedule-rows;
+            next: root.schedule-next;
+            stations: root.schedule-stations;
+            opened() => { root.schedule-opened(); }
+            draft(id) => { return root.schedule-draft(id); }
+            save(draft) => { return root.schedule-save(draft); }
+            toggled(id, on) => { root.schedule-toggled(id, on); }
+            remove(id) => { root.schedule-remove(id); }
+        }
+
         agents-dialog := AgentsDialog {
             network-toggled(on) => { root.agents-network-toggled(on); }
             apply-port(text) => { root.agents-apply-port(text); }
@@ -611,7 +665,8 @@ export component App inherits Window {
     property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
         || eq-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
-        || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings;
+        || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings
+        || sleep-dialog.show-dialog || schedule-dialog.show-dialog;
     changed dialog-open => {
         if !self.dialog-open {
             shortcuts.focus();

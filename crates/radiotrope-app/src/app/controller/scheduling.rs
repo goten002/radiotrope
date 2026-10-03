@@ -175,6 +175,34 @@ impl AppController {
         self.publish_schedule(&now);
     }
 
+    pub(super) fn extend_sleep_timer(&mut self, minutes: u32) {
+        let now = Local::now();
+        let minutes = TimeDelta::minutes(minutes.min(schedule::MAX_MINUTES).into());
+        match self.sleep.as_mut() {
+            Some(sleep) => {
+                let longest = now + TimeDelta::minutes(schedule::MAX_MINUTES.into());
+                sleep.until = (sleep.until + minutes).min(longest);
+            }
+            None => {
+                self.sleep = Some(SleepTimer {
+                    until: now + minutes,
+                    fade: true,
+                })
+            }
+        }
+        self.apply_volume(&now);
+        self.publish_schedule(&now);
+    }
+
+    pub(super) fn set_sleep_fade(&mut self, fade: bool) {
+        if let Some(sleep) = self.sleep.as_mut() {
+            sleep.fade = fade;
+        }
+        let now = Local::now();
+        self.apply_volume(&now);
+        self.publish_schedule(&now);
+    }
+
     pub(super) fn save_schedule_entry(&mut self, entry: Entry, reply: ScheduleReply<u64>) {
         let result = self.put_entry(entry);
         if let Some(reply) = reply {
