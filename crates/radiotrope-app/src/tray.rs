@@ -31,12 +31,15 @@ const FAVORITE: &str = "fav:";
 const SLEEP: &str = "sleep:";
 
 /// The sleep timer's lengths in the tray menu, in minutes
-const SLEEP_LENGTHS: [(u32, &str); 5] = [
+const SLEEP_LENGTHS: [(u32, &str); 8] = [
     (15, "15 min"),
     (30, "30 min"),
     (45, "45 min"),
     (60, "1 h"),
-    (90, "1 h 30 min"),
+    (120, "2 h"),
+    (180, "3 h"),
+    (240, "4 h"),
+    (360, "6 h"),
 ];
 
 /// What a click in the tray asks for

@@ -56,6 +56,7 @@ pub fn setup(
     state: Arc<Mutex<AppSnapshot>>,
 ) {
     ui.set_sleep_fade(settings.sleep_fade);
+    ui.set_sleep_last(settings.sleep_minutes.clamp(1, 24 * 60) as i32);
     let cmd_tx = Rc::new(cmd_tx);
 
     ui.on_sleep_start({
@@ -63,10 +64,21 @@ pub fn setup(
         let cmd_tx = cmd_tx.clone();
         move |minutes| {
             let Some(ui) = ui_weak.upgrade() else { return };
+            let minutes = minutes.max(1) as u32;
             cmd_tx.send(AppCommand::SetSleepTimer {
-                minutes: Some(minutes.max(1) as u32),
+                minutes: Some(minutes),
                 fade: ui.get_sleep_fade(),
             });
+            // The dialog opens on this length next time
+            if ui.get_sleep_last() != minutes as i32 {
+                ui.set_sleep_last(minutes as i32);
+                let mut settings =
+                    radiotrope_app::data::settings::Settings::load().unwrap_or_default();
+                settings.sleep_minutes = minutes;
+                if let Err(e) = settings.save() {
+                    eprintln!("Failed to save the sleep timer length: {e}");
+                }
+            }
         }
     });
     ui.on_sleep_off({

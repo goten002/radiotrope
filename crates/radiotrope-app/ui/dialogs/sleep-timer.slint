@@ -1,64 +1,112 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { StyledLineEdit } from "../styled-line-edit.slint";
-import { SecondaryButton, DangerButton } from "../buttons.slint";
-import { DialogShell, Toggle, PickerOption } from "../components.slint";
+import { SecondaryButton, DangerButton, AccentButton } from "../buttons.slint";
+import { DialogShell, Toggle, ButtonKeys, FocusRing } from "../components.slint";
 
-// A whole number field: type it, or step it with Up and Down or the wheel
-component NumberField inherits FocusScope {
-    in-out property <string> text;
-    in property <string> placeholder;
-    in property <int> step: 1;
-    in property <int> maximum: 99;
-    callback accepted();
-    callback edited();
+// A round − or + next to the length
+component StepButton inherits Rectangle {
+    in property <string> label;
+    in property <string> name;
+    in property <bool> enabled: true;
+    callback clicked();
 
-    width: 64px;
+    width: 36px;
     height: 36px;
+    border-radius: 18px;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    background: !root.enabled ? Theme.disabled-bg
+        : touch.pressed ? Theme.menu-hover.darker(0.05)
+        : touch.has-hover ? Theme.menu-hover
+        : Theme.elevated;
+    animate background { duration: Theme.fast; }
+    forward-focus: keys;
 
-    function bump(by: int) {
-        let now = root.text.is-float() ? round(root.text.to-float()) : 0;
-        root.text = max(0, min(root.maximum, now + by));
-        root.edited();
+    accessible-role: button;
+    accessible-label: root.name;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
     }
 
-    capture-key-pressed(event) => {
-        if event.text == Key.UpArrow {
-            root.bump(root.step);
-            return accept;
-        }
-        if event.text == Key.DownArrow {
-            root.bump(-root.step);
-            return accept;
-        }
-        reject
+    Text {
+        text: root.label;
+        color: root.enabled ? Theme.text-primary : Theme.disabled-text;
+        font-size: 18px;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
     }
 
-    TouchArea {
-        scroll-event(event) => {
-            if event.delta-y > 0 {
-                root.bump(root.step);
-                return accept;
-            }
-            if event.delta-y < 0 {
-                root.bump(-root.step);
-                return accept;
-            }
-            reject
-        }
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
 
-        StyledLineEdit {
-            width: parent.width;
-            placeholder-text: root.placeholder;
-            text <=> root.text;
-            accepted => { root.accepted(); }
-            edited => { root.edited(); }
-        }
+    keys := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 }
 
-// Stops playback after a while. While off it offers lengths that start
-// at once, or Custom for hours and minutes of your own; while running
-// it shows the time left, Restart and Stop Timer.
+// A length to pick; it sets the length, Start begins it
+component LengthChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    callback clicked();
+
+    height: 26px;
+    width: chip-text.preferred-width + 22px;
+    border-radius: 13px;
+    border-width: 1px;
+    border-color: root.selected ? Theme.accent : Theme.hairline;
+    background: root.selected ? Theme.accent-soft
+        : touch.has-hover ? Theme.menu-hover
+        : transparent;
+    animate background, border-color { duration: Theme.fast; }
+    forward-focus: keys;
+
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-action-default => { root.clicked(); }
+
+    chip-text := Text {
+        text: root.label;
+        color: root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        font-size: Theme.font-md;
+        font-weight: 500;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
+}
+
+// Stops playback after a while. One length, changed with − and +, the
+// wheel or the arrow keys (5 minute steps) or set by a chip, and one Start.
+// It opens on the length used last time. While running it shows the time
+// left, Restart and Stop Timer.
 export component SleepTimerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     // A timer runs
@@ -70,26 +118,32 @@ export component SleepTimerDialog inherits Rectangle {
     // Seconds left and the length it started with, for the bar
     in property <int> left-secs;
     in property <int> length-minutes;
+    // The length started last time, in minutes (the dialog opens on it)
+    in property <int> last: 30;
     in-out property <bool> fade: true;
 
     callback start(int);
     callback turn-off();
     callback fade-toggled(bool);
 
-    property <string> hours;
-    property <string> minutes;
-    property <string> error;
-    // Custom picked: show the hours and minutes fields
-    property <bool> custom;
-    property <[int]> lengths: [15, 30, 45, 60, 90, 120];
-    property <[string]> labels: ["15 min", "30 min", "45 min", "1 h", "1 h 30 min", "2 h"];
+    // The length to start, in minutes
+    property <int> length: 30;
+    property <[int]> lengths: [15, 30, 45, 60, 120, 180, 240, 360];
 
     public function open() {
-        root.hours = "";
-        root.minutes = "";
-        root.error = "";
-        root.custom = false;
+        root.length = root.clamped(root.last);
         root.show-dialog = true;
+    }
+
+    pure function clamped(minutes: int) -> int {
+        clamp(minutes, Defaults.sleep-step-minutes, Defaults.sleep-max-minutes)
+    }
+
+    // Five minutes more or less, onto the 5 minute steps
+    function bump(steps: int) {
+        let step = Defaults.sleep-step-minutes;
+        let base = steps > 0 ? floor(root.length / step) * step : ceil(root.length / step) * step;
+        root.length = root.clamped(base + steps * step);
     }
 
     // "1 h 30 min", "45 min", "2 h"
@@ -105,125 +159,112 @@ export component SleepTimerDialog inherits Rectangle {
         h + " h " + m + " min"
     }
 
-    function start-custom() {
-        let h = root.hours == "" ? 0 : root.hours.is-float() ? round(root.hours.to-float()) : -1;
-        let m = root.minutes == "" ? 0 : root.minutes.is-float() ? round(root.minutes.to-float()) : -1;
-        if h < 0 || m < 0 {
-            root.error = "Type whole hours and minutes";
-        } else if h * 60 + m < 1 || h * 60 + m > 1440 {
-            root.error = "Pick from 1 minute to 24 hours";
-        } else {
-            root.error = "";
-            root.start(h * 60 + m);
-        }
-    }
-
     if show-dialog: DialogShell {
         title: "Sleep Timer";
         card-width: Defaults.sleep-timer-width;
         close-requested => { root.show-dialog = false; }
 
         // ── Off: pick a length ──
-        if !root.active: VerticalLayout {
-            spacing: 6px;
+        if !root.active: HorizontalLayout {
+            alignment: center;
+            spacing: 14px;
 
-            Text {
-                text: "Start now for";
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
+            VerticalLayout {
+                alignment: center;
+                StepButton {
+                    label: "−";
+                    name: "5 minutes less";
+                    enabled: root.length > Defaults.sleep-step-minutes;
+                    clicked => { root.bump(-1); }
+                }
             }
-            Rectangle {
-                background: Theme.elevated;
-                border-radius: Theme.radius-md;
-                border-width: 1px;
-                border-color: Theme.hairline;
-                height: lengths-row.preferred-height;
 
-                lengths-row := HorizontalLayout {
-                    padding: 3px;
-                    spacing: 3px;
+            readout := FocusScope {
+                width: Defaults.sleep-readout-width;
+                height: 44px;
+                accessible-role: spinbox;
+                accessible-label: "Length";
+                accessible-value: root.length-label(root.length);
+                accessible-action-increment => { root.bump(1); }
+                accessible-action-decrement => { root.bump(-1); }
 
-                    for length[i] in root.lengths: PickerOption {
-                        label: root.labels[i];
-                        option-width: 44px;
-                        horizontal-stretch: 1;
-                        clicked => {
-                            root.error = "";
-                            root.start(length);
-                        }
+                key-pressed(event) => {
+                    if event.text == Key.UpArrow || event.text == Key.RightArrow {
+                        root.bump(1);
+                        return accept;
                     }
-                    PickerOption {
-                        label: "Custom";
-                        option-width: 44px;
-                        horizontal-stretch: 1;
-                        selected: root.custom;
-                        clicked => {
-                            root.error = "";
-                            root.custom = !root.custom;
-                            // Ready to start: 30 min, changed by typing or stepping
-                            if root.custom && root.hours == "" && root.minutes == "" {
-                                root.hours = "0";
-                                root.minutes = "30";
-                            }
-                        }
+                    if event.text == Key.DownArrow || event.text == Key.LeftArrow {
+                        root.bump(-1);
+                        return accept;
                     }
+                    if event.text == Key.Return {
+                        root.start(root.length);
+                        return accept;
+                    }
+                    reject
+                }
+
+                TouchArea {
+                    clicked => { readout.focus(); }
+                    scroll-event(event) => {
+                        if event.delta-y > 0 {
+                            root.bump(1);
+                            return accept;
+                        }
+                        if event.delta-y < 0 {
+                            root.bump(-1);
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+
+                Text {
+                    text: root.length-label(root.length);
+                    color: Theme.text-primary;
+                    font-size: 30px;
+                    font-weight: 600;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    accessible-role: none;
+                }
+
+                if readout.has-focus: FocusRing {
+                    radius: Theme.radius-md;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                StepButton {
+                    label: "+";
+                    name: "5 minutes more";
+                    enabled: root.length < Defaults.sleep-max-minutes;
+                    clicked => { root.bump(1); }
                 }
             }
         }
 
-        if !root.active && root.custom: VerticalLayout {
+        if !root.active: HorizontalLayout {
+            alignment: center;
             spacing: 6px;
 
-            HorizontalLayout {
-                spacing: 8px;
-
-                NumberField {
-                    text <=> root.hours;
-                    placeholder: "0";
-                    maximum: 24;
-                    accepted => { root.start-custom(); }
-                    edited => { root.error = ""; }
-                }
-                Text {
-                    text: "h";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-base;
-                    vertical-alignment: center;
-                }
-                NumberField {
-                    text <=> root.minutes;
-                    placeholder: "30";
-                    step: 5;
-                    maximum: 59;
-                    accepted => { root.start-custom(); }
-                    edited => { root.error = ""; }
-                }
-                Text {
-                    text: "min";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-base;
-                    vertical-alignment: center;
-                }
-
-                Rectangle { horizontal-stretch: 1; }
-
-                VerticalLayout {
-                    alignment: center;
-                    DangerButton {
-                        label: "Start";
-                        icon: @image-url("../icons/play.svg");
-                        tone: Theme.success;
-                        enabled: root.hours != "" || root.minutes != "";
-                        clicked => { root.start-custom(); }
-                    }
-                }
+            for minutes in root.lengths: LengthChip {
+                label: root.length-label(minutes);
+                selected: root.length == minutes;
+                clicked => { root.length = minutes; }
             }
+        }
 
-            if root.error != "": Text {
-                text: root.error;
-                color: Theme.danger;
-                font-size: Theme.font-md;
-                wrap: word-wrap;
+        // Full width: the one way to begin
+        if !root.active: Rectangle {
+            height: 34px;
+
+            AccentButton {
+                width: parent.width;
+                label: "Start " + root.length-label(root.length);
+                icon: @image-url("../icons/play.svg");
+                clicked => { root.start(root.length); }
             }
         }
 
