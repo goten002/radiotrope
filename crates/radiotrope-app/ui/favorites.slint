@@ -151,7 +151,12 @@ component FavoriteRow inherits Rectangle {
     property <bool> stats-ready: false;
     // The press on the stats came from a touch screen
     property <bool> stats-touch-press: false;
-    property <length> menu-width: 186px;
+    // The menu is as wide as its longest label needs, bold confirm text
+    // included, so asking to confirm doesn't push the text to the edge:
+    // card padding, item padding, icon and spacing around the label
+    property <length> menu-width: max(186px,
+        max(remove-label.preferred-width, confirm-label.preferred-width)
+            + 2 * 4px + 10px + 15px + 10px + 12px);
 
     public function open-menu(x: length, y: length) {
         root.confirm-remove = false;
@@ -517,6 +522,19 @@ component FavoriteRow inherits Rectangle {
                 }
             }
         }
+    }
+
+    // Measure the menu's widest labels; never shown
+    remove-label := Text {
+        visible: false;
+        text: "Remove from Favorites";
+        font-size: Theme.font-base;
+    }
+    confirm-label := Text {
+        visible: false;
+        text: "Press Again to Remove";
+        font-size: Theme.font-base;
+        font-weight: 700;
     }
 
     menu := PopupWindow {
