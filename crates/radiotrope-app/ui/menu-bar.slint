@@ -596,7 +596,6 @@ export component MenuBar inherits Rectangle {
                     label: "System Theme";
                     icon: @image-url("icons/desktop.svg");
                     hint: !Platform.has-system-theme ? "Not available"
-                        : !Theme.system-known ? "Not reported"
                         : Theme.system-dark ? "Dark" : "Light";
                     enabled: Platform.has-system-theme;
                     checked: Theme.theme-mode == "system";

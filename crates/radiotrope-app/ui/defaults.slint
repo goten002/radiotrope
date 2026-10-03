@@ -11,19 +11,13 @@ export global Theme {
     // The theme picked in the View menu: "system" follows the OS, or
     // "dark" / "light"
     in-out property <string> theme-mode: "system";
-    // What the OS reports, live: the Windows app mode, the Linux desktop's
-    // dark style (freedesktop portal). Not known on the Pi or on desktops
-    // that don't report it.
-    out property <bool> system-reported: Palette.color-scheme != ColorScheme.unknown;
-    // The Linux desktop answered "no preference", which Slint can't tell
-    // from no answer at all (set from Rust). GNOME says this when Dark
-    // Style is off: its light theme, so System is light then.
-    in property <bool> system-no-preference: false;
-    out property <bool> system-known: system-reported || system-no-preference;
+    // Whether the OS is dark, live: the Windows app mode, the Linux
+    // desktop's dark style (freedesktop portal). Anything else is light, as
+    // in GTK and Chromium apps: GNOME with Dark Style off says "no
+    // preference", which Slint can't tell from desktops that say nothing.
     out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
-    // System falls back to dark when the OS doesn't say
     out property <bool> dark-mode: theme-mode == "system"
-        ? !system-known || system-dark
+        ? system-dark
         : theme-mode != "light";
     // Soft accent glow on the header, the controls and dialogs
     in-out property <bool> panel-gradient: true;
