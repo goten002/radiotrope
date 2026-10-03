@@ -394,8 +394,26 @@ impl Theme {
         match self {
             Theme::Dark => true,
             Theme::Light => false,
-            Theme::System => true, // default to dark, matching Slint default
+            // The UI follows the OS live (Theme.dark-mode); dark is its
+            // fallback when the OS doesn't say
+            Theme::System => true,
         }
+    }
+
+    /// The name the UI uses (Theme.theme-mode), as saved in settings.json
+    pub fn name(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+
+    /// The theme for a UI name; `None` for an unknown one
+    pub fn from_name(name: &str) -> Option<Self> {
+        [Theme::System, Theme::Light, Theme::Dark]
+            .into_iter()
+            .find(|theme| theme.name() == name)
     }
 }
 
@@ -594,6 +612,17 @@ mod tests {
         assert_eq!(old.recording_dir, None);
         assert!(!old.record_with_eq);
         assert_eq!(old.recording_format, RecordingFormat::Mp3);
+    }
+
+    #[test]
+    fn test_theme_names_round_trip() {
+        for theme in [Theme::System, Theme::Light, Theme::Dark] {
+            assert_eq!(Theme::from_name(theme.name()), Some(theme));
+            // The UI name is the one settings.json uses
+            let json = serde_json::to_string(&theme).unwrap();
+            assert_eq!(json, format!("\"{}\"", theme.name()));
+        }
+        assert_eq!(Theme::from_name("blue"), None);
     }
 
     #[test]

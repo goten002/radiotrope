@@ -248,9 +248,15 @@ export component App inherits Window {
     in-out property <string> wifi-current-ssid <=> wifi-dialog.current-ssid;
     in-out property <string> wifi-connection-status <=> wifi-dialog.connection-status;
 
-    // Theme proxy — two-way bind to Theme global
-    in-out property <bool> dark-mode <=> Theme.dark-mode;
+    // Theme proxy: the View menu's choice, and the theme it gives
+    in-out property <string> theme-mode <=> Theme.theme-mode;
+    out property <bool> dark-mode: Theme.dark-mode;
     changed dark-mode => { root.logo-changed(); }
+    // The choice or the OS theme changed: Rust matches the Windows title bar
+    callback window-theme-changed();
+    property <bool> system-dark: Theme.system-dark;
+    changed theme-mode => { root.window-theme-changed(); }
+    changed system-dark => { root.window-theme-changed(); }
 
     // Accent color proxy — two-way bind to Theme global
     in-out property <color> accent-color <=> Theme.accent-base;

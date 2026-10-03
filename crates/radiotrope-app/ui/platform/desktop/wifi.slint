@@ -12,6 +12,8 @@ export global Platform {
     // A system clipboard: clicking the song title copies it
     // A system tray icon, and the View menu's tray options
     out property <bool> has-tray: true;
+    // The OS reports its light/dark setting: the View menu's System Theme
+    out property <bool> has-system-theme: true;
     out property <bool> has-clipboard: true;
 }
 

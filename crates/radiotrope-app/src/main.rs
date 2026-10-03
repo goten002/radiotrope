@@ -35,6 +35,7 @@ use radiotrope_app::config::ui::{
 };
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
+use radiotrope_app::data::settings::Theme as ThemeSetting;
 use radiotrope_app::data::types::{FavoriteSort, Station};
 use radiotrope_app::error::ServiceProblem;
 use radiotrope_app::network::browse_logos::BrowseLogos;
@@ -245,7 +246,12 @@ fn main() {
     }
 
     // Apply saved theme and viz mode
-    ui.set_dark_mode(settings.theme.is_dark());
+    // The Pi can't ask an OS for its theme, so System is dark there
+    let theme = match settings.theme {
+        ThemeSetting::System if cfg!(feature = "embedded") => ThemeSetting::Dark,
+        theme => theme,
+    };
+    ui.set_theme_mode(theme.name().into());
     // Modes that no longer exist (the old curve, Waterfall) fall back to Wave
     let viz_mode = match settings.viz_mode.as_str() {
         m @ ("wave" | "spectrum" | "mirror" | "dots" | "vu" | "hbars") => m,
@@ -288,6 +294,21 @@ fn main() {
                     ui.set_custom_frame(custom);
                 }
             });
+            let ui_weak = ui.as_weak();
+            ui.on_window_theme_changed(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    window_frame::set_title_bar_theme(ui.window(), &ui.get_theme_mode());
+                }
+            });
+            // The saved choice, once the window exists
+            if theme != ThemeSetting::System {
+                let ui_weak = ui.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.invoke_window_theme_changed();
+                    }
+                });
+            }
             let ui_weak = ui.as_weak();
             ui.on_show_system_menu(move |x, y, pressed| {
                 ui_weak
@@ -3236,7 +3257,7 @@ struct WindowSettings {
     eq_enabled: bool,
     eq_preset_name: Option<String>,
     accent_color: Option<String>,
-    theme: radiotrope_app::data::settings::Theme,
+    theme: ThemeSetting,
     viz_mode: String,
     viz_palette: String,
     show_station_stats: bool,
@@ -3289,11 +3310,8 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         eq_enabled: s.eq_enabled,
         eq_preset_name: s.eq_preset_name.clone(),
         accent_color: s.accent_color.clone(),
-        theme: if ui.get_dark_mode() {
-            radiotrope_app::data::settings::Theme::Dark
-        } else {
-            radiotrope_app::data::settings::Theme::Light
-        },
+        // The choice, not the colours it gives: an OS switch saves nothing
+        theme: ThemeSetting::from_name(&ui.get_theme_mode()).unwrap_or_default(),
         viz_mode: ui.get_viz_mode().to_string(),
         viz_palette: ui.global::<VizStyle>().get_palette().to_string(),
         show_station_stats: ui.get_show_station_stats(),
