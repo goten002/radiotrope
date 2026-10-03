@@ -133,6 +133,8 @@ export component App inherits Window {
     // Seconds left, and the length it started with in minutes
     in-out property <int> sleep-left-secs;
     in-out property <int> sleep-length;
+    // The length started last time, in minutes: the Sleep Timer opens on it
+    in-out property <int> sleep-last: 30;
     in-out property <bool> sleep-fade <=> sleep-dialog.fade;
 
     // Scheduler
@@ -618,6 +620,7 @@ export component App inherits Window {
             until: root.sleep-until;
             left-secs: root.sleep-left-secs;
             length-minutes: root.sleep-length;
+            last: root.sleep-last;
             start(minutes) => { root.sleep-start(minutes); }
             turn-off() => { root.sleep-off(); }
             fade-toggled(on) => { root.sleep-fade-toggled(on); }

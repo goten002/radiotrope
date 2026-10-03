@@ -143,6 +143,10 @@ pub struct Settings {
     /// The sleep timer lowers the volume over its last minute
     #[serde(default = "default_true")]
     pub sleep_fade: bool,
+    /// The length the sleep timer last started with, in minutes (the
+    /// dialog opens on it)
+    #[serde(default = "default_sleep_minutes")]
+    pub sleep_minutes: u32,
 
     // === Agents (MCP) ===
     /// Agents over the network may use the player
@@ -198,6 +202,10 @@ fn default_viz_palette() -> String {
     "logo".to_string()
 }
 
+fn default_sleep_minutes() -> u32 {
+    30
+}
+
 fn default_true() -> bool {
     true
 }
@@ -234,6 +242,7 @@ impl Default for Settings {
             recording_format: RecordingFormat::Mp3,
             recording_bitrate: None,
             sleep_fade: true,
+            sleep_minutes: default_sleep_minutes(),
             mcp_network: false,
             mcp_auth: McpAuth::None,
             mcp_address: default_mcp_address(),
@@ -521,6 +530,15 @@ mod tests {
 
         let settings: Settings = serde_json::from_str(r#"{"volume": 7.5}"#).unwrap();
         assert_eq!(settings.volume, 1.0);
+    }
+
+    #[test]
+    fn the_sleep_timer_remembers_its_length() {
+        // Files from before this setting open on 30 minutes
+        let settings: Settings = serde_json::from_str("{}").unwrap();
+        assert_eq!(settings.sleep_minutes, 30);
+        let settings: Settings = serde_json::from_str(r#"{"sleep_minutes": 190}"#).unwrap();
+        assert_eq!(settings.sleep_minutes, 190);
     }
 
     #[test]

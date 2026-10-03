@@ -144,8 +144,8 @@ export component Playback inherits Rectangle {
 
                 if root.sleep-left != "": Chip {
                     text: "Timer " + root.sleep-left;
-                    icon: @image-url("icons/book.svg");
-                    tone: Theme.info;
+                    icon: @image-url("icons/moon.svg");
+                    tone: Theme.text-secondary;
                     steady: true;
                     clickable: true;
                     clicked => { root.open-sleep-timer(); }

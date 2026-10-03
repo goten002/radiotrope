@@ -220,6 +220,11 @@ export global Defaults {
     // the gap kept to the window's edges
     out property <length> schedule-list-chrome: 160px;
     out property <length> sleep-timer-width: 520px;
+    // The Sleep Timer's length in the middle, wide enough for "12 h 55 min"
+    out property <length> sleep-readout-width: 190px;
+    // The Sleep Timer steps by this many minutes and goes up to a day
+    out property <int> sleep-step-minutes: 5;
+    out property <int> sleep-max-minutes: 1440;
     out property <length> station-browser-width: 700px;
     out property <length> station-browser-height: 640px;
     out property <length> statistics-width: 540px;
