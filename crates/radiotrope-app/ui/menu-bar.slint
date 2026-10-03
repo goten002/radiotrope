@@ -478,6 +478,9 @@ export component MenuBar inherits Rectangle {
         x: root.menu-start;
         y: 32px;
         width: popup-layout.preferred-width;
+        // Clicks inside don't close the menu: commands and dialogs close it
+        // themselves, ticks stay open to show the change. Esc still closes.
+        close-policy: close-on-click-outside;
 
         PopupCard {
             popup-layout := VerticalLayout {
@@ -509,6 +512,7 @@ export component MenuBar inherits Rectangle {
         x: root.menu-start + open-menu.width;
         y: 32px;
         width: stations-popup-layout.preferred-width;
+        close-policy: close-on-click-outside;
 
         PopupCard {
             stations-popup-layout := VerticalLayout {
@@ -539,6 +543,7 @@ export component MenuBar inherits Rectangle {
         x: root.window-menu-x;
         y: root.window-menu-y;
         width: window-popup-layout.preferred-width;
+        close-policy: close-on-click-outside;
 
         PopupCard {
             window-popup-layout := VerticalLayout {
@@ -565,7 +570,6 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/thumbtack.svg");
                     checked: root.always-on-top;
                     clicked => {
-                        window-popup.close();
                         root.always-on-top = !root.always-on-top;
                     }
                 }
@@ -586,6 +590,7 @@ export component MenuBar inherits Rectangle {
         x: root.menu-start + open-menu.width + stations-menu.width;
         y: 32px;
         width: view-popup-layout.preferred-width;
+        close-policy: close-on-click-outside;
 
         PopupCard {
             view-popup-layout := VerticalLayout {
@@ -601,7 +606,6 @@ export component MenuBar inherits Rectangle {
                     enabled: Platform.has-system-theme;
                     checked: Theme.theme-mode == "system";
                     clicked => {
-                        view-popup.close();
                         Theme.theme-mode = "system";
                     }
                 }
@@ -610,7 +614,6 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/moon.svg");
                     checked: Theme.theme-mode == "dark";
                     clicked => {
-                        view-popup.close();
                         Theme.theme-mode = "dark";
                     }
                 }
@@ -619,7 +622,6 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/sun.svg");
                     checked: Theme.theme-mode == "light";
                     clicked => {
-                        view-popup.close();
                         Theme.theme-mode = "light";
                     }
                 }
@@ -649,7 +651,6 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/clock.svg");
                     checked: root.show-station-stats;
                     clicked => {
-                        view-popup.close();
                         root.show-station-stats = !root.show-station-stats;
                     }
                 }
@@ -659,7 +660,6 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/wave-square.svg");
                     checked: root.show-visualizer;
                     clicked => {
-                        view-popup.close();
                         root.show-visualizer = !root.show-visualizer;
                     }
                 }
@@ -670,7 +670,6 @@ export component MenuBar inherits Rectangle {
                     enabled: root.show-visualizer;
                     checked: VizStyle.palette == "logo";
                     clicked => {
-                        view-popup.close();
                         VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
                     }
                 }
@@ -681,7 +680,6 @@ export component MenuBar inherits Rectangle {
                     checked: root.tray-icon;
                     clicked => {
                         root.tray-icon = !root.tray-icon;
-                        view-popup.close();
                     }
                 }
                 // Greyed with no tray to hide in; they keep their ticks
@@ -692,7 +690,6 @@ export component MenuBar inherits Rectangle {
                     checked: root.close-to-tray;
                     clicked => {
                         root.close-to-tray = !root.close-to-tray;
-                        view-popup.close();
                     }
                 }
                 if Platform.has-tray: CheckMenuItem {
@@ -702,7 +699,6 @@ export component MenuBar inherits Rectangle {
                     checked: root.hide-on-minimize;
                     clicked => {
                         root.hide-on-minimize = !root.hide-on-minimize;
-                        view-popup.close();
                     }
                 }
                 if Platform.has-tray: CheckMenuItem {
@@ -712,7 +708,6 @@ export component MenuBar inherits Rectangle {
                     checked: root.start-in-tray;
                     clicked => {
                         root.start-in-tray = !root.start-in-tray;
-                        view-popup.close();
                     }
                 }
                 if Platform.has-tray && root.tray-icon && !root.tray-available: MenuNote {
@@ -726,6 +721,7 @@ export component MenuBar inherits Rectangle {
         x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width + tools-menu.width;
         y: 32px;
         width: help-popup-layout.preferred-width;
+        close-policy: close-on-click-outside;
 
         PopupCard {
             help-popup-layout := VerticalLayout {
@@ -747,6 +743,7 @@ export component MenuBar inherits Rectangle {
         x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width;
         y: 32px;
         width: tools-popup-layout.preferred-width;
+        close-policy: close-on-click-outside;
 
         PopupCard {
             tools-popup-layout := VerticalLayout {
