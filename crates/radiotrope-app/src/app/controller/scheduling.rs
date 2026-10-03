@@ -402,8 +402,9 @@ impl AppController {
         } else if !record && fallback && !heard && waited >= BEEP_AFTER_SECS {
             // The alarm must wake someone
             self.start_alarm_tone(now);
-        } else if playback == PlaybackState::Stopped && !resolving {
-            // The station failed (the engine already tried for a while)
+        } else if playback == PlaybackState::Stopped && !resolving && self.resume.is_none() {
+            // The station failed (the engine already tried for a while), and
+            // no recording waits for it to start again
             match retry_at {
                 None => {
                     if let Some(active) = self.active.as_mut() {
