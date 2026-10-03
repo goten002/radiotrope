@@ -360,6 +360,19 @@ fn refresh(ui: &App) {
     if !window.is_visible() && !has_tray(ui) && !QUITTING.get() {
         show_window(ui);
     }
+    // Minimized by the window manager or the taskbar (Windows and X11;
+    // on Wayland only our own title bar button can tell)
+    if window.is_visible() && hides_on_minimize(ui) && crate::window_frame::is_minimized(window) {
+        crate::window_frame::hide_minimized(window);
+    }
+    let defaults = ui.global::<Defaults>();
+    crate::window_frame::keep_min_size(
+        window,
+        slint::LogicalSize::new(
+            defaults.get_window_min_width(),
+            defaults.get_window_min_height(),
+        ),
+    );
 }
 
 fn player(ui: &App) -> Player {
@@ -439,6 +452,11 @@ pub fn has_tray(ui: &App) -> bool {
 /// Whether closing the window should only hide it
 pub fn hides_on_close(ui: &App) -> bool {
     has_tray(ui) && ui.get_close_to_tray() && !QUITTING.get()
+}
+
+/// Whether minimizing the window should hide it to the tray
+pub fn hides_on_minimize(ui: &App) -> bool {
+    has_tray(ui) && ui.get_hide_on_minimize() && !QUITTING.get()
 }
 
 /// End the app (Quit in the tray and the Open menu, Ctrl+Q, or a close

@@ -262,6 +262,7 @@ fn main() {
         ui.set_tray_icon(settings.tray_icon);
         ui.set_close_to_tray(settings.close_to_tray);
         ui.set_start_in_tray(settings.start_in_tray);
+        ui.set_hide_on_minimize(settings.hide_on_minimize);
     }
     // The Pi build is full screen with no frame to replace
     if cfg!(not(feature = "embedded")) {
@@ -271,7 +272,13 @@ fn main() {
             let ui_weak = ui.as_weak();
             ui.on_minimize_window(move || {
                 if let Some(ui) = ui_weak.upgrade() {
-                    window_frame::minimize(ui.window());
+                    // Wayland never says a window was minimized, so our
+                    // own button hides to the tray itself
+                    if tray::hides_on_minimize(&ui) {
+                        let _ = ui.hide();
+                    } else {
+                        window_frame::minimize(ui.window());
+                    }
                 }
             });
             let ui_weak = ui.as_weak();
@@ -1759,7 +1766,20 @@ fn main() {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| ui.set_tray_available(available));
         });
         tray::start(&ui);
-        settings.start_in_tray && settings.tray_icon && available
+        let start_hidden = settings.start_in_tray && settings.tray_icon && available;
+        if start_hidden {
+            let ui_weak = ui.as_weak();
+            let _ = slint::spawn_local(async move {
+                use slint::winit_030::WinitWindowAccessor;
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
+                if ui.window().winit_window().await.is_ok() {
+                    window_frame::drop_hidden_window(ui.window());
+                }
+            });
+        }
+        start_hidden
     };
     #[cfg(not(feature = "desktop"))]
     let start_hidden = false;
@@ -3224,8 +3244,8 @@ struct WindowSettings {
     panel_gradient: bool,
     /// Custom title bar and always on top (not on the Pi)
     frame: Option<(bool, bool)>,
-    /// Tray icon, close to tray, start in tray (desktop)
-    tray: Option<(bool, bool, bool)>,
+    /// Tray icon, close to tray, start in tray, minimize to tray (desktop)
+    tray: Option<(bool, bool, bool, bool)>,
     last_station: Option<Station>,
     window_size: Option<(u32, u32)>,
 }
@@ -3286,6 +3306,7 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
                 ui.get_tray_icon(),
                 ui.get_close_to_tray(),
                 ui.get_start_in_tray(),
+                ui.get_hide_on_minimize(),
             )
         }),
         last_station,
@@ -3314,10 +3335,11 @@ fn write_settings(w: &WindowSettings) {
         settings.custom_title_bar = custom_title_bar;
         settings.always_on_top = always_on_top;
     }
-    if let Some((tray_icon, close_to_tray, start_in_tray)) = w.tray {
+    if let Some((tray_icon, close_to_tray, start_in_tray, hide_on_minimize)) = w.tray {
         settings.tray_icon = tray_icon;
         settings.close_to_tray = close_to_tray;
         settings.start_in_tray = start_in_tray;
+        settings.hide_on_minimize = hide_on_minimize;
     }
     if let Some(station) = &w.last_station {
         settings.last_station = Some(station.clone());

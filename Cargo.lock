@@ -5241,6 +5241,7 @@ dependencies = [
  "tray-icon",
  "widestring",
  "winresource",
+ "x11rb",
  "zbus",
 ]
 

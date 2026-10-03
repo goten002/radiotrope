@@ -316,6 +316,7 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> tray-icon;
     in-out property <bool> close-to-tray;
     in-out property <bool> start-in-tray;
+    in-out property <bool> hide-on-minimize;
     in property <bool> tray-available: true;
     callback quit-app();
 
@@ -667,6 +668,16 @@ export component MenuBar inherits Rectangle {
                     checked: root.close-to-tray;
                     clicked => {
                         root.close-to-tray = !root.close-to-tray;
+                        view-popup.close();
+                    }
+                }
+                if Platform.has-tray: CheckMenuItem {
+                    label: "Minimize to Tray";
+                    icon: @image-url("icons/window-minimize.svg");
+                    enabled: root.tray-icon && root.tray-available;
+                    checked: root.hide-on-minimize;
+                    clicked => {
+                        root.hide-on-minimize = !root.hide-on-minimize;
                         view-popup.close();
                     }
                 }

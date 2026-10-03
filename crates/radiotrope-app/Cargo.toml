@@ -64,13 +64,15 @@ signal-hook = "0.3"
 # runs on async-io, which zbus's tokio would take over, so each build turns
 # on its own runtime in [features].
 zbus = { version = "5", default-features = false, optional = true }
+# Hiding a minimized X11 window (already in the tree through winit)
+x11rb = { version = "0.13", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1"
 
 [features]
 default = ["desktop"]
-desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:zbus", "zbus/blocking-api", "zbus/async-io"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:x11rb", "dep:zbus", "zbus/blocking-api", "zbus/async-io"]
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "zbus/tokio"]
 
 [build-dependencies]
