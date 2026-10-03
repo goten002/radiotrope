@@ -1290,10 +1290,21 @@ fn main() {
     // Spawn controller on its own thread
     let ctrl_state = shared_state.clone();
     let ctrl_tx = cmd_tx.clone();
+    // A scheduled recording's cover art, as a recording started here gets
+    let cover_logos = logo_service.clone();
+    let cover_source: app::controller::CoverSource = Box::new(move |station| {
+        station_cover_png(&cover_logos, &Station::new(&station.name, &station.url))
+    });
+    let schedule_path = radiotrope_app::data::data_path(radiotrope_app::data::schedule::FILE_NAME);
     let controller = std::thread::Builder::new()
         .name("controller".into())
         .spawn(move || {
-            let mut ctrl = AppController::new(cmd_rx, ctrl_tx, ctrl_state, analysis_tx, stats_tx);
+            let mut ctrl = AppController::new(cmd_rx, ctrl_tx, ctrl_state, analysis_tx, stats_tx)
+                .with_cover_source(cover_source);
+            match schedule_path {
+                Ok(path) => ctrl = ctrl.with_schedule(path),
+                Err(e) => eprintln!("Schedule unavailable: {e}"),
+            }
             ctrl.run();
         })
         .expect("Failed to spawn controller thread");

@@ -21,6 +21,16 @@ use radiotrope_app::data::recordings;
 
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
+mod scheduling;
+
+pub use scheduling::CoverSource;
+
+/// How often the schedule's clock is read while something is scheduled
+const SCHEDULE_POLL: Duration = Duration::from_secs(1);
+
+/// How often a fade steps the volume
+const FADE_STEP: Duration = Duration::from_millis(100);
+
 /// Timeout for stream resolution — if the server doesn't respond within this
 /// duration the resolve attempt is abandoned. The engine ends a resolve by
 /// its own deadline with the reason; this is a little longer, as a backstop.
@@ -62,6 +72,18 @@ pub struct AppController {
     /// While the output device hangs: the status it covers, shown again
     /// once the device answers
     output_hang: Option<(std::borrow::Cow<'static, str>, bool)>,
+    /// The scheduled entries
+    schedule: Vec<radiotrope_app::data::schedule::Entry>,
+    /// Where the entries are saved; `None` keeps them in memory (tests)
+    schedule_path: Option<std::path::PathBuf>,
+    /// The entry the schedule started, while it plays
+    active: Option<scheduling::ActiveEntry>,
+    sleep: Option<scheduling::SleepTimer>,
+    fade_in: Option<scheduling::FadeIn>,
+    /// Gives a scheduled recording its cover art
+    cover_source: Option<CoverSource>,
+    /// The volume last given to the engine
+    engine_volume: Option<f32>,
 }
 
 impl AppController {
@@ -87,6 +109,13 @@ impl AppController {
             notice_seq: 0,
             stream_failed: false,
             output_hang: None,
+            schedule: Vec::new(),
+            schedule_path: None,
+            active: None,
+            sleep: None,
+            fade_in: None,
+            cover_source: None,
+            engine_volume: None,
         }
     }
 
@@ -124,8 +153,12 @@ impl AppController {
             None => never(),
         };
         let recording_tick = tick(RECORDING_POLL);
+        let schedule_tick = tick(SCHEDULE_POLL);
+        let fade_tick = tick(FADE_STEP);
         let no_tick = never();
         let mut recording = false;
+        let mut scheduled = self.schedule_armed();
+        let mut fading = false;
         loop {
             let metadata = self.metadata_rx.clone().unwrap_or_else(never);
             select! {
@@ -148,7 +181,17 @@ impl AppController {
                     Err(_) => self.metadata_rx = None,
                 },
                 recv(if recording { &recording_tick } else { &no_tick }) -> _ => {}
+                recv(if scheduled { &schedule_tick } else { &no_tick }) -> _ => {}
+                recv(if fading { &fade_tick } else { &no_tick }) -> _ => {}
             }
+            if scheduled || self.schedule_armed() {
+                let now = chrono::Local::now();
+                self.run_schedule(now);
+                fading = self.fading(&now);
+            } else {
+                fading = false;
+            }
+            scheduled = self.schedule_armed();
             recording = self.poll_recording();
             self.keep_hang_showing();
         }
@@ -192,6 +235,8 @@ impl AppController {
                 country,
                 taken,
             } => {
+                // The schedule's entry is over: the user picked a station
+                self.release_schedule();
                 let seq = self.start_stream(&url, name, logo_url, country);
                 if let Some(taken) = taken {
                     // An agent that stopped waiting has dropped its end
@@ -199,21 +244,16 @@ impl AppController {
                 }
             }
             AppCommand::Stop => {
-                self.stop_recording();
-                self.cancel_stream();
-                if let Some(engine) = &self.engine {
-                    engine.stop();
-                }
-                self.metadata_rx = None;
-                self.stream_failed = false;
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                // A station still resolving doesn't start after the stop
-                state.is_resolving = false;
-                state.playback = PlaybackState::Stopped;
-                state.status_text = "Stopped".into();
-                state.is_error = false;
-                state.title.clear();
-                state.artist.clear();
+                self.stopped_by_user();
+                self.stop_playback();
+            }
+            AppCommand::SetSleepTimer { minutes, fade } => self.set_sleep_timer(minutes, fade),
+            AppCommand::SaveScheduleEntry { entry, reply } => {
+                self.save_schedule_entry(entry, reply)
+            }
+            AppCommand::RemoveScheduleEntry { id, reply } => self.remove_schedule_entry(id, reply),
+            AppCommand::SetScheduleEntryEnabled { id, enabled, reply } => {
+                self.set_schedule_entry_enabled(id, enabled, reply)
             }
             AppCommand::SetVolume(vol) => {
                 // Keep NaN out of the shared state and the saved settings
@@ -221,37 +261,34 @@ impl AppController {
                     return false;
                 }
                 let vol = vol.clamp(0.0, 1.0);
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.volume = vol;
-                // Auto-unmute when volume is changed to a non-zero value
-                if state.is_muted && vol > 0.0 {
-                    state.is_muted = false;
+                {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.volume = vol;
+                    // Auto-unmute when volume is changed to a non-zero value
+                    if state.is_muted && vol > 0.0 {
+                        state.is_muted = false;
+                    }
                 }
-                // When muted, engine stays at 0; otherwise apply the new volume
-                let engine_vol = if state.is_muted { 0.0 } else { vol };
-                drop(state);
-                if let Some(engine) = &self.engine {
-                    engine.set_volume(engine_vol);
-                }
+                self.volume_set_by_user();
+                self.apply_volume(&chrono::Local::now());
             }
             AppCommand::Mute => {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                self.volume_before_mute = state.volume;
-                state.is_muted = true;
-                drop(state);
-                if let Some(engine) = &self.engine {
-                    engine.set_volume(0.0);
+                {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    self.volume_before_mute = state.volume;
+                    state.is_muted = true;
                 }
+                self.volume_set_by_user();
+                self.apply_volume(&chrono::Local::now());
             }
             AppCommand::Unmute => {
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.is_muted = false;
-                state.volume = self.volume_before_mute;
-                let vol = self.volume_before_mute;
-                drop(state);
-                if let Some(engine) = &self.engine {
-                    engine.set_volume(vol);
+                {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.is_muted = false;
+                    state.volume = self.volume_before_mute;
                 }
+                self.volume_set_by_user();
+                self.apply_volume(&chrono::Local::now());
             }
             AppCommand::SetEqBand { band, gain_db } => {
                 if let Some(engine) = &self.engine {
@@ -312,6 +349,10 @@ impl AppController {
                 self.start_recording(&folder, format, bitrate, with_eq, cover);
             }
             AppCommand::StopRecording => {
+                // A scheduled recording stopped by hand is over
+                if self.active.is_some() {
+                    self.release_schedule();
+                }
                 self.stop_recording();
             }
             AppCommand::InternalStreamResolved { generation, result } => {
@@ -319,6 +360,25 @@ impl AppController {
             }
         }
         false
+    }
+
+    /// Stop the station, and the recording of it
+    fn stop_playback(&mut self) {
+        self.stop_recording();
+        self.cancel_stream();
+        if let Some(engine) = &self.engine {
+            engine.stop();
+        }
+        self.metadata_rx = None;
+        self.stream_failed = false;
+        let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        // A station still resolving doesn't start after the stop
+        state.is_resolving = false;
+        state.playback = PlaybackState::Stopped;
+        state.status_text = "Stopped".into();
+        state.is_error = false;
+        state.title.clear();
+        state.artist.clear();
     }
 
     /// Resolve the stream on a worker thread, then send the result back.
@@ -538,6 +598,10 @@ impl AppController {
                 state.status_text = "Playing".into();
                 state.is_error = false;
                 self.stream_failed = false;
+                drop(state);
+                // An alarm's fade starts once it is heard
+                self.entry_station_plays();
+                self.apply_volume(&chrono::Local::now());
             }
             // AAC and AAC+, or a chained Ogg stream's next codec
             AudioEvent::CodecChanged(codec_info) => {

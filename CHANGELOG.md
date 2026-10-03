@@ -11,7 +11,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 
 ### Added
 - `radiotrope-probe`, a station checker for people and schedulers: it listens to a station for a few seconds and reports whether it is on air, its codec and format, its sound level and what is playing, as text or JSON, with monitoring-style exit codes.
-- AI agents over MCP: one shared player for every local agent, 14 tools (play, search, favorites, volume, recording, status), an Agents dialog with setup lines for Claude Code, Claude Desktop, Cursor and Codex, and optional network access with a token.
+- AI agents over MCP: one shared player for every local agent, 19 tools (play, search, favorites, volume, recording, sleep timer, schedule, status), an Agents dialog with setup lines for Claude Code, Claude Desktop, Cursor and Codex, and optional network access with a token.
 - Recording of the playing station to MP3, Opus or WAV, with or without the equalizer.
 - Song titles from ID3v1/ID3v2 tags in MP3, AAC and HLS streams when ICY gives none.
 - Equalizer presets in groups, with an automatic preamp and new 40 Hz and 12 kHz shelves.

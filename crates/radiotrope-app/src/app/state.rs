@@ -7,8 +7,13 @@ use std::borrow::Cow;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use chrono::{DateTime, Local};
 use radiotrope::audio::{PlaybackState, RecordingFormat};
+use radiotrope_app::data::schedule::Entry;
 use radiotrope_app::data::settings::Settings;
+
+/// Told whether a schedule change was made, or why not
+pub type ScheduleReply<T> = Option<tokio::sync::oneshot::Sender<Result<T, String>>>;
 
 /// Commands sent by any frontend (GUI, MCP, tray)
 pub enum AppCommand {
@@ -56,6 +61,28 @@ pub enum AppCommand {
         cover: Option<Vec<u8>>,
     },
     StopRecording,
+
+    // Schedule
+    /// Stop playback this many minutes from now; `None` turns it off
+    SetSleepTimer {
+        minutes: Option<u32>,
+        /// Lower the volume over the last minute
+        fade: bool,
+    },
+    /// Add an entry (id 0) or replace the one with its id. Told the id.
+    SaveScheduleEntry {
+        entry: Entry,
+        reply: ScheduleReply<u64>,
+    },
+    RemoveScheduleEntry {
+        id: u64,
+        reply: ScheduleReply<()>,
+    },
+    SetScheduleEntryEnabled {
+        id: u64,
+        enabled: bool,
+        reply: ScheduleReply<()>,
+    },
 
     // Internal: stream resolved on worker thread (not sent by frontends)
     InternalStreamResolved {
@@ -135,11 +162,51 @@ pub struct AppSnapshot {
     // Recording
     /// Progress of the running recording, `None` when not recording
     pub recording: Option<RecordingProgress>,
-    /// Last "saved" or error message about a recording
+    /// Last message for the window to show briefly: a recording saved or
+    /// failed, or a scheduled entry missed or skipped
     pub recording_notice: Option<RecordingNotice>,
     /// The recording settings as the window has them, for an agent's
     /// start_recording
     pub recording_setup: RecordingSetup,
+
+    // Schedule
+    /// The scheduled entries, as saved
+    pub schedule: Vec<Entry>,
+    /// Counts the changes to `schedule`, so the window redraws its list
+    /// only when it changed
+    pub schedule_seq: u64,
+    /// The running sleep timer
+    pub sleep: Option<SleepTimerInfo>,
+    /// The entry playing or recording now
+    pub scheduled: Option<ScheduledNow>,
+    /// The next entry to come round
+    pub next_run: Option<NextRun>,
+}
+
+/// The running sleep timer
+#[derive(Clone, Debug, PartialEq)]
+pub struct SleepTimerInfo {
+    pub until: DateTime<Local>,
+    pub fade: bool,
+}
+
+/// The entry playing or recording now
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScheduledNow {
+    pub id: u64,
+    /// "Play Jazz FM"
+    pub title: String,
+    pub until: Option<DateTime<Local>>,
+    pub record: bool,
+}
+
+/// The next entry to come round
+#[derive(Clone, Debug, PartialEq)]
+pub struct NextRun {
+    pub id: u64,
+    pub at: DateTime<Local>,
+    /// "Play Jazz FM"
+    pub title: String,
 }
 
 /// The choices of the Recording Settings dialog. Kept in memory, so an
@@ -215,6 +282,11 @@ impl Default for AppSnapshot {
             recording: None,
             recording_notice: None,
             recording_setup: RecordingSetup::default(),
+            schedule: Vec::new(),
+            schedule_seq: 0,
+            sleep: None,
+            scheduled: None,
+            next_run: None,
         }
     }
 }
