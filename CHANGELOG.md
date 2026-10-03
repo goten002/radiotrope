@@ -21,7 +21,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 - A soft fog behind dark or light transparent logos that would otherwise vanish on the tile.
 - Keyboard use and screen reader names for the controls, and touch support for the bubbles.
 - Windows: an exe icon and version info, no console window in release, and a log file.
-- A system tray icon on Windows and Linux: show or hide the window, Play/Stop, Mute, favorites, recording and Quit from its menu, middle click to play or stop. View has Show Tray Icon, Close to Tray and Start Hidden in Tray; Quit (Ctrl+Q) is in the Open menu.
+- A system tray icon on Windows and Linux: show or hide the window, Play/Stop, Mute, favorites, recording and Quit from its menu, middle click to play or stop. View has Show Tray Icon, Close to Tray, Minimize to Tray and Start Hidden in Tray; Quit (Ctrl+Q) is in the Open menu.
 
 ### Changed
 - Licence: GPL-3.0-or-later (was MIT).

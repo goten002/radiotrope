@@ -65,6 +65,11 @@ pub struct Settings {
     #[serde(default)]
     pub start_in_tray: bool,
 
+    /// Minimizing the window hides it to the tray. Not `minimize_to_tray`,
+    /// which old files hold as true.
+    #[serde(default)]
+    pub hide_on_minimize: bool,
+
     // === Visualization ===
     /// Visualization mode (wave, spectrum, mirror, dots, vu, hbars)
     #[serde(default = "default_viz_mode")]
@@ -205,6 +210,7 @@ impl Default for Settings {
             tray_icon: true,
             close_to_tray: false,
             start_in_tray: false,
+            hide_on_minimize: false,
             viz_mode: default_viz_mode(),
             viz_palette: default_viz_palette(),
             show_visualizer: true,
@@ -478,6 +484,7 @@ mod tests {
         assert!(settings.tray_icon);
         assert!(!settings.close_to_tray);
         assert!(!settings.start_in_tray);
+        assert!(!settings.hide_on_minimize);
         assert_eq!(settings.theme, Theme::System);
     }
 
@@ -613,6 +620,7 @@ mod tests {
             settings.tray_icon = false;
             settings.close_to_tray = true;
             settings.start_in_tray = true;
+            settings.hide_on_minimize = true;
             settings.accent_color = Some("#3584e4".to_string());
             settings.recording_dir = Some(PathBuf::from("/media/usb/radio"));
             settings.record_with_eq = true;
@@ -637,6 +645,7 @@ mod tests {
             assert!(!s.tray_icon);
             assert!(s.close_to_tray);
             assert!(s.start_in_tray);
+            assert!(s.hide_on_minimize);
             assert_eq!(s.accent_color, Some("#3584e4".to_string()));
             assert_eq!(s.recording_dir, Some(PathBuf::from("/media/usb/radio")));
             assert!(s.record_with_eq);
@@ -670,6 +679,7 @@ mod tests {
         assert!(settings.tray_icon);
         assert!(!settings.close_to_tray);
         assert!(!settings.start_in_tray);
+        assert!(!settings.hide_on_minimize);
         assert!(settings.show_visualizer);
         assert!(settings.show_station_stats);
         assert!(settings.panel_gradient);
@@ -870,6 +880,7 @@ mod tests {
         assert!(old.tray_icon);
         assert!(!old.close_to_tray);
         assert!(!old.start_in_tray);
+        assert!(!old.hide_on_minimize);
         let saved = serde_json::to_string(&old).unwrap();
         assert!(!saved.contains("minimize_to_tray"));
     }
