@@ -5,8 +5,21 @@
 // Components use these instead of literal values, so both themes (and the
 // accent color) apply everywhere.
 
+import { Palette } from "std-widgets.slint";
+
 export global Theme {
-    in-out property <bool> dark-mode: true;
+    // The theme picked in the View menu: "system" follows the OS, or
+    // "dark" / "light"
+    in-out property <string> theme-mode: "system";
+    // What the OS reports, live: the Windows app mode, the Linux desktop's
+    // dark style (freedesktop portal). Not known on the Pi or on desktops
+    // that don't report it.
+    out property <bool> system-known: Palette.color-scheme != ColorScheme.unknown;
+    out property <bool> system-dark: Palette.color-scheme == ColorScheme.dark;
+    // System falls back to dark when the OS doesn't say
+    out property <bool> dark-mode: theme-mode == "system"
+        ? !system-known || system-dark
+        : theme-mode != "light";
     // Soft accent glow on the header, the controls and dialogs
     in-out property <bool> panel-gradient: true;
 
