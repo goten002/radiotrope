@@ -338,7 +338,7 @@ fn draw_header(frame: &mut Frame, view: &View, player: &Player, area: Rect, wide
             x: area.right().saturating_sub(COLUMNS as u16 + 1),
             y: area.y,
             width: COLUMNS as u16,
-            height: 2.min(area.height),
+            height: area.height,
         };
         draw_spectrum(frame.buffer_mut(), view, viz);
     }
@@ -346,9 +346,13 @@ fn draw_header(frame: &mut Frame, view: &View, player: &Player, area: Rect, wide
 
 /// `MP3 · 128 kbps · 44.1 kHz · Stereo`, or what is known of it
 fn format_line(player: &Player) -> String {
+    let hls = player.stream_type == Some(StreamType::Hls);
     let mut parts = Vec::new();
-    if let Some(codec) = &player.codec {
-        parts.push(codec.codec_name.clone());
+    match &player.codec {
+        Some(codec) if hls => parts.push(format!("{} (HLS)", codec.codec_name)),
+        Some(codec) => parts.push(codec.codec_name.clone()),
+        None if hls => parts.push("HLS".to_string()),
+        None => {}
     }
     if let Some(kbps) = player.bitrate.filter(|k| *k > 0) {
         parts.push(format!("{kbps} kbps"));
@@ -367,9 +371,6 @@ fn format_line(player: &Player) -> String {
             2 => "Stereo".to_string(),
             n => format!("{n} channels"),
         });
-    }
-    if player.stream_type == Some(StreamType::Hls) {
-        parts.push("HLS".to_string());
     }
     parts.join(" · ")
 }
@@ -411,7 +412,7 @@ fn status_line(player: &Player, p: Palette, width: usize) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The spectrum, two rows of eighth blocks, from the accent at the bass
+/// The spectrum, as tall as the header, in eighth blocks, from the accent at the bass
 /// to its light tint at the treble
 fn draw_spectrum(buf: &mut Buffer, view: &View, area: Rect) {
     const EIGHTHS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
