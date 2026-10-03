@@ -466,9 +466,11 @@ impl SymphoniaSource {
                     // Clean EOF — stream ended naturally, no error stored
                     return false;
                 }
-                Err(Error::DecodeError(msg)) => {
-                    // Garbage in the stream: skip it, unless nothing but
-                    // garbage comes
+                // Garbage in the stream: skip it, unless nothing but garbage
+                // comes. A false sync word can also parse as a header the
+                // demuxer doesn't support (an ADTS header for several AAC
+                // frames): that is garbage too, not the station's format.
+                Err(Error::DecodeError(msg)) | Err(Error::Unsupported(msg)) => {
                     self.decoder_stats.record_error();
                     self.demux_errors += 1;
                     if self.demux_errors >= MAX_DEMUX_ERRORS {
@@ -1543,6 +1545,27 @@ mod tests {
             SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac"))
                 .unwrap()
                 .codec_info()
+        }
+
+        #[test]
+        fn a_reconnect_into_the_middle_of_a_frame_keeps_playing() {
+            let stream = adts(AudioObjectType::Mpeg4LowComplexity, 128_000, 44_100, true);
+            let whole = SymphoniaSource::new_with_hint(Cursor::new(stream.clone()), Some("aac"))
+                .unwrap()
+                .count();
+            // The connection dropped, and the reconnect lands in the middle
+            // of a frame, on bytes that look like an ADTS header for two AAC
+            // frames (which the demuxer doesn't read)
+            let cut = from_frame(&stream, 10).len();
+            let mut spliced = stream[..stream.len() - cut].to_vec();
+            spliced.extend_from_slice(&[0xFF, 0xF1, 0x50, 0x80, 0x10, 0x00, 0x01, 0x23, 0x45]);
+            spliced.extend_from_slice(&from_frame(&stream, 20));
+
+            let source = SymphoniaSource::new_with_hint(Cursor::new(spliced), Some("aac")).unwrap();
+            let slot = source.error_slot();
+            let played = source.count();
+            assert_eq!(*slot.lock().unwrap(), None, "the stream ended on an error");
+            assert!(played > whole / 2, "played {played} of {whole}");
         }
 
         #[test]

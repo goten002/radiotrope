@@ -204,6 +204,11 @@ struct BufferState {
     data_available: Condvar,
     /// Signalled when compaction makes room in a full buffer
     space_available: Condvar,
+    /// The network reader, once the producer has read all it will: kept
+    /// until the buffer goes. The ICY and HLS readers stop the stream as
+    /// they are dropped, and that would end decoding before the rest of the
+    /// buffer, and the reason the stream ended, are read.
+    finished_reader: Mutex<Option<Box<dyn ReadSeek>>>,
 }
 
 /// Longest the producer waits for room in a full buffer without being
@@ -252,6 +257,7 @@ impl StreamBuffer {
             }),
             data_available: Condvar::new(),
             space_available: Condvar::new(),
+            finished_reader: Mutex::new(None),
         });
 
         // Wake a consumer waiting for data, and a producer waiting for
@@ -356,6 +362,14 @@ impl StreamBuffer {
                     }
                     break;
                 }
+            }
+        }
+
+        // The stream ended or failed by itself: its reader stays until the
+        // consumer has read the end
+        if !cancel.is_cancelled() {
+            if let Ok(mut finished) = state.finished_reader.lock() {
+                *finished = Some(reader);
             }
         }
     }
@@ -1202,6 +1216,54 @@ mod tests {
         assert!(result.iter().all(|&b| b == 42));
 
         handle.join().unwrap();
+    }
+
+    /// Fails at once, and stops `cancel` when dropped, as the ICY and HLS
+    /// readers do
+    struct FailingNetworkReader {
+        cancel: StreamCancel,
+    }
+
+    impl Read for FailingNetworkReader {
+        fn read(&mut self, _buf: &mut [u8]) -> io::Result<usize> {
+            Err(io::Error::other("No audio for 2 min: connection lost"))
+        }
+    }
+
+    impl Seek for FailingNetworkReader {
+        fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+            Err(io::Error::from(io::ErrorKind::Unsupported))
+        }
+    }
+
+    impl Drop for FailingNetworkReader {
+        fn drop(&mut self) {
+            self.cancel.cancel();
+        }
+    }
+
+    #[test]
+    fn a_failed_reader_stops_the_stream_only_once_its_reason_is_read() {
+        let cancel = StreamCancel::new();
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let failing = FailingNetworkReader {
+            cancel: cancel.clone(),
+        };
+        let (mut reader, handle) =
+            StreamBuffer::with_cancel(Box::new(failing), status, probing, cancel.clone());
+        handle.join().unwrap();
+        // The decoder reading the buffer stops on a cancel: it must hear why
+        // the station ended first
+        assert!(!cancel.is_cancelled(), "stopped before the reason was read");
+
+        let err = reader
+            .read(&mut [0u8; 16])
+            .expect_err("the reason, not an end");
+        assert!(err.to_string().contains("No audio for 2 min"), "{err}");
+        // Done with the stream: its reader goes, and stops it
+        drop(reader);
+        assert!(cancel.is_cancelled());
     }
 
     // --- Compaction ---

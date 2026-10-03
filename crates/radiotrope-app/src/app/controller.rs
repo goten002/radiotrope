@@ -22,6 +22,7 @@ use radiotrope_app::data::recordings;
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
 mod alarm_tone;
+mod resume;
 mod scheduling;
 
 pub use scheduling::{clash_message, CoverSource};
@@ -85,6 +86,9 @@ pub struct AppController {
     cover_source: Option<CoverSource>,
     /// The volume last given to the engine
     engine_volume: Option<f32>,
+    /// A recording kept open while its station, which failed, is started
+    /// again
+    resume: Option<resume::Resume>,
 }
 
 impl AppController {
@@ -117,6 +121,7 @@ impl AppController {
             fade_in: None,
             cover_source: None,
             engine_volume: None,
+            resume: None,
         }
     }
 
@@ -194,6 +199,9 @@ impl AppController {
             }
             scheduled = self.schedule_armed();
             recording = self.poll_recording();
+            if recording {
+                self.retry_resume();
+            }
             self.keep_hang_showing();
         }
 
@@ -389,11 +397,8 @@ impl AppController {
         }
     }
 
-    /// Resolve the stream on a worker thread, then send the result back.
+    /// Play a station, ending the recording of the one before.
     /// Returns the station's `play_seq`.
-    ///
-    /// Each call increments `resolve_generation`; stale results from earlier
-    /// calls are discarded in `handle_stream_resolved`.
     fn start_stream(
         &mut self,
         url: &str,
@@ -401,9 +406,28 @@ impl AppController {
         logo_url: Option<String>,
         country: Option<String>,
     ) -> u64 {
+        // Playing the station a recording waits for keeps the recording
+        if self.resumes(url) {
+            return self.resume_station_now();
+        }
         // Switching station ends the recording of the old one
         self.stop_recording();
+        self.open_stream(url, name, logo_url, country)
+    }
 
+    /// Resolve the stream on a worker thread, then send the result back.
+    /// Returns the station's `play_seq`. A running recording carries on
+    /// with the new stream's audio.
+    ///
+    /// Each call increments `resolve_generation`; stale results from earlier
+    /// calls are discarded in `handle_stream_resolved`.
+    fn open_stream(
+        &mut self,
+        url: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    ) -> u64 {
         // Stop any current playback first, and any station still resolving
         self.cancel_stream();
         if let Some(engine) = &self.engine {
@@ -532,15 +556,19 @@ impl AppController {
             }
             Err(e) => {
                 eprintln!("Stream resolution failed: {e}");
-                let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.playback = PlaybackState::Stopped;
-                // The station stays the current one, showing its error: the
-                // window shows the station it has, so clearing it left the
-                // error on the one played before (a favorite, say)
-                state.last_error = Some(e.clone());
-                state.is_resolving = false;
-                state.status_text = format!("Error: {e}").into();
-                state.is_error = true;
+                {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.playback = PlaybackState::Stopped;
+                    // The station stays the current one, showing its error: the
+                    // window shows the station it has, so clearing it left the
+                    // error on the one played before (a favorite, say)
+                    state.last_error = Some(e.clone());
+                    state.is_resolving = false;
+                    state.status_text = format!("Error: {e}").into();
+                    state.is_error = true;
+                }
+                // A recording waiting for the station tries again
+                self.resume_failed(&e);
             }
         }
     }
@@ -554,13 +582,9 @@ impl AppController {
         }
         let event = event.event;
 
-        // The stream ended or failed: keep what was recorded
-        if matches!(
-            event,
-            AudioEvent::Stopped | AudioEvent::Error(_) | AudioEvent::NoAudioTimeout
-        ) {
-            self.stop_recording();
-        }
+        // The stream ended or failed: a recording waits for the station to
+        // be started again, or keeps what was recorded
+        self.recording_station_event(&event);
 
         // The output was gone so long that the station would play minutes
         // behind live: start it again, to catch up
@@ -621,6 +645,11 @@ impl AppController {
                 // A stream that failed stops with its error still showing
                 if !std::mem::take(&mut self.stream_failed) {
                     state.status_text = "Stopped".into();
+                    state.is_error = false;
+                }
+                // A recording that waits for the station says so
+                if self.resume.is_some() {
+                    state.status_text = resume::RECONNECTING.into();
                     state.is_error = false;
                 }
             }
@@ -778,10 +807,21 @@ impl AppController {
 
     /// Stop the running recording, if any, and say where it was saved.
     fn stop_recording(&mut self) {
+        self.stop_recording_with(None);
+    }
+
+    /// Stop the running recording, if any, and say where it was saved, and
+    /// why it stopped when that is `reason` rather than the user
+    fn stop_recording_with(&mut self, reason: Option<String>) {
+        // Nothing waits for the station any more
+        self.end_resume();
         let Some(engine) = &self.engine else { return };
-        let Some(status) = engine.recorder().stop() else {
+        let Some(mut status) = engine.recorder().stop() else {
             return;
         };
+        if status.error.is_none() {
+            status.error = reason;
+        }
         self.shared_state
             .lock()
             .unwrap_or_else(|e| e.into_inner())

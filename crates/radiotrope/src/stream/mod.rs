@@ -82,6 +82,18 @@ impl StreamEnd {
     }
 }
 
+/// How a reader's reason for giving up on a station begins (see [`gave_up`])
+const GAVE_UP: &str = "No audio for ";
+
+/// True if `error` (as the engine reports it) says the station's reader
+/// gave up: it already reconnected for [`RECONNECT_GIVE_UP_SECS`] without
+/// getting audio.
+///
+/// [`RECONNECT_GIVE_UP_SECS`]: crate::config::timeouts::RECONNECT_GIVE_UP_SECS
+pub fn is_gave_up(error: &str) -> bool {
+    error.contains(GAVE_UP)
+}
+
 /// The reason a reader gives up on a station: no audio for `after`, and the
 /// last thing that went wrong
 pub(crate) fn gave_up(after: Duration, last_problem: &str) -> String {
@@ -91,7 +103,7 @@ pub(crate) fn gave_up(after: Duration, last_problem: &str) -> String {
     } else {
         format!("{secs} s")
     };
-    format!("No audio for {after}: {last_problem}")
+    format!("{GAVE_UP}{after}: {last_problem}")
 }
 
 /// Calculate exponential backoff delay: min(2^(n-1) * base, max)
@@ -231,5 +243,14 @@ mod tests {
             "No audio for 90 s: x"
         );
         assert_eq!(gave_up(Duration::from_secs(1), "x"), "No audio for 1 s: x");
+    }
+
+    #[test]
+    fn a_reader_giving_up_is_told_from_other_errors() {
+        let reason = gave_up(Duration::from_secs(120), "connection lost");
+        // As the engine reports it
+        assert!(is_gave_up(&format!("Stream error: {reason}")));
+        assert!(!is_gave_up("Stream error: connection reset by peer"));
+        assert!(!is_gave_up("unsupported feature: adts"));
     }
 }
