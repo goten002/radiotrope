@@ -20,6 +20,7 @@ use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
+use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
 use radiotrope_app::data::types::{url_to_id, Favorite, FavoriteSort, Station};
 use radiotrope_app::providers::{CategoryType, ProviderRegistry, SearchOrder, StationFilter};
 
@@ -45,6 +46,8 @@ const MAX_NAME_CHARS: usize = 512;
 const MAX_URL_CHARS: usize = 2048;
 /// add_favorite stops adding at this many favorites
 const MAX_FAVORITES: usize = 1000;
+/// How long schedule tools wait for the player to answer
+const SCHEDULE_WAIT: Duration = Duration::from_secs(3);
 /// What a tool says when the player's command queue is full
 const PLAYER_BUSY: &str = "The player is busy; try again in a moment";
 
@@ -237,6 +240,131 @@ pub struct RemoveFavoriteArgs {
     pub url: Option<String>,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SleepTimerArgs {
+    /// Stop playback this many minutes from now (1-1440); 0 turns the
+    /// timer off
+    #[serde(deserialize_with = "lenient_number")]
+    #[schemars(schema_with = "sleep_minutes_schema")]
+    pub minutes: f64,
+    /// Lower the volume over the last minute (default true)
+    #[serde(default)]
+    pub fade: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ActionArg {
+    /// Play the station (an alarm)
+    Play,
+    /// Play the station and record it (needs an end)
+    Record,
+    /// Stop whatever plays (bedtime)
+    Stop,
+}
+
+impl From<ActionArg> for Action {
+    fn from(action: ActionArg) -> Self {
+        match action {
+            ActionArg::Play => Action::Play,
+            ActionArg::Record => Action::Record,
+            ActionArg::Stop => Action::Stop,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddScheduleArgs {
+    /// play, record or stop
+    pub action: ActionArg,
+    /// Start time, 24-hour "HH:MM" in the player's local time
+    pub start: String,
+    /// Days it repeats: "mon".."sun", or "daily", "weekdays", "weekends".
+    /// None: once, at the next time `start` comes round (or on `date`).
+    #[serde(default)]
+    pub days: Vec<String>,
+    /// For a one-off: the day, "YYYY-MM-DD"
+    #[serde(default)]
+    pub date: Option<String>,
+    /// Station to play or record: a favorite id from list_favorites (give
+    /// this or url)
+    #[serde(default)]
+    pub favorite_id: Option<String>,
+    /// Station stream URL (give this or favorite_id)
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Station display name, with url
+    #[serde(default)]
+    pub name: Option<String>,
+    /// End after this many minutes (1-1440)
+    #[serde(default, deserialize_with = "lenient_optional_number")]
+    #[schemars(schema_with = "length_schema")]
+    pub end_after_minutes: Option<f64>,
+    /// End at this time, "HH:MM" (one before the start is the next day)
+    #[serde(default)]
+    pub end_at: Option<String>,
+    /// Volume to play at, 0-100; leave out to keep the current one
+    #[serde(default, deserialize_with = "lenient_optional_number")]
+    #[schemars(schema_with = "optional_volume_schema")]
+    pub volume: Option<f64>,
+    /// play: rise from silence over 30 s; stop: fade out over a minute
+    #[serde(default)]
+    pub fade: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScheduleIdArgs {
+    /// Entry id, from list_schedule
+    #[serde(deserialize_with = "lenient_number")]
+    #[schemars(schema_with = "entry_id_schema")]
+    pub id: f64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct EnableScheduleArgs {
+    /// Entry id, from list_schedule
+    #[serde(deserialize_with = "lenient_number")]
+    #[schemars(schema_with = "entry_id_schema")]
+    pub id: f64,
+    /// true to switch it on, false to switch it off
+    pub enabled: bool,
+}
+
+fn sleep_minutes_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 0,
+        "maximum": schedule::MAX_MINUTES,
+        "description": "Minutes until playback stops (1-1440); 0 turns the timer off"
+    })
+}
+
+fn length_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 1,
+        "maximum": schedule::MAX_MINUTES,
+        "description": "End after this many minutes (1-1440)"
+    })
+}
+
+fn optional_volume_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+        "description": "Volume to play at, 0-100; leave out to keep the current one"
+    })
+}
+
+fn entry_id_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "integer",
+        "minimum": 1,
+        "description": "Entry id, from list_schedule"
+    })
+}
+
 fn volume_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "integer",
@@ -333,6 +461,12 @@ pub struct Status {
     pub stream: Option<StreamInfo>,
     /// The recording in progress, if any
     pub recording: Option<RecordingInfo>,
+    /// When the sleep timer stops playback, "HH:MM" local time
+    pub sleep_timer_until: Option<String>,
+    /// The scheduled entry playing or recording now, e.g. "Play Jazz FM"
+    pub scheduled_now: Option<String>,
+    /// The next scheduled entry, e.g. "Tomorrow 07:00: Play Jazz FM"
+    pub next_scheduled: Option<String>,
     /// The last error, e.g. why a station failed to start
     pub last_error: Option<String>,
     /// The last change an agent made (changes made in the window are not
@@ -433,6 +567,86 @@ pub struct FavoriteItem {
 pub struct FavoritesList {
     /// In the user's own order
     pub favorites: Vec<FavoriteItem>,
+}
+
+/// One scheduled entry, as list_schedule returns it
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ScheduleItem {
+    /// Id for remove_schedule_entry and set_schedule_entry_enabled
+    pub id: u64,
+    pub enabled: bool,
+    /// "play", "record" or "stop"
+    pub action: String,
+    /// The station played or recorded
+    pub station: Option<String>,
+    pub station_url: Option<String>,
+    /// "HH:MM"
+    pub start: String,
+    /// Days it repeats ("mon".."sun"); empty for a one-off
+    pub days: Vec<String>,
+    /// A one-off's day, "YYYY-MM-DD"
+    pub date: Option<String>,
+    /// e.g. "Weekdays · for 1 h · fade in"
+    pub summary: String,
+    /// When it next comes round, "YYYY-MM-DD HH:MM" local time
+    pub next: Option<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ScheduleList {
+    /// Ordered by start time
+    pub entries: Vec<ScheduleItem>,
+    /// When the sleep timer stops playback, "HH:MM" local time
+    pub sleep_timer_until: Option<String>,
+}
+
+fn schedule_item(entry: &Entry, now: &chrono::DateTime<chrono::Local>) -> ScheduleItem {
+    const IDS: [&str; 7] = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+    ScheduleItem {
+        id: entry.id,
+        enabled: entry.enabled,
+        action: entry.action.id().into(),
+        station: entry.station.as_ref().map(|s| s.name.clone()),
+        station_url: entry.station.as_ref().map(|s| s.url.clone()),
+        start: entry.start.to_string(),
+        days: entry
+            .days
+            .flags()
+            .iter()
+            .zip(IDS)
+            .filter(|(on, _)| **on)
+            .map(|(_, id)| id.to_string())
+            .collect(),
+        date: entry
+            .date
+            .filter(|_| entry.days.is_once())
+            .map(|d| d.format("%Y-%m-%d").to_string()),
+        summary: entry.details(),
+        next: entry
+            .next_start(now)
+            .map(|at| at.format("%Y-%m-%d %H:%M").to_string()),
+    }
+}
+
+/// "mon".."sun" (or the full names), "daily", "weekdays", "weekends"
+fn parse_days(days: &[String]) -> Result<Days, String> {
+    let mut flags = [false; 7];
+    for day in days {
+        let day = day.trim().to_lowercase();
+        match day.as_str() {
+            "daily" | "every day" | "everyday" | "all" => flags = [true; 7],
+            "weekdays" => flags[..5].fill(true),
+            "weekends" => flags[5..].fill(true),
+            _ => {
+                let i = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+                    .iter()
+                    .position(|d| day.starts_with(d))
+                    .ok_or_else(|| format!("Not a day: {day}"))?;
+                flags[i] = true;
+            }
+        }
+    }
+    Ok(Days::from_flags(flags))
 }
 
 fn non_empty(s: &str) -> Option<String> {
@@ -750,6 +964,18 @@ impl RadioTools {
                 path: r.path.display().to_string(),
                 seconds: r.duration.as_secs(),
                 bytes: r.bytes,
+            }),
+            sleep_timer_until: s
+                .sleep
+                .as_ref()
+                .map(|t| t.until.format("%H:%M").to_string()),
+            scheduled_now: s.scheduled.as_ref().map(|a| a.title.clone()),
+            next_scheduled: s.next_run.as_ref().map(|n| {
+                format!(
+                    "{}: {}",
+                    schedule::when_label(&n.at, &chrono::Local::now()),
+                    n.title
+                )
             }),
             last_error: s.last_error.clone(),
             last_agent_change,
@@ -1091,6 +1317,239 @@ impl RadioTools {
         }
         Ok(format!("Recording stopped: {}", recording.path.display()))
     }
+
+    #[tool(
+        title = "Sleep timer",
+        description = "Stop playback after some minutes, fading out over the last minute. \
+                       0 minutes turns the timer off.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_sleep_timer(
+        &self,
+        Parameters(args): Parameters<SleepTimerArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let minutes = args.minutes.round();
+        if !(0.0..=f64::from(schedule::MAX_MINUTES)).contains(&minutes) {
+            return Err(format!(
+                "minutes must be from 0 to {}",
+                schedule::MAX_MINUTES
+            ));
+        }
+        let minutes = minutes as u32;
+        if minutes == 0 {
+            self.send(AppCommand::SetSleepTimer {
+                minutes: None,
+                fade: true,
+            })?;
+            self.note_change(&ctx, "sleep timer off");
+            return Ok("Sleep timer off".into());
+        }
+        self.send(AppCommand::SetSleepTimer {
+            minutes: Some(minutes),
+            fade: args.fade.unwrap_or(true),
+        })?;
+        self.note_change(&ctx, format!("sleep timer {minutes} min"));
+        let until = chrono::Local::now() + chrono::TimeDelta::minutes(minutes.into());
+        Ok(format!(
+            "Playback stops in {} (at {})",
+            schedule::duration_label(minutes),
+            until.format("%H:%M")
+        ))
+    }
+
+    #[tool(
+        title = "List the schedule",
+        description = "The scheduled alarms, recordings and bedtime stops, with when each \
+                       comes round next, and the sleep timer",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn list_schedule(&self) -> Json<ScheduleList> {
+        let s = self.snapshot();
+        let now = chrono::Local::now();
+        let mut entries = s.schedule.clone();
+        entries.sort_by_key(|e| (e.start, e.id));
+        Json(ScheduleList {
+            entries: entries.iter().map(|e| schedule_item(e, &now)).collect(),
+            sleep_timer_until: s
+                .sleep
+                .as_ref()
+                .map(|t| t.until.format("%H:%M").to_string()),
+        })
+    }
+
+    #[tool(
+        title = "Add to the schedule",
+        description = "Schedule an alarm (play), a recording (record, needs end_at or \
+                       end_after_minutes) or a bedtime stop (stop) at a local time, once or on \
+                       chosen days. Recordings use the player's recording settings. Only one \
+                       recording can run at a time.",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = false,
+            open_world_hint = false
+        )
+    )]
+    async fn add_schedule_entry(
+        &self,
+        Parameters(args): Parameters<AddScheduleArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let action: Action = args.action.into();
+        let start = ClockTime::parse(&args.start)
+            .ok_or_else(|| format!("start must be a time like 07:30, not {:?}", args.start))?;
+        let days = parse_days(&args.days)?;
+        let date = match args
+            .date
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            Some(text) => Some(
+                chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                    .map_err(|_| format!("date must be YYYY-MM-DD, not {text:?}"))?,
+            ),
+            None => None,
+        };
+        let end = match (args.end_after_minutes, args.end_at.as_deref()) {
+            (Some(_), Some(_)) => return Err("Give end_after_minutes or end_at, not both".into()),
+            (Some(minutes), None) => {
+                let minutes = minutes.round();
+                if !(1.0..=f64::from(schedule::MAX_MINUTES)).contains(&minutes) {
+                    return Err(format!(
+                        "end_after_minutes must be from 1 to {}",
+                        schedule::MAX_MINUTES
+                    ));
+                }
+                End::After {
+                    minutes: minutes as u32,
+                }
+            }
+            (None, Some(text)) => End::At {
+                time: ClockTime::parse(text)
+                    .ok_or_else(|| format!("end_at must be a time like 22:00, not {text:?}"))?,
+            },
+            (None, None) => End::Never,
+        };
+        let volume = match args.volume {
+            Some(v) if !(0.0..=100.0).contains(&v) => {
+                return Err("volume must be from 0 to 100".into())
+            }
+            Some(v) => Some((v / 100.0) as f32),
+            None => None,
+        };
+        let station = if action == Action::Stop {
+            None
+        } else {
+            Some(self.schedule_station(&args).await?)
+        };
+        let entry = Entry {
+            id: 0,
+            enabled: true,
+            action,
+            station,
+            start,
+            days,
+            date,
+            end,
+            volume,
+            fade: args.fade,
+            armed_from: 0,
+        };
+        let title = entry.title();
+        let id = self
+            .ask_schedule(|reply| AppCommand::SaveScheduleEntry {
+                entry,
+                reply: Some(reply),
+            })
+            .await?;
+        self.note_change(&ctx, format!("schedule {title} at {start}"));
+        let now = chrono::Local::now();
+        let saved = self.snapshot().schedule.into_iter().find(|e| e.id == id);
+        Ok(match saved {
+            Some(e) => {
+                let next = e
+                    .next_start(&now)
+                    .map(|at| format!(", next {}", schedule::when_label(&at, &now)))
+                    .unwrap_or_default();
+                format!(
+                    "Scheduled {title} at {start} ({}){next}. Id {id}",
+                    e.details()
+                )
+            }
+            None => format!("Scheduled {title} at {start}. Id {id}"),
+        })
+    }
+
+    #[tool(
+        title = "Remove from the schedule",
+        description = "Remove a scheduled entry by its id (ids come from list_schedule)",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = true,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn remove_schedule_entry(
+        &self,
+        Parameters(args): Parameters<ScheduleIdArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let id = entry_id(args.id)?;
+        let title = self.entry_title(id)?;
+        self.ask_schedule(|reply| AppCommand::RemoveScheduleEntry {
+            id,
+            reply: Some(reply),
+        })
+        .await?;
+        self.note_change(&ctx, format!("unschedule {title}"));
+        Ok(format!("Removed {title} from the schedule"))
+    }
+
+    #[tool(
+        title = "Switch a schedule entry on or off",
+        description = "Switch a scheduled entry on or off without removing it",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_schedule_entry_enabled(
+        &self,
+        Parameters(args): Parameters<EnableScheduleArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let id = entry_id(args.id)?;
+        let title = self.entry_title(id)?;
+        let enabled = args.enabled;
+        self.ask_schedule(|reply| AppCommand::SetScheduleEntryEnabled {
+            id,
+            enabled,
+            reply: Some(reply),
+        })
+        .await?;
+        let word = if enabled { "on" } else { "off" };
+        self.note_change(&ctx, format!("switch {word} {title}"));
+        Ok(format!("Switched {word}: {title}"))
+    }
+}
+
+/// A whole, positive entry id
+fn entry_id(id: f64) -> Result<u64, String> {
+    if id >= 1.0 && id.fract() == 0.0 && id <= u64::MAX as f64 {
+        Ok(id as u64)
+    } else {
+        Err("id must be an entry id from list_schedule".into())
+    }
 }
 
 /// Refuse a text longer than `max` characters: it would be saved and drawn
@@ -1177,6 +1636,90 @@ impl RadioTools {
         })
         .await
         .map_err(|e| format!("Favorites unavailable: {e}"))
+    }
+
+    /// The station a schedule entry is for: a favorite, or a URL
+    async fn schedule_station(&self, args: &AddScheduleArgs) -> Result<ScheduledStation, String> {
+        let favorite_id = args
+            .favorite_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|i| !i.is_empty());
+        let url = args.url.as_deref().map(str::trim).filter(|u| !u.is_empty());
+        match (favorite_id, url) {
+            (Some(_), Some(_)) => Err("Give favorite_id or url, not both".into()),
+            (None, None) => Err("Give the station: favorite_id or url".into()),
+            (Some(id), None) => {
+                let id = id.to_string();
+                self.with_favorites(move |_, favorites| {
+                    let fav = favorites.get(&id).ok_or_else(|| {
+                        format!("No favorite with id {id}; list_favorites gives the ids")
+                    })?;
+                    Ok(ScheduledStation {
+                        name: fav.name().to_string(),
+                        url: fav.url().to_string(),
+                        logo_url: fav.station.logo_url.clone(),
+                        country: fav.station.country.clone(),
+                    })
+                })
+                .await?
+            }
+            (None, Some(url)) => {
+                check_length("url", url, MAX_URL_CHARS)?;
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err("url must start with http:// or https://".into());
+                }
+                let name = args.name.as_deref().map(str::trim).unwrap_or_default();
+                check_length("name", name, MAX_NAME_CHARS)?;
+                let url = url.to_string();
+                let name = if name.is_empty() {
+                    radiotrope_app::data::types::name_from_url(&url)
+                } else {
+                    name.to_string()
+                };
+                // A favorite's logo and country come along
+                let lookup = url.clone();
+                let (logo_url, country) = self
+                    .with_favorites(move |_, favorites| {
+                        favorites
+                            .get_by_url(&lookup)
+                            .map(|f| (f.station.logo_url.clone(), f.station.country.clone()))
+                            .unwrap_or_default()
+                    })
+                    .await
+                    .unwrap_or_default();
+                Ok(ScheduledStation {
+                    name,
+                    url,
+                    logo_url,
+                    country,
+                })
+            }
+        }
+    }
+
+    /// The title of entry `id`, or why there is none
+    fn entry_title(&self, id: u64) -> Result<String, String> {
+        self.snapshot()
+            .schedule
+            .iter()
+            .find(|e| e.id == id)
+            .map(Entry::title)
+            .ok_or_else(|| format!("No schedule entry with id {id}; list_schedule gives the ids"))
+    }
+
+    /// Send a schedule change and wait for the player's answer
+    async fn ask_schedule<T>(
+        &self,
+        command: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, String>>) -> AppCommand,
+    ) -> Result<T, String> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        self.send(command(reply))?;
+        match tokio::time::timeout(SCHEDULE_WAIT, answer).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("The player has stopped".into()),
+            Err(_) => Err(PLAYER_BUSY.into()),
+        }
     }
 
     fn snapshot(&self) -> AppSnapshot {

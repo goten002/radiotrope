@@ -270,7 +270,7 @@ async fn every_tool_has_a_title_and_behaviour_hints() {
     s.legacy_handshake("2025-11-25").await;
     let list = s.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 14);
+    assert_eq!(tools.len(), 19);
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert!(tool["title"].is_string(), "{name} has no title");
@@ -719,4 +719,163 @@ async fn recording_needs_a_station_playing() {
     let r = s.call("stop_recording", json!({})).await;
     assert_eq!(text(&r), "Not recording");
     assert!(s.commands.try_recv().is_err());
+}
+
+/// Answers schedule changes as the player does, keeping the entries in the
+/// shared state; refuses a second recording
+fn fake_scheduler(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>>) {
+    use radiotrope_app::data::schedule::Action;
+    std::thread::spawn(move || {
+        while let Ok(cmd) = commands.recv() {
+            let mut st = state.lock().unwrap();
+            match cmd {
+                AppCommand::SaveScheduleEntry { mut entry, reply } => {
+                    let result = if entry.action == Action::Record
+                        && st.schedule.iter().any(|e| e.action == Action::Record)
+                    {
+                        Err("Overlaps Record Jazz FM".to_string())
+                    } else {
+                        entry.id = st.schedule.len() as u64 + 1;
+                        st.schedule.push(entry.clone());
+                        Ok(entry.id)
+                    };
+                    let _ = reply.unwrap().send(result);
+                }
+                AppCommand::RemoveScheduleEntry { id, reply } => {
+                    st.schedule.retain(|e| e.id != id);
+                    let _ = reply.unwrap().send(Ok(()));
+                }
+                AppCommand::SetScheduleEntryEnabled { id, enabled, reply } => {
+                    if let Some(e) = st.schedule.iter_mut().find(|e| e.id == id) {
+                        e.enabled = enabled;
+                    }
+                    let _ = reply.unwrap().send(Ok(()));
+                }
+                _ => {}
+            }
+        }
+    });
+}
+
+#[tokio::test]
+async fn an_agent_schedules_a_recording_of_a_favorite() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.favorites
+        .lock()
+        .unwrap()
+        .add(Favorite::from_station(
+            Station::new("Rock FM", "http://rock.test/stream").with_logo("http://rock.test/l.png"),
+        ))
+        .unwrap();
+    fake_scheduler(s.commands.clone(), s.state.clone());
+    s.legacy_handshake("2025-11-25").await;
+
+    let added = s
+        .call(
+            "add_schedule_entry",
+            json!({"action": "record", "favorite_id": url_to_id("http://rock.test/stream"),
+                   "start": "20:00", "end_at": "22:00", "days": ["sat"]}),
+        )
+        .await;
+    assert_eq!(added["isError"], false, "{added}");
+    assert!(
+        text(&added).starts_with("Scheduled Record Rock FM at 20:00 (Saturdays · until 22:00)"),
+        "{added}"
+    );
+    {
+        let st = s.state.lock().unwrap();
+        let entry = &st.schedule[0];
+        let station = entry.station.as_ref().unwrap();
+        assert_eq!(station.logo_url.as_deref(), Some("http://rock.test/l.png"));
+    }
+
+    // A second one at the same time is refused with the player's reason
+    let again = s
+        .call(
+            "add_schedule_entry",
+            json!({"action": "record", "url": "http://news.test/stream", "start": "20:30",
+                   "end_after_minutes": "60", "days": ["weekends"]}),
+        )
+        .await;
+    assert_eq!(again["isError"], true, "{again}");
+    assert_eq!(text(&again), "Overlaps Record Jazz FM");
+
+    let list = s.call("list_schedule", json!({})).await;
+    let entries = list["structuredContent"]["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["days"], json!(["sat"]));
+    assert_eq!(entries[0]["action"], "record");
+    assert!(entries[0]["next"].is_string());
+
+    let off = s
+        .call(
+            "set_schedule_entry_enabled",
+            json!({"id": 1, "enabled": false}),
+        )
+        .await;
+    assert_eq!(text(&off), "Switched off: Record Rock FM");
+    let removed = s.call("remove_schedule_entry", json!({"id": "1"})).await;
+    assert_eq!(text(&removed), "Removed Record Rock FM from the schedule");
+    let gone = s.call("remove_schedule_entry", json!({"id": 1})).await;
+    assert_eq!(gone["isError"], true);
+}
+
+#[tokio::test]
+async fn schedule_arguments_are_checked_before_the_player_hears_of_them() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    for (args, error) in [
+        (
+            json!({"action": "play", "start": "25:00", "url": "http://a.test/s"}),
+            "start must be",
+        ),
+        (
+            json!({"action": "play", "start": "07:00"}),
+            "Give the station",
+        ),
+        (
+            json!({"action": "play", "start": "07:00", "url": "ftp://a"}),
+            "url must start",
+        ),
+        (
+            json!({"action": "play", "start": "07:00", "url": "http://a.test/s", "days": ["funday"]}),
+            "Not a day",
+        ),
+        (
+            json!({"action": "play", "start": "07:00", "url": "http://a.test/s", "volume": 150}),
+            "volume must be",
+        ),
+        (
+            json!({"action": "record", "start": "07:00", "url": "http://a.test/s", "end_at": "08:00", "end_after_minutes": 5}),
+            "Give end_after_minutes or end_at",
+        ),
+    ] {
+        let r = s.call("add_schedule_entry", args).await;
+        assert_eq!(r["isError"], true, "{r}");
+        assert!(text(&r).starts_with(error), "{r}");
+    }
+    assert!(s.commands.try_recv().is_err(), "nothing reached the player");
+}
+
+#[tokio::test]
+async fn the_sleep_timer_tool_sets_and_clears_it() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let set = s.call("set_sleep_timer", json!({"minutes": 45})).await;
+    assert!(text(&set).starts_with("Playback stops in 45 min"), "{set}");
+    assert!(matches!(
+        s.commands.try_recv(),
+        Ok(AppCommand::SetSleepTimer {
+            minutes: Some(45),
+            fade: true
+        })
+    ));
+    let off = s.call("set_sleep_timer", json!({"minutes": 0})).await;
+    assert_eq!(text(&off), "Sleep timer off");
+    assert!(matches!(
+        s.commands.try_recv(),
+        Ok(AppCommand::SetSleepTimer { minutes: None, .. })
+    ));
+    let bad = s.call("set_sleep_timer", json!({"minutes": 5000})).await;
+    assert_eq!(bad["isError"], true);
 }

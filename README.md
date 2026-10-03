@@ -64,7 +64,7 @@ The server speaks plain http, meant for your own network. With Authentication se
 | `stop` | Stop playback |
 | `set_volume` | Set volume 0-100 |
 | `set_muted` | Mute or unmute |
-| `get_status` | Playback state, station, song, volume, stream format, recording, the last error and which agent changed the player last |
+| `get_status` | Playback state, station, song, volume, stream format, recording, sleep timer, the scheduled entry playing and the next one, the last error and which agent changed the player last |
 | `search_stations` | Search radio-browser.info by name, genre, country, language, codec and minimum bitrate; with nothing given, the most popular stations |
 | `list_categories` | List the directory's genres, countries or languages |
 | `list_favorites` | List all saved favorite stations with IDs |
@@ -72,6 +72,11 @@ The server speaks plain http, meant for your own network. With Authentication se
 | `remove_favorite` | Remove a station from favorites by ID or URL |
 | `start_recording` | Record the station playing, with the player's recording settings |
 | `stop_recording` | Stop and save the recording |
+| `set_sleep_timer` | Stop playback after some minutes, fading out over the last one (0 turns it off) |
+| `list_schedule` | The scheduled alarms, recordings and bedtime stops, with when each comes round next |
+| `add_schedule_entry` | Schedule an alarm (play), a recording (record, with an end) or a bedtime stop at a local time, once or on chosen days |
+| `remove_schedule_entry` | Remove a scheduled entry |
+| `set_schedule_entry_enabled` | Switch a scheduled entry on or off |
 
 The server speaks every MCP version from 2024-11-05 to 2026-07-28 (it is built on [rmcp](https://github.com/modelcontextprotocol/rust-sdk), the official Rust SDK). Tools that return data return structured JSON with an output schema, and every tool carries a title and behaviour hints (read-only, destructive, open-world) that clients use when asking for confirmation.
 
