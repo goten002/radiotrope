@@ -175,6 +175,8 @@ component DayChoice inherits PickerOption {
 // change one
 export component ScheduleDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    // The height the list can take in this window
+    property <length> list-room: max(80px, root.height - Defaults.schedule-list-chrome);
     in property <[ScheduleRow]> rows;
     // "Next: Mon 07:00, Play Jazz FM"
     in property <string> next;
@@ -271,7 +273,7 @@ export component ScheduleDialog inherits Rectangle {
 
         // ── The list ──
         if !root.editing && root.rows.length == 0: Rectangle {
-            height: Defaults.schedule-empty-height;
+            height: min(root.list-room, Defaults.schedule-empty-height);
             border-radius: Theme.radius-md;
             background: Theme.elevated;
 
@@ -298,7 +300,9 @@ export component ScheduleDialog inherits Rectangle {
         }
 
         if !root.editing && root.rows.length > 0: Rectangle {
-            height: min(list.preferred-height, Defaults.schedule-list-height);
+            // As tall as the empty box at least, taller with more entries
+            // while the window has room, and scrolling past that
+            height: min(root.list-room, max(Defaults.schedule-empty-height, list.preferred-height));
 
             flick := Flickable {
                 content-height: list.preferred-height;

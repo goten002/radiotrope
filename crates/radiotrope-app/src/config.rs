@@ -96,10 +96,10 @@ pub mod ui {
     pub const TRAY_HOST_CHECK: Duration = Duration::from_secs(2);
 
     /// The Scheduler's label counts down this long before an entry starts
-    pub const SCHEDULE_COUNTDOWN_SECS: i64 = 10;
+    pub const SCHEDULE_COUNTDOWN_SECS: i64 = 60;
 
-    /// ... and says what started for this long after
-    pub const SCHEDULE_LABEL_SECS: i64 = 10;
+    /// ... and says what started for this long after (or until clicked)
+    pub const SCHEDULE_LABEL_SECS: i64 = 15;
 
     /// A one-off entry can be set this many days ahead (today first)
     pub const SCHEDULE_DATES: i64 = 14;

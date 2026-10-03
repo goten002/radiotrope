@@ -349,6 +349,8 @@ export component Chip inherits Rectangle {
     in property <bool> pulse: false;
     // Clickable chips get a pointer and a stronger background on hover
     in property <bool> clickable: false;
+    // Shows a small x after the text: a click closes it
+    in property <bool> closable: false;
     callback clicked();
 
     // Grows with its text but gives way (eliding) when space runs out
@@ -439,6 +441,16 @@ export component Chip inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
                 preferred-width: detail-measure.preferred-width;
+            }
+        }
+
+        if root.closable: VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 8px;
+                height: 8px;
+                source: @image-url("icons/xmark.svg");
+                colorize: root.tone;
             }
         }
     }

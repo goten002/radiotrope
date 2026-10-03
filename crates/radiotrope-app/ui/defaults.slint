@@ -213,11 +213,13 @@ export global Defaults {
     out property <length> network-stream-width: 460px;
     out property <length> recording-width: 480px;
     out property <length> schedule-width: 560px;
-    // The schedule's list scrolls past this height
-    out property <length> schedule-list-height: 340px;
-    // The empty list's box, with its icon and line
+    // The Scheduler's list is at least this tall (the empty box too) and
+    // grows with its entries while the window has room, then scrolls
     out property <length> schedule-empty-height: 200px;
-    out property <length> sleep-timer-width: 480px;
+    // The Scheduler's card around the list: title, footer, padding and
+    // the gap kept to the window's edges
+    out property <length> schedule-list-chrome: 160px;
+    out property <length> sleep-timer-width: 520px;
     out property <length> station-browser-width: 700px;
     out property <length> station-browser-height: 640px;
     out property <length> statistics-width: 540px;

@@ -56,12 +56,14 @@ export component AccentButton inherits Rectangle {
 
 export component SecondaryButton inherits Rectangle {
     in property <string> label;
+    // Optional icon before the label
+    in property <image> icon;
     in property <bool> enabled: true;
     out property <bool> has-focus: focus.has-focus;
     callback clicked();
 
     height: 34px;
-    width: btn-text.preferred-width + 32px;
+    width: row.preferred-width + 32px;
     border-radius: Theme.radius-sm;
     border-width: 1px;
     border-color: Theme.hairline;
@@ -86,15 +88,31 @@ export component SecondaryButton inherits Rectangle {
         mouse-cursor: root.enabled ? pointer : default;
     }
 
-    btn-text := Text {
-        text: root.label;
-        color: !root.enabled ? Theme.disabled-text
-            : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-        font-size: Theme.font-base;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        accessible-role: none;
+    row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 11px;
+                height: 11px;
+                source: root.icon;
+                colorize: !root.enabled ? Theme.disabled-text
+                    : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+
+        Text {
+            text: root.label;
+            color: !root.enabled ? Theme.disabled-text
+                : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-base;
+            font-weight: 500;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
     }
 
     focus := ButtonKeys {

@@ -33,6 +33,20 @@ thread_local! {
     static SHOWN_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
     /// The entry the label last counted down to, to say when it started
     static COUNTED_DOWN: RefCell<Option<NextRun>> = const { RefCell::new(None) };
+    /// The label saying what started was clicked away
+    static STARTED_DISMISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The fallback sound label was clicked away (until the beep ends)
+    static BEEP_DISMISSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// What the Scheduler's label under the station says
+#[derive(Debug, Default, PartialEq)]
+struct Label {
+    text: String,
+    /// For the fallback sound: a bell instead of the calendar
+    bell: bool,
+    /// Only news about what happened, so a click closes it
+    closable: bool,
 }
 
 pub fn setup(
@@ -73,6 +87,16 @@ pub fn setup(
             if let Err(e) = settings.save() {
                 eprintln!("Failed to save the sleep timer setting: {e}");
             }
+        }
+    });
+
+    ui.on_schedule_label_dismiss({
+        let ui_weak = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            dismiss_label(ui.get_schedule_label_bell());
+            ui.set_schedule_label("".into());
+            ui.set_schedule_label_closable(false);
         }
     });
 
@@ -456,12 +480,15 @@ pub fn show_state(ui: &App, view: View) {
         }
     }
 
-    let (label, bell) = schedule_label(&view, &now);
-    if ui.get_schedule_label() != label.as_str() {
-        ui.set_schedule_label(label.into());
+    let label = schedule_label(&view, &now);
+    if ui.get_schedule_label() != label.text.as_str() {
+        ui.set_schedule_label(label.text.into());
     }
-    if ui.get_schedule_label_bell() != bell {
-        ui.set_schedule_label_bell(bell);
+    if ui.get_schedule_label_bell() != label.bell {
+        ui.set_schedule_label_bell(label.bell);
+    }
+    if ui.get_schedule_label_closable() != label.closable {
+        ui.set_schedule_label_closable(label.closable);
     }
 
     let next = view
@@ -483,22 +510,40 @@ pub fn show_state(ui: &App, view: View) {
     }
 }
 
+/// Close the label that says what started, or the fallback sound one
+fn dismiss_label(bell: bool) {
+    if bell {
+        BEEP_DISMISSED.set(true);
+    } else {
+        STARTED_DISMISSED.set(true);
+    }
+}
+
 /// The Scheduler's label: a countdown before an entry, what started just
-/// after, or the fallback sound playing. Also says whether it is the bell.
-fn schedule_label(view: &View, now: &DateTime<Local>) -> (String, bool) {
+/// after, or the fallback sound playing. The last two close on a click.
+fn schedule_label(view: &View, now: &DateTime<Local>) -> Label {
     if view.alarm_beep {
-        return ("Fallback sound".into(), true);
+        if !BEEP_DISMISSED.get() {
+            return Label {
+                text: "Fallback sound".into(),
+                bell: true,
+                closable: true,
+            };
+        }
+    } else {
+        BEEP_DISMISSED.set(false);
     }
     if let Some(next) = &view.next_run {
         let left = (next.at - *now).num_milliseconds();
         if left > 0 && left <= SCHEDULE_COUNTDOWN_SECS * 1000 {
             COUNTED_DOWN.with(|c| *c.borrow_mut() = Some(next.clone()));
+            STARTED_DISMISSED.set(false);
             // Rounded up: "in 0:01" until it starts
             let secs = (left + 999) / 1000;
-            return (
-                format!("{} in {}", verb(next.action), clock_text(secs)),
-                false,
-            );
+            return Label {
+                text: format!("{} in {}", verb(next.action), clock_text(secs)),
+                ..Label::default()
+            };
         }
     }
     let started = COUNTED_DOWN.with(|c| c.borrow().clone());
@@ -507,20 +552,21 @@ fn schedule_label(view: &View, now: &DateTime<Local>) -> (String, bool) {
         // A play or recording that was skipped (a recording ran) says nothing
         let ran = entry.action == Action::Stop
             || view.scheduled.as_ref().is_some_and(|s| s.id == entry.id);
-        if (0..SCHEDULE_LABEL_SECS).contains(&since) && ran {
-            return (
-                match entry.action {
+        if (0..SCHEDULE_LABEL_SECS).contains(&since) && ran && !STARTED_DISMISSED.get() {
+            return Label {
+                text: match entry.action {
                     Action::Stop => "Stopped playback".into(),
                     action => format!("{} · {}", verb(action), entry.station),
                 },
-                false,
-            );
+                bell: false,
+                closable: true,
+            };
         }
         if since >= SCHEDULE_LABEL_SECS {
             COUNTED_DOWN.with(|c| *c.borrow_mut() = None);
         }
     }
-    (String::new(), false)
+    Label::default()
 }
 
 fn verb(action: Action) -> &'static str {
@@ -641,27 +687,56 @@ mod tests {
             entries: None,
         };
         COUNTED_DOWN.with(|c| *c.borrow_mut() = None);
-        let label = |v: &View, secs: i64| schedule_label(v, &(at + TimeDelta::seconds(secs))).0;
+        let label = |v: &View, secs: i64| schedule_label(v, &(at + TimeDelta::seconds(secs))).text;
 
-        assert_eq!(label(&view(Some(next.clone()), None, false), -11), "");
+        assert_eq!(label(&view(Some(next.clone()), None, false), -61), "");
         assert_eq!(
-            label(&view(Some(next.clone()), None, false), -10),
-            "Play in 0:10"
+            label(&view(Some(next.clone()), None, false), -60),
+            "Play in 1:00"
         );
         assert_eq!(
             label(&view(Some(next.clone()), None, false), -1),
             "Play in 0:01"
         );
+        // The countdown opens the Scheduler; what started closes on a click
+        assert!(
+            !schedule_label(
+                &view(Some(next.clone()), None, false),
+                &(at - TimeDelta::seconds(5))
+            )
+            .closable
+        );
         // Started: the next run moved on to tomorrow
         assert_eq!(label(&view(None, Some(4), false), 0), "Play · Jazz FM");
-        assert_eq!(label(&view(None, Some(4), false), 9), "Play · Jazz FM");
-        assert_eq!(label(&view(None, Some(4), false), 10), "");
+        assert_eq!(label(&view(None, Some(4), false), 14), "Play · Jazz FM");
+        assert!(
+            schedule_label(&view(None, Some(4), false), &(at + TimeDelta::seconds(3))).closable
+        );
+        assert_eq!(label(&view(None, Some(4), false), 15), "");
         assert_eq!(label(&view(None, Some(4), true), 30), "Fallback sound");
-        assert!(schedule_label(&view(None, None, true), &at).1);
+        assert!(schedule_label(&view(None, None, true), &at).bell);
 
         // Skipped: nothing claims it started
         label(&view(Some(next.clone()), None, false), -5);
         assert_eq!(label(&view(None, None, false), 1), "");
+
+        // Clicked away: what started stays closed, the next countdown shows
+        label(&view(Some(next.clone()), None, false), -5);
+        assert_eq!(label(&view(None, Some(4), false), 1), "Play · Jazz FM");
+        dismiss_label(false);
+        assert_eq!(label(&view(None, Some(4), false), 2), "");
+        assert_eq!(
+            label(&view(Some(next.clone()), None, false), -5),
+            "Play in 0:05"
+        );
+        assert_eq!(label(&view(None, Some(4), false), 1), "Play · Jazz FM");
+
+        // The fallback sound label stays closed until the beep ends
+        assert_eq!(label(&view(None, Some(4), true), 30), "Fallback sound");
+        dismiss_label(true);
+        assert_eq!(label(&view(None, Some(4), true), 31), "");
+        label(&view(None, Some(4), false), 40);
+        assert_eq!(label(&view(None, Some(4), true), 41), "Fallback sound");
     }
 
     #[test]

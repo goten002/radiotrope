@@ -152,6 +152,9 @@ export component App inherits Window {
     in-out property <string> schedule-label;
     // The label is for the fallback sound (a bell, not the calendar)
     in-out property <bool> schedule-label-bell;
+    // It says what started or the fallback sound: a click closes it
+    in-out property <bool> schedule-label-closable;
+    callback schedule-label-dismiss();
 
     // Agents (MCP)
     callback agents-network-toggled(bool);
@@ -446,6 +449,8 @@ export component App inherits Window {
                     sleep-left: root.sleep-active ? root.sleep-left : "";
                     schedule-label: root.schedule-label;
                     schedule-label-bell: root.schedule-label-bell;
+                    schedule-label-closable: root.schedule-label-closable;
+                    schedule-label-dismiss => { root.schedule-label-dismiss(); }
                     open-sleep-timer => { sleep-dialog.open(); }
                     open-schedule => { schedule-dialog.open(); }
                     toggle-favorite => { root.toggle-favorite(); }

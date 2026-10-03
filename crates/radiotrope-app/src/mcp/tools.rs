@@ -1323,7 +1323,7 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "Timer",
+        title = "Sleep Timer",
         description = "Stop playback after some minutes, fading out over the last minute. \
                        0 minutes turns the timer off.",
         annotations(
