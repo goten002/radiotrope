@@ -5,6 +5,9 @@ import { Platform } from "@platform/wifi.slint";
 component VolumeSlider inherits Rectangle {
     in-out property <float> value: 50;  // 0–100
     in property <bool> muted;
+    // How loud a fade lets it play now, 0–1 (1 with no fade): the fill
+    // shows it while the knob stays at the volume
+    in property <float> level: 1;
     out property <bool> touch-pressed: touch.pressed;
     callback value-changed(float);
     callback mute-toggled();
@@ -59,10 +62,19 @@ component VolumeSlider inherits Rectangle {
         border-radius: self.height / 2;
         background: Theme.text-primary.with-alpha(0.12);
 
-        // Filled portion, greyed while muted
-        Rectangle {
+        // Up to the knob, faint, while a fade holds the sound below it
+        if root.level < 0.999: Rectangle {
             x: 0;
             width: Math.max(self.height, (root.width - root.knob) * root.shown + root.knob / 2);
+            border-radius: self.height / 2;
+            background: root.fill-color.with-alpha(0.35);
+        }
+
+        // Filled portion, greyed while muted; during a fade, as loud as it
+        // plays now
+        Rectangle {
+            x: 0;
+            width: Math.max(self.height, (root.width - root.knob) * root.shown * Math.clamp(root.level, 0, 1) + root.knob / 2);
             border-radius: self.height / 2;
             background: root.fill-color;
             animate background { duration: Theme.fast; }
@@ -189,6 +201,8 @@ export component Controls inherits Rectangle {
     in property <bool> has-station;
     in property <string> now-playing-title;
     in-out property <float> volume: 1.0;   // 0.0–1.0
+    // How loud a fade lets it play now, 0.0–1.0 (1 with no fade)
+    in property <float> volume-level: 1.0;
     in-out property <bool> is-muted;
 
     callback play-clicked();
@@ -440,6 +454,7 @@ export component Controls inherits Rectangle {
                     vol-slider := VolumeSlider {
                         value: root.volume * 100;
                         muted: root.is-muted;
+                        level: root.volume-level;
                         mute-toggled => { root.mute-clicked(); }
                         value-changed(val) => {
                             root.volume = val / 100;

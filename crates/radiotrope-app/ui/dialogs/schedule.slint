@@ -354,6 +354,7 @@ export component ScheduleDialog inherits Rectangle {
             }
             AccentButton {
                 label: "Add";
+                icon: @image-url("../icons/plus.svg");
                 clicked => { root.start-edit(0); }
             }
         }
@@ -551,7 +552,7 @@ export component ScheduleDialog inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         InfoTip {
-                            text: "If the station hasn't started 30 seconds after the start time, for example because it is down or there's no internet, a beep plays instead until you press Stop.";
+                            text: "If the station hasn't started 30 seconds after the start time, for example because it is down or there's no internet, the Scheduler switches to alarm mode and beeps until you press Stop.";
                         }
                     }
                 }

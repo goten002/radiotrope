@@ -25,7 +25,8 @@ use crate::app::state::{NextRun, ScheduleReply, ScheduledNow, SleepTimerInfo};
 /// How long an alarm's volume takes to rise from silence
 pub const FADE_IN: Duration = Duration::from_secs(30);
 
-/// How long the sleep timer and a bedtime stop take to fade out
+/// How long the sleep timer and a bedtime stop take to fade out. A
+/// bedtime stop fades over the minute before it, so playback ends on time.
 pub const FADE_OUT_SECS: i64 = 60;
 
 /// Wait between tries to start an entry's station that failed
@@ -107,6 +108,7 @@ impl AppController {
     /// A fade runs: the volume changes every step
     pub(super) fn fading(&self, now: &DateTime<Local>) -> bool {
         matches!(self.fade_in, Some(FadeIn::Rising { .. }))
+            || self.stop_fade_until(now).is_some()
             || self
                 .sleep
                 .as_ref()
@@ -125,14 +127,7 @@ impl AppController {
         for decision in decisions {
             match decision {
                 Decision::Start { entry, until } => self.start_entry(*entry, until, &now),
-                Decision::Stop { entry } if entry.fade => {
-                    // Fade out over the next minute, as the sleep timer does
-                    self.sleep = Some(SleepTimer {
-                        until: now + TimeDelta::seconds(FADE_OUT_SECS),
-                        fade: true,
-                        minutes: 1,
-                    });
-                }
+                // A fading stop faded over the minute before it
                 Decision::Stop { .. } => self.stop_for_schedule(),
                 Decision::Notice(text) => self.notify(&text, false),
             }
@@ -156,6 +151,7 @@ impl AppController {
     /// entry's volume isn't put back
     pub(super) fn volume_set_by_user(&mut self) {
         self.fade_in = None;
+        self.stop_fade_skipped = self.stop_fade_until(&Local::now());
         if let Some(sleep) = self.sleep.as_mut() {
             sleep.fade = false;
         }
@@ -457,7 +453,8 @@ impl AppController {
             state.is_resolving = false;
             state.playback = PlaybackState::Playing;
             state.alarm_beep = true;
-            state.status_text = format!("{name} didn't start, playing the fallback sound").into();
+            state.status_text =
+                format!("Alarm mode: {name} didn't start, playing the fallback sound").into();
             state.is_error = true;
             state.title.clear();
             state.artist.clear();
@@ -521,6 +518,22 @@ impl AppController {
         self.stop_for_schedule();
     }
 
+    /// When a fading Stop due within the minute stops playback: its fade
+    /// runs now. Not while a scheduled recording runs (the Stop is skipped
+    /// then), nor after the user moved the volume during it.
+    fn stop_fade_until(&self, now: &DateTime<Local>) -> Option<DateTime<Local>> {
+        if self.scheduled_recording() {
+            return None;
+        }
+        self.schedule
+            .iter()
+            .filter(|e| e.action == Action::Stop && e.fade)
+            .filter_map(|e| e.next_start(now))
+            .filter(|at| (*at - *now).num_milliseconds() <= FADE_OUT_SECS * 1000)
+            .min()
+            .filter(|at| self.stop_fade_skipped != Some(*at))
+    }
+
     /// How loud the fades let the station play now, from 0 to 1
     fn fade_gain(&mut self, now: &DateTime<Local>) -> f32 {
         let mut gain = 1.0;
@@ -536,8 +549,12 @@ impl AppController {
             }
             None => {}
         }
-        if let Some(sleep) = self.sleep.as_ref().filter(|s| s.fade) {
-            let left = (sleep.until - *now).num_milliseconds() as f32;
+        let fade_outs = [
+            self.sleep.as_ref().filter(|s| s.fade).map(|s| s.until),
+            self.stop_fade_until(now),
+        ];
+        for until in fade_outs.into_iter().flatten() {
+            let left = (until - *now).num_milliseconds() as f32;
             gain *= (left / (FADE_OUT_SECS * 1000) as f32).clamp(0.0, 1.0);
         }
         gain
@@ -547,7 +564,14 @@ impl AppController {
     pub(super) fn apply_volume(&mut self, now: &DateTime<Local>) {
         let gain = self.fade_gain(now);
         let volume = {
-            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            // Shown on the volume bar, while there is a station to hear
+            let sounding = state.playback == PlaybackState::Playing || state.is_resolving;
+            state.fade_gain = if sounding && !state.alarm_beep {
+                gain
+            } else {
+                1.0
+            };
             if state.is_muted {
                 0.0
             } else if state.alarm_beep {
@@ -956,6 +980,57 @@ mod tests {
         let (_, at) = save(&mut controller, entry(Action::Stop));
         controller.run_schedule(at);
         assert_eq!(state.lock().unwrap().playback, PlaybackState::Stopped);
+    }
+
+    #[test]
+    fn a_fading_stop_fades_over_the_minute_before_it() {
+        let (mut controller, state) = controller();
+        state.lock().unwrap().volume = 0.8;
+        playing(&state);
+        controller.set_sleep_timer(Some(90), true);
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                fade: true,
+                ..entry(Action::Stop)
+            },
+        );
+
+        // Full volume until a minute before, half way down at 30 s
+        controller.apply_volume(&(at - TimeDelta::seconds(61)));
+        assert_eq!(controller.engine_volume, Some(0.8));
+        let half = at - TimeDelta::seconds(30);
+        assert!(controller.fading(&half));
+        controller.apply_volume(&half);
+        let volume = controller.engine_volume.unwrap();
+        assert!((volume - 0.4).abs() < 0.02, "{volume}");
+        // It isn't the Sleep Timer: the one set by hand runs on, unchanged
+        assert_eq!(controller.sleep.as_ref().map(|s| s.minutes), Some(90));
+
+        // Stopped on time, the volume setting untouched
+        controller.run_schedule(at);
+        let s = state.lock().unwrap();
+        assert_eq!(s.playback, PlaybackState::Stopped);
+        assert_eq!(s.volume, 0.8);
+        drop(s);
+        assert_eq!(controller.engine_volume, Some(0.8));
+    }
+
+    #[test]
+    fn moving_the_volume_ends_a_stops_fade() {
+        let (mut controller, state) = controller();
+        state.lock().unwrap().volume = 0.8;
+        playing(&state);
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                fade: true,
+                ..entry(Action::Stop)
+            },
+        );
+        controller.stop_fade_skipped = Some(at);
+        controller.apply_volume(&(at - TimeDelta::seconds(30)));
+        assert_eq!(controller.engine_volume, Some(0.8));
     }
 
     #[test]
