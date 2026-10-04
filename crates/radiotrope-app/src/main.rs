@@ -6,6 +6,8 @@ mod app;
 mod control;
 mod instance;
 mod mcp;
+mod remote;
+mod remote_ui;
 mod row_logos;
 mod schedule_ui;
 #[cfg(feature = "desktop")]
@@ -206,6 +208,14 @@ fn main() {
     // Network agents, when turned on, and the Agents dialog
     let _network_timer = setup_agents(&ui, agents.clone(), &settings);
     let _agents_timer = watch_agents(&ui, agents.as_ref().map(|a| a.tools().presence()));
+    // Phones (Radiotrope Remote), when turned on, in the main player only
+    let remote = instance.as_ref().map(|_| {
+        Arc::new(remote::Remote::new(
+            control::Control::new(cmd_tx.clone(), shared_state.clone(), favorites.clone()),
+            Some(logo_service.clone()),
+        ))
+    });
+    let _remote_timer = remote_ui::setup(&ui, remote, &settings);
 
     // Initial load of favorites into UI model
     migrate_logo_ids(&favorites, settings.last_station.as_ref(), &logo_service);

@@ -12,6 +12,7 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
+import { RemoteControlDialog, PairingCodeDialog, RemoteDevice } from "dialogs/remote-control.slint";
 import { SleepTimerDialog } from "dialogs/sleep-timer.slint";
 import { ScheduleDialog, ScheduleRow, ScheduleDraft } from "dialogs/schedule.slint";
 import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
@@ -21,7 +22,7 @@ import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
-export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft }
+export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -187,6 +188,26 @@ export component App inherits Window {
     in-out property <[string]> agents-auths <=> agents-dialog.auths;
     in-out property <int> agents-auth <=> agents-dialog.auth;
     callback agents-auth-changed(int);
+    // Remote Control (Radiotrope Remote)
+    callback remote-opened();
+    callback remote-toggled(bool);
+    callback remote-apply-name(string);
+    callback remote-remove-device(string);
+    callback remote-cancel-pairing();
+    in-out property <bool> remote-on <=> remote-dialog.enabled-on;
+    in-out property <string> remote-status <=> remote-dialog.status;
+    in-out property <bool> remote-status-error <=> remote-dialog.status-error;
+    in-out property <string> remote-address <=> remote-dialog.address;
+    in-out property <string> remote-address-note <=> remote-dialog.address-note;
+    in-out property <string> remote-name <=> remote-dialog.name;
+    in-out property <string> remote-edit-name <=> remote-dialog.edit-name;
+    in-out property <string> remote-name-placeholder <=> remote-dialog.name-placeholder;
+    in-out property <[RemoteDevice]> remote-devices <=> remote-dialog.devices;
+    // A phone is pairing: the code to show, and for how long
+    in-out property <bool> pairing-shown;
+    in-out property <string> pairing-device;
+    in-out property <string> pairing-code;
+    in-out property <int> pairing-seconds;
     // Agents using the player now, for the chip in the menu bar
     in property <int> agent-count;
     in property <[AgentRow]> agent-list;
@@ -427,6 +448,7 @@ export component App inherits Window {
                     }
                     open-recordings-folder => { root.open-recordings-folder(); }
                     open-agents => { agents-dialog.open(); }
+                    open-remote-control => { remote-dialog.open(); }
                     open-sleep-timer => { sleep-dialog.open(); }
                     open-schedule => { schedule-dialog.open(); }
                     menus-enabled: !root.dialog-open;
@@ -652,6 +674,13 @@ export component App inherits Window {
             auth-changed(index) => { root.agents-auth-changed(index); }
         }
 
+        remote-dialog := RemoteControlDialog {
+            opened() => { root.remote-opened(); }
+            toggled(on) => { root.remote-toggled(on); }
+            apply-name(text) => { root.remote-apply-name(text); }
+            remove-device(id) => { root.remote-remove-device(id); }
+        }
+
         about-dialog := AboutDialog {
             open-url(url) => { root.open-url(url); }
         }
@@ -664,6 +693,15 @@ export component App inherits Window {
             disconnect-requested() => { root.wifi-disconnect-requested(); }
             close-requested() => { root.show-wifi-settings = false; }
             wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+        }
+
+        // Over every other dialog: a phone waits for this code
+        PairingCodeDialog {
+            show-dialog: root.pairing-shown;
+            device-name: root.pairing-device;
+            code: root.pairing-code;
+            seconds-left: root.pairing-seconds;
+            cancel => { root.remote-cancel-pairing(); }
         }
     }
 
@@ -687,7 +725,8 @@ export component App inherits Window {
         || eq-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings
-        || sleep-dialog.show-dialog || schedule-dialog.show-dialog;
+        || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
+        || root.pairing-shown;
     changed dialog-open => {
         if !self.dialog-open {
             shortcuts.focus();

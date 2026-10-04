@@ -34,7 +34,7 @@ pub fn regenerate() -> io::Result<String> {
 }
 
 fn path() -> io::Result<PathBuf> {
-    let dir = token_dir()?;
+    let dir = private_dir()?;
     fs::create_dir_all(&dir)?;
     let path = dir.join(TOKEN_FILE);
     // Earlier versions kept it in the roaming folder
@@ -47,8 +47,9 @@ fn path() -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// The folder the token is kept in
-fn token_dir() -> io::Result<PathBuf> {
+/// The folder the token is kept in, with the other files only the user
+/// should read (the paired phones)
+pub fn private_dir() -> io::Result<PathBuf> {
     #[cfg(windows)]
     let dir = dirs::data_local_dir().map(|dir| dir.join(crate::config::app::NAME));
     #[cfg(not(windows))]

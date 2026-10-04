@@ -418,6 +418,14 @@ impl Control {
         .await
     }
 
+    /// Counts the changes to the favorites, so callers can tell when to
+    /// list them again
+    pub async fn favorites_generation(&self) -> u64 {
+        self.with_favorites(|_, favorites| favorites.generation())
+            .await
+            .unwrap_or_default()
+    }
+
     /// The favorite id of a station URL, if it is a favorite
     pub async fn favorite_id(&self, url: String) -> Option<String> {
         self.with_favorites(move |_, favorites| {

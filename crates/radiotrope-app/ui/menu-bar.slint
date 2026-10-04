@@ -289,6 +289,7 @@ export component MenuBar inherits Rectangle {
     callback open-recording-settings();
     callback open-recordings-folder();
     callback open-agents();
+    callback open-remote-control();
     callback open-sleep-timer();
     callback open-schedule();
     // The menus are greyed out while a dialog is open; the window buttons
@@ -816,6 +817,14 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/robot.svg");
                     clicked => {
                         root.open-agents();
+                        tools-popup.close();
+                    }
+                }
+                MenuItem {
+                    label: "Remote Control";
+                    icon: @image-url("icons/mobile-screen-button.svg");
+                    clicked => {
+                        root.open-remote-control();
                         tools-popup.close();
                     }
                 }

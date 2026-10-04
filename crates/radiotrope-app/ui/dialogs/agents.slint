@@ -5,7 +5,7 @@ import { DialogShell, Toggle, InfoTip, Dropdown } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or a command that adds Radiotrope
-component CopyLine inherits Rectangle {
+export component CopyLine inherits Rectangle {
     in property <string> text;
     in property <string> placeholder;
     in property <bool> enabled: true;
@@ -121,7 +121,7 @@ component CopyLine inherits Rectangle {
 }
 
 // Caption at the start of a row
-component RowLabel inherits Text {
+export component RowLabel inherits Text {
     width: 84px;
     color: Theme.text-secondary;
     font-size: Theme.font-md;
