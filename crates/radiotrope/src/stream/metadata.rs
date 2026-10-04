@@ -16,6 +16,24 @@ use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 
 use crate::config::metadata::{MAX_SYNC_DELAY_SECS, SYNC_POLL_MS};
 
+/// Put song info on one line: each line break (CR, LF, CR LF and the other
+/// Unicode line and paragraph breaks), with the spaces around it, becomes a
+/// single space, and the ends are trimmed. Some stations split a title over
+/// two lines, which the player would otherwise show as two.
+fn one_line(text: &str) -> String {
+    let is_break = |c: char| {
+        matches!(
+            c,
+            '\n' | '\r' | '\u{0B}' | '\u{0C}' | '\u{85}' | '\u{2028}' | '\u{2029}'
+        )
+    };
+    text.split(is_break)
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn is_country_code(label: &str) -> bool {
     label.len() == 2 && label.bytes().all(|b| b.is_ascii_lowercase())
 }
@@ -56,9 +74,10 @@ pub struct StreamMetadata {
 }
 
 impl StreamMetadata {
-    /// Create metadata, trimming fields and treating blank ones as missing.
+    /// Create metadata, putting fields on one line (see [`one_line`]) and
+    /// treating blank ones as missing.
     pub fn new(title: Option<String>, artist: Option<String>, source: MetadataSource) -> Self {
-        let clean = |s: Option<String>| s.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let clean = |s: Option<String>| s.map(|s| one_line(&s)).filter(|s| !s.is_empty());
         Self {
             title: clean(title),
             artist: clean(artist),
@@ -77,9 +96,11 @@ impl StreamMetadata {
     /// If no separator found, the whole string becomes the title. So does
     /// text laid out in fields split by ` :: ` (`Song :: Artist A. - Artist
     /// B. :: 1933`): which field is which isn't said, and a ` - ` inside a
-    /// field doesn't split artist from title.
+    /// field doesn't split artist from title. Line breaks become spaces
+    /// first (see [`one_line`]).
     pub fn from_icy_title(raw: &str) -> Self {
-        let raw = raw.trim();
+        let raw = one_line(raw);
+        let raw = raw.as_str();
         if raw.is_empty() {
             return Self {
                 title: None,
@@ -887,6 +908,38 @@ mod tests {
         assert_eq!(m.artist, None);
         assert!(!m.is_empty());
         assert!(StreamMetadata::new(None, None, MetadataSource::Icy).is_empty());
+    }
+
+    #[test]
+    fn new_puts_fields_on_one_line() {
+        let m = StreamMetadata::new(
+            Some("Ενα (x)\nΜελισσες".to_string()),
+            Some(" Artist \r\n\r\n  Name\n".to_string()),
+            MetadataSource::Id3v2,
+        );
+        assert_eq!(m.title, Some("Ενα (x) Μελισσες".to_string()));
+        assert_eq!(m.artist, Some("Artist Name".to_string()));
+        let blank = StreamMetadata::new(Some("\r\n \n".to_string()), None, MetadataSource::Icy);
+        assert!(blank.is_empty());
+    }
+
+    #[test]
+    fn one_line_handles_every_line_break() {
+        assert_eq!(
+            one_line("a\rb\u{0B}c\u{0C}d\u{85}e\u{2028}f\u{2029}g"),
+            "a b c d e f g"
+        );
+        assert_eq!(one_line("  keep  inner  spaces  "), "keep  inner  spaces");
+        assert_eq!(one_line("tab\tstays"), "tab\tstays");
+    }
+
+    #[test]
+    fn from_icy_title_with_line_breaks() {
+        let m = StreamMetadata::from_icy_title("Artist\r\n - Song\nPart 2\n");
+        assert_eq!(m.artist, Some("Artist".to_string()));
+        assert_eq!(m.title, Some("Song Part 2".to_string()));
+        let m = StreamMetadata::from_icy_title("\n\r\n");
+        assert!(m.is_empty());
     }
 
     // --- MetadataArbiter ---
