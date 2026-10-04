@@ -7,6 +7,7 @@ pub mod cache;
 pub mod favorites;
 pub mod flags;
 pub mod recordings;
+pub mod remote;
 pub mod schedule;
 pub mod settings;
 pub mod storage;

@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Sender, TrySendError};
+use crossbeam_channel::Sender;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::service::RequestContext;
@@ -18,14 +18,19 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
-use radiotrope_app::data::recordings;
-use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
-use radiotrope_app::data::types::{url_to_id, Favorite, FavoriteSort, Station};
-use radiotrope_app::providers::{CategoryType, ProviderRegistry, SearchOrder, StationFilter};
+use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::schedule::{self, Action, Entry};
+use radiotrope_app::data::types::{url_to_id, Favorite};
+#[cfg(test)]
+use radiotrope_app::providers::ProviderRegistry;
+use radiotrope_app::providers::{CategoryType, SearchOrder, StationFilter};
 
 use super::presence::{NetworkAgent, Place, Presence};
 use crate::app::state::{AppCommand, AppSnapshot};
+use crate::control::{
+    self, check_length, sorted_genres, Control, EntryRequest, Found, Played, RecordingStart,
+    RecordingStop, MAX_FAVORITES, MAX_NAME_CHARS, MAX_URL_CHARS,
+};
 
 /// Default number of results returned by search_stations
 const DEFAULT_SEARCH_LIMIT: usize = 20;
@@ -33,35 +38,15 @@ const DEFAULT_SEARCH_LIMIT: usize = 20;
 const DEFAULT_PLAY_WAIT: Duration = Duration::from_secs(10);
 /// Longest wait a play tool accepts
 const MAX_PLAY_WAIT_SECS: f64 = 30.0;
-/// How long recording tools wait for the recorder to answer
-const RECORDING_WAIT: Duration = Duration::from_secs(3);
-/// How often waiting tools look at the player's state
-const POLL: Duration = Duration::from_millis(100);
 /// Default and largest number of categories list_categories returns
 const DEFAULT_CATEGORY_LIMIT: usize = 50;
 const MAX_CATEGORY_LIMIT: usize = 500;
-/// Longest station name or country an agent may give, in characters
-const MAX_NAME_CHARS: usize = 512;
-/// Longest stream or logo URL an agent may give, in characters
-const MAX_URL_CHARS: usize = 2048;
-/// add_favorite stops adding at this many favorites
-const MAX_FAVORITES: usize = 1000;
-/// How long schedule tools wait for the player to answer
-const SCHEDULE_WAIT: Duration = Duration::from_secs(3);
-/// What a tool says when the player's command queue is full
-const PLAYER_BUSY: &str = "The player is busy; try again in a moment";
 
-/// Everything the tools reach into: the controller's command channel and
-/// the state and favorites shared with the GUI
+/// Everything the tools reach into: the player, through the control layer
+/// the Remote API shares, and what agents alone keep
 #[derive(Clone)]
 pub struct RadioTools {
-    cmd_tx: Sender<AppCommand>,
-    state: Arc<Mutex<AppSnapshot>>,
-    favorites: Arc<Mutex<FavoritesManager>>,
-    /// Built on first search; shares its HTTP client and server list
-    providers: Arc<Mutex<Option<Arc<ProviderRegistry>>>>,
-    /// Where favorites are saved; `None` is the usual data folder
-    favorites_file: Option<std::path::PathBuf>,
+    control: Control,
     /// The last change an agent made, shared by every agent's session
     last_change: Arc<Mutex<Option<LastChange>>>,
     /// The agents using the player, for the menu bar's agents chip
@@ -632,35 +617,8 @@ fn schedule_item(entry: &Entry, now: &chrono::DateTime<chrono::Local>) -> Schedu
     }
 }
 
-/// "mon".."sun" (or the full names), "daily", "weekdays", "weekends"
-fn parse_days(days: &[String]) -> Result<Days, String> {
-    let mut flags = [false; 7];
-    for day in days {
-        let day = day.trim().to_lowercase();
-        match day.as_str() {
-            "daily" | "every day" | "everyday" | "all" => flags = [true; 7],
-            "weekdays" => flags[..5].fill(true),
-            "weekends" => flags[5..].fill(true),
-            _ => {
-                let i = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-                    .iter()
-                    .position(|d| day.starts_with(d))
-                    .ok_or_else(|| format!("Not a day: {day}"))?;
-                flags[i] = true;
-            }
-        }
-    }
-    Ok(Days::from_flags(flags))
-}
-
 fn non_empty(s: &str) -> Option<String> {
     (!s.is_empty()).then(|| s.to_string())
-}
-
-fn sorted_genres(genres: &HashSet<String>) -> Vec<String> {
-    let mut genres: Vec<String> = genres.iter().cloned().collect();
-    genres.sort();
-    genres
 }
 
 fn playback_name(s: &AppSnapshot) -> &'static str {
@@ -686,11 +644,7 @@ impl RadioTools {
         favorites: Arc<Mutex<FavoritesManager>>,
     ) -> Self {
         Self {
-            cmd_tx,
-            state,
-            favorites,
-            providers: Arc::new(Mutex::new(None)),
-            favorites_file: None,
+            control: Control::new(cmd_tx, state, favorites),
             last_change: Arc::new(Mutex::new(None)),
             presence: Presence::default(),
             place: None,
@@ -705,8 +659,7 @@ impl RadioTools {
         providers: ProviderRegistry,
         favorites_file: std::path::PathBuf,
     ) -> Self {
-        self.providers = Arc::new(Mutex::new(Some(Arc::new(providers))));
-        self.favorites_file = Some(favorites_file);
+        self.control = self.control.with_test_setup(providers, favorites_file);
         self
     }
 
@@ -734,14 +687,11 @@ impl RadioTools {
             check_length("name", name, MAX_NAME_CHARS)?;
         }
         // Enrich from favorites, as the GUI does
-        let request = PlayMetadata {
-            url: url.clone(),
-            name: args.name.clone(),
-            ..Default::default()
-        };
         let known = self
-            .with_favorites(move |_, favorites| favorites.resolve_play(request))
-            .await?;
+            .control
+            .resolve_play(url.clone(), args.name.clone())
+            .await
+            .map_err(agent_text)?;
         self.play(
             &ctx,
             url,
@@ -772,26 +722,13 @@ impl RadioTools {
         if id.is_empty() {
             return Err("id must not be empty".into());
         }
-        let tools = self.clone();
-        let station = tokio::task::spawn_blocking(move || tools.find_station(&id))
-            .await
-            .map_err(|e| format!("Lookup failed: {e}"))??;
-        // Count the play in the directory, as the GUI does; nobody waits on it
-        let tools = self.clone();
-        let clicked = station.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(providers) = tools.providers() {
-                if let Some(p) = providers.get(&clicked.provider) {
-                    let _ = p.report_click(&clicked);
-                }
-            }
-        });
+        let station = self.control.station_to_play(id).await.map_err(agent_text)?;
         self.play(
             &ctx,
-            station.url.clone(),
-            Some(station.name.clone()),
-            station.logo_url.clone(),
-            station.country.clone(),
+            station.url,
+            Some(station.name),
+            station.logo_url,
+            station.country,
             play_wait(args.wait_seconds),
         )
         .await
@@ -814,18 +751,10 @@ impl RadioTools {
     ) -> Result<String, String> {
         let id = args.id.trim().to_string();
         let (url, name, logo, country) = self
-            .with_favorites(move |_, favorites| {
-                let fav = favorites.get(&id).ok_or_else(|| {
-                    format!("No favorite with id {id}; list_favorites gives the ids")
-                })?;
-                Ok::<_, String>((
-                    fav.url().to_string(),
-                    fav.name().to_string(),
-                    fav.station.logo_url.clone(),
-                    fav.station.country.clone(),
-                ))
-            })
-            .await??;
+            .control
+            .favorite_to_play(id)
+            .await
+            .map_err(agent_text)?;
         self.play(
             &ctx,
             url,
@@ -848,7 +777,7 @@ impl RadioTools {
         )
     )]
     async fn stop(&self, ctx: RequestContext<RoleServer>) -> Result<String, String> {
-        self.send(AppCommand::Stop)?;
+        self.control.stop().map_err(agent_text)?;
         self.note_change(&ctx, "stop");
         Ok("Playback stopped".into())
     }
@@ -869,16 +798,7 @@ impl RadioTools {
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let volume = (args.volume as f32).clamp(0.0, 100.0) / 100.0;
-        let was_muted = self.snapshot().is_muted;
-        self.send(AppCommand::SetVolume(volume))?;
-        {
-            // Set it in the shared state now so the GUI shows it at once
-            let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
-            s.volume = volume;
-            if volume > 0.0 {
-                s.is_muted = false;
-            }
-        }
+        let was_muted = self.control.set_volume(volume).map_err(agent_text)?;
         let percent = (volume * 100.0).round() as u8;
         self.note_change(&ctx, format!("set volume {percent}"));
         Ok(if was_muted && volume > 0.0 {
@@ -903,12 +823,11 @@ impl RadioTools {
         Parameters(args): Parameters<SetMutedArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
+        self.control.set_muted(args.muted).map_err(agent_text)?;
         if args.muted {
-            self.send(AppCommand::Mute)?;
             self.note_change(&ctx, "mute");
             Ok("Muted".into())
         } else {
-            self.send(AppCommand::Unmute)?;
             self.note_change(&ctx, "unmute");
             Ok("Unmuted".into())
         }
@@ -921,14 +840,9 @@ impl RadioTools {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_status(&self) -> Json<Status> {
-        let s = self.snapshot();
+        let s = self.control.snapshot();
         let favorite_id = match s.station_url.clone() {
-            Some(url) => self
-                .with_favorites(move |_, favorites| {
-                    favorites.is_favorite(&url).then(|| url_to_id(&url))
-                })
-                .await
-                .unwrap_or_default(),
+            Some(url) => self.control.favorite_id(url).await,
             None => None,
         };
         let station = (s.station_name.is_some() || s.station_url.is_some()).then(|| StationRef {
@@ -1013,35 +927,21 @@ impl RadioTools {
             min_bitrate: args.min_bitrate.map(|b| b.max(0.0) as u32),
             order: args.order.map(Into::into).unwrap_or_default(),
         };
-        // Blocking HTTP (reqwest's blocking client, which must not even be
-        // built inside the async runtime): off it, so other calls keep flowing
-        let tools = self.clone();
-        let results = tokio::task::spawn_blocking(move || {
-            let providers = tools.providers()?;
-            let mut stations = Vec::new();
-            let mut has_more = false;
-            let mut failed = None;
-            for id in providers.list_ids() {
-                let Some(provider) = providers.get(id) else {
-                    continue;
-                };
-                match provider.search_filtered(&filter, limit, offset) {
-                    Ok(r) => {
-                        has_more |= r.has_more;
-                        stations.extend(r.stations);
-                    }
-                    Err(e) => failed = Some(e),
-                }
-            }
-            if let Some(e) = failed.filter(|_| stations.is_empty()) {
-                return Err(format!("Search failed: {e}"));
-            }
-            let favorites = tools.favorites();
-            let stations: Vec<FoundStation> = stations
-                .into_iter()
-                .map(|s: Station| FoundStation {
+        let page = self
+            .control
+            .search(filter, limit, offset)
+            .await
+            .map_err(agent_text)?;
+        let stations: Vec<FoundStation> = page
+            .stations
+            .into_iter()
+            .map(
+                |Found {
+                     station: s,
+                     favorite_id,
+                 }| FoundStation {
                     id: s.provider_id.clone().filter(|id| !id.is_empty()),
-                    favorite_id: favorites.is_favorite(&s.url).then(|| url_to_id(&s.url)),
+                    favorite_id,
                     genres: sorted_genres(&s.genres),
                     name: s.name,
                     url: s.url,
@@ -1051,16 +951,12 @@ impl RadioTools {
                     bitrate_kbps: s.bitrate.filter(|b| *b > 0),
                     homepage: s.homepage,
                     logo_url: s.logo_url,
-                })
-                .collect();
-            Ok((stations, has_more))
-        })
-        .await
-        .map_err(|e| format!("Search failed: {e}"))?;
-        let (stations, has_more) = results?;
+                },
+            )
+            .collect();
         Ok(Json(SearchResult {
             count: stations.len(),
-            has_more,
+            has_more: page.has_more,
             stations,
         }))
     }
@@ -1085,49 +981,18 @@ impl RadioTools {
             .limit
             .map(|v| (v as usize).clamp(1, MAX_CATEGORY_LIMIT))
             .unwrap_or(DEFAULT_CATEGORY_LIMIT);
-        let filter = args
-            .filter
-            .map(|f| f.trim().to_lowercase())
-            .filter(|f| !f.is_empty());
-        let tools = self.clone();
-        let categories = tokio::task::spawn_blocking(move || {
-            let providers = tools.providers()?;
-            let mut all = Vec::new();
-            let mut failed = None;
-            for id in providers.list_ids() {
-                match providers.get(id).map(|p| p.browse_categories()) {
-                    Some(Ok(c)) => all.extend(c),
-                    Some(Err(e)) => failed = Some(e),
-                    None => {}
-                }
-            }
-            match failed {
-                Some(e) if all.is_empty() => Err(format!("Listing failed: {e}")),
-                _ => Ok(all),
-            }
-        })
-        .await
-        .map_err(|e| format!("Listing failed: {e}"))??;
-
-        let mut categories: Vec<CategoryItem> = categories
+        let categories = self
+            .control
+            .categories(wanted, args.filter, limit)
+            .await
+            .map_err(agent_text)?
             .into_iter()
-            .filter(|c| c.category_type == wanted)
-            .filter(|c| {
-                filter.as_deref().is_none_or(|f| {
-                    c.name.to_lowercase().contains(f)
-                        || c.code
-                            .as_deref()
-                            .is_some_and(|code| code.eq_ignore_ascii_case(f))
-                })
-            })
             .map(|c| CategoryItem {
                 name: c.name,
                 code: c.code.filter(|code| !code.is_empty()),
                 stations: c.station_count,
             })
             .collect();
-        categories.sort_by_key(|c| std::cmp::Reverse(c.stations));
-        categories.truncate(limit);
         Ok(Json(CategoryList { kind, categories }))
     }
 
@@ -1138,21 +1003,20 @@ impl RadioTools {
     )]
     async fn list_favorites(&self) -> Result<Json<FavoritesList>, String> {
         let favorites = self
-            .with_favorites(|_, favorites| {
-                favorites
-                    .sorted(FavoriteSort::Manual)
-                    .into_iter()
-                    .map(|fav| FavoriteItem {
-                        id: fav.id(),
-                        name: fav.name().to_string(),
-                        url: fav.url().to_string(),
-                        country: fav.station.country.clone(),
-                        genres: sorted_genres(&fav.station.genres),
-                        play_count: fav.play_count,
-                    })
-                    .collect()
+            .control
+            .favorites_in_order()
+            .await
+            .map_err(agent_text)?
+            .into_iter()
+            .map(|fav| FavoriteItem {
+                id: fav.id(),
+                name: fav.name().to_string(),
+                url: fav.url().to_string(),
+                country: fav.station.country.clone(),
+                genres: sorted_genres(&fav.station.genres),
+                play_count: fav.play_count,
             })
-            .await?;
+            .collect();
         Ok(Json(FavoritesList { favorites }))
     }
 
@@ -1192,19 +1056,7 @@ impl RadioTools {
             fav = fav.with_metadata(args.country, None, HashSet::new());
         }
         let id = fav.id();
-        self.with_favorites(move |tools, favorites| {
-            if favorites.count() >= MAX_FAVORITES && !favorites.is_favorite(fav.url()) {
-                return Err(format!(
-                    "There are {MAX_FAVORITES} favorites already, the most an agent can add; \
-                     remove some first"
-                ));
-            }
-            favorites.add(fav).map_err(|e| e.to_string())?;
-            tools
-                .save_favorites(favorites)
-                .map_err(|e| format!("Failed to save: {e}"))
-        })
-        .await??;
+        self.control.add_favorite(fav).await.map_err(agent_text)?;
         self.note_change(&ctx, format!("add favorite {name}"));
         Ok(format!("Added \"{name}\" to favorites (id {id})"))
     }
@@ -1229,15 +1081,7 @@ impl RadioTools {
             (_, Some(url)) if !url.trim().is_empty() => url_to_id(url.trim()),
             _ => return Err("Give the favorite's id or url".into()),
         };
-        let removed = self
-            .with_favorites(move |tools, favorites| {
-                let removed = favorites.remove(&id).map_err(|e| e.to_string())?;
-                tools
-                    .save_favorites(favorites)
-                    .map_err(|e| format!("Removed but failed to save: {e}"))?;
-                Ok::<_, String>(removed)
-            })
-            .await??;
+        let removed = self.control.remove_favorite(id).await.map_err(agent_text)?;
         self.note_change(&ctx, format!("remove favorite {}", removed.name()));
         Ok(format!("Removed \"{}\" from favorites", removed.name()))
     }
@@ -1254,40 +1098,16 @@ impl RadioTools {
         )
     )]
     async fn start_recording(&self, ctx: RequestContext<RoleServer>) -> Result<String, String> {
-        let s = self.snapshot();
-        if let Some(r) = &s.recording {
-            return Ok(format!("Already recording to {}", r.path.display()));
-        }
-        if s.playback != PlaybackState::Playing {
-            return Err("Nothing is playing; start a station first".into());
-        }
-        let notice_before = s.recording_notice.as_ref().map(|n| n.seq);
-        // The settings as the window has them, not as the file may be
-        // half-way through a save
-        let setup = &s.recording_setup;
-        self.send(AppCommand::StartRecording {
-            folder: recordings::folder(setup.dir.as_deref()),
-            format: setup.format,
-            bitrate: setup.bitrate,
-            // As in the window: the switch only counts with the EQ on
-            with_eq: setup.with_eq && s.eq_enabled,
-            cover: None,
-        })?;
-        self.note_change(&ctx, "start recording");
-        let deadline = Instant::now() + RECORDING_WAIT;
-        while Instant::now() < deadline {
-            tokio::time::sleep(POLL).await;
-            let s = self.snapshot();
-            if let Some(r) = &s.recording {
-                return Ok(format!("Recording to {}", r.path.display()));
-            }
-            if let Some(n) = s.recording_notice.filter(|n| Some(n.seq) != notice_before) {
-                if n.is_error {
-                    return Err(n.text);
-                }
-            }
-        }
-        Ok("Recording is starting; get_status shows its file".into())
+        let started = self
+            .control
+            .start_recording(|| self.note_change(&ctx, "start recording"))
+            .await
+            .map_err(agent_text)?;
+        Ok(match started {
+            RecordingStart::Already(path) => format!("Already recording to {}", path.display()),
+            RecordingStart::Started(path) => format!("Recording to {}", path.display()),
+            RecordingStart::Starting => "Recording is starting; get_status shows its file".into(),
+        })
     }
 
     #[tool(
@@ -1301,25 +1121,16 @@ impl RadioTools {
         )
     )]
     async fn stop_recording(&self, ctx: RequestContext<RoleServer>) -> Result<String, String> {
-        let s = self.snapshot();
-        let Some(recording) = s.recording else {
-            return Ok("Not recording".into());
-        };
-        let notice_before = s.recording_notice.as_ref().map(|n| n.seq);
-        self.send(AppCommand::StopRecording)?;
-        self.note_change(&ctx, "stop recording");
-        let deadline = Instant::now() + RECORDING_WAIT;
-        while Instant::now() < deadline {
-            tokio::time::sleep(POLL).await;
-            let s = self.snapshot();
-            if let Some(n) = s.recording_notice.filter(|n| Some(n.seq) != notice_before) {
-                return if n.is_error { Err(n.text) } else { Ok(n.text) };
-            }
-            if s.recording.is_none() {
-                break;
-            }
-        }
-        Ok(format!("Recording stopped: {}", recording.path.display()))
+        let stopped = self
+            .control
+            .stop_recording(|| self.note_change(&ctx, "stop recording"))
+            .await
+            .map_err(agent_text)?;
+        Ok(match stopped {
+            RecordingStop::NotRecording => "Not recording".into(),
+            RecordingStop::Saved(text) => text,
+            RecordingStop::Stopping(path) => format!("Recording stopped: {}", path.display()),
+        })
     }
 
     #[tool(
@@ -1347,17 +1158,15 @@ impl RadioTools {
         }
         let minutes = minutes as u32;
         if minutes == 0 {
-            self.send(AppCommand::SetSleepTimer {
-                minutes: None,
-                fade: true,
-            })?;
+            self.control
+                .set_sleep_timer(None, true)
+                .map_err(agent_text)?;
             self.note_change(&ctx, "sleep timer off");
             return Ok("Sleep timer off".into());
         }
-        self.send(AppCommand::SetSleepTimer {
-            minutes: Some(minutes),
-            fade: args.fade.unwrap_or(true),
-        })?;
+        self.control
+            .set_sleep_timer(Some(minutes), args.fade.unwrap_or(true))
+            .map_err(agent_text)?;
         self.note_change(&ctx, format!("sleep timer {minutes} min"));
         let until = chrono::Local::now() + chrono::TimeDelta::minutes(minutes.into());
         Ok(format!(
@@ -1374,7 +1183,7 @@ impl RadioTools {
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn list_schedule(&self) -> Json<ScheduleList> {
-        let s = self.snapshot();
+        let s = self.control.snapshot();
         let now = chrono::Local::now();
         let mut entries = s.schedule.clone();
         entries.sort_by_key(|e| (e.start, e.id));
@@ -1405,80 +1214,31 @@ impl RadioTools {
         Parameters(args): Parameters<AddScheduleArgs>,
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
-        let action: Action = args.action.into();
-        let start = ClockTime::parse(&args.start)
-            .ok_or_else(|| format!("start must be a time like 07:30, not {:?}", args.start))?;
-        let days = parse_days(&args.days)?;
-        let date = match args
-            .date
-            .as_deref()
-            .map(str::trim)
-            .filter(|d| !d.is_empty())
-        {
-            Some(text) => Some(
-                chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
-                    .map_err(|_| format!("date must be YYYY-MM-DD, not {text:?}"))?,
-            ),
-            None => None,
-        };
-        let end = match (args.end_after_minutes, args.end_at.as_deref()) {
-            (Some(_), Some(_)) => return Err("Give end_after_minutes or end_at, not both".into()),
-            (Some(minutes), None) => {
-                let minutes = minutes.round();
-                if !(1.0..=f64::from(schedule::MAX_MINUTES)).contains(&minutes) {
-                    return Err(format!(
-                        "end_after_minutes must be from 1 to {}",
-                        schedule::MAX_MINUTES
-                    ));
-                }
-                End::After {
-                    minutes: minutes as u32,
-                }
-            }
-            (None, Some(text)) => End::At {
-                time: ClockTime::parse(text)
-                    .ok_or_else(|| format!("end_at must be a time like 22:00, not {text:?}"))?,
-            },
-            (None, None) => End::Never,
-        };
-        let volume = match args.volume {
-            Some(v) if !(0.0..=100.0).contains(&v) => {
-                return Err("volume must be from 0 to 100".into())
-            }
-            Some(v) => Some((v / 100.0) as f32),
-            None => None,
-        };
-        let station = if action == Action::Stop {
-            None
-        } else {
-            Some(self.schedule_station(&args).await?)
-        };
-        let entry = Entry {
-            id: 0,
-            enabled: true,
-            action,
-            station,
-            start,
-            days,
-            date,
-            end,
-            volume,
-            fade: args.fade,
-            fallback: args.fallback.unwrap_or(true),
-            armed_from: 0,
-        };
-        let title = entry.title();
-        let id = self
-            .ask_schedule(|reply| AppCommand::SaveScheduleEntry {
-                entry,
-                reply: Some(reply),
+        let entry = self
+            .control
+            .build_entry(EntryRequest {
+                action: args.action.into(),
+                start: args.start,
+                days: args.days,
+                date: args.date,
+                favorite_id: args.favorite_id,
+                url: args.url,
+                name: args.name,
+                end_after_minutes: args.end_after_minutes,
+                end_at: args.end_at,
+                volume: args.volume,
+                fade: args.fade,
+                fallback: args.fallback,
             })
-            .await?;
+            .await
+            .map_err(agent_text)?;
+        let start = entry.start;
+        let title = entry.title();
+        let id = self.control.save_entry(entry).await.map_err(agent_text)?;
         self.note_change(&ctx, format!("schedule {title} at {start}"));
         let now = chrono::Local::now();
-        let saved = self.snapshot().schedule.into_iter().find(|e| e.id == id);
-        Ok(match saved {
-            Some(e) => {
+        Ok(match self.control.entry(id) {
+            Ok(e) => {
                 let next = e
                     .next_start(&now)
                     .map(|at| format!(", next {}", schedule::when_label(&at, &now)))
@@ -1488,7 +1248,7 @@ impl RadioTools {
                     e.details()
                 )
             }
-            None => format!("Scheduled {title} at {start}. Id {id}"),
+            Err(_) => format!("Scheduled {title} at {start}. Id {id}"),
         })
     }
 
@@ -1508,12 +1268,8 @@ impl RadioTools {
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let id = entry_id(args.id)?;
-        let title = self.entry_title(id)?;
-        self.ask_schedule(|reply| AppCommand::RemoveScheduleEntry {
-            id,
-            reply: Some(reply),
-        })
-        .await?;
+        let title = self.control.entry(id).map_err(agent_text)?.title();
+        self.control.remove_entry(id).await.map_err(agent_text)?;
         self.note_change(&ctx, format!("unschedule {title}"));
         Ok(format!("Removed {title} from the schedule"))
     }
@@ -1534,17 +1290,36 @@ impl RadioTools {
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let id = entry_id(args.id)?;
-        let title = self.entry_title(id)?;
+        let title = self.control.entry(id).map_err(agent_text)?.title();
         let enabled = args.enabled;
-        self.ask_schedule(|reply| AppCommand::SetScheduleEntryEnabled {
-            id,
-            enabled,
-            reply: Some(reply),
-        })
-        .await?;
+        self.control
+            .set_entry_enabled(id, enabled)
+            .await
+            .map_err(agent_text)?;
         let word = if enabled { "on" } else { "off" };
         self.note_change(&ctx, format!("switch {word} {title}"));
         Ok(format!("Switched {word}: {title}"))
+    }
+}
+
+/// A shared error in the tools' words: those naming an id say which tool
+/// lists the ids
+fn agent_text(error: control::Error) -> String {
+    match error {
+        control::Error::NoFavorite(id) => {
+            format!("No favorite with id {id}; list_favorites gives the ids")
+        }
+        control::Error::NoStation(id) => {
+            format!("No station with id {id}; search_stations gives the ids")
+        }
+        control::Error::NoEntry(id) => {
+            format!("No schedule entry with id {id}; list_schedule gives the ids")
+        }
+        control::Error::TooManyFavorites => format!(
+            "There are {MAX_FAVORITES} favorites already, the most an agent can add; \
+             remove some first"
+        ),
+        other => other.to_string(),
     }
 }
 
@@ -1557,14 +1332,6 @@ fn entry_id(id: f64) -> Result<u64, String> {
     }
 }
 
-/// Refuse a text longer than `max` characters: it would be saved and drawn
-fn check_length(what: &str, text: &str, max: usize) -> Result<(), String> {
-    if text.chars().count() > max {
-        return Err(format!("{what} is too long (at most {max} characters)"));
-    }
-    Ok(())
-}
-
 /// How long a play tool waits, from its wait_seconds argument
 fn play_wait(seconds: Option<f64>) -> Duration {
     seconds
@@ -1573,175 +1340,6 @@ fn play_wait(seconds: Option<f64>) -> Duration {
 }
 
 impl RadioTools {
-    fn providers(&self) -> Result<Arc<ProviderRegistry>, String> {
-        let mut providers = self.providers.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(p) = providers.as_ref() {
-            return Ok(p.clone());
-        }
-        let registry = Arc::new(
-            ProviderRegistry::with_defaults()
-                .map_err(|e| format!("Failed to initialize provider: {e}"))?,
-        );
-        *providers = Some(registry.clone());
-        Ok(registry)
-    }
-
-    /// A station by its directory id (blocking)
-    fn find_station(&self, id: &str) -> Result<Station, String> {
-        let providers = self.providers()?;
-        let mut failed = None;
-        for provider_id in providers.list_ids() {
-            let Some(provider) = providers.get(provider_id) else {
-                continue;
-            };
-            match provider.get_station(id) {
-                Ok(Some(station)) => return Ok(station),
-                Ok(None) => {}
-                Err(e) => failed = Some(e),
-            }
-        }
-        Err(match failed {
-            Some(e) => format!("Lookup failed: {e}"),
-            None => format!("No station with id {id}; search_stations gives the ids"),
-        })
-    }
-
-    fn save_favorites(
-        &self,
-        favorites: &mut FavoritesManager,
-    ) -> radiotrope_app::error::Result<()> {
-        match &self.favorites_file {
-            Some(path) => favorites.save_to(path),
-            None => favorites.save(),
-        }
-    }
-
-    /// The favorites, locked (blocking: the window may hold the lock while
-    /// it draws them, and taking in another player's save reads the file)
-    fn favorites(&self) -> std::sync::MutexGuard<'_, FavoritesManager> {
-        let mut favorites = self.favorites.lock().unwrap_or_else(|e| e.into_inner());
-        // What another player saved since: with `--mcp --standalone` the
-        // agent's own player and the usual one share the file
-        favorites.reload_if_changed();
-        favorites
-    }
-
-    /// Run `work` on the favorites off the async thread, which every local
-    /// agent shares: waiting for the lock or the disk there would hold them
-    /// all up
-    async fn with_favorites<R, F>(&self, work: F) -> Result<R, String>
-    where
-        F: FnOnce(&RadioTools, &mut FavoritesManager) -> R + Send + 'static,
-        R: Send + 'static,
-    {
-        let tools = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut favorites = tools.favorites();
-            work(&tools, &mut favorites)
-        })
-        .await
-        .map_err(|e| format!("Favorites unavailable: {e}"))
-    }
-
-    /// The station a schedule entry is for: a favorite, or a URL
-    async fn schedule_station(&self, args: &AddScheduleArgs) -> Result<ScheduledStation, String> {
-        let favorite_id = args
-            .favorite_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|i| !i.is_empty());
-        let url = args.url.as_deref().map(str::trim).filter(|u| !u.is_empty());
-        match (favorite_id, url) {
-            (Some(_), Some(_)) => Err("Give favorite_id or url, not both".into()),
-            (None, None) => Err("Give the station: favorite_id or url".into()),
-            (Some(id), None) => {
-                let id = id.to_string();
-                self.with_favorites(move |_, favorites| {
-                    let fav = favorites.get(&id).ok_or_else(|| {
-                        format!("No favorite with id {id}; list_favorites gives the ids")
-                    })?;
-                    Ok(ScheduledStation {
-                        name: fav.name().to_string(),
-                        url: fav.url().to_string(),
-                        logo_url: fav.station.logo_url.clone(),
-                        country: fav.station.country.clone(),
-                    })
-                })
-                .await?
-            }
-            (None, Some(url)) => {
-                check_length("url", url, MAX_URL_CHARS)?;
-                if !(url.starts_with("http://") || url.starts_with("https://")) {
-                    return Err("url must start with http:// or https://".into());
-                }
-                let name = args.name.as_deref().map(str::trim).unwrap_or_default();
-                check_length("name", name, MAX_NAME_CHARS)?;
-                let url = url.to_string();
-                let name = if name.is_empty() {
-                    radiotrope_app::data::types::name_from_url(&url)
-                } else {
-                    name.to_string()
-                };
-                // A favorite's logo and country come along
-                let lookup = url.clone();
-                let (logo_url, country) = self
-                    .with_favorites(move |_, favorites| {
-                        favorites
-                            .get_by_url(&lookup)
-                            .map(|f| (f.station.logo_url.clone(), f.station.country.clone()))
-                            .unwrap_or_default()
-                    })
-                    .await
-                    .unwrap_or_default();
-                Ok(ScheduledStation {
-                    name,
-                    url,
-                    logo_url,
-                    country,
-                })
-            }
-        }
-    }
-
-    /// The title of entry `id`, or why there is none
-    fn entry_title(&self, id: u64) -> Result<String, String> {
-        self.snapshot()
-            .schedule
-            .iter()
-            .find(|e| e.id == id)
-            .map(Entry::title)
-            .ok_or_else(|| format!("No schedule entry with id {id}; list_schedule gives the ids"))
-    }
-
-    /// Send a schedule change and wait for the player's answer
-    async fn ask_schedule<T>(
-        &self,
-        command: impl FnOnce(tokio::sync::oneshot::Sender<Result<T, String>>) -> AppCommand,
-    ) -> Result<T, String> {
-        let (reply, answer) = tokio::sync::oneshot::channel();
-        self.send(command(reply))?;
-        match tokio::time::timeout(SCHEDULE_WAIT, answer).await {
-            Ok(Ok(result)) => result,
-            Ok(Err(_)) => Err("The player has stopped".into()),
-            Err(_) => Err(PLAYER_BUSY.into()),
-        }
-    }
-
-    fn snapshot(&self) -> AppSnapshot {
-        self.state.lock().unwrap_or_else(|e| e.into_inner()).clone()
-    }
-
-    /// Hand `cmd` to the player without waiting: a player whose queue is
-    /// full (a recording finishing, a stuck audio device) says so instead
-    /// of holding up every agent
-    fn send(&self, cmd: AppCommand) -> Result<(), String> {
-        match self.cmd_tx.try_send(cmd) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(PLAYER_BUSY.into()),
-            Err(TrySendError::Disconnected(_)) => Err("The player has stopped".into()),
-        }
-    }
-
     /// The agents using the player, shared by every session
     pub fn presence(&self) -> Presence {
         self.presence.clone()
@@ -1798,57 +1396,28 @@ impl RadioTools {
         wait: Duration,
     ) -> Result<String, String> {
         let label = name.clone().unwrap_or_else(|| url.clone());
-        // The player says which station number ours became, so a station
-        // started by the window or another agent just before or after
-        // isn't taken for ours
-        let (taken, ours) = tokio::sync::oneshot::channel();
-        // The logo and country go with it, so the header shows them as it
-        // does for a station picked in the UI
-        self.send(AppCommand::Play {
-            url: url.clone(),
-            name,
-            logo_url,
-            country,
-            taken: Some(taken),
-        })?;
-        self.note_change(ctx, format!("play {label}"));
-        if wait.is_zero() {
-            return Ok(format!(
+        let played = self
+            .control
+            .play(url, name, logo_url, country, wait, || {
+                self.note_change(ctx, format!("play {label}"))
+            })
+            .await;
+        match played {
+            Ok(Played::Starting) => Ok(format!(
                 "Starting {label}; call get_status to see whether it plays"
-            ));
-        }
-
-        let deadline = tokio::time::Instant::now() + wait;
-        let still_connecting = || {
-            Ok(format!(
+            )),
+            Ok(Played::StillConnecting) => Ok(format!(
                 "{label} is still connecting; call get_status to follow it"
-            ))
-        };
-        let seq = match tokio::time::timeout_at(deadline, ours).await {
-            Ok(Ok(seq)) => seq,
-            // The player went away without taking it
-            Ok(Err(_)) => return Err(format!("{label} was not started: the player has stopped")),
-            Err(_) => return still_connecting(),
-        };
-        loop {
-            let s = self.snapshot();
-            if s.play_seq != seq {
-                return Ok(format!(
-                    "Started {label}, but another station has been started since"
-                ));
+            )),
+            Ok(Played::Superseded) => Ok(format!(
+                "Started {label}, but another station has been started since"
+            )),
+            Ok(Played::Playing(s)) => Ok(playing_text(&label, &s)),
+            Err(control::Error::NotTaken) => {
+                Err(format!("{label} was not started: the player has stopped"))
             }
-            if !s.is_resolving {
-                if s.playback == PlaybackState::Playing {
-                    return Ok(playing_text(&label, &s));
-                }
-                if let Some(e) = &s.last_error {
-                    return Err(format!("{label} did not start: {e}"));
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return still_connecting();
-            }
-            tokio::time::sleep(POLL).await;
+            Err(control::Error::Failed(e)) => Err(format!("{label} did not start: {e}")),
+            Err(e) => Err(agent_text(e)),
         }
     }
 }

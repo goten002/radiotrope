@@ -213,3 +213,54 @@ pub mod mcp {
     /// listen (the network may not have been up yet)
     pub const NETWORK_RECHECK: std::time::Duration = std::time::Duration::from_secs(20);
 }
+
+pub mod remote {
+    use std::time::Duration;
+
+    /// The port the Remote API listens on, on every network
+    pub const PORT: u16 = 8766;
+
+    /// The mDNS service type phones look for
+    pub const SERVICE_TYPE: &str = "_radiotrope._tcp.local.";
+
+    /// The API version phones check before they talk to the player
+    pub const API_VERSION: u32 = 1;
+
+    /// File in the config folder holding the player's id and the paired
+    /// phones with their tokens, readable by the user only
+    pub const FILE: &str = "remote.json";
+
+    /// How long a pairing code shown on the player works
+    pub const CODE_LIFETIME: Duration = Duration::from_secs(120);
+
+    /// Wrong codes allowed before the player shows a new one
+    pub const CODE_TRIES: u32 = 3;
+
+    /// Failed pairings allowed within [`FAILED_PAIRING_WINDOW`] before
+    /// pairing stops until the Remote Control dialog is opened again
+    pub const MAX_FAILED_PAIRINGS: usize = 3;
+    pub const FAILED_PAIRING_WINDOW: Duration = Duration::from_secs(10 * 60);
+
+    /// Most phones paired at once
+    pub const MAX_DEVICES: usize = 32;
+
+    /// Longest phone name kept, in characters
+    pub const MAX_DEVICE_NAME_CHARS: usize = 64;
+
+    /// Most connections served at once; a phone's event stream holds one
+    pub const MAX_CONNECTIONS: usize = 32;
+
+    /// How long a connection has to send a request's headers, which is
+    /// also how long an idle one stays open between requests
+    pub const HEADER_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// How often the event stream looks for changes to send
+    pub const EVENT_POLL: Duration = Duration::from_millis(250);
+
+    /// A comment line this often keeps Wi-Fi and proxies from dropping an
+    /// event stream that has nothing to say
+    pub const EVENT_KEEP_ALIVE: Duration = Duration::from_secs(15);
+
+    /// Largest request body read, in bytes
+    pub const MAX_BODY: usize = 64 * 1024;
+}

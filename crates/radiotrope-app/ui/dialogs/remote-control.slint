@@ -1,0 +1,266 @@
+import { Theme, Defaults } from "../defaults.slint";
+import { StyledLineEdit } from "../styled-line-edit.slint";
+import { SecondaryButton } from "../buttons.slint";
+import { DialogShell, Toggle, InfoTip, IconButton, Icon } from "../components.slint";
+import { CopyLine, RowLabel } from "agents.slint";
+
+// A paired phone, and when it was last used ("Used 5 min ago")
+export struct RemoteDevice {
+    id: string,
+    name: string,
+    seen: string,
+}
+
+component DeviceRow inherits Rectangle {
+    in property <RemoteDevice> device;
+    // The trash was clicked once: the next click removes
+    in property <bool> confirm-remove;
+    callback remove();
+
+    height: 48px;
+    border-radius: Theme.radius-md;
+    background: Theme.elevated;
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 6px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 14px;
+                height: 14px;
+                source: @image-url("../icons/mobile-screen-button.svg");
+                colorize: Theme.text-secondary;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            horizontal-stretch: 1;
+
+            Text {
+                text: root.device.name;
+                color: Theme.text-primary;
+                font-size: Theme.font-base;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                text: root.confirm-remove ? "Press Again to Remove" : root.device.seen;
+                color: root.confirm-remove ? Theme.danger : Theme.text-secondary;
+                font-size: Theme.font-sm;
+                overflow: elide;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                icon: @image-url("../icons/trash-can.svg");
+                label: root.confirm-remove ? "Press again to remove" : "Remove " + root.device.name;
+                icon-size: 14px;
+                active: root.confirm-remove;
+                clicked => { root.remove(); }
+            }
+        }
+    }
+}
+
+// Radiotrope Remote: phones on this network that may control the player
+export component RemoteControlDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in-out property <bool> enabled-on: false;
+    // What the server says, while on
+    in property <string> status;
+    in property <bool> status-error;
+    // Where phones reach the player, e.g. "192.168.1.20:8766"
+    in property <string> address;
+    in property <string> address-note;
+    // The saved name, and the computer's name shown when there is none
+    in property <string> name;
+    in property <string> name-placeholder;
+    in property <[RemoteDevice]> devices;
+
+    // Being edited; reset from the saved name when the dialog opens
+    in-out property <string> edit-name;
+    property <string> confirm-remove;
+
+    callback opened();
+    callback toggled(bool);
+    callback apply-name(string);
+    callback remove-device(string);
+
+    public function open() {
+        root.opened();
+        root.edit-name = root.name;
+        root.confirm-remove = "";
+        root.show-dialog = true;
+    }
+
+    // The name saves on Enter, when it loses focus, or here
+    function close() {
+        if root.edit-name != root.name {
+            root.apply-name(root.edit-name);
+        }
+        root.show-dialog = false;
+    }
+
+    if show-dialog: DialogShell {
+        title: "Remote Control";
+        subtitle: "Control the player from the Radiotrope Remote app on your phone";
+        card-width: Defaults.remote-control-width;
+        close-requested => { root.close(); }
+
+        // While on, what the server says at the right, as in Agents
+        HorizontalLayout {
+            spacing: 12px;
+
+            Toggle {
+                label: "Allow phones on this network";
+                checked <=> root.enabled-on;
+                toggled(on) => {
+                    root.confirm-remove = "";
+                    root.toggled(on);
+                }
+            }
+            if root.enabled-on && root.status != "": HorizontalLayout {
+                horizontal-stretch: 1;
+                alignment: end;
+                spacing: 6px;
+
+                if !root.status-error: VerticalLayout {
+                    alignment: center;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        background: Theme.accent;
+                    }
+                }
+                Text {
+                    text: root.status-error ? root.status : "Ready";
+                    color: root.status-error ? Theme.danger : Theme.accent-text;
+                    font-size: Theme.font-md;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.status-error: VerticalLayout {
+                    alignment: center;
+                    InfoTip { text: root.status; }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            RowLabel { text: "Name"; }
+            StyledLineEdit {
+                height: 34px;
+                horizontal-stretch: 1;
+                text <=> root.edit-name;
+                placeholder-text: root.name-placeholder;
+                accepted(text) => { root.apply-name(text); }
+                changed has-focus => {
+                    if !self.has-focus && root.edit-name != root.name {
+                        root.apply-name(root.edit-name);
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            RowLabel { text: "Address"; }
+            CopyLine {
+                text: root.enabled-on ? root.address : "";
+                placeholder: root.enabled-on ? "No network found" : "Shown while on";
+                enabled: root.enabled-on;
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoTip { text: root.address-note; }
+            }
+        }
+
+        Rectangle {
+            height: 1px;
+            background: Theme.hairline;
+        }
+
+        Text {
+            text: "Paired phones";
+            color: Theme.text-secondary;
+            font-size: Theme.font-md;
+            font-weight: 600;
+        }
+
+        if root.devices.length == 0: Text {
+            text: "No phones yet. Open Radiotrope Remote on a phone on this network and type the code the player shows.";
+            color: Theme.text-tertiary;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
+        }
+
+        for device in root.devices: DeviceRow {
+            device: device;
+            confirm-remove: root.confirm-remove == device.id;
+            remove => {
+                if root.confirm-remove == device.id {
+                    root.confirm-remove = "";
+                    root.remove-device(device.id);
+                } else {
+                    root.confirm-remove = device.id;
+                }
+            }
+        }
+    }
+}
+
+// The code a phone asks for while it pairs; shown over everything
+export component PairingCodeDialog inherits Rectangle {
+    in property <bool> show-dialog: false;
+    in property <string> device-name;
+    in property <string> code;
+    // Seconds before the code runs out
+    in property <int> seconds-left;
+    callback cancel();
+
+    if show-dialog: DialogShell {
+        title: "Pair a Phone";
+        subtitle: root.device-name + " wants to control Radiotrope";
+        card-width: Defaults.pairing-code-width;
+        close-requested => { root.cancel(); }
+
+        Text {
+            text: root.code;
+            color: Theme.accent-text;
+            font-size: 44px;
+            font-weight: 700;
+            letter-spacing: 10px;
+            horizontal-alignment: center;
+            accessible-label: "Code " + root.code;
+        }
+
+        Text {
+            // e.g. "Type this code on the phone · 1:58"
+            text: "Type this code on the phone · " + floor(root.seconds-left / 60) + ":"
+                + (mod(root.seconds-left, 60) < 10 ? "0" : "") + mod(root.seconds-left, 60);
+            color: Theme.text-secondary;
+            font-size: Theme.font-md;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            SecondaryButton {
+                label: "Cancel";
+                clicked => { root.cancel(); }
+            }
+        }
+    }
+}

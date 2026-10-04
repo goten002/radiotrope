@@ -3,8 +3,11 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod control;
 mod instance;
 mod mcp;
+mod remote;
+mod remote_ui;
 mod row_logos;
 mod schedule_ui;
 #[cfg(feature = "desktop")]
@@ -205,6 +208,15 @@ fn main() {
     // Network agents, when turned on, and the Agents dialog
     let _network_timer = setup_agents(&ui, agents.clone(), &settings);
     let _agents_timer = watch_agents(&ui, agents.as_ref().map(|a| a.tools().presence()));
+    // Phones (Radiotrope Remote), when turned on, in the main player only
+    let remote = instance.as_ref().map(|_| {
+        Arc::new(remote::Remote::new(
+            control::Control::new(cmd_tx.clone(), shared_state.clone(), favorites.clone()),
+            Some(logo_service.clone()),
+            remote_window_hooks(&ui, &favorites, &logo_service, &shared_state),
+        ))
+    });
+    let _remote_timer = remote_ui::setup(&ui, remote, &settings);
 
     // Initial load of favorites into UI model
     migrate_logo_ids(&favorites, settings.last_station.as_ref(), &logo_service);
@@ -649,64 +661,16 @@ fn main() {
             let _ = f.save();
             drop(f);
 
-            // Drop the old cached logo (cache key = station id = url hash)
-            if let Some(old_fav) = &old_fav {
-                logo_svc.delete(old_fav);
-            }
-            invalidate_logo_image(&id);
-
-            // Update playback UI if this is the currently playing station
             if let Some(ui) = ui_weak.upgrade() {
-                let current_url = ui.get_station_url().to_string();
-                // Check both old URL (by id match) and new URL
-                let is_current = current_url == url
-                    || radiotrope_app::data::types::url_to_id(&current_url) == id;
-                if is_current {
-                    ui.set_station_name(name.as_str().into());
-                    ui.set_station_logo_url(logo_url.as_str().into());
-                    ui.set_station_country(country.as_str().into());
-                    ui.set_station_url(url.as_str().into());
-                    // Also update shared_state so the 200ms poll timer doesn't overwrite
-                    let mut s = edit_shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                    s.station_name = Some(name.clone());
-                    s.station_url = Some(url.clone());
-                    s.station_logo_url = Some(logo_url.clone()).filter(|l| !l.is_empty());
-                    s.station_country = Some(country.clone()).filter(|c| !c.is_empty());
-                }
-
-                // Refresh favorites list immediately (logos will show placeholders for new URLs)
-                refresh_favorites(&ui, &favs, &logo_svc);
-            }
-
-            // Fetch the new logo on a background thread, then refresh UI
-            if !logo_url.is_empty() {
-                let logo_svc = logo_svc.clone();
-                let favs = favs.clone();
-                let ui_weak = ui_weak.clone();
-                let url = url.clone();
-                // Shown in the player only if it is the station there now
-                let shown = SHOWN_STATION.with(|s| s.borrow().seq());
-                std::thread::Builder::new()
-                    .name("edit-logo-fetch".into())
-                    .spawn(move || {
-                        let tmp_station = Station::new(&name, &url).with_logo(&logo_url);
-                        if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
-                            let _ = slint::invoke_from_event_loop(move || {
-                                let Some(ui) = ui_weak.upgrade() else { return };
-                                // Update playback logo if this is the current station
-                                if is_current_station(shown, &url) {
-                                    let pixel_buf =
-                                        SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                            &rgba, width, height,
-                                        );
-                                    ui.set_current_logo(slint::Image::from_rgba8(pixel_buf));
-                                }
-                                // Refresh favorites list with the now-cached logo
-                                refresh_favorites(&ui, &favs, &logo_svc);
-                            });
-                        }
-                    })
-                    .ok();
+                let edited = EditedFavorite {
+                    old: old_fav.as_ref(),
+                    id: &id,
+                    name: &name,
+                    url: &url,
+                    logo_url: &logo_url,
+                    country: &country,
+                };
+                show_edited_favorite(&ui, &favs, &logo_svc, &edit_shared_state, edited);
             }
             slint::SharedString::new()
         });
@@ -4136,6 +4100,139 @@ thread_local! {
 /// The favorites on screen are up to date with `favs`
 fn note_favorites_shown(favs: &FavoritesManager) {
     FAVORITES_SHOWN.set(favs.generation());
+}
+
+/// A favorite just edited, in the window or from a phone
+struct EditedFavorite<'a> {
+    /// As it was
+    old: Option<&'a radiotrope_app::data::types::Favorite>,
+    /// Its id before the edit (it changes with the stream URL)
+    id: &'a str,
+    name: &'a str,
+    url: &'a str,
+    /// Empty: no logo
+    logo_url: &'a str,
+    /// Empty: none
+    country: &'a str,
+}
+
+/// Show an edited favorite: drop its old logo, update the player when it
+/// is the station there, redraw the list, and fetch the new logo
+fn show_edited_favorite(
+    ui: &App,
+    favs: &Arc<Mutex<FavoritesManager>>,
+    logo_svc: &Arc<LogoService>,
+    shared_state: &Arc<Mutex<AppSnapshot>>,
+    edited: EditedFavorite<'_>,
+) {
+    let EditedFavorite {
+        old,
+        id,
+        name,
+        url,
+        logo_url,
+        country,
+    } = edited;
+    // Drop the old cached logo (cache key = station id = url hash)
+    if let Some(old_fav) = old {
+        logo_svc.delete(old_fav);
+    }
+    invalidate_logo_image(id);
+
+    // Update playback UI if this is the currently playing station
+    let current_url = ui.get_station_url().to_string();
+    // Check both old URL (by id match) and new URL
+    let is_current =
+        current_url == url || radiotrope_app::data::types::url_to_id(&current_url) == id;
+    if is_current {
+        ui.set_station_name(name.into());
+        ui.set_station_logo_url(logo_url.into());
+        ui.set_station_country(country.into());
+        ui.set_station_url(url.into());
+        // Also update shared_state so the 200ms poll timer doesn't overwrite
+        let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        s.station_name = Some(name.to_string());
+        s.station_url = Some(url.to_string());
+        s.station_logo_url = Some(logo_url.to_string()).filter(|l| !l.is_empty());
+        s.station_country = Some(country.to_string()).filter(|c| !c.is_empty());
+    }
+
+    // Refresh favorites list immediately (logos will show placeholders for new URLs)
+    refresh_favorites(ui, favs, logo_svc);
+
+    // Fetch the new logo on a background thread, then refresh UI
+    if !logo_url.is_empty() {
+        let logo_svc = logo_svc.clone();
+        let favs = favs.clone();
+        let ui_weak = ui.as_weak();
+        let tmp_station = Station::new(name, url).with_logo(logo_url);
+        let url = url.to_string();
+        // Shown in the player only if it is the station there now
+        let shown = SHOWN_STATION.with(|s| s.borrow().seq());
+        std::thread::Builder::new()
+            .name("edit-logo-fetch".into())
+            .spawn(move || {
+                if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        let Some(ui) = ui_weak.upgrade() else { return };
+                        // Update playback logo if this is the current station
+                        if is_current_station(shown, &url) {
+                            let pixel_buf =
+                                SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                                    &rgba, width, height,
+                                );
+                            ui.set_current_logo(slint::Image::from_rgba8(pixel_buf));
+                        }
+                        // Refresh favorites list with the now-cached logo
+                        refresh_favorites(&ui, &favs, &logo_svc);
+                    });
+                }
+            })
+            .ok();
+    }
+}
+
+/// What the window does when a phone changes the accent or edits a
+/// favorite; both run on the window's thread
+fn remote_window_hooks(
+    ui: &App,
+    favorites: &Arc<Mutex<FavoritesManager>>,
+    logo_service: &Arc<LogoService>,
+    shared_state: &Arc<Mutex<AppSnapshot>>,
+) -> remote::WindowHooks {
+    let accent_ui = ui.as_weak();
+    let edit_ui = ui.as_weak();
+    let favs = favorites.clone();
+    let logo_svc = logo_service.clone();
+    let state = shared_state.clone();
+    remote::WindowHooks {
+        accent: Some(Box::new(move |hex: String| {
+            let Some((r, g, b)) = radiotrope_app::data::settings::parse_hex_rgb(&hex) else {
+                return;
+            };
+            let _ = accent_ui.upgrade_in_event_loop(move |ui| {
+                ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
+            });
+        })),
+        favorite_edited: Some(Box::new(move |old, new| {
+            let favs = favs.clone();
+            let logo_svc = logo_svc.clone();
+            let state = state.clone();
+            let _ = edit_ui.upgrade_in_event_loop(move |ui| {
+                let s = &new.station;
+                let id = old.id();
+                let edited = EditedFavorite {
+                    old: Some(&old),
+                    id: &id,
+                    name: &s.name,
+                    url: &s.url,
+                    logo_url: s.logo_url.as_deref().unwrap_or(""),
+                    country: s.country.as_deref().unwrap_or(""),
+                };
+                show_edited_favorite(&ui, &favs, &logo_svc, &state, edited);
+            });
+        })),
+    }
 }
 
 /// Remove a cached logo image, forcing re-decode on next refresh.

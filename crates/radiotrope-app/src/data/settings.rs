@@ -170,6 +170,15 @@ pub struct Settings {
     /// `None` is Claude Code
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_client: Option<String>,
+
+    // === Remote Control (phones) ===
+    /// Phones on the local network may find and pair with the player
+    #[serde(default)]
+    pub remote_control: bool,
+
+    /// The name phones see for this player; `None` is the computer's name
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_name: Option<String>,
 }
 
 fn default_mcp_address() -> String {
@@ -248,6 +257,8 @@ impl Default for Settings {
             mcp_address: default_mcp_address(),
             mcp_interface: None,
             mcp_client: None,
+            remote_control: false,
+            remote_name: None,
         }
     }
 }

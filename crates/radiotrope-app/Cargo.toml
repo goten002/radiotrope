@@ -49,6 +49,8 @@ futures-core = "0.3"
 # The network interfaces to offer in the Agents dialog (Linux, Windows)
 if-addrs = "0.15"
 getrandom = "0.3"
+# Remote Control: announce the player to phones on the local network (mDNS)
+mdns-sd = { version = "0.21", default-features = false }
 rfd = { version = "0.17", optional = true }
 # The system tray icon (desktop): Win32 on Windows, D-Bus StatusNotifierItem
 # on Linux (ksni, no GTK)
