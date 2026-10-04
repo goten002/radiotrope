@@ -16,8 +16,10 @@ use crossbeam_channel::{Sender, TrySendError};
 use radiotrope::audio::PlaybackState;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
-use radiotrope_app::data::schedule::{Entry, ScheduledStation};
-use radiotrope_app::data::types::{name_from_url, url_to_id, Favorite, FavoriteSort, Station};
+use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
+use radiotrope_app::data::types::{
+    name_from_url, url_to_id, Favorite, FavoriteSort, FavoriteUpdate, Station,
+};
 use radiotrope_app::providers::types::Category;
 use radiotrope_app::providers::{CategoryType, ProviderRegistry, StationFilter};
 
@@ -249,10 +251,7 @@ impl Control {
     /// A station by its directory id, looked up off the async thread. The
     /// play is counted in the directory, as the GUI does; nobody waits on it.
     pub async fn station_to_play(&self, id: String) -> Result<Station, Error> {
-        let control = self.clone();
-        let station = tokio::task::spawn_blocking(move || control.find_station(&id))
-            .await
-            .map_err(|e| Error::Failed(format!("Lookup failed: {e}")))??;
+        let station = self.station(id).await?;
         let control = self.clone();
         let clicked = station.clone();
         tokio::task::spawn_blocking(move || {
@@ -263,6 +262,14 @@ impl Control {
             }
         });
         Ok(station)
+    }
+
+    /// A station by its directory id, looked up off the async thread
+    pub async fn station(&self, id: String) -> Result<Station, Error> {
+        let control = self.clone();
+        tokio::task::spawn_blocking(move || control.find_station(&id))
+            .await
+            .map_err(|e| Error::Failed(format!("Lookup failed: {e}")))?
     }
 
     /// A favorite's URL, name, logo and country, to play it
@@ -306,6 +313,14 @@ impl Control {
         } else {
             AppCommand::Unmute
         })
+    }
+
+    /// Use this accent ("#rrggbb"); it is saved with the settings
+    pub fn set_accent(&self, hex: String) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .accent_color = Some(hex);
     }
 
     // -- Directory ----------------------------------------------------------
@@ -454,6 +469,9 @@ impl Control {
     /// Remove the favorite with this id; tells which it was
     pub async fn remove_favorite(&self, id: String) -> Result<Favorite, Error> {
         self.with_favorites(move |control, favorites| {
+            if favorites.get(&id).is_none() {
+                return Err(Error::NoFavorite(id));
+            }
             let removed = favorites
                 .remove(&id)
                 .map_err(|e| Error::Failed(e.to_string()))?;
@@ -461,6 +479,74 @@ impl Control {
                 .save_favorites(favorites)
                 .map_err(|e| Error::Failed(format!("Removed but failed to save: {e}")))?;
             Ok(removed)
+        })
+        .await?
+    }
+
+    /// Change a favorite's name, stream, logo and country, as the window's
+    /// Edit Favorite does; tells what it was and what it is now
+    pub async fn edit_favorite(
+        &self,
+        id: String,
+        edit: FavoriteEdit,
+    ) -> Result<(Favorite, Favorite), Error> {
+        self.with_favorites(move |control, favorites| {
+            let old = favorites
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| Error::NoFavorite(id.clone()))?;
+            let mut update = FavoriteUpdate::new()
+                .name(edit.name.clone())
+                .url(edit.url.clone());
+            update.logo_url = Some(edit.logo_url.clone().filter(|l| !l.is_empty()));
+            update.country = Some(edit.country.clone().filter(|c| !c.is_empty()));
+            if let Err(e) = favorites.update(&id, update) {
+                return Err(Error::Failed(
+                    if url_to_id(&edit.url) != id && favorites.is_favorite(&edit.url) {
+                        "Another favorite already has this stream URL".into()
+                    } else {
+                        e.to_string()
+                    },
+                ));
+            }
+            control
+                .save_favorites(favorites)
+                .map_err(|e| Error::Failed(format!("Changed but failed to save: {e}")))?;
+            let new = favorites
+                .get(&url_to_id(&edit.url))
+                .cloned()
+                .ok_or_else(|| Error::NoFavorite(url_to_id(&edit.url)))?;
+            Ok((old, new))
+        })
+        .await?
+    }
+
+    /// Put the favorites in this order; any left out keep theirs after
+    /// the ones given
+    pub async fn reorder_favorites(&self, ids: Vec<String>) -> Result<(), Error> {
+        self.with_favorites(move |control, favorites| {
+            if let Some(missing) = ids.iter().find(|id| favorites.get(id).is_none()) {
+                return Err(Error::NoFavorite(missing.clone()));
+            }
+            let mut order: Vec<String> = Vec::with_capacity(favorites.count());
+            for id in &ids {
+                if !order.contains(id) {
+                    order.push(id.clone());
+                }
+            }
+            for fav in favorites.sorted(FavoriteSort::Manual) {
+                let id = fav.id();
+                if !order.contains(&id) {
+                    order.push(id);
+                }
+            }
+            let refs: Vec<&str> = order.iter().map(String::as_str).collect();
+            favorites
+                .reorder(&refs)
+                .map_err(|e| Error::Failed(e.to_string()))?;
+            control
+                .save_favorites(favorites)
+                .map_err(|e| Error::Failed(format!("Reordered but failed to save: {e}")))
         })
         .await?
     }
@@ -623,6 +709,112 @@ impl Control {
         })
     }
 
+    /// A Scheduler entry from what a caller asked for, checked as the
+    /// window checks its form (the player then checks for clashes)
+    pub async fn build_entry(&self, request: EntryRequest) -> Result<Entry, Error> {
+        let start = ClockTime::parse(&request.start)
+            .ok_or_else(|| format!("start must be a time like 07:30, not {:?}", request.start))?;
+        let days = parse_days(&request.days)?;
+        let date = match request
+            .date
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+        {
+            Some(text) => Some(
+                chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d")
+                    .map_err(|_| format!("date must be YYYY-MM-DD, not {text:?}"))?,
+            ),
+            None => None,
+        };
+        let end = match (request.end_after_minutes, request.end_at.as_deref()) {
+            (Some(_), Some(_)) => {
+                return Err("Give end_after_minutes or end_at, not both"
+                    .to_string()
+                    .into())
+            }
+            (Some(minutes), None) => {
+                let minutes = minutes.round();
+                if !(1.0..=f64::from(schedule::MAX_MINUTES)).contains(&minutes) {
+                    return Err(format!(
+                        "end_after_minutes must be from 1 to {}",
+                        schedule::MAX_MINUTES
+                    )
+                    .into());
+                }
+                End::After {
+                    minutes: minutes as u32,
+                }
+            }
+            (None, Some(text)) => End::At {
+                time: ClockTime::parse(text)
+                    .ok_or_else(|| format!("end_at must be a time like 22:00, not {text:?}"))?,
+            },
+            (None, None) => End::Never,
+        };
+        let volume = match request.volume {
+            Some(v) if !(0.0..=100.0).contains(&v) => {
+                return Err("volume must be from 0 to 100".to_string().into())
+            }
+            Some(v) => Some((v / 100.0) as f32),
+            None => None,
+        };
+        let station = if request.action == Action::Stop {
+            None
+        } else {
+            Some(self.entry_station(&request).await?)
+        };
+        Ok(Entry {
+            id: 0,
+            enabled: true,
+            action: request.action,
+            station,
+            start,
+            days,
+            date,
+            end,
+            volume,
+            fade: request.fade,
+            fallback: request.fallback.unwrap_or(true),
+            armed_from: 0,
+        })
+    }
+
+    /// The station an entry asks for: a favorite, or a URL
+    async fn entry_station(&self, request: &EntryRequest) -> Result<ScheduledStation, Error> {
+        let favorite_id = request
+            .favorite_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|i| !i.is_empty());
+        let url = request
+            .url
+            .as_deref()
+            .map(str::trim)
+            .filter(|u| !u.is_empty());
+        match (favorite_id, url) {
+            (Some(_), Some(_)) => {
+                return Err("Give favorite_id or url, not both".to_string().into())
+            }
+            (None, None) => return Err("Give the station: favorite_id or url".to_string().into()),
+            (Some(_), None) => {}
+            (None, Some(url)) => {
+                check_length("url", url, MAX_URL_CHARS)?;
+                if !(url.starts_with("http://") || url.starts_with("https://")) {
+                    return Err("url must start with http:// or https://".to_string().into());
+                }
+                let name = request.name.as_deref().map(str::trim).unwrap_or_default();
+                check_length("name", name, MAX_NAME_CHARS)?;
+            }
+        }
+        self.scheduled_station(
+            favorite_id.map(str::to_string),
+            url.map(str::to_string),
+            request.name.as_deref().map(|n| n.trim().to_string()),
+        )
+        .await
+    }
+
     /// Send a schedule change and wait for the player's answer
     async fn ask_schedule<T>(
         &self,
@@ -708,6 +900,67 @@ impl Control {
         .await
         .map_err(|e| Error::Failed(format!("Favorites unavailable: {e}")))
     }
+}
+
+/// A favorite's fields as the window's Edit Favorite has them
+#[derive(Debug, Clone)]
+pub struct FavoriteEdit {
+    pub name: String,
+    pub url: String,
+    /// None or empty: no logo
+    pub logo_url: Option<String>,
+    pub country: Option<String>,
+}
+
+/// A Scheduler entry as callers describe it; [`Control::build_entry`]
+/// checks it
+#[derive(Debug, Clone)]
+pub struct EntryRequest {
+    pub action: Action,
+    /// "HH:MM", local time
+    pub start: String,
+    /// "mon".."sun", "daily", "weekdays", "weekends"; none: once
+    pub days: Vec<String>,
+    /// A one-off's day, "YYYY-MM-DD"
+    pub date: Option<String>,
+    pub favorite_id: Option<String>,
+    pub url: Option<String>,
+    pub name: Option<String>,
+    pub end_after_minutes: Option<f64>,
+    pub end_at: Option<String>,
+    /// 0 to 100; None keeps the volume
+    pub volume: Option<f64>,
+    pub fade: bool,
+    pub fallback: Option<bool>,
+}
+
+/// `text` is at most `max` characters, or says which field is too long
+pub fn check_length(what: &str, text: &str, max: usize) -> Result<(), String> {
+    if text.chars().count() > max {
+        return Err(format!("{what} is too long (at most {max} characters)"));
+    }
+    Ok(())
+}
+
+/// "mon".."sun" (or the full names), "daily", "weekdays", "weekends"
+pub fn parse_days(days: &[String]) -> Result<Days, String> {
+    let mut flags = [false; 7];
+    for day in days {
+        let day = day.trim().to_lowercase();
+        match day.as_str() {
+            "daily" | "every day" | "everyday" | "all" => flags = [true; 7],
+            "weekdays" => flags[..5].fill(true),
+            "weekends" => flags[5..].fill(true),
+            _ => {
+                let i = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+                    .iter()
+                    .position(|d| day.starts_with(d))
+                    .ok_or_else(|| format!("Not a day: {day}"))?;
+                flags[i] = true;
+            }
+        }
+    }
+    Ok(Days::from_flags(flags))
 }
 
 /// A favorite's genres, A to Z

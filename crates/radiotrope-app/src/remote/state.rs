@@ -15,6 +15,21 @@ use crate::app::state::AppSnapshot;
 /// accent-default in ui/defaults.slint)
 pub const DEFAULT_ACCENT: &str = "#f7931e";
 
+/// The Accent Color dialog's swatches and their names (Defaults'
+/// accent-swatches and accent-swatch-names in ui/defaults.slint)
+pub const ACCENT_SWATCHES: [(&str, &str); 10] = [
+    ("#f7931e", "Orange"),
+    ("#ed5b00", "Dark orange"),
+    ("#e62d42", "Red"),
+    ("#d56199", "Pink"),
+    ("#9141ac", "Purple"),
+    ("#3584e4", "Blue"),
+    ("#2190a4", "Teal"),
+    ("#3a944a", "Green"),
+    ("#c88800", "Gold"),
+    ("#6f8396", "Slate"),
+];
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
     /// "stopped", "resolving", "playing" or "paused"
@@ -192,6 +207,27 @@ fn non_empty(s: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_swatches_are_the_windows() {
+        let defaults = include_str!("../../ui/defaults.slint");
+        let colors: Vec<&str> = ACCENT_SWATCHES.iter().map(|(c, _)| *c).collect();
+        let names: Vec<String> = ACCENT_SWATCHES
+            .iter()
+            .map(|(_, n)| format!("\"{n}\""))
+            .collect();
+        let line = |start: &str| {
+            let from = defaults.find(start).unwrap() + start.len();
+            let to = from + defaults[from..].find("];").unwrap();
+            defaults[from..to]
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(line("accent-swatches: ["), colors.join(", ") + ",");
+        assert_eq!(line("accent-swatch-names: ["), names.join(", ") + ",");
+        assert!(defaults.contains(&format!("accent-default: {DEFAULT_ACCENT};")));
+    }
 
     #[test]
     fn a_stopped_player_with_no_accent_set() {

@@ -5,6 +5,8 @@
 //! mDNS, and pairs phones with a code it shows. Phones reach the player
 //! through the same control layer as agents ([`crate::control`]).
 
+mod controls;
+mod library;
 pub mod mdns;
 pub mod pairing;
 pub mod server;
@@ -21,6 +23,7 @@ use std::time::{Duration, Instant};
 use radiotrope_app::config::remote::PORT;
 use radiotrope_app::data::remote::{Device, RemoteStore};
 use radiotrope_app::data::settings::Settings;
+use radiotrope_app::data::types::Favorite;
 use radiotrope_app::network::logo::LogoService;
 
 use crate::control::Control;
@@ -57,8 +60,18 @@ pub struct Status {
 /// What to do with the status once the server is set up
 pub type ShowStatus = Box<dyn FnOnce(Status) + Send>;
 
+/// What the window does when a phone changes something the window draws
+/// itself (the rest it picks up from the shared state)
+#[derive(Default)]
+pub struct WindowHooks {
+    /// Show this accent, "#rrggbb"
+    pub accent: Option<Box<dyn Fn(String) + Send + Sync>>,
+    /// A favorite was edited: as it was, as it is now
+    pub favorite_edited: Option<Box<dyn Fn(Favorite, Favorite) + Send + Sync>>,
+}
+
 impl Remote {
-    pub fn new(control: Control, logos: Option<Arc<LogoService>>) -> Self {
+    pub fn new(control: Control, logos: Option<Arc<LogoService>>, window: WindowHooks) -> Self {
         let store = RemoteStore::load_or_create().unwrap_or_else(|e| {
             eprintln!("Remote Control: can't read or save the paired phones: {e}");
             RemoteStore {
@@ -66,12 +79,13 @@ impl Remote {
                 devices: Vec::new(),
             }
         });
-        Self::with_store(control, logos, store, None)
+        Self::with_store(control, logos, window, store, None)
     }
 
     fn with_store(
         control: Control,
         logos: Option<Arc<LogoService>>,
+        window: WindowHooks,
         store: RemoteStore,
         store_path: Option<std::path::PathBuf>,
     ) -> Self {
@@ -84,6 +98,7 @@ impl Remote {
                 name: Arc::from(mdns::computer_name()),
                 logos,
                 changes: Arc::new(AtomicU64::new(0)),
+                window: Arc::new(window),
             },
             running: Mutex::new(None),
             asked: AtomicU64::new(0),

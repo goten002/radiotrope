@@ -34,9 +34,10 @@ use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
 use super::state::State;
+use super::{controls, library, WindowHooks};
 use crate::control::{self, Control, Played, MAX_NAME_CHARS, MAX_URL_CHARS};
 
-type Body = BoxBody<Bytes, Infallible>;
+pub(super) type Body = BoxBody<Bytes, Infallible>;
 
 /// How long a play waits for the station unless told otherwise
 const DEFAULT_PLAY_WAIT: Duration = Duration::from_secs(10);
@@ -60,6 +61,8 @@ pub struct Shared {
     /// Counts changes the Remote Control dialog shows: phones paired or
     /// removed, a pairing started
     pub changes: Arc<AtomicU64>,
+    /// What the window does about a phone's changes
+    pub window: Arc<WindowHooks>,
 }
 
 impl Shared {
@@ -291,6 +294,33 @@ pub async fn handle(
         (&Method::PUT, ["v1", "volume"]) => volume(shared, request).await,
         (&Method::PUT, ["v1", "mute"]) => mute(shared, request).await,
         (&Method::GET, ["v1", "logos", id]) => logo(shared, id).await,
+        (&Method::GET, ["v1", "search"]) => library::search(shared, &request).await,
+        (&Method::GET, ["v1", "categories", kind]) => {
+            library::categories(shared, kind, &request).await
+        }
+        (&Method::GET, ["v1", "favorites"]) => library::favorites(shared).await,
+        (&Method::POST, ["v1", "favorites"]) => library::add_favorite(shared, request).await,
+        (&Method::PUT, ["v1", "favorites", "order"]) => library::reorder(shared, request).await,
+        (&Method::PATCH, ["v1", "favorites", id]) => {
+            library::edit_favorite(shared, id, request).await
+        }
+        (&Method::DELETE, ["v1", "favorites", id]) => library::remove_favorite(shared, id).await,
+        (&Method::POST, ["v1", "recording"]) => controls::start_recording(shared).await,
+        (&Method::DELETE, ["v1", "recording"]) => controls::stop_recording(shared).await,
+        (&Method::GET, ["v1", "eq"]) => controls::eq(shared),
+        (&Method::PUT, ["v1", "eq"]) => controls::set_eq(shared, request).await,
+        (&Method::PUT, ["v1", "sleep-timer"]) => controls::sleep_timer(shared, request).await,
+        (&Method::GET, ["v1", "schedule"]) => controls::schedule(shared),
+        (&Method::POST, ["v1", "schedule"]) => controls::add_entry(shared, request).await,
+        (&Method::PUT, ["v1", "schedule", id]) => {
+            controls::replace_entry(shared, id, request).await
+        }
+        (&Method::DELETE, ["v1", "schedule", id]) => controls::remove_entry(shared, id).await,
+        (&Method::PUT, ["v1", "schedule", id, "enabled"]) => {
+            controls::enable_entry(shared, id, request).await
+        }
+        (&Method::GET, ["v1", "appearance"]) => controls::appearance(shared),
+        (&Method::PUT, ["v1", "appearance"]) => controls::set_appearance(shared, request).await,
         (_, ["v1", ..]) => error(StatusCode::NOT_FOUND, "not_found", "No such request"),
         _ => error(
             StatusCode::NOT_FOUND,
@@ -767,7 +797,7 @@ pub fn is_local(ip: IpAddr) -> bool {
     }
 }
 
-async fn read_json<T: serde::de::DeserializeOwned>(
+pub(super) async fn read_json<T: serde::de::DeserializeOwned>(
     request: Request<Incoming>,
 ) -> Result<T, Box<Response<Body>>> {
     let bytes = match Limited::new(request.into_body(), MAX_BODY).collect().await {
@@ -789,7 +819,7 @@ async fn read_json<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn json<T: Serialize>(status: StatusCode, value: &T) -> Response<Body> {
+pub(super) fn json<T: Serialize>(status: StatusCode, value: &T) -> Response<Body> {
     let body = serde_json::to_vec(value).unwrap_or_default();
     let mut response = Response::new(Full::new(Bytes::from(body)).boxed());
     *response.status_mut() = status;
@@ -811,25 +841,25 @@ struct ErrorBody<'a> {
     message: &'a str,
 }
 
-fn error(status: StatusCode, code: &str, message: &str) -> Response<Body> {
+pub(super) fn error(status: StatusCode, code: &str, message: &str) -> Response<Body> {
     json(status, &ErrorBody { code, message })
 }
 
-fn no_content() -> Response<Body> {
+pub(super) fn no_content() -> Response<Body> {
     let mut response = Response::new(Full::new(Bytes::new()).boxed());
     *response.status_mut() = StatusCode::NO_CONTENT;
     response
 }
 
 /// 204 when it worked, else the error
-fn done(result: Result<(), control::Error>) -> Response<Body> {
+pub(super) fn done(result: Result<(), control::Error>) -> Response<Body> {
     match result {
         Ok(()) => no_content(),
         Err(e) => control_error(e),
     }
 }
 
-fn control_error(e: control::Error) -> Response<Body> {
+pub(super) fn control_error(e: control::Error) -> Response<Body> {
     let (status, code) = match &e {
         control::Error::Busy => (StatusCode::SERVICE_UNAVAILABLE, "busy"),
         control::Error::Stopped | control::Error::NotTaken => {
