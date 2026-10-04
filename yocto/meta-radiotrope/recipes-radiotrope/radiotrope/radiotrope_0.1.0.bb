@@ -18,6 +18,8 @@ do_unpack() {
     mkdir -p ${S}
     cp -a /work/Cargo.toml /work/Cargo.lock /work/LICENSE ${S}/ 2>/dev/null || true
     cp -a /work/crates ${S}/
+    # The UI and the station flags are compiled in from assets/
+    cp -a /work/assets ${S}/
     # Copy service files and splash data to WORKDIR
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope.service ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/seatd.service ${WORKDIR}/
