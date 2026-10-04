@@ -71,19 +71,20 @@ impl Shared {
         self.pairing.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Save the paired phones off the async thread
-    fn save_store(&self) {
-        let store = self.store().clone();
+    /// Save the paired phones off the async thread, and wait until they
+    /// are on disk
+    async fn save_store(&self) {
+        let store = self.store.clone();
         let path = self.store_path.clone();
-        tokio::task::spawn_blocking(move || {
-            let saved = match path {
-                Some(path) => store.save_at(&path),
-                None => store.save(),
-            };
-            if let Err(e) = saved {
-                eprintln!("Remote Control: can't save the paired phones: {e}");
-            }
-        });
+        let saved = tokio::task::spawn_blocking(move || {
+            radiotrope_app::data::remote::save_shared(&store, path.as_deref())
+        })
+        .await;
+        match saved {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => eprintln!("Remote Control: can't save the paired phones: {e}"),
+            Err(e) => eprintln!("Remote Control: can't save the paired phones: {e}"),
+        }
     }
 
     fn changed(&self) {
@@ -276,7 +277,7 @@ pub async fn handle(
     };
 
     match (&method, parts.as_slice()) {
-        (&Method::DELETE, ["v1", "pair"]) => unpair(shared, &caller),
+        (&Method::DELETE, ["v1", "pair"]) => unpair(shared, &caller).await,
         (&Method::GET, ["v1", "state"]) => {
             let rev = shared.control.favorites_generation().await;
             json(
@@ -313,7 +314,9 @@ fn authorize(shared: &Shared, request: &Request<Incoming>) -> Option<Caller> {
         (device_id, touched)
     };
     if touched {
-        shared.save_store();
+        // Only the time it was last used: the request needn't wait
+        let saving = shared.clone();
+        tokio::spawn(async move { saving.save_store().await });
         shared.changed();
     }
     Some(Caller { device_id })
@@ -447,7 +450,8 @@ async fn pair_code(
             };
             match paired {
                 Ok((token, player_id)) => {
-                    shared.save_store();
+                    // On disk before the phone has its token
+                    shared.save_store().await;
                     json(
                         StatusCode::OK,
                         &Paired {
@@ -490,9 +494,9 @@ async fn pair_code(
     }
 }
 
-fn unpair(shared: &Shared, caller: &Caller) -> Response<Body> {
+async fn unpair(shared: &Shared, caller: &Caller) -> Response<Body> {
     shared.store().remove(&caller.device_id);
-    shared.save_store();
+    shared.save_store().await;
     shared.changed();
     no_content()
 }

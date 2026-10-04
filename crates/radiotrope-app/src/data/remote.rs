@@ -7,6 +7,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
@@ -123,6 +124,21 @@ impl RemoteStore {
             }
             _ => false,
         }
+    }
+}
+
+/// Saves wait here for their turn
+static SAVING: Mutex<()> = Mutex::new(());
+
+/// Save what `store` holds when this save's turn comes, to `path` or the
+/// usual file. Saves run one at a time and each writes the phones as they
+/// are then, so an older list never lands after a newer one.
+pub fn save_shared(store: &Mutex<RemoteStore>, path: Option<&Path>) -> io::Result<()> {
+    let _turn = SAVING.lock().unwrap_or_else(|e| e.into_inner());
+    let latest = store.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    match path {
+        Some(path) => latest.save_at(path),
+        None => latest.save(),
     }
 }
 

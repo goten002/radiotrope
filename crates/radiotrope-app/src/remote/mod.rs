@@ -202,15 +202,15 @@ impl Remote {
 
     /// Forget a phone; its token stops working at once
     pub fn remove_device(&self, id: &str) {
-        let store = {
-            let mut store = self.store();
-            if !store.remove(id) {
-                return;
-            }
-            store.clone()
-        };
+        if !self.store().remove(id) {
+            return;
+        }
         self.shared.changes.fetch_add(1, Ordering::SeqCst);
-        if let Err(e) = store.save() {
+        let saved = radiotrope_app::data::remote::save_shared(
+            &self.shared.store,
+            self.shared.store_path.as_deref(),
+        );
+        if let Err(e) = saved {
             eprintln!("Remote Control: can't save the paired phones: {e}");
         }
     }
