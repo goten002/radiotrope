@@ -368,7 +368,7 @@ struct PairStarted {
 async fn pair_start(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
     let body: PairStart = match read_json(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let device_id = body.device_id.trim();
     if device_id.is_empty() || device_id.chars().count() > MAX_DEVICE_ID_CHARS {
@@ -431,7 +431,7 @@ async fn pair_code(
 ) -> Response<Body> {
     let body: PairCode = match read_json(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     let checked = shared
         .pairing()
@@ -521,7 +521,7 @@ struct PlayResult {
 async fn play(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
     let body: PlayBody = match read_json(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     fn given(v: &Option<String>) -> Option<&str> {
         v.as_deref().map(str::trim).filter(|v| !v.is_empty())
@@ -600,7 +600,7 @@ struct VolumeBody {
 async fn volume(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
     let body: VolumeBody = match read_json(request).await {
         Ok(body) => body,
-        Err(response) => return response,
+        Err(response) => return *response,
     };
     if !(0.0..=100.0).contains(&body.volume) {
         return error(
@@ -625,7 +625,7 @@ struct MuteBody {
 async fn mute(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
     match read_json::<MuteBody>(request).await {
         Ok(body) => done(shared.control.set_muted(body.muted)),
-        Err(response) => response,
+        Err(response) => *response,
     }
 }
 
@@ -765,23 +765,23 @@ pub fn is_local(ip: IpAddr) -> bool {
 
 async fn read_json<T: serde::de::DeserializeOwned>(
     request: Request<Incoming>,
-) -> Result<T, Response<Body>> {
+) -> Result<T, Box<Response<Body>>> {
     let bytes = match Limited::new(request.into_body(), MAX_BODY).collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(_) => {
-            return Err(error(
+            return Err(Box::new(error(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "too_large",
                 "The request is too large",
-            ))
+            )))
         }
     };
     serde_json::from_slice(&bytes).map_err(|e| {
-        error(
+        Box::new(error(
             StatusCode::BAD_REQUEST,
             "bad_request",
             &format!("Bad request: {e}"),
-        )
+        ))
     })
 }
 
