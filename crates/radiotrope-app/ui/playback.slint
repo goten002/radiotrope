@@ -128,6 +128,8 @@ export component Playback inherits Rectangle {
                     dot: true;
                     pulse: root.status-text == "Playing" || root.is-loading;
                     steady: true;
+                    // A long error may shorten like the others
+                    keep: !root.is-error;
                 }
 
                 // Recording progress, or what happened to the last recording
@@ -138,6 +140,7 @@ export component Playback inherits Rectangle {
                     dot: root.is-recording;
                     pulse: root.is-recording;
                     steady: root.is-recording;
+                    keep: root.is-recording;
                     clickable: !root.is-recording && !root.recording-notice-error && root.can-open-recordings;
                     clicked => { root.open-recordings-folder(); }
                 }
@@ -147,6 +150,7 @@ export component Playback inherits Rectangle {
                     icon: @image-url("icons/moon.svg");
                     tone: Theme.text-secondary;
                     steady: true;
+                    keep: true;
                     clickable: true;
                     clicked => { root.open-sleep-timer(); }
                 }

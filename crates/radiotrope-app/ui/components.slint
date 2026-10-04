@@ -351,13 +351,17 @@ export component Chip inherits Rectangle {
     in property <bool> clickable: false;
     // Shows a small x after the text: a click closes it
     in property <bool> closable: false;
+    // Keep the full text while other chips in the row still have room to
+    // give: those elide first (e.g. Playing and REC stay whole while a
+    // Scheduler label shortens)
+    in property <bool> keep: false;
     callback clicked();
 
     // Grows with its text but gives way (eliding) when space runs out
     preferred-width: row.preferred-width + 16px;
     max-width: self.preferred-width;
     min-width: 40px;
-    horizontal-stretch: 1;
+    horizontal-stretch: root.keep ? 0 : 1;
     height: 20px;
     border-radius: Theme.radius-sm;
     background: root.tone.with-alpha(root.clickable && touch.has-hover ? 0.26 : 0.14);
