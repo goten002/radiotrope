@@ -4,22 +4,24 @@
 //! Four short beeps, then a pause, again and again. The file says it is
 //! about a day long; the alarm stops it long before.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 use std::io::{self, Read, Seek, SeekFrom};
 
-const RATE: u32 = 22_050;
+/// The rate most outputs run at, so the beep is rarely resampled
+const RATE: u32 = 48_000;
 const HEADER_LEN: u64 = 44;
 /// 16-bit mono samples, a little over a day of them
 const DATA_LEN: u32 = 0x7FFF_0000;
 const PITCH: f32 = 880.0;
-const LOUDNESS: f32 = 0.5;
+/// Leaves headroom for an equalizer boost, so the limiter stays out of it
+const LOUDNESS: f32 = 0.4;
 
 /// One cycle: four beeps of 0.1 s with 0.1 s gaps, then 0.6 s quiet
 const BEEP: u32 = RATE / 10;
 const BEEPS: u32 = 4;
 const CYCLE: u32 = BEEP * 2 * BEEPS + RATE * 6 / 10;
-/// Rise and fall of each beep, so it doesn't click
-const EDGE: u32 = RATE / 200;
+/// Rise and fall of each beep (15 ms, eased), so it doesn't click or buzz
+const EDGE: u32 = RATE * 15 / 1000;
 
 /// Reads as a WAV file of the alarm beep
 pub struct AlarmTone {
@@ -60,7 +62,8 @@ impl AlarmTone {
             return 0.0;
         }
         let into = at % (BEEP * 2);
-        let edge = into.min(BEEP - 1 - into).min(EDGE) as f32 / EDGE as f32;
+        let ramp = into.min(BEEP - 1 - into).min(EDGE) as f32 / EDGE as f32;
+        let edge = 0.5 - 0.5 * (PI * ramp).cos();
         (TAU * PITCH * into as f32 / RATE as f32).sin() * LOUDNESS * edge
     }
 
@@ -118,7 +121,7 @@ mod tests {
                 .fold(0.0, f32::max)
         };
         // The first beep, the gap after it, and the pause at the end
-        assert!(loud(0, BEEP) > 0.4);
+        assert!(loud(0, BEEP) > 0.35);
         assert_eq!(loud(BEEP, BEEP * 2), 0.0);
         assert_eq!(loud(BEEP * 2 * BEEPS, CYCLE), 0.0);
         // Its edges are soft
@@ -132,7 +135,7 @@ mod tests {
                 .unwrap();
         // The first beep, as the engine would hear it
         let peak = source.take(BEEP as usize).map(f32::abs).fold(0.0, f32::max);
-        assert!(peak > 0.4, "{peak}");
+        assert!(peak > 0.35, "{peak}");
     }
 
     #[test]

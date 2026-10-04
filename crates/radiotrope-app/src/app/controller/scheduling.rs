@@ -39,7 +39,8 @@ pub const ALARM_WATCH_SECS: i64 = 10 * 60;
 /// How long an alarm waits for its station before it beeps instead
 pub const BEEP_AFTER_SECS: i64 = 30;
 
-/// The beep is at least this loud, whatever volume the alarm set
+/// The beep is at least this loud, whatever volume the alarm set, once
+/// its fade in is done
 pub const BEEP_VOLUME: f32 = 0.5;
 
 /// Gives a station's logo as PNG, for a scheduled recording's cover art
@@ -431,6 +432,8 @@ impl AppController {
             return;
         };
         active.beeping = true;
+        // An alarm that fades in lets its beep rise the same way
+        let fade = active.entry.fade;
         let name = active
             .entry
             .station
@@ -438,7 +441,9 @@ impl AppController {
             .map(|s| s.name.clone())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| "The station".into());
-        self.fade_in = None;
+        self.fade_in = fade.then(|| FadeIn::Rising {
+            from: Instant::now(),
+        });
         // Stop the station or its resolve; the beep's own events are
         // ignored, as no station is current
         self.cancel_stream();
@@ -575,7 +580,7 @@ impl AppController {
             if state.is_muted {
                 0.0
             } else if state.alarm_beep {
-                state.volume.max(BEEP_VOLUME)
+                state.volume.max(BEEP_VOLUME) * gain
             } else {
                 state.volume * gain
             }
@@ -787,13 +792,7 @@ mod tests {
     fn an_alarm_whose_station_does_not_start_beeps_until_stopped() {
         let (mut controller, state) = controller();
         state.lock().unwrap().volume = 0.2;
-        let (_, at) = save(
-            &mut controller,
-            Entry {
-                fade: true,
-                ..entry(Action::Play)
-            },
-        );
+        let (_, at) = save(&mut controller, entry(Action::Play));
         controller.run_schedule(at);
         controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS - 1));
         assert!(!state.lock().unwrap().alarm_beep);
@@ -805,7 +804,7 @@ mod tests {
             assert_eq!(s.playback, PlaybackState::Playing);
             assert!(s.status_text.contains("Jazz FM didn't start"));
         }
-        // Loud enough to hear, and no fade holds it down
+        // Loud enough to hear
         assert_eq!(controller.engine_volume, Some(BEEP_VOLUME));
 
         // It isn't retried over the beep, and Stop silences it
@@ -817,6 +816,32 @@ mod tests {
         assert_eq!(s.playback, PlaybackState::Stopped);
         drop(s);
         assert_eq!(controller.engine_volume, Some(0.2));
+    }
+
+    #[test]
+    fn a_fading_alarms_beep_rises_like_its_station_would() {
+        let (mut controller, state) = controller();
+        state.lock().unwrap().volume = 0.2;
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                fade: true,
+                ..entry(Action::Play)
+            },
+        );
+        controller.run_schedule(at);
+        let beep_at = at + TimeDelta::seconds(BEEP_AFTER_SECS);
+        controller.run_schedule(beep_at);
+        assert!(state.lock().unwrap().alarm_beep);
+        // It starts from silence
+        assert!(controller.engine_volume.unwrap() < 0.05);
+
+        // and ends at the beep's volume
+        controller.fade_in = Some(FadeIn::Rising {
+            from: Instant::now() - FADE_IN,
+        });
+        controller.apply_volume(&beep_at);
+        assert_eq!(controller.engine_volume, Some(BEEP_VOLUME));
     }
 
     #[test]
