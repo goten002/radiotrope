@@ -484,27 +484,27 @@ export component ScheduleDialog inherits Rectangle {
                     selected <=> root.date;
                     changed => { root.error = ""; }
                 }
-                if root.repeat == "weekly": Rectangle { horizontal-stretch: 1; }
-            }
+                // The days sit beside the picker, where Once shows its date
+                if root.repeat == "weekly": Rectangle {
+                    horizontal-stretch: 1;
+                    background: Theme.elevated;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.hairline;
+                    height: days-row.preferred-height;
 
-            if root.repeat == "weekly": Rectangle {
-                background: Theme.elevated;
-                border-radius: Theme.radius-md;
-                border-width: 1px;
-                border-color: Theme.hairline;
-                height: days-row.preferred-height;
+                    days-row := HorizontalLayout {
+                        padding: 3px;
+                        spacing: 3px;
 
-                days-row := HorizontalLayout {
-                    padding: 3px;
-                    spacing: 3px;
-
-                    for label[i] in root.day-labels: DayChoice {
-                        label: label;
-                        accessible-label: root.day-names[i];
-                        selected: root.days[i];
-                        clicked => {
-                            root.error = "";
-                            root.days[i] = !root.days[i];
+                        for label[i] in root.day-labels: DayChoice {
+                            label: label;
+                            accessible-label: root.day-names[i];
+                            selected: root.days[i];
+                            clicked => {
+                                root.error = "";
+                                root.days[i] = !root.days[i];
+                            }
                         }
                     }
                 }
