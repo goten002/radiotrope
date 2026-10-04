@@ -33,6 +33,11 @@ do_unpack() {
 # Allow cargo to fetch crates from crates.io (standard Yocto Rust pattern per meta-slint)
 do_compile[network] = "1"
 
+# LAME (MP3 recording) builds with autoconf, which only cross-compiles when
+# told the target; it reads the triple from the compiler name, and Yocto's
+# compiler is a wrapper script
+export MP3LAME_SYS_OVERRIDE_HOST = "${HOST_SYS}"
+
 # Build with embedded feature flags (linuxkms backend, software renderer)
 CARGO_FEATURES = "embedded"
 EXTRA_CARGO_FLAGS = "--no-default-features"
