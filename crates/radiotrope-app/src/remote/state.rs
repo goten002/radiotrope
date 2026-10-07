@@ -51,6 +51,8 @@ pub struct State {
     /// An alarm's station didn't start and the player beeps instead
     pub alarm_mode: bool,
     pub recording: Option<RecordingState>,
+    /// Names of the phones listening to the station now
+    pub listeners: Vec<String>,
     pub sleep_timer: Option<SleepState>,
     /// The scheduled entry playing or recording now, e.g. "Play Jazz FM"
     pub scheduled_now: Option<String>,
@@ -145,6 +147,11 @@ impl State {
             status: s.status_text.to_string(),
             status_is_error: s.is_error,
             alarm_mode: s.alarm_beep,
+            listeners: s
+                .listen
+                .as_ref()
+                .map(|l| l.listener_names())
+                .unwrap_or_default(),
             recording: s.recording.as_ref().map(|r| RecordingState {
                 file: r
                     .path

@@ -36,7 +36,7 @@ use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::output::{DefaultWatch, DeviceOutputs, Devices, Output, SilentOutput};
 use super::pcm::{decode_ahead, PcmFeed};
-use super::recording::{Recorder, RecordingTap, TapPoint};
+use super::recording::{Listen, Recorder, RecordingTap, TapPoint};
 use super::stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
 use super::types::{AudioAnalysis, AudioCommand, AudioEvent, EngineEvent, PlaybackState, StreamId};
 
@@ -616,6 +616,12 @@ impl AudioEngine {
     /// the equalizer (see [`super::recording::TapPoint`]).
     pub fn recorder(&self) -> Recorder {
         self.recorder.clone()
+    }
+
+    /// Get a handle for phones listening to the playing station (fed by
+    /// the same taps as recordings)
+    pub fn listen(&self) -> Listen {
+        self.recorder.listen()
     }
 
     /// Non-blocking poll for the next event.

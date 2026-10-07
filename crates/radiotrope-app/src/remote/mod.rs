@@ -7,6 +7,7 @@
 
 mod controls;
 mod library;
+mod listen;
 pub mod mdns;
 pub mod pairing;
 pub mod server;
@@ -99,6 +100,7 @@ impl Remote {
                 logos,
                 changes: Arc::new(AtomicU64::new(0)),
                 window: Arc::new(window),
+                tickets: Default::default(),
             },
             running: Mutex::new(None),
             asked: AtomicU64::new(0),

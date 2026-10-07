@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
-use radiotrope::audio::{PlaybackState, RecordingFormat};
+use radiotrope::audio::{Listen, PlaybackState, RecordingFormat};
 use radiotrope_app::data::schedule::{Action, Entry};
 use radiotrope_app::data::settings::Settings;
 
@@ -189,6 +189,10 @@ pub struct AppSnapshot {
     pub scheduled: Option<ScheduledNow>,
     /// The next entry to come round
     pub next_run: Option<NextRun>,
+
+    // Listening on phones
+    /// Phones listening to the station; `None` until the audio engine runs
+    pub listen: Option<Listen>,
 }
 
 /// The running sleep timer
@@ -302,6 +306,7 @@ impl Default for AppSnapshot {
             sleep: None,
             scheduled: None,
             next_run: None,
+            listen: None,
         }
     }
 }

@@ -11,6 +11,8 @@
 //!
 //! The taps never block playback: batches are handed over with `try_send`,
 //! and if the writer falls behind, batches are dropped and counted.
+//!
+//! The same taps also feed [`Listen`], which streams the station to phones.
 
 use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Seek, SeekFrom, Write};
@@ -27,11 +29,16 @@ use rodio::Source;
 
 use crate::error::RadioError;
 
+mod listen;
 mod mp3;
 mod opus;
 mod resample;
 mod wav;
 
+pub use listen::{
+    Listen, ListenError, ListenStream, LISTEN_BITRATE_KBPS, LISTEN_CHANNELS, LISTEN_SAMPLE_RATE,
+    MAX_LISTENERS,
+};
 #[cfg(test)]
 pub(crate) use opus::encode_ogg_opus;
 
@@ -215,11 +222,18 @@ struct RecorderShared {
 #[derive(Clone, Default)]
 pub struct Recorder {
     shared: Arc<RecorderShared>,
+    /// Phones listening to the same taps
+    listen: Listen,
 }
 
 impl Recorder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Phones listening to the station, through the same taps as recordings
+    pub fn listen(&self) -> Listen {
+        self.listen.clone()
     }
 
     /// Start recording to `options.path`.
@@ -392,7 +406,10 @@ pub struct RecordingTap<S> {
     inner: S,
     recorder: Recorder,
     point: TapPoint,
+    /// Generation of the recording this tap feeds, 0 for none
     generation: u64,
+    /// Generation of the listening this tap feeds, 0 for none
+    listen_generation: u64,
     until_check: u32,
     /// Position of the next sample within its frame (0 = frame start)
     frame_pos: u16,
@@ -413,6 +430,7 @@ where
             recorder,
             point,
             generation: 0,
+            listen_generation: 0,
             until_check: 0,
             frame_pos: 0,
             frame_channels: 0,
@@ -420,19 +438,6 @@ where
             batch_rate: 0,
             batch_channels: 0,
         }
-    }
-
-    fn send_batch(&mut self) {
-        if self.batch.is_empty() {
-            return;
-        }
-        let samples = mem::replace(&mut self.batch, Vec::with_capacity(BATCH_SAMPLES));
-        self.recorder.submit(
-            self.generation,
-            self.batch_rate,
-            self.batch_channels,
-            samples,
-        );
     }
 }
 
@@ -460,14 +465,18 @@ where
         if self.until_check == 0 && frame_start {
             self.until_check = STATE_CHECK_INTERVAL;
             let generation = self.recorder.generation_for(self.point);
-            if generation != self.generation {
-                // Started, stopped or restarted: don't carry audio across.
-                self.batch.clear();
+            let listen_generation = self.recorder.listen.generation_for(self.point);
+            if (generation, listen_generation) != (self.generation, self.listen_generation) {
+                // Started, stopped or restarted: what was gathered goes to
+                // whoever it was gathered for (a recording or listening
+                // that has ended ignores it), so nothing carries across.
+                self.send_batch();
                 self.generation = generation;
+                self.listen_generation = listen_generation;
             }
         }
 
-        if self.generation != 0 {
+        if self.copying() {
             let rate = self.inner.sample_rate().get();
             if rate != self.batch_rate || channels != self.batch_channels {
                 self.send_batch();
@@ -508,20 +517,56 @@ where
     }
 }
 
+impl<S> RecordingTap<S> {
+    /// Whether a recording or a listener takes audio from this tap
+    fn copying(&self) -> bool {
+        self.generation != 0 || self.listen_generation != 0
+    }
+
+    fn send_batch(&mut self) {
+        if self.batch.is_empty() {
+            return;
+        }
+        let samples = mem::replace(&mut self.batch, Vec::with_capacity(BATCH_SAMPLES));
+        self.submit(samples);
+    }
+
+    /// Hand `samples` to whoever takes them
+    fn submit(&mut self, samples: Vec<f32>) {
+        let (rate, channels) = (self.batch_rate, self.batch_channels);
+        match (self.generation != 0, self.listen_generation != 0) {
+            (true, true) => {
+                self.recorder.listen.submit(
+                    self.listen_generation,
+                    rate,
+                    channels,
+                    samples.clone(),
+                );
+                self.recorder
+                    .submit(self.generation, rate, channels, samples);
+            }
+            (true, false) => self
+                .recorder
+                .submit(self.generation, rate, channels, samples),
+            (false, true) => {
+                self.recorder
+                    .listen
+                    .submit(self.listen_generation, rate, channels, samples)
+            }
+            (false, false) => {}
+        }
+    }
+}
+
 impl<S> Drop for RecordingTap<S> {
     fn drop(&mut self) {
         // rodio can stop a source mid-frame: keep whole frames only
         let channels = usize::from(self.batch_channels.max(1));
         self.batch
             .truncate(self.batch.len() - self.batch.len() % channels);
-        if self.generation != 0 && !self.batch.is_empty() {
+        if self.copying() && !self.batch.is_empty() {
             let samples = mem::take(&mut self.batch);
-            self.recorder.submit(
-                self.generation,
-                self.batch_rate,
-                self.batch_channels,
-                samples,
-            );
+            self.submit(samples);
         }
     }
 }
@@ -914,6 +959,34 @@ mod tests {
         let status = recorder.stop().unwrap();
         assert_eq!(status.error, None);
         assert!(status.duration.abs_diff(Duration::from_secs(2)) < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn one_tap_feeds_a_recording_and_listeners_together() {
+        let path = temp_path("tap-and-listen");
+        let recorder = Recorder::new();
+        let listen = recorder.listen();
+        let phone = listen.subscribe("Pixel").unwrap();
+        recorder.start(options(&path, TapPoint::BeforeEq)).unwrap();
+        let source = SamplesBuffer::new(
+            NonZero::new(2).unwrap(),
+            NonZero::new(44_100).unwrap(),
+            sine(44_100, 2, 2.0),
+        );
+        play_through(source, &recorder, TapPoint::BeforeEq);
+        let status = recorder.stop().unwrap();
+        assert_eq!(status.error, None);
+        assert!(status.duration.abs_diff(Duration::from_secs(2)) < Duration::from_millis(50));
+        // Two seconds at 192 kbps is 48 kB; the phone got the audio, not
+        // just silence, which would take two seconds to come
+        let started = Instant::now();
+        let mut got = 0;
+        while got < 40_000 && started.elapsed() < Duration::from_secs(1) {
+            if let Ok(piece) = phone.recv_timeout(Duration::from_millis(50)) {
+                got += piece.len();
+            }
+        }
+        assert!(got >= 40_000, "the phone got {got} bytes");
     }
 
     #[test]

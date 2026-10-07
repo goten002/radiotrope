@@ -141,6 +141,11 @@ impl AppController {
                 if let Some(tx) = self.stats_tx.take() {
                     let _ = tx.send(engine.shared_stats());
                 }
+                // Phones reach the listening through the shared state
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .listen = Some(engine.listen());
                 self.engine = Some(engine);
             }
             Err(e) => {

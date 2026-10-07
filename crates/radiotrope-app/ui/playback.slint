@@ -27,6 +27,9 @@ export component Playback inherits Rectangle {
     // A "Saved ..." notice opens the recordings folder when clicked
     in property <bool> can-open-recordings;
     callback open-recordings-folder();
+    // Phones listening over Remote Control: a name or "2 phones" ("" when
+    // none listens)
+    in property <string> listening;
     // Time left on the Timer, "23:12" ("" when none runs)
     in property <string> sleep-left;
     // The Scheduler's label around an entry's start ("" when none), and
@@ -143,6 +146,13 @@ export component Playback inherits Rectangle {
                     keep: root.is-recording;
                     clickable: !root.is-recording && !root.recording-notice-error && root.can-open-recordings;
                     clicked => { root.open-recordings-folder(); }
+                }
+
+                if root.listening != "": Chip {
+                    text: root.listening;
+                    icon: @image-url("icons/headphones.svg");
+                    tone: Theme.text-secondary;
+                    keep: true;
                 }
 
                 if root.sleep-left != "": Chip {
