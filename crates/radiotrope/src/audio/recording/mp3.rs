@@ -69,6 +69,22 @@ impl Mp3Encoder {
         }
     }
 
+    /// An encoder for a stream rather than a file: no tag, and a fixed
+    /// rate and channel count that any input is converted to
+    pub(super) fn stream(kbps: u32, sample_rate: u32, channels: u16) -> Result<Self, String> {
+        let bitrate = nearest_bitrate(kbps);
+        Ok(Self {
+            tags: None,
+            bitrate,
+            seekable: false,
+            lame: Some(Lame::new(sample_rate, channels, bitrate, false)?),
+            resampler: None,
+            resampled: Vec::new(),
+            audio_start: 0,
+            lame_tag: Vec::new(),
+        })
+    }
+
     fn write_tag(&mut self, out: &mut Vec<u8>) {
         if let Some(tags) = self.tags.take() {
             let tag = id3v2_tag(&tags);

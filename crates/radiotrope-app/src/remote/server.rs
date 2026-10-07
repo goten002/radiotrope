@@ -34,7 +34,7 @@ use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
 use super::state::State;
-use super::{controls, library, WindowHooks};
+use super::{controls, library, listen, WindowHooks};
 use crate::control::{self, Control, Played, MAX_NAME_CHARS, MAX_URL_CHARS};
 
 pub(super) type Body = BoxBody<Bytes, Infallible>;
@@ -63,6 +63,8 @@ pub struct Shared {
     pub changes: Arc<AtomicU64>,
     /// What the window does about a phone's changes
     pub window: Arc<WindowHooks>,
+    /// Tickets phones were given to open the listening stream
+    pub tickets: Arc<Mutex<listen::Tickets>>,
 }
 
 impl Shared {
@@ -72,6 +74,19 @@ impl Shared {
 
     fn pairing(&self) -> std::sync::MutexGuard<'_, Pairing> {
         self.pairing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(super) fn tickets(&self) -> std::sync::MutexGuard<'_, listen::Tickets> {
+        self.tickets.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The name of the paired phone `device_id`; `None` once unpaired
+    pub(super) fn device_name(&self, device_id: &str) -> Option<String> {
+        self.store()
+            .devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .map(|d| d.name.clone())
     }
 
     /// Save the paired phones off the async thread, and wait until they
@@ -90,7 +105,7 @@ impl Shared {
         }
     }
 
-    fn changed(&self) {
+    pub(super) fn changed(&self) {
         self.changes.fetch_add(1, Ordering::SeqCst);
     }
 }
@@ -263,6 +278,10 @@ pub async fn handle(
             let id = id.to_string();
             return pair_code(shared, &id, request).await;
         }
+        // The ticket in the address stands for the token
+        (&Method::GET, ["v1", "listen", "stream"]) => {
+            return listen::stream(shared, &request, cancel)
+        }
         _ => {}
     }
 
@@ -289,6 +308,7 @@ pub async fn handle(
             )
         }
         (&Method::GET, ["v1", "events"]) => events(shared, cancel),
+        (&Method::POST, ["v1", "listen"]) => listen::ticket(shared, &caller.device_id),
         (&Method::POST, ["v1", "play"]) => play(shared, request).await,
         (&Method::POST, ["v1", "stop"]) => done(shared.control.stop()),
         (&Method::PUT, ["v1", "volume"]) => volume(shared, request).await,
@@ -749,8 +769,8 @@ fn events(shared: &Shared, cancel: CancellationToken) -> Response<Body> {
     response
 }
 
-/// An event stream's body: what the sender task hands over
-struct Events(tokio::sync::mpsc::Receiver<Bytes>);
+/// An event or audio stream's body: what the sender hands over
+pub(super) struct Events(pub(super) tokio::sync::mpsc::Receiver<Bytes>);
 
 impl hyper::body::Body for Events {
     type Data = Bytes;

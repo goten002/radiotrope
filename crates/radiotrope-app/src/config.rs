@@ -263,4 +263,11 @@ pub mod remote {
 
     /// Largest request body read, in bytes
     pub const MAX_BODY: usize = 64 * 1024;
+
+    /// How long a listening ticket can be used to open the audio stream
+    pub const LISTEN_TICKET_LIFETIME: Duration = Duration::from_secs(30);
+
+    /// How often an open audio stream checks that its phone is still
+    /// paired and still connected
+    pub const LISTEN_CHECK: Duration = Duration::from_secs(1);
 }

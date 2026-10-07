@@ -1568,6 +1568,11 @@ fn main() {
                 .into();
             let recording = s.recording.clone();
             let recording_notice = s.recording_notice.clone();
+            let listeners = s
+                .listen
+                .as_ref()
+                .map(|l| l.listener_names())
+                .unwrap_or_default();
             let schedule_view = schedule_ui::View::of(&s);
             let settings_now = window_settings(&s, &ui);
             drop(s);
@@ -1593,6 +1598,7 @@ fn main() {
             }
 
             schedule_ui::show_state(&ui, schedule_view);
+            ui.set_listening(listening_text(&listeners).into());
             show_recording_state(
                 &ui,
                 recording.as_ref(),
@@ -3102,6 +3108,16 @@ fn station_cover_png(logo_service: &LogoService, station: &Station) -> Option<Ve
     (png.len() <= MAX_COVER_BYTES).then_some(png)
 }
 
+/// The header chip's words for the phones listening: the phone's name, or
+/// how many there are; empty when none listens
+fn listening_text(listeners: &[String]) -> String {
+    match listeners {
+        [] => String::new(),
+        [one] => one.clone(),
+        many => format!("{} phones", many.len()),
+    }
+}
+
 /// Mirror recording progress and notices into the UI (called every 200 ms).
 fn show_recording_state(
     ui: &App,
@@ -4346,6 +4362,16 @@ fn format_codec_line(s: &AppSnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_listening_chip_names_one_phone_and_counts_more() {
+        assert_eq!(listening_text(&[]), "");
+        assert_eq!(listening_text(&["Pixel".into()]), "Pixel");
+        assert_eq!(
+            listening_text(&["Pixel".into(), "Xiaomi".into()]),
+            "2 phones"
+        );
+    }
 
     #[test]
     fn explorer_gets_backslashes() {

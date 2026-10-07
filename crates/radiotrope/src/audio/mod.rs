@@ -21,8 +21,8 @@ pub use dsp::equalizer::{
 };
 pub use engine::{AudioEngine, EngineConfig, EngineOutput};
 pub use recording::{
-    Recorder, RecordingFormat, RecordingOptions, RecordingStatus, RecordingTags, RecordingTap,
-    TapPoint,
+    Listen, ListenError, ListenStream, Recorder, RecordingFormat, RecordingOptions,
+    RecordingStatus, RecordingTags, RecordingTap, TapPoint,
 };
 pub use stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
 pub use types::{

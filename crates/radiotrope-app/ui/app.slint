@@ -111,6 +111,8 @@ export component App inherits Window {
     callback recording-bitrate-changed(int);
     in-out property <bool> is-recording;
     in-out property <bool> can-record;
+    // Phones listening over Remote Control: a name or "2 phones"
+    in-out property <string> listening;
     in-out property <string> recording-text;
     in-out property <string> recording-size;
     in-out property <string> recording-notice;
@@ -473,6 +475,7 @@ export component App inherits Window {
                     can-open-recordings: Platform.has-file-manager;
                     open-recordings-folder => { root.open-recordings-folder(); }
                     sleep-left: root.sleep-active ? root.sleep-left : "";
+                    listening: root.listening;
                     schedule-label: root.schedule-label;
                     schedule-label-bell: root.schedule-label-bell;
                     schedule-label-closable: root.schedule-label-closable;
