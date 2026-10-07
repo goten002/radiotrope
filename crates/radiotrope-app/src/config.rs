@@ -91,6 +91,11 @@ pub mod ui {
     /// How often the tray icon's menu and tooltip are brought up to date
     pub const TRAY_REFRESH: Duration = Duration::from_millis(250);
 
+    /// A tray click hides the window when it was in front. Clicking the
+    /// tray can take the focus from it first (Windows makes the taskbar the
+    /// active window), so focus lost this recently still counts as in front.
+    pub const TRAY_FRONT_GRACE: Duration = Duration::from_millis(600);
+
     /// How often the desktop is asked whether it has a tray (Linux: the
     /// panel, or GNOME's AppIndicator extension, can come and go)
     pub const TRAY_HOST_CHECK: Duration = Duration::from_secs(2);

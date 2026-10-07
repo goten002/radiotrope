@@ -15,7 +15,7 @@ use tray_icon::menu::{
 };
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use radiotrope_app::config::ui::{TRAY_FAVORITES, TRAY_REFRESH, TRAY_TEXT_CHARS};
+use radiotrope_app::config::ui::{TRAY_FAVORITES, TRAY_FRONT_GRACE, TRAY_REFRESH, TRAY_TEXT_CHARS};
 
 use crate::{App, Defaults};
 
@@ -337,6 +337,7 @@ thread_local! {
 /// Start the tray: the icon while View > Show Tray Icon is on, and the
 /// clicks on it. Call once, on the UI thread.
 pub fn start(ui: &App) {
+    crate::window_frame::track_focus(ui.window());
     let ui_weak = ui.as_weak();
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
         let TrayIconEvent::Click {
@@ -461,11 +462,15 @@ fn act(ui: &App, action: Action, click: bool) {
                     return;
                 }
             }
+            // A shown window that others cover comes to the front; only one
+            // already in front hides
             let window = ui.window();
-            if window.is_visible() && !window.is_minimized() {
+            if !window.is_visible() || window.is_minimized() {
+                show_window(ui);
+            } else if !click || crate::window_frame::was_in_front(window, TRAY_FRONT_GRACE) {
                 let _ = ui.hide();
             } else {
-                show_window(ui);
+                crate::window_frame::raise(window);
             }
         }
         Action::PlayStop => ui.invoke_play_or_stop(),
