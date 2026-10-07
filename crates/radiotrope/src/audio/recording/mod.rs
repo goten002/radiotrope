@@ -36,8 +36,8 @@ mod resample;
 mod wav;
 
 pub use listen::{
-    Listen, ListenError, ListenStream, LISTEN_BITRATE_KBPS, LISTEN_CHANNELS, LISTEN_SAMPLE_RATE,
-    MAX_LISTENERS,
+    Listen, ListenError, ListenFormat, ListenStream, LISTEN_BITRATE_KBPS, LISTEN_CHANNELS,
+    LISTEN_OPUS_FRAME, LISTEN_OPUS_KBPS, LISTEN_OPUS_RATE, LISTEN_SAMPLE_RATE, MAX_LISTENERS,
 };
 #[cfg(test)]
 pub(crate) use opus::encode_ogg_opus;

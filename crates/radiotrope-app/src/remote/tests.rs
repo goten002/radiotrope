@@ -78,6 +78,7 @@ impl Player {
             changes: Arc::new(AtomicU64::new(0)),
             window: Arc::new(window),
             tickets: Default::default(),
+            calls: Default::default(),
         };
         let server = server::start(SocketAddr::from(([127, 0, 0, 1], 0)), shared.clone()).unwrap();
         Player {
@@ -894,4 +895,174 @@ async fn a_made_up_ticket_is_refused() {
     assert!(head.starts_with("HTTP/1.1 401"), "{head}");
     let (_, head) = open_listening(&player, "/v1/listen/stream").await;
     assert!(head.starts_with("HTTP/1.1 401"), "{head}");
+}
+
+/// A phone's side of a WebRTC call, on this computer: offers to receive
+/// audio and counts the Opus packets that arrive
+struct PhoneCall {
+    rtc: str0m::Rtc,
+    socket: std::net::UdpSocket,
+    pending: str0m::change::SdpPendingOffer,
+}
+
+impl PhoneCall {
+    fn offer() -> (Self, String) {
+        use str0m::media::{Direction, MediaKind};
+        let mut rtc = str0m::RtcConfig::new()
+            .clear_codecs()
+            .enable_opus(true, false)
+            .build(Instant::now());
+        let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+        let candidate = str0m::Candidate::host(socket.local_addr().unwrap(), "udp").unwrap();
+        rtc.add_local_candidate(candidate);
+        let mut change = rtc.sdp_api();
+        change.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None);
+        let (offer, pending) = change.apply().unwrap();
+        (
+            Self {
+                rtc,
+                socket,
+                pending,
+            },
+            offer.to_sdp_string(),
+        )
+    }
+
+    /// Take the player's answer and run the call for `time`; the Opus
+    /// packets that came, and whether the player hung up
+    fn run(mut self, answer: &str, time: Duration) -> (Vec<Vec<u8>>, bool) {
+        use str0m::{Event, IceConnectionState, Input, Output};
+        let answer = str0m::change::SdpAnswer::from_sdp_string(answer).unwrap();
+        self.rtc
+            .sdp_api()
+            .accept_answer(self.pending, answer)
+            .unwrap();
+        let local = self.socket.local_addr().unwrap();
+        let end = Instant::now() + time;
+        let mut packets = Vec::new();
+        let mut buf = vec![0; 2000];
+        while Instant::now() < end {
+            let timeout = loop {
+                match self.rtc.poll_output().unwrap() {
+                    Output::Timeout(t) => break t,
+                    Output::Transmit(t) => {
+                        self.socket.send_to(&t.contents, t.destination).unwrap();
+                    }
+                    Output::Event(Event::MediaData(data)) => packets.push(data.data.to_vec()),
+                    Output::Event(Event::IceConnectionStateChange(
+                        IceConnectionState::Disconnected,
+                    )) => return (packets, true),
+                    Output::Event(_) => {}
+                }
+            };
+            if !self.rtc.is_alive() {
+                return (packets, true);
+            }
+            let wait = timeout
+                .saturating_duration_since(Instant::now())
+                .clamp(Duration::from_millis(1), Duration::from_millis(20));
+            self.socket.set_read_timeout(Some(wait)).unwrap();
+            buf.resize(2000, 0);
+            let input = match self.socket.recv_from(&mut buf) {
+                Ok((n, source)) => {
+                    buf.truncate(n);
+                    Input::Receive(
+                        Instant::now(),
+                        str0m::net::Receive {
+                            proto: str0m::net::Protocol::Udp,
+                            source,
+                            destination: local,
+                            contents: buf.as_slice().try_into().unwrap(),
+                        },
+                    )
+                }
+                Err(_) => Input::Timeout(Instant::now()),
+            };
+            self.rtc.handle_input(input).unwrap();
+        }
+        (packets, false)
+    }
+}
+
+#[tokio::test]
+async fn a_paired_phone_listens_over_webrtc_and_hangs_up() {
+    let player = Player::start();
+    player.state.lock().unwrap().listen = Some(radiotrope::audio::Listen::new());
+    let token = player.pair("phone-1").await;
+    let (phone, offer) = PhoneCall::offer();
+
+    // Only with a token
+    let body = json!({ "sdp": offer });
+    let (status, _) = player
+        .request("POST", "/v1/listen/webrtc", None, Some(body.clone()))
+        .await;
+    assert_eq!(status, 401);
+
+    let (status, answer) = player
+        .request("POST", "/v1/listen/webrtc", Some(&token), Some(body))
+        .await;
+    assert_eq!(status, 200, "{answer}");
+    let sdp = answer["sdp"].as_str().unwrap().to_string();
+    assert!(sdp.contains("opus/48000/2"), "{sdp}");
+    assert!(sdp.contains("stereo=1"), "{sdp}");
+    let call = answer["call"].as_str().unwrap().to_string();
+
+    // Silence comes while nothing plays: 50 packets a second
+    let calling = std::thread::spawn(move || phone.run(&sdp, Duration::from_secs(2)));
+    let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
+    assert_eq!(state["listeners"], json!(["Pixel"]));
+    let (packets, hung_up) = calling.join().unwrap();
+    assert!(!hung_up);
+    assert!(packets.len() >= 40, "only {} packets", packets.len());
+    // Each one a stereo Opus packet
+    assert!(packets.iter().all(|p| !p.is_empty() && p[0] & 0b100 != 0));
+
+    // Hanging up ends the call (another phone can't)
+    let (status, _) = player
+        .request(
+            "DELETE",
+            &format!("/v1/listen/webrtc/{call}"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, 204);
+    let started = Instant::now();
+    loop {
+        let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
+        if state["listeners"] == json!([]) {
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "{state}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let (status, _) = player
+        .request(
+            "DELETE",
+            &format!("/v1/listen/webrtc/{call}"),
+            Some(&token),
+            None,
+        )
+        .await;
+    assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn a_broken_offer_is_refused() {
+    let player = Player::start();
+    player.state.lock().unwrap().listen = Some(radiotrope::audio::Listen::new());
+    let token = player.pair("phone-1").await;
+    let (status, body) = player
+        .request(
+            "POST",
+            "/v1/listen/webrtc",
+            Some(&token),
+            Some(json!({ "sdp": "v=0\r\nnot an offer" })),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(body["code"], "bad_offer");
+    // Nobody joined the listeners
+    let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
+    assert_eq!(state["listeners"], json!([]));
 }

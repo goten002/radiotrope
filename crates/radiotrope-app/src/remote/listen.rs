@@ -122,20 +122,7 @@ pub(super) fn stream(
     };
     let audio = match listen.subscribe(&name) {
         Ok(audio) => audio,
-        Err(ListenError::TooMany) => {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "too_many_listeners",
-                &ListenError::TooMany.to_string(),
-            )
-        }
-        Err(e) => {
-            return error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "failed",
-                &format!("Can't start listening: {e}"),
-            )
-        }
+        Err(e) => return subscribe_error(e),
     };
     shared.changed();
 
@@ -204,7 +191,23 @@ pub(super) fn stream(
     response
 }
 
-fn no_audio() -> Response<Body> {
+/// Why a phone couldn't join the listeners, as a response
+pub(super) fn subscribe_error(e: ListenError) -> Response<Body> {
+    match e {
+        ListenError::TooMany => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too_many_listeners",
+            &ListenError::TooMany.to_string(),
+        ),
+        e => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "failed",
+            &format!("Can't start listening: {e}"),
+        ),
+    }
+}
+
+pub(super) fn no_audio() -> Response<Body> {
     error(
         StatusCode::SERVICE_UNAVAILABLE,
         "no_audio",

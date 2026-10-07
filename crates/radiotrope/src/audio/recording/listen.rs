@@ -1,10 +1,12 @@
-//! Listening on a phone: the playing station as one endless MP3 stream
+//! Listening on a phone: the playing station as one endless stream
 //!
 //! The same taps that feed recordings (see [`super::RecordingTap`]) copy
 //! the decoded audio here while at least one listener is connected. One
-//! encoder thread turns it into MP3 at a fixed rate and bitrate and hands
-//! each piece to every listener, so the format never changes, whatever the
-//! station plays or how often it switches. When no audio comes (stopped,
+//! encoder thread turns it into each format a listener wants ([`ListenFormat`]:
+//! an MP3 byte stream, or Opus packets for WebRTC) at a fixed rate and
+//! bitrate, and hands each piece to the listeners of that format, so the
+//! format never changes, whatever the station plays or how often it
+//! switches. When no audio comes (stopped,
 //! buffering, switching station) the encoder fills in silence at the pace
 //! of the clock, so a phone's player never runs dry.
 //!
@@ -13,13 +15,14 @@
 //! dropped (its stream ends, and the phone can connect again).
 
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendError};
 
 use super::mp3::Mp3Encoder;
+use super::opus::OpusPackets;
 use super::{TapPoint, QUEUE_BATCHES};
 
 /// Sample rate of the stream
@@ -30,6 +33,18 @@ pub const LISTEN_CHANNELS: u16 = 2;
 
 /// Bitrate of the stream, in kbps (constant)
 pub const LISTEN_BITRATE_KBPS: u32 = 192;
+
+/// Bitrate of the Opus packets, in kbps (48 kHz stereo)
+pub const LISTEN_OPUS_KBPS: u32 = 128;
+
+/// Sample rate of the Opus packets (Opus always runs at 48 kHz)
+pub const LISTEN_OPUS_RATE: u32 = OpusPackets::RATE;
+
+/// Samples per channel in each Opus packet (20 ms)
+pub const LISTEN_OPUS_FRAME: usize = OpusPackets::FRAME;
+
+/// Packet loss the Opus encoder prepares for (Wi-Fi drops a few)
+const OPUS_LOSS_PERCENT: i32 = 5;
 
 /// Most listeners at once
 pub const MAX_LISTENERS: usize = 4;
@@ -43,6 +58,15 @@ const IDLE_TICK: Duration = Duration::from_millis(100);
 /// Pieces a listener may fall behind by before it is dropped (each piece is
 /// one batch of audio, about 46 ms, so about 12 s)
 const LISTENER_QUEUE: usize = 256;
+
+/// What a listener receives
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListenFormat {
+    /// An MP3 byte stream (pieces of any size; the first starts on a frame)
+    Mp3,
+    /// One Opus packet (20 ms, 48 kHz stereo) per piece
+    Opus,
+}
 
 /// Why a listener couldn't join
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +98,7 @@ enum EncoderMsg {
 struct Listener {
     id: u64,
     name: String,
+    format: ListenFormat,
     tx: Sender<Arc<[u8]>>,
     /// Has had its first whole MP3 frame: a listener that joins mid-stream
     /// starts at a frame header
@@ -120,11 +145,22 @@ impl Listen {
         Self::default()
     }
 
+    /// Join as an MP3 listener called `name` (shown to the user); see
+    /// [`Listen::subscribe_as`]
+    pub fn subscribe(&self, name: &str) -> Result<ListenStream, ListenError> {
+        self.subscribe_as(name, ListenFormat::Mp3)
+    }
+
     /// Join as a listener called `name` (shown to the user).
     ///
-    /// The stream starts with whole MP3 frames and goes on until the
-    /// returned [`ListenStream`] is dropped, or the listener falls behind.
-    pub fn subscribe(&self, name: &str) -> Result<ListenStream, ListenError> {
+    /// The stream starts with whole MP3 frames (or whole Opus packets) and
+    /// goes on until the returned [`ListenStream`] is dropped, or the
+    /// listener falls behind.
+    pub fn subscribe_as(
+        &self,
+        name: &str,
+        format: ListenFormat,
+    ) -> Result<ListenStream, ListenError> {
         let mut listeners = self.lock_listeners();
         if listeners.len() >= MAX_LISTENERS {
             return Err(ListenError::TooMany);
@@ -135,8 +171,10 @@ impl Listen {
         listeners.push(Listener {
             id,
             name: name.to_string(),
+            format,
             tx,
-            synced: false,
+            // Each Opus piece is a whole packet
+            synced: format == ListenFormat::Opus,
         });
         Ok(ListenStream {
             id,
@@ -214,20 +252,11 @@ impl Listen {
         if encoder.is_some() {
             return Ok(());
         }
-        let mp3 = Mp3Encoder::stream(LISTEN_BITRATE_KBPS, LISTEN_SAMPLE_RATE, LISTEN_CHANNELS)
-            .map_err(ListenError::Failed)?;
         let (tx, rx) = bounded(QUEUE_BATCHES);
         let shared = Arc::downgrade(&self.shared);
         let handle = thread::Builder::new()
             .name("listen-encoder".to_string())
-            .spawn(move || {
-                encoder_loop(mp3, rx, move |piece| {
-                    // The listeners went with the last handle: nothing to feed
-                    if let Some(shared) = shared.upgrade() {
-                        broadcast(&shared, piece);
-                    }
-                })
-            })
+            .spawn(move || encoder_loop(shared, rx))
             .map_err(|e| ListenError::Failed(format!("Failed to start listening: {e}")))?;
         let generation = self.shared.next_generation.fetch_add(1, Ordering::SeqCst) + 1;
         *encoder = Some(Encoder {
@@ -290,6 +319,11 @@ impl ListenStream {
     pub fn recv_timeout(&self, timeout: Duration) -> Result<Arc<[u8]>, RecvTimeoutError> {
         self.rx.recv_timeout(timeout)
     }
+
+    /// The next piece if one is waiting
+    pub fn try_recv(&self) -> Result<Arc<[u8]>, crossbeam_channel::TryRecvError> {
+        self.rx.try_recv()
+    }
 }
 
 impl Drop for ListenStream {
@@ -298,11 +332,15 @@ impl Drop for ListenStream {
     }
 }
 
-/// Give `piece` to every listener; drop the ones that fell behind or left
-fn broadcast(shared: &ListenShared, piece: &[u8]) {
+/// Give `piece` to every listener of `format`; drop the ones that fell
+/// behind or left
+fn broadcast(shared: &ListenShared, format: ListenFormat, piece: &[u8]) {
     let mut listeners = shared.listeners.lock().unwrap_or_else(|e| e.into_inner());
     let mut shared_piece: Option<Arc<[u8]>> = None;
     listeners.retain_mut(|listener| {
+        if listener.format != format {
+            return true;
+        }
         let data: Arc<[u8]> = if listener.synced {
             shared_piece.get_or_insert_with(|| piece.into()).clone()
         } else {
@@ -325,12 +363,99 @@ fn frame_start(data: &[u8]) -> Option<usize> {
         .position(|w| w[0] == 0xff && (w[1] & 0xfe) == 0xfa)
 }
 
-/// Encode what comes in, and silence while nothing does, handing each
-/// piece of MP3 to `deliver`
-fn encoder_loop(mut mp3: Mp3Encoder, rx: Receiver<EncoderMsg>, deliver: impl Fn(&[u8])) {
-    use super::AudioEncoder as _;
+/// The encoders the listeners need now; each starts with its first
+/// listener and goes with its last
+#[derive(Default)]
+struct Encoders {
+    mp3: Option<Mp3Encoder>,
+    opus: Option<OpusPackets>,
+    out: Vec<u8>,
+}
 
-    let mut out = Vec::new();
+impl Encoders {
+    /// Encode `samples` into each format someone listens in. False once
+    /// nobody can listen any more (the [`Listen`] is gone).
+    fn encode(
+        &mut self,
+        shared: &Weak<ListenShared>,
+        sample_rate: u32,
+        channels: u16,
+        samples: &[f32],
+    ) -> bool {
+        use super::AudioEncoder as _;
+
+        let Some(shared) = shared.upgrade() else {
+            return false;
+        };
+        let (mp3, opus) = {
+            let listeners = shared.listeners.lock().unwrap_or_else(|e| e.into_inner());
+            (
+                listeners.iter().any(|l| l.format == ListenFormat::Mp3),
+                listeners.iter().any(|l| l.format == ListenFormat::Opus),
+            )
+        };
+
+        if !mp3 {
+            self.mp3 = None;
+        } else {
+            if self.mp3.is_none() {
+                match Mp3Encoder::stream(LISTEN_BITRATE_KBPS, LISTEN_SAMPLE_RATE, LISTEN_CHANNELS) {
+                    Ok(encoder) => self.mp3 = Some(encoder),
+                    Err(e) => fail(&shared, ListenFormat::Mp3, &e),
+                }
+            }
+            if let Some(encoder) = self.mp3.as_mut() {
+                self.out.clear();
+                match encoder.encode(sample_rate, channels, samples, &mut self.out) {
+                    Ok(()) if !self.out.is_empty() => {
+                        broadcast(&shared, ListenFormat::Mp3, &self.out)
+                    }
+                    Ok(()) => {}
+                    Err(e) => {
+                        self.mp3 = None;
+                        fail(&shared, ListenFormat::Mp3, &e);
+                    }
+                }
+            }
+        }
+
+        if !opus {
+            self.opus = None;
+        } else {
+            if self.opus.is_none() {
+                match OpusPackets::new(LISTEN_CHANNELS, LISTEN_OPUS_KBPS, OPUS_LOSS_PERCENT) {
+                    Ok(encoder) => self.opus = Some(encoder),
+                    Err(e) => fail(&shared, ListenFormat::Opus, &e),
+                }
+            }
+            if let Some(encoder) = self.opus.as_mut() {
+                let sent = encoder.encode(sample_rate, channels, samples, |packet| {
+                    broadcast(&shared, ListenFormat::Opus, packet)
+                });
+                if let Err(e) = sent {
+                    self.opus = None;
+                    fail(&shared, ListenFormat::Opus, &e);
+                }
+            }
+        }
+        true
+    }
+}
+
+/// An encoder broke: end its listeners' streams (they may connect again)
+fn fail(shared: &ListenShared, format: ListenFormat, error: &str) {
+    eprintln!("Listening: {error}");
+    shared
+        .listeners
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .retain(|l| l.format != format);
+}
+
+/// Encode what comes in, and silence while nothing does, for the listeners
+/// of `shared`
+fn encoder_loop(shared: Weak<ListenShared>, rx: Receiver<EncoderMsg>) {
+    let mut encoders = Encoders::default();
     let mut last_audio = Instant::now();
     // How far silence has been filled in since the last audio
     let mut silence_until: Option<Instant> = None;
@@ -341,17 +466,12 @@ fn encoder_loop(mut mp3: Mp3Encoder, rx: Receiver<EncoderMsg>, deliver: impl Fn(
                 channels,
                 samples,
             }) => {
-                out.clear();
                 let clamped: Vec<f32> = samples.iter().map(|s| s.clamp(-1.0, 1.0)).collect();
-                if let Err(e) = mp3.encode(sample_rate, channels, &clamped, &mut out) {
-                    eprintln!("Listening: {e}");
+                if !encoders.encode(&shared, sample_rate, channels, &clamped) {
                     return;
                 }
                 last_audio = Instant::now();
                 silence_until = None;
-                if !out.is_empty() {
-                    deliver(&out);
-                }
             }
             Ok(EncoderMsg::Finish) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {}
@@ -368,16 +488,11 @@ fn encoder_loop(mut mp3: Mp3Encoder, rx: Receiver<EncoderMsg>, deliver: impl Fn(
             continue;
         }
         let silence = vec![0.0f32; frames as usize * usize::from(LISTEN_CHANNELS)];
-        out.clear();
-        if let Err(e) = mp3.encode(LISTEN_SAMPLE_RATE, LISTEN_CHANNELS, &silence, &mut out) {
-            eprintln!("Listening: {e}");
+        if !encoders.encode(&shared, LISTEN_SAMPLE_RATE, LISTEN_CHANNELS, &silence) {
             return;
         }
         silence_until =
             Some(from + Duration::from_secs_f64(frames as f64 / f64::from(LISTEN_SAMPLE_RATE)));
-        if !out.is_empty() {
-            deliver(&out);
-        }
     }
 }
 
@@ -514,6 +629,50 @@ mod tests {
             }
         };
         assert_eq!(ended, RecvTimeoutError::Disconnected);
+    }
+
+    #[test]
+    fn opus_listeners_get_one_packet_per_piece() {
+        let listen = Listen::new();
+        let mp3 = listen.subscribe("Radio").unwrap();
+        let opus = listen.subscribe_as("Pixel", ListenFormat::Opus).unwrap();
+        let generation = listen.generation_for(TapPoint::BeforeEq);
+        for _ in 0..10 {
+            listen.submit(generation, 44_100, 2, sine(44_100, 2, 4410));
+        }
+        // About a second: 50 packets of 20 ms
+        let mut packets = Vec::new();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while packets.len() < 40 && Instant::now() < deadline {
+            if let Ok(p) = opus.recv_timeout(Duration::from_millis(50)) {
+                packets.push(p);
+            }
+        }
+        assert!(packets.len() >= 40, "only {} packets", packets.len());
+        for p in &packets {
+            // TOC byte: a CELT (music) 20 ms frame, stereo, one frame
+            assert!(!p.is_empty() && p.len() < 1275, "{} bytes", p.len());
+            assert_eq!(p[0] >> 3 & 0b11, 3, "20 ms frames");
+            assert_eq!(p[0] & 0b100, 0b100, "stereo");
+        }
+        // The MP3 listener still gets MP3
+        let got = read(&mp3, 5_000, Duration::from_secs(5));
+        assert!(count_frames(&got) > 0);
+        assert_eq!(listen.listener_names(), ["Radio", "Pixel"]);
+    }
+
+    #[test]
+    fn opus_alone_fills_in_silence_too() {
+        let listen = Listen::new();
+        let opus = listen.subscribe_as("Pixel", ListenFormat::Opus).unwrap();
+        let mut packets = 0;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while packets < 25 && Instant::now() < deadline {
+            if opus.recv_timeout(Duration::from_millis(50)).is_ok() {
+                packets += 1;
+            }
+        }
+        assert!(packets >= 25, "only {packets} packets of silence");
     }
 
     #[test]

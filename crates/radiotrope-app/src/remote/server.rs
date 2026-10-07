@@ -34,7 +34,7 @@ use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
 use super::state::State;
-use super::{controls, library, listen, WindowHooks};
+use super::{controls, library, listen, webrtc, WindowHooks};
 use crate::control::{self, Control, Played, MAX_NAME_CHARS, MAX_URL_CHARS};
 
 pub(super) type Body = BoxBody<Bytes, Infallible>;
@@ -65,6 +65,8 @@ pub struct Shared {
     pub window: Arc<WindowHooks>,
     /// Tickets phones were given to open the listening stream
     pub tickets: Arc<Mutex<listen::Tickets>>,
+    /// Phones listening over WebRTC
+    pub calls: Arc<Mutex<webrtc::Calls>>,
 }
 
 impl Shared {
@@ -78,6 +80,10 @@ impl Shared {
 
     pub(super) fn tickets(&self) -> std::sync::MutexGuard<'_, listen::Tickets> {
         self.tickets.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub(super) fn calls(&self) -> std::sync::MutexGuard<'_, webrtc::Calls> {
+        self.calls.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The name of the paired phone `device_id`; `None` once unpaired
@@ -210,8 +216,14 @@ async fn serve(listener: StdListener, shared: Shared, cancel: CancellationToken)
         };
         let shared = shared.clone();
         let cancel = cancel.clone();
+        // Where the phone reached the player: listening over WebRTC
+        // offers a port on the same address
+        let local = match stream.local_addr() {
+            Ok(addr) => addr.ip().to_canonical(),
+            Err(_) => continue,
+        };
         tokio::spawn(async move {
-            serve_connection(stream, peer.ip().to_canonical(), shared, cancel).await;
+            serve_connection(stream, peer.ip().to_canonical(), local, shared, cancel).await;
             drop(place);
         });
     }
@@ -220,6 +232,7 @@ async fn serve(listener: StdListener, shared: Shared, cancel: CancellationToken)
 async fn serve_connection(
     stream: tokio::net::TcpStream,
     peer: IpAddr,
+    local: IpAddr,
     shared: Shared,
     cancel: CancellationToken,
 ) {
@@ -227,7 +240,7 @@ async fn serve_connection(
     let handler = hyper::service::service_fn(move |request: Request<Incoming>| {
         let shared = shared.clone();
         let cancel = handler_cancel.clone();
-        async move { Ok::<_, Infallible>(handle(&shared, peer, request, cancel).await) }
+        async move { Ok::<_, Infallible>(handle(&shared, peer, local, request, cancel).await) }
     });
     // Also closes a connection left idle between requests
     let connection = hyper::server::conn::http1::Builder::new()
@@ -249,6 +262,7 @@ struct Caller {
 pub async fn handle(
     shared: &Shared,
     peer: IpAddr,
+    local: IpAddr,
     request: Request<Incoming>,
     cancel: CancellationToken,
 ) -> Response<Body> {
@@ -309,6 +323,12 @@ pub async fn handle(
         }
         (&Method::GET, ["v1", "events"]) => events(shared, cancel),
         (&Method::POST, ["v1", "listen"]) => listen::ticket(shared, &caller.device_id),
+        (&Method::POST, ["v1", "listen", "webrtc"]) => {
+            webrtc::offer(shared, &caller.device_id, local, request, cancel).await
+        }
+        (&Method::DELETE, ["v1", "listen", "webrtc", call]) => {
+            webrtc::hang_up(shared, &caller.device_id, call)
+        }
         (&Method::POST, ["v1", "play"]) => play(shared, request).await,
         (&Method::POST, ["v1", "stop"]) => done(shared.control.stop()),
         (&Method::PUT, ["v1", "volume"]) => volume(shared, request).await,

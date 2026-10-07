@@ -12,6 +12,7 @@ pub mod mdns;
 pub mod pairing;
 pub mod server;
 pub mod state;
+mod webrtc;
 
 #[cfg(test)]
 mod tests;
@@ -101,6 +102,7 @@ impl Remote {
                 changes: Arc::new(AtomicU64::new(0)),
                 window: Arc::new(window),
                 tickets: Default::default(),
+                calls: Default::default(),
             },
             running: Mutex::new(None),
             asked: AtomicU64::new(0),
