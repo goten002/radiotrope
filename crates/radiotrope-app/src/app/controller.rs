@@ -392,6 +392,7 @@ impl AppController {
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         // A station still resolving doesn't start after the stop
         state.is_resolving = false;
+        state.is_connecting = false;
         let was_beeping = std::mem::take(&mut state.alarm_beep);
         state.playback = PlaybackState::Stopped;
         state.status_text = "Stopped".into();
@@ -460,6 +461,7 @@ impl AppController {
             state.artist.clear();
             state.last_error = None;
             state.is_resolving = true;
+            state.is_connecting = false;
             state.alarm_beep = false;
             state.codec_name.clear();
             state.stream_type.clear();
@@ -551,6 +553,7 @@ impl AppController {
                     state.bitrate = resolved.info.bitrate;
                     state.status_text = "Connecting...".into();
                     state.is_error = false;
+                    state.is_connecting = true;
                 }
 
                 // Store metadata receiver for polling
@@ -629,6 +632,7 @@ impl AppController {
         match event {
             AudioEvent::Playing(codec_info) => {
                 state.playback = PlaybackState::Playing;
+                state.is_connecting = false;
                 state.codec_name = codec_info.codec_name;
                 state.channels = codec_info.channels;
                 state.sample_rate = codec_info.sample_rate;
@@ -650,6 +654,7 @@ impl AppController {
             }
             AudioEvent::Stopped => {
                 state.playback = PlaybackState::Stopped;
+                state.is_connecting = false;
                 // A stream that failed stops with its error still showing
                 if !std::mem::take(&mut self.stream_failed) {
                     state.status_text = "Stopped".into();
@@ -663,6 +668,7 @@ impl AppController {
             }
             AudioEvent::Paused => {
                 state.playback = PlaybackState::Paused;
+                state.is_connecting = false;
                 state.status_text = "Paused".into();
                 state.is_error = false;
                 self.stream_failed = false;
@@ -678,6 +684,7 @@ impl AppController {
                 state.last_error = Some(e.clone());
                 state.status_text = format!("Error: {e}").into();
                 state.is_error = true;
+                state.is_connecting = false;
                 self.stream_failed = true;
             }
             AudioEvent::Buffering(pct) => {
@@ -734,6 +741,7 @@ impl AppController {
             AudioEvent::NoAudioTimeout => {
                 state.status_text = "No audio".into();
                 state.is_error = true;
+                state.is_connecting = false;
                 self.stream_failed = true;
             }
             // Handled above
@@ -1376,6 +1384,7 @@ mod tests {
         controller.cancel_stream();
         let mut state = state.lock().unwrap();
         state.is_resolving = true;
+        state.is_connecting = false;
         state.status_text = "Resolving...".into();
         state.is_error = false;
         state.playback = PlaybackState::Stopped;
@@ -1386,6 +1395,7 @@ mod tests {
         controller.stream_id = Some(StreamId(id));
         let mut state = state.lock().unwrap();
         state.is_resolving = false;
+        state.is_connecting = true;
         state.status_text = "Connecting...".into();
     }
 
@@ -1406,6 +1416,24 @@ mod tests {
         assert_eq!(state.playback, PlaybackState::Stopped);
         assert!(state.is_error);
         assert!(state.status_text.contains("Probe failed"));
+    }
+
+    #[test]
+    fn a_station_counts_as_connecting_until_it_plays_or_fails() {
+        let (mut controller, state) = controller_playing();
+        resolving(&mut controller, &state);
+        connecting(&mut controller, &state, 2);
+        // The old station's last words and the new one's buffering
+        controller.handle_engine_event(on(1, AudioEvent::Stopped));
+        controller.handle_engine_event(on(2, AudioEvent::Buffering(40)));
+        assert!(state.lock().unwrap().is_connecting);
+        controller.handle_engine_event(on(2, playing()));
+        assert!(!state.lock().unwrap().is_connecting);
+
+        resolving(&mut controller, &state);
+        connecting(&mut controller, &state, 3);
+        controller.handle_engine_event(on(3, AudioEvent::NoAudioTimeout));
+        assert!(!state.lock().unwrap().is_connecting);
     }
 
     #[test]
