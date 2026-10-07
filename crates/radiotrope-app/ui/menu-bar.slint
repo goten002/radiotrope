@@ -303,6 +303,18 @@ export component MenuBar inherits Rectangle {
     out property <length> agents-bubble-right;
     out property <length> agents-bubble-top;
     property <bool> agents-hover: false;
+    // Phones listening to the player (Remote Control): a chip beside the
+    // agents chip, only while there are any
+    in property <[string]> listeners;
+    out property <bool> listeners-bubble-open: root.listeners.length > 0 && root.listeners-hover;
+    out property <length> listeners-bubble-right;
+    out property <length> listeners-bubble-top;
+    property <bool> listeners-hover: false;
+    changed listeners => {
+        if root.listeners.length == 0 {
+            root.listeners-hover = false;
+        }
+    }
     // The chip goes away with the last agent, and its hover with it
     changed agent-count => {
         if root.agent-count == 0 {
@@ -391,6 +403,21 @@ export component MenuBar inherits Rectangle {
                         root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, false);
                     }
                 }
+            }
+        }
+
+        if root.listeners.length > 0: VerticalLayout {
+            alignment: center;
+            padding-right: 6px;
+            AgentsChip {
+                count: root.listeners.length;
+                icon: @image-url("icons/headphones.svg");
+                show-bubble(right, top) => {
+                    root.listeners-bubble-right = right;
+                    root.listeners-bubble-top = top;
+                    root.listeners-hover = true;
+                }
+                hide-bubble => { root.listeners-hover = false; }
             }
         }
 

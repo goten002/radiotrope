@@ -19,7 +19,7 @@ import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
-import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
+import { TextUtil, AgentsBubble, AgentRow, ListenersBubble, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 import { LogoFog, FogColors } from "logo-fog.slint";
 export { AboutInfo, LogoFog, FogColors, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
@@ -111,8 +111,8 @@ export component App inherits Window {
     callback recording-bitrate-changed(int);
     in-out property <bool> is-recording;
     in-out property <bool> can-record;
-    // Phones listening over Remote Control: a name or "2 phones"
-    in-out property <string> listening;
+    // Phones listening over Remote Control, for the chip in the menu bar
+    in property <[string]> listeners;
     in-out property <string> recording-text;
     in-out property <string> recording-size;
     in-out property <string> recording-notice;
@@ -455,6 +455,7 @@ export component App inherits Window {
                     open-schedule => { schedule-dialog.open(); }
                     menus-enabled: !root.dialog-open;
                     agent-count: root.agent-count;
+                    listeners: root.listeners;
                 }
                 playback := Playback {
                     station-name: root.station-name;
@@ -475,7 +476,6 @@ export component App inherits Window {
                     can-open-recordings: Platform.has-file-manager;
                     open-recordings-folder => { root.open-recordings-folder(); }
                     sleep-left: root.sleep-active ? root.sleep-left : "";
-                    listening: root.listening;
                     schedule-label: root.schedule-label;
                     schedule-label-bell: root.schedule-label-bell;
                     schedule-label-closable: root.schedule-label-closable;
@@ -713,6 +713,13 @@ export component App inherits Window {
         interval: Defaults.motion-step;
         running: root.is-playing || root.is-loading || root.is-recording;
         triggered => { Motion.tick += self.interval; }
+    }
+
+    // The menu bar's listeners bubble, over the header below it
+    if menu-bar.listeners-bubble-open: ListenersBubble {
+        x: menu-bar.listeners-bubble-right - self.width;
+        y: menu-bar.listeners-bubble-top;
+        phones: root.listeners;
     }
 
     // The menu bar's agents bubble, over the header below it

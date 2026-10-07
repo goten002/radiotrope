@@ -875,11 +875,13 @@ export component InfoTip inherits Rectangle {
     }
 }
 
-// How many agents use the player; hovering lists them in an AgentsBubble.
-// The window draws the bubble (over the header under the menu bar), at the
-// chip's right edge: a popup would take the mouse and close it on any move.
+// How many agents use the player (or phones listen to it); hovering lists
+// them in an AgentsBubble (ListenersBubble). The window draws the bubble
+// (over the header under the menu bar), at the chip's right edge: a popup
+// would take the mouse and close it on any move.
 export component AgentsChip inherits Rectangle {
     in property <int> count;
+    in property <image> icon: @image-url("icons/robot.svg");
     // Show the bubble with its top right corner here (window coordinates),
     // or hide it
     callback show-bubble(/* right */ length, /* top */ length);
@@ -917,7 +919,7 @@ export component AgentsChip inherits Rectangle {
             Icon {
                 width: 11px;
                 height: 11px;
-                source: @image-url("icons/robot.svg");
+                source: root.icon;
                 colorize: Theme.accent-text;
             }
         }
@@ -1005,6 +1007,51 @@ export component AgentsBubble inherits PopupCard {
                     horizontal-alignment: right;
                     vertical-alignment: center;
                 }
+            }
+        }
+    }
+}
+
+// The listeners chip's list: the phones listening to the player
+export component ListenersBubble inherits PopupCard {
+    in property <[string]> phones;
+
+    width: max(Defaults.info-tip-width, bubble.preferred-width);
+    height: bubble.preferred-height;
+
+    bubble := VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 10px;
+        spacing: 6px;
+
+        Text {
+            text: root.phones.length == 1 ? "PHONE LISTENING" : "PHONES LISTENING";
+            color: Theme.text-secondary;
+            font-size: Theme.font-xs;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+        }
+
+        for phone in root.phones: HorizontalLayout {
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    width: 13px;
+                    height: 13px;
+                    source: @image-url("icons/mobile-screen-button.svg");
+                    colorize: Theme.accent-text;
+                }
+            }
+            Text {
+                text: phone;
+                color: Theme.text-primary;
+                font-size: Theme.font-md;
+                font-weight: 600;
+                vertical-alignment: center;
             }
         }
     }

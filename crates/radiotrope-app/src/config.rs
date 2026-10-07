@@ -275,4 +275,7 @@ pub mod remote {
     /// How often an open audio stream checks that its phone is still
     /// paired and still connected
     pub const LISTEN_CHECK: Duration = Duration::from_secs(1);
+
+    /// How long a phone's WebRTC call may take to connect after the answer
+    pub const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 }

@@ -101,6 +101,97 @@ impl Drop for Encoder {
     }
 }
 
+/// Opus packets for real-time sending (listening over WebRTC): one 20 ms
+/// packet per [`FRAME`], no Ogg around them. Takes audio at any rate and
+/// channel count; gives 48 kHz packets in its own channel count.
+pub(super) struct OpusPackets {
+    encoder: Encoder,
+    channels: u16,
+    resampler: Option<(u32, Resampler)>,
+    pending: Vec<f32>,
+    resampled: Vec<f32>,
+    packet: Vec<u8>,
+}
+
+impl OpusPackets {
+    /// `loss_percent` is the packet loss to expect: above 0, each packet
+    /// also carries a rougher copy of the one before (in-band FEC)
+    pub(super) fn new(channels: u16, kbps: u32, loss_percent: i32) -> Result<Self, String> {
+        let encoder = Encoder::new(channels, kbps)?;
+        if loss_percent > 0 {
+            // SAFETY: a live encoder; these requests take one opus_int32.
+            unsafe {
+                ffi::opus_encoder_ctl(encoder.0, ffi::OPUS_SET_INBAND_FEC_REQUEST, 1i32);
+                ffi::opus_encoder_ctl(
+                    encoder.0,
+                    ffi::OPUS_SET_PACKET_LOSS_PERC_REQUEST,
+                    loss_percent.clamp(0, 100),
+                );
+            }
+        }
+        Ok(Self {
+            encoder,
+            channels,
+            resampler: None,
+            pending: Vec::new(),
+            resampled: Vec::new(),
+            packet: vec![0; MAX_PACKET],
+        })
+    }
+
+    /// Samples per channel in each packet
+    pub(super) const FRAME: usize = FRAME;
+
+    /// Sample rate of the packets
+    pub(super) const RATE: u32 = OPUS_RATE;
+
+    /// Encode `samples`, handing each finished packet to `deliver`
+    pub(super) fn encode(
+        &mut self,
+        sample_rate: u32,
+        channels: u16,
+        samples: &[f32],
+        mut deliver: impl FnMut(&[u8]),
+    ) -> Result<(), String> {
+        let converted;
+        let samples = if channels == self.channels {
+            samples
+        } else {
+            converted = super::convert_channels(samples, channels, self.channels);
+            &converted[..]
+        };
+        if let Some((_, mut old)) = self.resampler.take_if(|(rate, _)| *rate != sample_rate) {
+            old.finish(&mut self.pending)?;
+        }
+        if sample_rate == OPUS_RATE {
+            self.pending.extend_from_slice(samples);
+        } else {
+            if self.resampler.is_none() {
+                self.resampler = Some((
+                    sample_rate,
+                    Resampler::new(sample_rate, OPUS_RATE, self.channels)?,
+                ));
+            }
+            if let Some((_, r)) = self.resampler.as_mut() {
+                self.resampled.clear();
+                r.process(samples, &mut self.resampled)?;
+                self.pending.extend_from_slice(&self.resampled);
+            }
+        }
+        let frame_len = FRAME * usize::from(self.channels);
+        let mut offset = 0;
+        while self.pending.len() - offset >= frame_len {
+            let n = self
+                .encoder
+                .encode(&self.pending[offset..offset + frame_len], &mut self.packet)?;
+            offset += frame_len;
+            deliver(&self.packet[..n]);
+        }
+        self.pending.drain(..offset);
+        Ok(())
+    }
+}
+
 pub(super) struct OpusEncoder {
     tags: RecordingTags,
     kbps: u32,
