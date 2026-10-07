@@ -19,6 +19,57 @@ pub fn bring_to_front(window: &slint::Window) {
     });
 }
 
+thread_local! {
+    /// When the window last lost the keyboard focus
+    static FOCUS_LOST: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Start noting when the window loses the focus, for [`was_in_front`].
+/// Call once; the note survives Wayland making a new window on show.
+pub fn track_focus(window: &slint::Window) {
+    window.on_winit_window_event(|_, event| {
+        if let winit::event::WindowEvent::Focused(false) = event {
+            FOCUS_LOST.set(Some(std::time::Instant::now()));
+        }
+        slint::winit_030::EventResult::Propagate
+    });
+}
+
+/// Whether the window has the focus, or had it until `grace` ago (a click
+/// on the tray can take it away just before the click arrives)
+pub fn was_in_front(window: &slint::Window, grace: std::time::Duration) -> bool {
+    let focused = window.with_winit_window(|w| w.has_focus()).unwrap_or(false);
+    focused || FOCUS_LOST.get().is_some_and(|lost| lost.elapsed() < grace)
+}
+
+/// Bring a shown window that other windows cover to the front, for a click
+/// on the tray icon.
+///
+/// - Windows: winit's `focus_window`, which may take the foreground.
+/// - X11: asks the window manager like a taskbar or pager does (source 2),
+///   which it always does. winit asks as the app (source 1), which
+///   focus-stealing prevention may turn into a blinking taskbar entry.
+/// - Wayland: an app can't raise itself (winit's `focus_window` does
+///   nothing there), but compositors give focus to a new window, so it is
+///   hidden and shown again, the way the tray shows a hidden window. The
+///   compositor picks where it goes, as after any hide.
+pub fn raise(window: &slint::Window) {
+    #[cfg(target_os = "linux")]
+    {
+        if wayland_window(window).is_some() {
+            let _ = window.hide();
+            let _ = window.show();
+            return;
+        }
+        if let Some(id) = x11_window(window) {
+            activate_x11(id);
+            return;
+        }
+    }
+    bring_to_front(window);
+}
+
 /// Whether the window manager has the window minimized. Windows and X11
 /// say so; Wayland never does, which counts as no.
 pub fn is_minimized(window: &slint::Window) -> bool {
@@ -34,20 +85,52 @@ pub fn is_minimized(window: &slint::Window) -> bool {
 /// ICCCM 4.1.4 says, with an UnmapNotify sent to the root window.
 pub fn hide_minimized(window: &slint::Window) {
     #[cfg(target_os = "linux")]
-    let x11_id = {
-        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        window
-            .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
-                RawWindowHandle::Xlib(h) => u32::try_from(h.window).ok(),
-                RawWindowHandle::Xcb(h) => Some(h.window.get()),
-                _ => None,
-            })
-            .flatten()
-    };
+    let x11_id = x11_window(window);
     let _ = window.hide();
     #[cfg(target_os = "linux")]
     if let Some(id) = x11_id {
         withdraw_x11(id);
+    }
+}
+
+/// The window's id when it is an X11 window
+#[cfg(target_os = "linux")]
+fn x11_window(window: &slint::Window) -> Option<u32> {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    window
+        .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
+            RawWindowHandle::Xlib(h) => u32::try_from(h.window).ok(),
+            RawWindowHandle::Xcb(h) => Some(h.window.get()),
+            _ => None,
+        })
+        .flatten()
+}
+
+/// Ask the window manager to raise and focus `window` (EWMH
+/// _NET_ACTIVE_WINDOW, source 2: on the user's behalf)
+#[cfg(target_os = "linux")]
+fn activate_x11(window: u32) {
+    use x11rb::connection::Connection;
+    use x11rb::protocol::xproto::{ClientMessageEvent, ConnectionExt, EventMask};
+    let Ok((conn, screen)) = x11rb::connect(None) else {
+        return;
+    };
+    let Some(root) = conn.setup().roots.get(screen).map(|s| s.root) else {
+        return;
+    };
+    let atom = conn
+        .intern_atom(false, b"_NET_ACTIVE_WINDOW")
+        .ok()
+        .and_then(|cookie| cookie.reply().ok());
+    let Some(atom) = atom else {
+        return;
+    };
+    let event = ClientMessageEvent::new(32, window, atom.atom, [2, x11rb::CURRENT_TIME, 0, 0, 0]);
+    let mask = EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY;
+    // Wait for the answer so the event goes out before the connection closes
+    let sent = conn.send_event(false, root, mask, event);
+    if let Ok(sent) = sent {
+        let _ = sent.check();
     }
 }
 
