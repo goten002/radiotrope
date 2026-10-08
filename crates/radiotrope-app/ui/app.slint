@@ -198,6 +198,9 @@ export component App inherits Window {
     callback remote-cancel-pairing();
     callback remote-pair-qr();
     callback remote-cancel-qr();
+    callback remote-share-toggled(bool);
+    in-out property <bool> remote-share-recordings <=> remote-dialog.share-recordings;
+    in-out property <[string]> remote-activity <=> remote-dialog.activity;
     in-out property <bool> remote-on <=> remote-dialog.enabled-on;
     in-out property <string> remote-status <=> remote-dialog.status;
     in-out property <bool> remote-status-error <=> remote-dialog.status-error;
@@ -688,6 +691,7 @@ export component App inherits Window {
             apply-name(text) => { root.remote-apply-name(text); }
             remove-device(id) => { root.remote-remove-device(id); }
             pair-qr => { root.remote-pair-qr(); }
+            share-toggled(on) => { root.remote-share-toggled(on); }
         }
 
         about-dialog := AboutDialog {

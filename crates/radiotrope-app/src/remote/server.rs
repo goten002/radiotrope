@@ -37,7 +37,7 @@ use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
 use super::state::State;
-use super::{controls, library, listen, webrtc, WindowHooks};
+use super::{controls, library, listen, recordings, webrtc, WindowHooks};
 use crate::control::{self, Control, Played, MAX_NAME_CHARS, MAX_URL_CHARS};
 
 pub(super) type Body = BoxBody<Bytes, Infallible>;
@@ -72,6 +72,8 @@ pub struct Shared {
     pub calls: Arc<Mutex<webrtc::Calls>>,
     /// The player's certificate and key, for every connection
     pub tls: Arc<rustls::ServerConfig>,
+    /// Recordings shared with phones
+    pub recordings: Arc<recordings::Recordings>,
 }
 
 impl Shared {
@@ -352,10 +354,7 @@ pub async fn handle(
         (&Method::DELETE, ["v1", "pair"]) => unpair(shared, &caller).await,
         (&Method::GET, ["v1", "state"]) => {
             let rev = shared.control.favorites_generation().await;
-            json(
-                StatusCode::OK,
-                &State::from_snapshot(&shared.control.snapshot(), rev),
-            )
+            json(StatusCode::OK, &state_now(shared, rev))
         }
         (&Method::GET, ["v1", "events"]) => events(shared, cancel),
         (&Method::POST, ["v1", "listen"]) => listen::ticket(shared, &caller.device_id),
@@ -394,6 +393,13 @@ pub async fn handle(
         (&Method::DELETE, ["v1", "schedule", id]) => controls::remove_entry(shared, id).await,
         (&Method::PUT, ["v1", "schedule", id, "enabled"]) => {
             controls::enable_entry(shared, id, request).await
+        }
+        (&Method::GET, ["v1", "recordings"]) => recordings::list_all(shared).await,
+        (&Method::GET, ["v1", "recordings", id]) => {
+            recordings::download(shared, &caller.device_id, id, &request, cancel).await
+        }
+        (&Method::DELETE, ["v1", "recordings", id]) => {
+            recordings::delete(shared, &caller.device_id, id, &request).await
         }
         (&Method::GET, ["v1", "appearance"]) => controls::appearance(shared),
         (&Method::PUT, ["v1", "appearance"]) => controls::set_appearance(shared, request).await,
@@ -817,16 +823,28 @@ async fn logo(shared: &Shared, id: &str) -> Response<Body> {
     }
 }
 
+/// The player's state as phones see it
+fn state_now(shared: &Shared, favorites_rev: u64) -> State {
+    let snapshot = shared.control.snapshot();
+    let mut state = State::from_snapshot(&snapshot, favorites_rev);
+    let folder = radiotrope_app::data::recordings::folder(snapshot.recording_setup.dir.as_deref());
+    let recording = snapshot.recording.as_ref().map(|r| r.path.as_path());
+    state.recordings_shared = shared.recordings.is_on();
+    state.recordings_rev = shared.recordings.rev(&folder, recording);
+    state
+}
+
 /// The state now, then again whenever it changes, as Server-Sent Events
 fn events(shared: &Shared, cancel: CancellationToken) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
     let control = shared.control.clone();
+    let shared = shared.clone();
     tokio::spawn(async move {
         let mut last: Option<State> = None;
         let mut quiet_since = Instant::now();
         loop {
             let rev = control.favorites_generation().await;
-            let state = State::from_snapshot(&control.snapshot(), rev);
+            let state = state_now(&shared, rev);
             let message = if last.as_ref() != Some(&state) {
                 let data = serde_json::to_string(&state).unwrap_or_default();
                 last = Some(state);

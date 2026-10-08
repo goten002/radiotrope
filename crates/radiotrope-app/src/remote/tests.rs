@@ -175,6 +175,7 @@ impl Player {
             tickets: Default::default(),
             calls: Default::default(),
             tls: server::tls_config(&cert).unwrap(),
+            recordings: Default::default(),
         };
         let server = server::start(SocketAddr::from(([127, 0, 0, 1], 0)), shared.clone()).unwrap();
         Player {
@@ -238,6 +239,37 @@ impl Player {
         (status, serde_json::from_str(body).unwrap_or(Value::Null))
     }
 
+    /// Send a request; the status, the headers as text and the raw body
+    async fn request_raw(&self, method: &str, path: &str, headers: &str) -> (u16, String, Vec<u8>) {
+        let request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1\r\n{headers}Connection: close\r\n\r\n"
+        );
+        let mut stream = self.connect().await;
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            read_all(&mut stream, &mut response),
+        )
+        .await
+        .expect("no answer within 15 s")
+        .unwrap();
+        let split = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .expect("headers end");
+        let head = String::from_utf8_lossy(&response[..split]).to_string();
+        let mut body = response[split + 4..].to_vec();
+        // Read without knowing its length: undo the chunks
+        if head
+            .to_ascii_lowercase()
+            .contains("transfer-encoding: chunked")
+        {
+            body = unchunk(&body);
+        }
+        (head[9..12].parse().unwrap(), head, body)
+    }
+
     /// Pair a phone the way the app does; its token
     async fn pair(&self, device_id: &str) -> String {
         let (status, started) = self
@@ -291,6 +323,35 @@ impl Player {
             .expect("the player shows a code")
             .code
     }
+}
+
+/// The body of a chunked response
+fn unchunk(mut data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let Some(line_end) = data.windows(2).position(|w| w == b"\r\n") else {
+            return out;
+        };
+        let size =
+            usize::from_str_radix(std::str::from_utf8(&data[..line_end]).unwrap().trim(), 16)
+                .unwrap();
+        if size == 0 {
+            return out;
+        }
+        let start = line_end + 2;
+        out.extend_from_slice(&data[start..start + size]);
+        data = &data[start + size + 2..];
+    }
+}
+
+/// A header's value in a response's headers
+fn header_value(head: &str, name: &str) -> Option<String> {
+    head.lines().find_map(|line| {
+        let (n, v) = line.split_once(':')?;
+        n.trim()
+            .eq_ignore_ascii_case(name)
+            .then(|| v.trim().to_string())
+    })
 }
 
 /// Plays what it's told: starts, then plays 150 ms later
@@ -1264,4 +1325,140 @@ async fn a_broken_offer_is_refused() {
     // Nobody joined the listeners
     let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
     assert_eq!(state["listeners"], json!([]));
+}
+
+/// A file in the recording folder, last written a minute ago
+fn old_recording(path: &std::path::Path, bytes: &[u8]) {
+    std::fs::write(path, bytes).unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+}
+
+#[tokio::test]
+async fn recordings_are_shared_only_when_the_user_says() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let folder = player.dir.join("rec");
+    std::fs::create_dir_all(&folder).unwrap();
+    old_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.mp3"),
+        b"0123456789",
+    );
+    player.state.lock().unwrap().recording_setup.dir = Some(folder);
+
+    let (status, body) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(status, 403);
+    assert_eq!(body["code"], "recordings_off");
+    let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
+    assert_eq!(state["recordings_shared"], false);
+
+    player.shared.recordings.set_on(true);
+    let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
+    assert_eq!(state["recordings_shared"], true);
+    let (status, list) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(list["recordings"][0]["size"], 10);
+    // A phone that isn't paired sees nothing
+    let (status, _) = player.request("GET", "/v1/recordings", None, None).await;
+    assert_eq!(status, 401);
+}
+
+#[tokio::test]
+async fn a_phone_downloads_and_deletes_a_recording() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    let folder = player.dir.join("rec");
+    std::fs::create_dir_all(&folder).unwrap();
+    let file = folder.join("Jazz FM - 2026-10-08 20-15-03.mp3");
+    old_recording(&file, b"0123456789");
+    old_recording(&folder.join("notes.txt"), b"private");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(
+        player.dir.join("remote.json"),
+        folder.join("Rock - 2026-10-08 20-15-03.mp3"),
+    )
+    .unwrap();
+    player.state.lock().unwrap().recording_setup.dir = Some(folder.clone());
+    player.shared.recordings.set_on(true);
+
+    let (_, list) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    let recordings = list["recordings"].as_array().unwrap();
+    assert_eq!(recordings.len(), 1, "only the recording: {list}");
+    assert_eq!(recordings[0]["name"], "Jazz FM - 2026-10-08 20-15-03.mp3");
+    assert_eq!(recordings[0]["format"], "mp3");
+    assert_eq!(recordings[0]["recording"], false);
+    let id = recordings[0]["id"].as_str().unwrap().to_string();
+    let path = format!("/v1/recordings/{id}");
+
+    // The whole file
+    let (status, head, body) = player.request_raw("GET", &path, &auth).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(body, b"0123456789");
+    assert_eq!(header_value(&head, "content-type").unwrap(), "audio/mpeg");
+    assert!(header_value(&head, "content-disposition")
+        .unwrap()
+        .ends_with("Jazz%20FM%20-%202026-10-08%2020-15-03.mp3"));
+    let etag = header_value(&head, "etag").unwrap();
+
+    // The rest after an interrupted download
+    let headers = format!("{auth}Range: bytes=4-\r\nIf-Match: {etag}\r\n");
+    let (status, head, body) = player.request_raw("GET", &path, &headers).await;
+    assert_eq!(status, 206, "{head}");
+    assert_eq!(body, b"456789");
+    assert_eq!(
+        header_value(&head, "content-range").unwrap(),
+        "bytes 4-9/10"
+    );
+    let headers = format!("{auth}Range: bytes=20-\r\n");
+    assert_eq!(player.request_raw("GET", &path, &headers).await.0, 416);
+    let headers = format!("{auth}If-Match: \"other\"\r\n");
+    assert_eq!(player.request_raw("GET", &path, &headers).await.0, 412);
+    // Ids are only what the player gave
+    let (status, _, _) = player
+        .request_raw("GET", "/v1/recordings/..%2Fremote.json", &auth)
+        .await;
+    assert_eq!(status, 404);
+
+    // Being recorded: neither download nor delete
+    player.state.lock().unwrap().recording = Some(crate::app::state::RecordingProgress {
+        path: file.clone(),
+        duration: Duration::from_secs(1),
+        bytes: 10,
+    });
+    let (_, list) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(list["recordings"][0]["recording"], true);
+    assert_eq!(player.request_raw("GET", &path, &auth).await.0, 409);
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 409);
+    player.state.lock().unwrap().recording = None;
+
+    // Deleting needs the ETag the phone saw
+    assert_eq!(player.request_raw("DELETE", &path, &auth).await.0, 428);
+    let (status, head, _) = player.request_raw("DELETE", &path, &headers).await;
+    assert_eq!(status, 204, "{head}");
+    assert!(!file.exists());
+    assert!(folder.join("notes.txt").exists());
+    assert_eq!(player.request_raw("GET", &path, &auth).await.0, 404);
+
+    let activity = player.shared.recordings.activity();
+    assert_eq!(
+        activity.len(),
+        2,
+        "the download and the deletion, not the resume"
+    );
+    assert!(activity[0].deleted);
+    assert_eq!(activity[0].device, "Pixel");
 }

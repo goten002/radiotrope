@@ -65,6 +65,10 @@ pub struct State {
     pub favorites_rev: u64,
     /// Changes whenever the Scheduler entries change: list them again
     pub schedule_rev: u64,
+    /// The user shares the recordings with paired phones
+    pub recordings_shared: bool,
+    /// Changes whenever the recordings may have changed: list them again
+    pub recordings_rev: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -188,6 +192,8 @@ impl State {
                 .unwrap_or_else(|| DEFAULT_ACCENT.to_string()),
             favorites_rev,
             schedule_rev: schedule_rev(s),
+            recordings_shared: false,
+            recordings_rev: 0,
         }
     }
 }

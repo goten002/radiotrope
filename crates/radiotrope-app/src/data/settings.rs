@@ -179,6 +179,10 @@ pub struct Settings {
     /// The name phones see for this player; `None` is the computer's name
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_name: Option<String>,
+
+    /// Paired phones may list, download and delete the recordings
+    #[serde(default)]
+    pub remote_share_recordings: bool,
 }
 
 fn default_mcp_address() -> String {
@@ -259,6 +263,7 @@ impl Default for Settings {
             mcp_client: None,
             remote_control: false,
             remote_name: None,
+            remote_share_recordings: false,
         }
     }
 }

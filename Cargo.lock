@@ -5787,6 +5787,7 @@ dependencies = [
  "dirs",
  "futures-core",
  "getrandom 0.3.4",
+ "hmac",
  "http",
  "http-body-util",
  "hyper",
