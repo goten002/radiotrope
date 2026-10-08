@@ -83,6 +83,10 @@ export component RemoteControlDialog inherits Rectangle {
     in property <string> name;
     in property <string> name-placeholder;
     in property <[RemoteDevice]> devices;
+    in-out property <bool> share-recordings: false;
+    // Phones' last downloads and deletions, newest first, e.g.
+    // "Pixel 8 downloaded Jazz FM - 2026-10-08 20-15-03.mp3 · 14:02"
+    in property <[string]> activity;
 
     // Being edited; reset from the saved name when the dialog opens
     in-out property <string> edit-name;
@@ -93,6 +97,7 @@ export component RemoteControlDialog inherits Rectangle {
     callback apply-name(string);
     callback remove-device(string);
     callback pair-qr();
+    callback share-toggled(bool);
 
     public function open() {
         root.opened();
@@ -187,6 +192,22 @@ export component RemoteControlDialog inherits Rectangle {
             }
         }
 
+        HorizontalLayout {
+            spacing: 8px;
+            Toggle {
+                label: "Share recordings with paired phones";
+                checked <=> root.share-recordings;
+                enabled: root.enabled-on;
+                toggled(on) => { root.share-toggled(on); }
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoTip {
+                    text: "Paired phones can list, download and delete the recordings in the recording folder (Tools > Recording Settings). Only recordings are shown, never other files. The recording being made can't be downloaded or deleted until it stops.";
+                }
+            }
+        }
+
         Rectangle {
             height: 1px;
             background: Theme.hairline;
@@ -231,6 +252,22 @@ export component RemoteControlDialog inherits Rectangle {
                 } else {
                     root.confirm-remove = device.id;
                 }
+            }
+        }
+
+        if root.activity.length > 0: VerticalLayout {
+            spacing: 4px;
+            Text {
+                text: "Recent file activity";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                font-weight: 600;
+            }
+            for line in root.activity: Text {
+                text: line;
+                color: Theme.text-secondary;
+                font-size: Theme.font-sm;
+                overflow: elide;
             }
         }
     }

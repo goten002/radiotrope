@@ -60,6 +60,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "aws_lc_rs"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 sha2 = "0.10"
+# Ids for recordings that stand for a file name only in this run
+hmac = "0.12"
 # The QR code a phone scans to pair
 qrcode = { version = "0.14", default-features = false }
 rfd = { version = "0.17", optional = true }

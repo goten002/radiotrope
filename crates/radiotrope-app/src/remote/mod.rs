@@ -10,6 +10,7 @@ mod library;
 mod listen;
 pub mod mdns;
 pub mod pairing;
+pub mod recordings;
 pub mod server;
 pub mod state;
 mod webrtc;
@@ -116,6 +117,7 @@ impl Remote {
                 tickets: Default::default(),
                 calls: Default::default(),
                 tls,
+                recordings: Default::default(),
             },
             running: Mutex::new(None),
             asked: AtomicU64::new(0),
@@ -140,6 +142,10 @@ impl Remote {
         let ours = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
         let remote = self.clone();
         let on = settings.remote_control;
+        self.shared
+            .recordings
+            .set_on(settings.remote_share_recordings);
+        self.shared.changes.fetch_add(1, Ordering::SeqCst);
         let name = Self::name_for(settings);
         let spawned = std::thread::Builder::new()
             .name("remote-setup".into())
@@ -290,6 +296,11 @@ impl Remote {
     pub fn cancel_qr_pairing(&self) {
         self.pairing().cancel_qr();
         self.shared.changes.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// The last downloads and deletions by phones, newest first
+    pub fn recordings_activity(&self) -> Vec<recordings::Activity> {
+        self.shared.recordings.activity()
     }
 
     /// The user opened the dialog: pairing works again after too many
