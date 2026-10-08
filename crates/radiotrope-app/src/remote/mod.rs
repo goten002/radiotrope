@@ -73,6 +73,9 @@ pub struct WindowHooks {
     pub accent: Option<Box<dyn Fn(String) + Send + Sync>>,
     /// A favorite was edited: as it was, as it is now
     pub favorite_edited: Option<Box<dyn Fn(Favorite, Favorite) + Send + Sync>>,
+    /// Save these recording settings and show them in the dialog
+    pub recording_settings:
+        Option<Box<dyn Fn(crate::app::state::RecordingSettingsChange) + Send + Sync>>,
 }
 
 impl Remote {

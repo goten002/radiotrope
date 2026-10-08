@@ -4211,8 +4211,8 @@ fn show_edited_favorite(
     }
 }
 
-/// What the window does when a phone changes the accent or edits a
-/// favorite; both run on the window's thread
+/// What the window does when a phone changes the accent or the recording
+/// settings, or edits a favorite; all run on the window's thread
 fn remote_window_hooks(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
@@ -4224,6 +4224,8 @@ fn remote_window_hooks(
     let favs = favorites.clone();
     let logo_svc = logo_service.clone();
     let state = shared_state.clone();
+    let recording_ui = ui.as_weak();
+    let recording_state = shared_state.clone();
     remote::WindowHooks {
         accent: Some(Box::new(move |hex: String| {
             let Some((r, g, b)) = radiotrope_app::data::settings::parse_hex_rgb(&hex) else {
@@ -4249,6 +4251,21 @@ fn remote_window_hooks(
                     country: s.country.as_deref().unwrap_or(""),
                 };
                 show_edited_favorite(&ui, &favs, &logo_svc, &state, edited);
+            });
+        })),
+        recording_settings: Some(Box::new(move |change| {
+            let state = recording_state.clone();
+            let _ = recording_ui.upgrade_in_event_loop(move |ui| {
+                save_recording_settings(&state, |s| change.apply(s));
+                if let Some(format) = change.format {
+                    ui.set_recording_format(format.id().into());
+                }
+                if let Some(bitrate) = change.bitrate {
+                    ui.set_recording_bitrate(bitrate.unwrap_or(0) as i32);
+                }
+                if let Some(on) = change.with_eq {
+                    ui.set_record_with_eq(on);
+                }
             });
         })),
     }

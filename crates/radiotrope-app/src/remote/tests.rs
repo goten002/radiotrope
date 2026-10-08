@@ -19,6 +19,7 @@ use radiotrope_app::providers::ProviderRegistry;
 use super::pairing::Pairing;
 use super::server::{self, is_local, Shared};
 use super::WindowHooks;
+use crate::app::state::RecordingSettingsChange;
 use crate::app::state::{AppCommand, AppSnapshot};
 use crate::control::Control;
 
@@ -28,6 +29,8 @@ struct Player {
     accents: Arc<Mutex<Vec<String>>>,
     /// Favorites the window was told were edited: old and new names
     edits: Arc<Mutex<Vec<(String, String)>>>,
+    /// Recording settings the window was told to save
+    recording_changes: Arc<Mutex<Vec<RecordingSettingsChange>>>,
     port: u16,
     _server: server::Server,
     state: Arc<Mutex<AppSnapshot>>,
@@ -153,7 +156,9 @@ impl Player {
         let cert = PlayerCert::load_or_create_at(&dir.join("remote-cert.pem")).unwrap();
         let accents = Arc::new(Mutex::new(Vec::new()));
         let edits = Arc::new(Mutex::new(Vec::new()));
+        let recording_changes = Arc::new(Mutex::new(Vec::new()));
         let (shown_accents, shown_edits) = (accents.clone(), edits.clone());
+        let saved_recording = recording_changes.clone();
         let window = WindowHooks {
             accent: Some(Box::new(move |hex| shown_accents.lock().unwrap().push(hex))),
             favorite_edited: Some(Box::new(move |old: Favorite, new: Favorite| {
@@ -161,6 +166,9 @@ impl Player {
                     .lock()
                     .unwrap()
                     .push((old.name().to_string(), new.name().to_string()))
+            })),
+            recording_settings: Some(Box::new(move |change| {
+                saved_recording.lock().unwrap().push(change)
             })),
         };
         let shared = Shared {
@@ -182,6 +190,7 @@ impl Player {
             shared,
             accents,
             edits,
+            recording_changes,
             _server: server,
             state,
             dir,
@@ -995,6 +1004,98 @@ async fn a_phone_picks_the_accent() {
         .request("PUT", "/v1/appearance", t, Some(json!({"accent": "blue"})))
         .await;
     assert_eq!(status, 400);
+}
+
+#[tokio::test]
+async fn phones_change_the_recording_settings_but_not_the_folder() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let t = Some(token.as_str());
+
+    let (_, state) = player.request("GET", "/v1/state", t, None).await;
+    assert_eq!(
+        state["recording_settings"],
+        json!({"format": "mp3", "bitrate": 0, "with_eq": false})
+    );
+
+    let (status, _) = player
+        .request(
+            "PUT",
+            "/v1/recording-settings",
+            t,
+            Some(json!({"format": "opus", "bitrate": 192})),
+        )
+        .await;
+    assert_eq!(status, 204);
+    let (status, _) = player
+        .request(
+            "PUT",
+            "/v1/recording-settings",
+            t,
+            Some(json!({"with_eq": true})),
+        )
+        .await;
+    assert_eq!(status, 204);
+    let (_, state) = player.request("GET", "/v1/state", t, None).await;
+    assert_eq!(
+        state["recording_settings"],
+        json!({"format": "opus", "bitrate": 192, "with_eq": true})
+    );
+    {
+        let setup = &player.state.lock().unwrap().recording_setup;
+        assert_eq!(setup.format, radiotrope::audio::RecordingFormat::Opus);
+        assert_eq!(setup.bitrate, Some(192));
+        assert!(setup.with_eq);
+    }
+    assert_eq!(
+        player.recording_changes.lock().unwrap().clone(),
+        [
+            RecordingSettingsChange {
+                format: Some(radiotrope_app::data::settings::RecordingFormat::Opus),
+                bitrate: Some(Some(192)),
+                with_eq: None,
+            },
+            RecordingSettingsChange {
+                with_eq: Some(true),
+                ..Default::default()
+            },
+        ]
+    );
+
+    // Auto is 0
+    let (status, _) = player
+        .request(
+            "PUT",
+            "/v1/recording-settings",
+            t,
+            Some(json!({"bitrate": 0})),
+        )
+        .await;
+    assert_eq!(status, 204);
+    assert_eq!(player.state.lock().unwrap().recording_setup.bitrate, None);
+
+    for bad in [
+        json!({"format": "flac"}),
+        json!({"bitrate": 100}),
+        json!({"folder": "/tmp"}),
+    ] {
+        let (status, body) = player
+            .request("PUT", "/v1/recording-settings", t, Some(bad.clone()))
+            .await;
+        assert_eq!(status, 400, "{bad} gave {body}");
+    }
+    assert_eq!(player.state.lock().unwrap().recording_setup.dir, None);
+    assert_eq!(player.recording_changes.lock().unwrap().len(), 3);
+
+    let (status, _) = player
+        .request(
+            "PUT",
+            "/v1/recording-settings",
+            None,
+            Some(json!({"format": "wav"})),
+        )
+        .await;
+    assert_eq!(status, 401);
 }
 
 #[tokio::test]
