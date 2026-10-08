@@ -43,6 +43,8 @@ const CHUNK: usize = 64 * 1024;
 const STILL_WRITING: Duration = Duration::from_secs(10);
 /// How many of the last downloads and deletions the dialog keeps
 const ACTIVITY_KEPT: usize = 20;
+/// How many files the player finished recording it remembers as finished
+const FINISHED_KEPT: usize = 8;
 /// Formats the player records, and what phones are told they are
 const FORMATS: &[(&str, &str)] = &[
     ("mp3", "audio/mpeg"),
@@ -60,6 +62,9 @@ pub struct Recordings {
     changes: AtomicU64,
     downloads: Mutex<HashMap<String, usize>>,
     activity: Mutex<VecDeque<Activity>>,
+    /// The file the player was recording when last seen, and the files it
+    /// finished since: closed, so not "still being written" however new
+    recorded: Mutex<(Option<PathBuf>, VecDeque<PathBuf>)>,
 }
 
 /// A phone downloaded or deleted a recording
@@ -86,6 +91,7 @@ impl Default for Recordings {
             changes: AtomicU64::new(0),
             downloads: Mutex::default(),
             activity: Mutex::default(),
+            recorded: Mutex::default(),
         }
     }
 }
@@ -107,12 +113,37 @@ impl Recordings {
     /// being recorded), and kept within what a phone's JSON reads exactly.
     pub fn rev(&self, folder: &Path, recording: Option<&Path>) -> u64 {
         use std::hash::{Hash, Hasher};
+        self.saw_recording(recording);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         self.changes.load(Ordering::SeqCst).hash(&mut hasher);
         self.is_on().hash(&mut hasher);
         folder.hash(&mut hasher);
         recording.hash(&mut hasher);
         hasher.finish() & ((1 << 53) - 1)
+    }
+
+    /// Note the file the player records now: the one it recorded before,
+    /// if another, is finished
+    fn saw_recording(&self, recording: Option<&Path>) {
+        let mut recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
+        let (last, finished) = &mut *recorded;
+        if last.as_deref() == recording {
+            return;
+        }
+        if let Some(done) = last.take() {
+            finished.retain(|f| *f != done);
+            finished.push_back(done);
+            if finished.len() > FINISHED_KEPT {
+                finished.pop_front();
+            }
+        }
+        *last = recording.map(Path::to_path_buf);
+    }
+
+    /// The player finished recording `path` itself
+    fn finished(&self, path: &Path) -> bool {
+        let recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
+        recorded.1.iter().any(|f| f == path)
     }
 
     /// The last downloads and deletions, newest first
@@ -247,6 +278,7 @@ fn list(
     folder: &Path,
     recording: Option<&Path>,
 ) -> io::Result<Vec<Entry>> {
+    recordings.saw_recording(recording);
     let now = SystemTime::now();
     let mut entries = Vec::new();
     let read = match fs::read_dir(folder) {
@@ -270,10 +302,12 @@ fn list(
             continue;
         }
         let modified = meta.modified().unwrap_or(UNIX_EPOCH);
-        let being_recorded = recording.is_some_and(|r| r == item.path())
-            || now
-                .duration_since(modified)
-                .map_or(true, |ago| ago < STILL_WRITING);
+        let path = item.path();
+        let being_recorded = recording.is_some_and(|r| r == path)
+            || (!recordings.finished(&path)
+                && now
+                    .duration_since(modified)
+                    .map_or(true, |ago| ago < STILL_WRITING));
         entries.push(Entry {
             id: recordings.id(&name),
             name,
@@ -763,6 +797,26 @@ mod tests {
         assert!(list(&recordings, &dir.join("none"), None)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn a_recording_the_player_stopped_is_finished_at_once() {
+        let dir = temp_dir("stopped");
+        let recordings = Recordings::default();
+        let file = dir.join("C - 2026-10-02 10-00-00.opus");
+        fs::write(&file, b"cc").unwrap();
+        let rev = recordings.rev(&dir, Some(&file));
+        assert!(list(&recordings, &dir, Some(&file)).unwrap()[0].recording);
+        // Stopped: the state the phones get says so, and the list too,
+        // although the file was written just now
+        assert_ne!(recordings.rev(&dir, None), rev);
+        assert!(!list(&recordings, &dir, None).unwrap()[0].recording);
+        // Another new file the player didn't write may still be written
+        fs::write(dir.join("D - 2026-10-02 10-00-01.mp3"), b"d").unwrap();
+        let entries = list(&recordings, &dir, None).unwrap();
+        assert!(entries
+            .iter()
+            .any(|e| e.name.starts_with("D ") && e.recording));
     }
 
     #[test]
