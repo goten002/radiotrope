@@ -18,7 +18,7 @@ use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
 use radiotrope_app::data::types::{
-    name_from_url, url_to_id, Favorite, FavoriteSort, FavoriteUpdate, Station,
+    name_from_url, url_to_id, Favorite, FavoriteSort, FavoriteUpdate, Station, StationStats,
 };
 use radiotrope_app::providers::types::Category;
 use radiotrope_app::providers::{CategoryType, ProviderRegistry, StationFilter};
@@ -438,6 +438,26 @@ impl Control {
                 .collect()
         })
         .await
+    }
+
+    /// The favorites in the user's order, each with its plays and
+    /// listening time
+    pub async fn favorites_with_stats(&self) -> Result<Vec<(Favorite, StationStats)>, Error> {
+        self.with_favorites(|_, favorites| {
+            favorites
+                .sorted(FavoriteSort::Manual)
+                .into_iter()
+                .map(|f| (f.clone(), favorites.stats(&f.id())))
+                .collect()
+        })
+        .await
+    }
+
+    /// The plays and listening time of the favorite with this id
+    pub async fn favorite_stats(&self, id: String) -> StationStats {
+        self.with_favorites(move |_, favorites| favorites.stats(&id))
+            .await
+            .unwrap_or_default()
     }
 
     /// Counts the changes to the favorites, so callers can tell when to

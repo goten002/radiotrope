@@ -1004,17 +1004,17 @@ impl RadioTools {
     async fn list_favorites(&self) -> Result<Json<FavoritesList>, String> {
         let favorites = self
             .control
-            .favorites_in_order()
+            .favorites_with_stats()
             .await
             .map_err(agent_text)?
             .into_iter()
-            .map(|fav| FavoriteItem {
+            .map(|(fav, stats)| FavoriteItem {
                 id: fav.id(),
                 name: fav.name().to_string(),
                 url: fav.url().to_string(),
                 country: fav.station.country.clone(),
                 genres: sorted_genres(&fav.station.genres),
-                play_count: fav.play_count,
+                play_count: stats.play_count,
             })
             .collect();
         Ok(Json(FavoritesList { favorites }))

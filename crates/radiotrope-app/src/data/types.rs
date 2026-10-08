@@ -211,30 +211,68 @@ impl HasLogo for Station {
 
 /// A favorite radio station with user-specific metadata
 ///
-/// Extends Station with statistics and display preferences.
+/// Its plays and listening time are kept apart, in [`StationStats`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Favorite {
     /// The station data
     #[serde(flatten)]
     pub station: Station,
 
-    // === Statistics ===
+    /// When the favorite was added (Unix timestamp)
+    pub added_at: u64,
+
+    // === Display ===
+    /// Sort order (lower = higher priority)
+    #[serde(default)]
+    pub sort_order: i32,
+}
+
+/// How much a station was listened to on this computer
+///
+/// Kept in its own file next to the favorites, so the favorites file
+/// changes only when a favorite does, not every minute while music plays.
+/// The field names are the ones favorites.json used before, so they read
+/// straight out of an old favorites file.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StationStats {
     /// Number of times played
     #[serde(default)]
     pub play_count: u32,
     /// Total listening time in seconds
     #[serde(default)]
     pub total_listen_time_secs: u64,
-    /// When the favorite was added (Unix timestamp)
-    pub added_at: u64,
     /// Last played timestamp
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_played: Option<u64>,
+}
 
-    // === Display ===
-    /// Sort order (lower = higher priority)
-    #[serde(default)]
-    pub sort_order: i32,
+impl StationStats {
+    /// Never played (or reset)
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Record a play session
+    pub fn record_play(&mut self, duration_secs: u64) {
+        self.add_listening(duration_secs, true);
+    }
+
+    /// Add listening time, counting a new play when `new_play` is set, and
+    /// mark the station as played now. Long sessions are credited in steps,
+    /// so only their first step counts as a play.
+    pub fn add_listening(&mut self, secs: u64, new_play: bool) {
+        // Listening after a stats reset counts as a play too
+        if new_play || self.play_count == 0 {
+            self.play_count += 1;
+        }
+        self.total_listen_time_secs += secs;
+        self.last_played = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+    }
 }
 
 impl Favorite {
@@ -247,10 +285,7 @@ impl Favorite {
 
         Self {
             station,
-            play_count: 0,
-            total_listen_time_secs: 0,
             added_at: now,
-            last_played: None,
             sort_order: 0,
         }
     }
@@ -306,35 +341,6 @@ impl Favorite {
     pub fn with_audio_info(mut self, codec: Option<String>, bitrate: Option<u32>) -> Self {
         self.station = self.station.with_audio_info(codec, bitrate);
         self
-    }
-
-    /// Record a play session
-    pub fn record_play(&mut self, duration_secs: u64) {
-        self.add_listening(duration_secs, true);
-    }
-
-    /// Add listening time, counting a new play when `new_play` is set, and
-    /// mark the station as played now. Long sessions are credited in steps,
-    /// so only their first step counts as a play.
-    pub fn add_listening(&mut self, secs: u64, new_play: bool) {
-        // Listening after a stats reset counts as a play too
-        if new_play || self.play_count == 0 {
-            self.play_count += 1;
-        }
-        self.total_listen_time_secs += secs;
-        self.last_played = Some(
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
-        );
-    }
-
-    /// Forget plays, listening time and when the station was last played
-    pub fn reset_stats(&mut self) {
-        self.play_count = 0;
-        self.total_listen_time_secs = 0;
-        self.last_played = None;
     }
 }
 
@@ -592,7 +598,6 @@ mod tests {
             favorite.station.logo_url,
             Some("http://example.com/logo.png".to_string())
         );
-        assert_eq!(favorite.play_count, 0);
         assert!(favorite.added_at > 0);
     }
 
@@ -666,18 +671,34 @@ mod tests {
 
     #[test]
     fn test_record_play() {
-        let mut fav = Favorite::new("Test", "http://test.com");
-        assert_eq!(fav.play_count, 0);
-        assert_eq!(fav.total_listen_time_secs, 0);
+        let mut stats = StationStats::default();
+        assert!(stats.is_empty());
 
-        fav.record_play(300); // 5 minutes
-        assert_eq!(fav.play_count, 1);
-        assert_eq!(fav.total_listen_time_secs, 300);
-        assert!(fav.last_played.is_some());
+        stats.record_play(300); // 5 minutes
+        assert_eq!(stats.play_count, 1);
+        assert_eq!(stats.total_listen_time_secs, 300);
+        assert!(stats.last_played.is_some());
 
-        fav.record_play(600); // 10 more minutes
-        assert_eq!(fav.play_count, 2);
-        assert_eq!(fav.total_listen_time_secs, 900);
+        stats.record_play(600); // 10 more minutes
+        assert_eq!(stats.play_count, 2);
+        assert_eq!(stats.total_listen_time_secs, 900);
+    }
+
+    #[test]
+    fn stats_read_out_of_an_old_favorite() {
+        let old = serde_json::json!({
+            "name": "A", "url": "http://a.test/", "added_at": 5,
+            "play_count": 3, "total_listen_time_secs": 900, "last_played": 77
+        });
+        let stats: StationStats = serde_json::from_value(old.clone()).unwrap();
+        assert_eq!(stats.play_count, 3);
+        assert_eq!(stats.total_listen_time_secs, 900);
+        assert_eq!(stats.last_played, Some(77));
+        // The favorite itself reads the same file and no longer writes them
+        let fav: Favorite = serde_json::from_value(old).unwrap();
+        let written = serde_json::to_value(&fav).unwrap();
+        assert!(written.get("play_count").is_none());
+        assert!(written.get("last_played").is_none());
     }
 
     #[test]
