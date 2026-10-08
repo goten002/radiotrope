@@ -33,13 +33,12 @@ pub const LISTEN_CHANNELS: u16 = 2;
 /// Bitrate of the Opus packets, in kbps (48 kHz stereo), for a station
 /// sending `station_kbps`. Opus needs fewer bits than MP3 or AAC for the
 /// same sound, and the phone can't hear more than the station sends, so
-/// 160 kbps covers the best stations. Unknown gets plenty, to be safe.
+/// 160 kbps covers the best stations, and one we know nothing about.
 pub fn listen_opus_kbps(station_kbps: Option<u32>) -> u32 {
     match station_kbps {
         Some(1..=64) => 96,
         Some(65..=128) => 128,
-        Some(129..) => 160,
-        Some(0) | None => 256,
+        Some(129..) | Some(0) | None => 160,
     }
 }
 
@@ -525,8 +524,8 @@ mod tests {
         assert_eq!(listen_opus_kbps(Some(128)), 128);
         assert_eq!(listen_opus_kbps(Some(192)), 160);
         assert_eq!(listen_opus_kbps(Some(320)), 160);
-        assert_eq!(listen_opus_kbps(Some(0)), 256);
-        assert_eq!(listen_opus_kbps(None), 256);
+        assert_eq!(listen_opus_kbps(Some(0)), 160);
+        assert_eq!(listen_opus_kbps(None), 160);
     }
 
     /// White noise, which takes every bit the encoder may spend
@@ -561,12 +560,13 @@ mod tests {
             got[10..].iter().map(|p| p.len()).sum::<usize>() / 40
         };
         let low = sizes(Some(64));
+        let mid = sizes(Some(128));
         let high = sizes(Some(320));
-        let unknown = sizes(None);
-        // 20 ms packets: 96 kbps is 240 bytes, 160 is 400, 256 is 640
-        assert!((180..=300).contains(&low), "96 kbps: {low} bytes");
-        assert!((320..=480).contains(&high), "160 kbps: {high} bytes");
-        assert!((520..=760).contains(&unknown), "256 kbps: {unknown} bytes");
+        // 20 ms packets: 96 kbps is 240 bytes, 128 is 320, 160 is 400
+        assert!((180..=290).contains(&low), "96 kbps: {low} bytes");
+        assert!((260..=370).contains(&mid), "128 kbps: {mid} bytes");
+        assert!((340..=480).contains(&high), "160 kbps: {high} bytes");
+        assert!(low < mid && mid < high, "{low} {mid} {high}");
     }
 
     #[test]
