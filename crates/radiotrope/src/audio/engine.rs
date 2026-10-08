@@ -1071,6 +1071,8 @@ impl AudioEngine {
 
                                 let mut codec_info = source.codec_info();
                                 codec_info.bitrate = p.bitrate;
+                                // Phones listening get a bitrate to suit
+                                recorder.listen().set_station_kbps(p.bitrate);
                                 let label = source.codec_label();
                                 let error_slot = source.error_slot();
                                 let dec_stats = source.decoder_stats();

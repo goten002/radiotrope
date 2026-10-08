@@ -36,7 +36,7 @@ mod resample;
 mod wav;
 
 pub use listen::{
-    Listen, ListenError, ListenStream, LISTEN_CHANNELS, LISTEN_OPUS_FRAME, LISTEN_OPUS_KBPS,
+    listen_opus_kbps, Listen, ListenError, ListenStream, LISTEN_CHANNELS, LISTEN_OPUS_FRAME,
     LISTEN_OPUS_RATE, MAX_LISTENERS,
 };
 #[cfg(test)]

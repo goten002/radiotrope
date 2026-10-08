@@ -2,9 +2,11 @@
 //!
 //! The same taps that feed recordings (see [`super::RecordingTap`]) copy
 //! the decoded audio here while at least one listener is connected. One
-//! encoder thread turns it into Opus packets for WebRTC at a fixed rate and
-//! bitrate, and hands each packet to every listener, so the format never
-//! changes, whatever the station plays or how often it switches. When no
+//! encoder thread turns it into Opus packets for WebRTC at a fixed rate, and
+//! hands each packet to every listener, so the format never changes,
+//! whatever the station plays or how often it switches. Only the bitrate
+//! follows the station (see [`listen_opus_kbps`]); Opus packets carry their
+//! own size, so a phone needs no notice. When no
 //! audio comes (stopped, buffering, switching station) the encoder fills in
 //! silence at the pace of the clock, so a phone's player never runs dry.
 //!
@@ -12,7 +14,7 @@
 //! encoder with `try_send`, and a listener that falls too far behind is
 //! dropped (its stream ends, and the phone can connect again).
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -28,8 +30,18 @@ const SILENCE_RATE: u32 = 44_100;
 /// Channels of the stream
 pub const LISTEN_CHANNELS: u16 = 2;
 
-/// Bitrate of the Opus packets, in kbps (48 kHz stereo)
-pub const LISTEN_OPUS_KBPS: u32 = 128;
+/// Bitrate of the Opus packets, in kbps (48 kHz stereo), for a station
+/// sending `station_kbps`. Opus needs fewer bits than MP3 or AAC for the
+/// same sound, and the phone can't hear more than the station sends, so
+/// 160 kbps covers the best stations. Unknown gets plenty, to be safe.
+pub fn listen_opus_kbps(station_kbps: Option<u32>) -> u32 {
+    match station_kbps {
+        Some(1..=64) => 96,
+        Some(65..=128) => 128,
+        Some(129..) => 160,
+        Some(0) | None => 256,
+    }
+}
 
 /// Sample rate of the Opus packets (Opus always runs at 48 kHz)
 pub const LISTEN_OPUS_RATE: u32 = OpusPackets::RATE;
@@ -104,6 +116,8 @@ struct ListenShared {
     tap: AtomicU8,
     /// Pieces the taps couldn't hand to a busy encoder
     dropped_batches: AtomicU64,
+    /// Advertised bitrate of the playing station in kbps, 0 when unknown
+    station_kbps: AtomicU32,
 }
 
 /// Lets phones listen to the playing station. Cheap to clone; all clones
@@ -168,6 +182,23 @@ impl Listen {
     /// the equalizer unless set)
     pub fn set_tap(&self, tap: TapPoint) {
         self.shared.tap.store(tap.id(), Ordering::SeqCst);
+    }
+
+    /// Tell the encoder the playing station's bitrate (`None` when it
+    /// isn't known); the packets follow it from the next one on
+    pub fn set_station_kbps(&self, kbps: Option<u32>) {
+        self.shared
+            .station_kbps
+            .store(kbps.unwrap_or(0), Ordering::Relaxed);
+    }
+
+    /// Bitrate the Opus packets have now, in kbps
+    pub fn opus_kbps(&self) -> u32 {
+        listen_opus_kbps(self.station_kbps())
+    }
+
+    fn station_kbps(&self) -> Option<u32> {
+        Some(self.shared.station_kbps.load(Ordering::Relaxed)).filter(|&k| k > 0)
     }
 
     /// Pieces of audio lost because the encoder was busy
@@ -315,6 +346,8 @@ fn broadcast(shared: &ListenShared, packet: &[u8]) {
 #[derive(Default)]
 struct Encoders {
     opus: Option<OpusPackets>,
+    /// Bitrate `opus` was last set to
+    kbps: u32,
 }
 
 impl Encoders {
@@ -339,13 +372,22 @@ impl Encoders {
             self.opus = None;
             return true;
         }
+        let kbps =
+            listen_opus_kbps(Some(shared.station_kbps.load(Ordering::Relaxed)).filter(|&k| k > 0));
         if self.opus.is_none() {
-            match OpusPackets::new(LISTEN_CHANNELS, LISTEN_OPUS_KBPS, OPUS_LOSS_PERCENT) {
-                Ok(encoder) => self.opus = Some(encoder),
+            match OpusPackets::new(LISTEN_CHANNELS, kbps, OPUS_LOSS_PERCENT) {
+                Ok(encoder) => {
+                    self.opus = Some(encoder);
+                    self.kbps = kbps;
+                }
                 Err(e) => fail(&shared, &e),
             }
         }
         if let Some(encoder) = self.opus.as_mut() {
+            if self.kbps != kbps {
+                encoder.set_bitrate(kbps);
+                self.kbps = kbps;
+            }
             let sent = encoder.encode(sample_rate, channels, samples, |packet| {
                 broadcast(&shared, packet)
             });
@@ -473,6 +515,58 @@ mod tests {
         let got = read(&stream, 90, Duration::from_secs(5));
         assert!(got.len() >= 90, "only {} packets", got.len());
         assert_packets(&got);
+    }
+
+    #[test]
+    fn the_bitrate_follows_the_station() {
+        assert_eq!(listen_opus_kbps(Some(32)), 96);
+        assert_eq!(listen_opus_kbps(Some(64)), 96);
+        assert_eq!(listen_opus_kbps(Some(96)), 128);
+        assert_eq!(listen_opus_kbps(Some(128)), 128);
+        assert_eq!(listen_opus_kbps(Some(192)), 160);
+        assert_eq!(listen_opus_kbps(Some(320)), 160);
+        assert_eq!(listen_opus_kbps(Some(0)), 256);
+        assert_eq!(listen_opus_kbps(None), 256);
+    }
+
+    /// White noise, which takes every bit the encoder may spend
+    fn noise(seed: &mut u32, frames: usize) -> Vec<f32> {
+        (0..frames * 2)
+            .map(|_| {
+                *seed ^= *seed << 13;
+                *seed ^= *seed >> 17;
+                *seed ^= *seed << 5;
+                (*seed as f32 / u32::MAX as f32 - 0.5) * 0.8
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_station_change_changes_the_packet_size() {
+        let listen = Listen::new();
+        let stream = listen.subscribe("Pixel").unwrap();
+        let generation = listen.generation_for(TapPoint::BeforeEq);
+        let mut seed = 1;
+        // Average bytes per packet of a second of noise from a station
+        // of `kbps`, leaving out the first packets after the change
+        let mut sizes = |kbps: Option<u32>| {
+            listen.set_station_kbps(kbps);
+            assert_eq!(listen.opus_kbps(), listen_opus_kbps(kbps));
+            for _ in 0..10 {
+                listen.submit(generation, 48_000, 2, noise(&mut seed, 4800));
+            }
+            let got = read(&stream, 50, Duration::from_secs(5));
+            assert_eq!(got.len(), 50);
+            assert_packets(&got);
+            got[10..].iter().map(|p| p.len()).sum::<usize>() / 40
+        };
+        let low = sizes(Some(64));
+        let high = sizes(Some(320));
+        let unknown = sizes(None);
+        // 20 ms packets: 96 kbps is 240 bytes, 160 is 400, 256 is 640
+        assert!((180..=300).contains(&low), "96 kbps: {low} bytes");
+        assert!((320..=480).contains(&high), "160 kbps: {high} bytes");
+        assert!((520..=760).contains(&unknown), "256 kbps: {unknown} bytes");
     }
 
     #[test]
