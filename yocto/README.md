@@ -35,7 +35,7 @@ The first build takes several hours. Subsequent builds use sstate-cache and are 
 ## Flash
 
 ```bash
-sudo dd if=build/tmp/deploy/images/raspberrypi3-64/radiotrope-image-raspberrypi3-64.rpi-sdimg \
+sudo dd if=build/tmp/deploy/images/raspberrypi3-64/radiotrope-image-raspberrypi3-64.rootfs.rpi-sdimg \
     of=/dev/sdX bs=4M status=progress
 sync
 ```

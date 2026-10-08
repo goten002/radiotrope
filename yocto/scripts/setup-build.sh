@@ -33,4 +33,4 @@ $BUILD_CMD kas-radiotrope-pi3.yml
 echo ""
 echo "Build complete!"
 echo "Flash the image to an SD card:"
-echo "  sudo dd if=build/tmp/deploy/images/raspberrypi3-64/radiotrope-image-raspberrypi3-64.rpi-sdimg of=/dev/sdX bs=4M status=progress"
+echo "  sudo dd if=build/tmp/deploy/images/raspberrypi3-64/radiotrope-image-raspberrypi3-64.rootfs.rpi-sdimg of=/dev/sdX bs=4M status=progress"
