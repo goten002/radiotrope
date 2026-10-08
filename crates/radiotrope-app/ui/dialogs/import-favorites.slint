@@ -1,0 +1,118 @@
+import { Theme, Defaults } from "../defaults.slint";
+import { AccentButton, SecondaryButton, DangerButton } from "../buttons.slint";
+import { DialogShell } from "../components.slint";
+
+// One choice: its name, what it does, and what it would change here
+component ImportChoice inherits VerticalLayout {
+    in property <string> label;
+    in property <string> text;
+    in property <string> summary;
+    spacing: 2px;
+
+    Text {
+        text: root.label;
+        color: Theme.text-primary;
+        font-size: Theme.font-lg;
+        font-weight: 600;
+    }
+    Text {
+        text: root.text;
+        color: Theme.text-secondary;
+        font-size: Theme.font-base;
+        overflow: elide;
+    }
+    Text {
+        text: root.summary;
+        color: Theme.text-primary;
+        font-size: Theme.font-base;
+        overflow: elide;
+    }
+}
+
+// Import Favorites: after a file is picked, choose Add Missing or Replace,
+// each with what it would change; then what was done, or what went wrong.
+// Export Favorites uses it for its outcome too.
+export component ImportFavoritesDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in-out property <string> title: "Import Favorites";
+    // "Favorites.json: 42 stations"
+    in-out property <string> subtitle;
+    // What each choice would change, e.g. "Adds 12, keeps 30."
+    in-out property <string> add-summary;
+    in-out property <string> replace-summary;
+    // Set once done (or failed): shown instead of the choices, with a
+    // second line under it (a file's path, what to do next)
+    in-out property <string> message;
+    in-out property <string> message-detail;
+    in-out property <bool> message-error;
+    callback add-missing();
+    callback replace();
+
+    if show-dialog: DialogShell {
+        title: root.title;
+        subtitle: root.subtitle;
+        card-width: Defaults.network-stream-width;
+        close-requested => { root.show-dialog = false; }
+
+        if root.message == "": VerticalLayout {
+            spacing: 14px;
+
+            ImportChoice {
+                label: "Add Missing";
+                text: "Adds the stations you don't have, at the end.";
+                summary: root.add-summary;
+            }
+            ImportChoice {
+                label: "Replace";
+                text: "Your favorites become the file's list, in its order.";
+                summary: root.replace-summary;
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+
+                SecondaryButton {
+                    label: "Cancel";
+                    clicked => { root.show-dialog = false; }
+                }
+                DangerButton {
+                    label: "Replace";
+                    clicked => { root.replace(); }
+                }
+                AccentButton {
+                    label: "Add Missing";
+                    clicked => { root.add-missing(); }
+                }
+            }
+        }
+
+        if root.message != "": VerticalLayout {
+            spacing: 14px;
+
+            VerticalLayout {
+                spacing: 2px;
+                Text {
+                    text: root.message;
+                    color: root.message-error ? Theme.danger : Theme.text-primary;
+                    font-size: Theme.font-lg;
+                    overflow: elide;
+                }
+                if root.message-detail != "": Text {
+                    text: root.message-detail;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-base;
+                    overflow: elide;
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                AccentButton {
+                    label: "Close";
+                    clicked => { root.show-dialog = false; }
+                }
+            }
+        }
+    }
+}

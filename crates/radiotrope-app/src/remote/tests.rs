@@ -147,6 +147,8 @@ impl Player {
         let mut favs = FavoritesManager::new();
         favs.add(Favorite::new("Jazz FM", "http://jazz.test/stream"))
             .unwrap();
+        // Saved, as a player's favorites come from their file
+        favs.save_to(&dir.join("favorites.json")).unwrap();
         let favorites = Arc::new(Mutex::new(favs));
         let control = Control::new(cmd_tx, state.clone(), favorites)
             .with_test_setup(ProviderRegistry::new(), dir.join("favorites.json"));
@@ -818,6 +820,136 @@ async fn a_phone_edits_orders_and_removes_favorites() {
         .request("DELETE", &format!("/v1/favorites/{rock}"), t, None)
         .await;
     assert_eq!(status, 404);
+}
+
+#[tokio::test]
+async fn a_phone_copies_a_list_of_favorites_to_the_player() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let t = Some(token.as_str());
+    let names = |list: &Value| -> Vec<String> {
+        list["favorites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Nothing to undo yet
+    let (status, body) = player
+        .request("POST", "/v1/favorites/import/undo", t, None)
+        .await;
+    assert_eq!(status, 409, "{body}");
+    assert_eq!(body["code"], "nothing_to_undo");
+
+    // As another player's GET /v1/favorites gives them
+    let theirs = json!([
+        {"name": "Rock", "url": "http://rock.test/live", "genres": ["rock"],
+         "codec": "MP3", "bitrate_kbps": 128, "provider": "radio-browser",
+         "provider_id": "uuid-1", "play_count": 9, "listen_seconds": 900},
+        {"name": "Jazz elsewhere", "url": "http://jazz.test/stream"}
+    ]);
+    let (status, preview) = player
+        .request(
+            "POST",
+            "/v1/favorites/import",
+            t,
+            Some(json!({"mode": "add", "preview": true, "favorites": theirs})),
+        )
+        .await;
+    assert_eq!(status, 200, "{preview}");
+    assert_eq!(
+        (preview["added"].as_u64(), preview["kept"].as_u64()),
+        (Some(1), Some(1))
+    );
+    assert_eq!(preview["can_undo"], false);
+    let (_, list) = player.request("GET", "/v1/favorites", t, None).await;
+    assert_eq!(names(&list), ["Jazz FM"]);
+
+    let (status, added) = player
+        .request(
+            "POST",
+            "/v1/favorites/import",
+            t,
+            Some(json!({"mode": "add", "favorites": theirs})),
+        )
+        .await;
+    assert_eq!(status, 200, "{added}");
+    assert_eq!(added["can_undo"], true);
+    let (_, list) = player.request("GET", "/v1/favorites", t, None).await;
+    assert_eq!(names(&list), ["Jazz FM", "Rock"]);
+    let rock = &list["favorites"][1];
+    assert_eq!(rock["provider_id"], "uuid-1");
+    assert_eq!(rock["bitrate_kbps"], 128);
+    // Plays never travel
+    assert_eq!(rock["play_count"], 0);
+
+    // Replace: their names and order
+    let (status, replaced) = player
+        .request(
+            "POST",
+            "/v1/favorites/import",
+            t,
+            Some(json!({"mode": "replace", "favorites": [theirs[1], {"name": "News", "url": "https://news.test/"}]})),
+        )
+        .await;
+    assert_eq!(status, 200, "{replaced}");
+    assert_eq!(
+        (
+            replaced["added"].as_u64(),
+            replaced["updated"].as_u64(),
+            replaced["removed"].as_u64()
+        ),
+        (Some(1), Some(1), Some(1))
+    );
+    let (_, list) = player.request("GET", "/v1/favorites", t, None).await;
+    assert_eq!(names(&list), ["Jazz elsewhere", "News"]);
+
+    let (status, undone) = player
+        .request("POST", "/v1/favorites/import/undo", t, None)
+        .await;
+    assert_eq!(status, 200, "{undone}");
+    assert_eq!(undone["count"], 2);
+    let (_, list) = player.request("GET", "/v1/favorites", t, None).await;
+    assert_eq!(names(&list), ["Jazz FM", "Rock"]);
+
+    // A bad entry stops the whole list
+    let (status, body) = player
+        .request(
+            "POST",
+            "/v1/favorites/import",
+            t,
+            Some(json!({"mode": "replace", "favorites": [{"name": "A", "url": "https://a.test/"}, {"name": "B", "url": "ftp://b.test/"}]})),
+        )
+        .await;
+    assert_eq!(status, 400, "{body}");
+    assert!(body["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("favorites[1]"));
+    let (status, _) = player
+        .request(
+            "POST",
+            "/v1/favorites/import",
+            t,
+            Some(json!({"mode": "merge", "favorites": []})),
+        )
+        .await;
+    assert_eq!(status, 400);
+    let (_, list) = player.request("GET", "/v1/favorites", t, None).await;
+    assert_eq!(names(&list), ["Jazz FM", "Rock"]);
+
+    // Not for unpaired phones
+    let (status, _) = player
+        .request(
+            "POST",
+            "/v1/favorites/import",
+            None,
+            Some(json!({"mode": "replace", "favorites": []})),
+        )
+        .await;
+    assert_eq!(status, 401);
 }
 
 #[tokio::test]

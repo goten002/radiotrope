@@ -273,6 +273,9 @@ pub mod remote {
 
     /// Largest request body read, in bytes
     pub const MAX_BODY: usize = 64 * 1024;
+    /// The most a list of favorites sent to the player may take (up to
+    /// 1000 stations)
+    pub const MAX_IMPORT_BODY: usize = 2 * 1024 * 1024;
 
     /// How often a WebRTC call checks that its phone is still paired and
     /// still connected

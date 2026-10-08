@@ -365,6 +365,12 @@ pub async fn handle(
         (&Method::GET, ["v1", "favorites"]) => library::favorites(shared).await,
         (&Method::POST, ["v1", "favorites"]) => library::add_favorite(shared, request).await,
         (&Method::PUT, ["v1", "favorites", "order"]) => library::reorder(shared, request).await,
+        (&Method::POST, ["v1", "favorites", "import"]) => {
+            library::import_favorites(shared, request).await
+        }
+        (&Method::POST, ["v1", "favorites", "import", "undo"]) => {
+            library::undo_import(shared).await
+        }
         (&Method::PATCH, ["v1", "favorites", id]) => {
             library::edit_favorite(shared, id, request).await
         }
@@ -923,7 +929,15 @@ pub fn is_local(ip: IpAddr) -> bool {
 pub(super) async fn read_json<T: serde::de::DeserializeOwned>(
     request: Request<Incoming>,
 ) -> Result<T, Box<Response<Body>>> {
-    let bytes = match Limited::new(request.into_body(), MAX_BODY).collect().await {
+    read_json_up_to(request, MAX_BODY).await
+}
+
+/// [`read_json`] for a request that may be larger, up to `limit` bytes
+pub(super) async fn read_json_up_to<T: serde::de::DeserializeOwned>(
+    request: Request<Incoming>,
+    limit: usize,
+) -> Result<T, Box<Response<Body>>> {
+    let bytes = match Limited::new(request.into_body(), limit).collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(_) => {
             return Err(Box::new(error(

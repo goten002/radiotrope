@@ -275,6 +275,11 @@ export component MenuBar inherits Rectangle {
     callback open-network-stream();
     callback open-station-search();
     callback open-country-picker();
+    callback export-favorites();
+    callback import-favorites();
+    callback undo-favorites-import();
+    // A list taken in (from a file or a phone) can be undone
+    in property <bool> can-undo-import;
     callback open-statistics();
     callback open-equalizer();
     callback open-accent-color();
@@ -562,6 +567,35 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         stations-popup.close();
                         root.open-country-picker();
+                    }
+                }
+                MenuSeparator {}
+                // Need a file dialog, which the kiosk build lacks
+                MenuItem {
+                    label: "Export Favorites...";
+                    enabled: Platform.has-file-manager;
+                    icon: @image-url("icons/file-export.svg");
+                    clicked => {
+                        stations-popup.close();
+                        root.export-favorites();
+                    }
+                }
+                MenuItem {
+                    label: "Import Favorites...";
+                    enabled: Platform.has-file-manager;
+                    icon: @image-url("icons/file-import.svg");
+                    clicked => {
+                        stations-popup.close();
+                        root.import-favorites();
+                    }
+                }
+                MenuItem {
+                    label: "Undo Favorites Import";
+                    enabled: root.can-undo-import;
+                    icon: @image-url("icons/rotate-left.svg");
+                    clicked => {
+                        stations-popup.close();
+                        root.undo-favorites-import();
                     }
                 }
             }

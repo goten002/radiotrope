@@ -10,10 +10,18 @@ use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::types::{Favorite, Station, StationStats};
 use radiotrope_app::providers::{CategoryType, SearchOrder, StationFilter};
 
-use super::server::{control_error, error, json, no_content, read_json, Body, Shared};
-use crate::control::{
-    check_length, sorted_genres, FavoriteEdit, Found, MAX_NAME_CHARS, MAX_URL_CHARS,
+use radiotrope_app::config::remote::MAX_IMPORT_BODY;
+use radiotrope_app::data::favorites::ImportMode;
+
+use super::server::{
+    control_error, error, json, no_content, read_json, read_json_up_to, Body, Shared,
 };
+use crate::control::{
+    check_length, sorted_genres, FavoriteEdit, Found, MAX_FAVORITES, MAX_NAME_CHARS, MAX_URL_CHARS,
+};
+
+/// Genres a station sent to the player may have
+const MAX_GENRES: usize = 32;
 
 /// Stations a search sends unless told otherwise
 const DEFAULT_SEARCH_LIMIT: usize = 30;
@@ -193,6 +201,10 @@ pub(super) struct FavoriteItem {
     codec: Option<String>,
     bitrate_kbps: Option<u32>,
     homepage: Option<String>,
+    /// The directory it came from ("radio-browser", or "manual")
+    provider: String,
+    /// Its id in that directory
+    provider_id: Option<String>,
     play_count: u32,
     listen_seconds: u64,
     /// Unix time
@@ -217,6 +229,8 @@ impl FavoriteItem {
             codec: s.codec.clone(),
             bitrate_kbps: s.bitrate.filter(|b| *b > 0),
             homepage: s.homepage.clone(),
+            provider: s.provider.clone(),
+            provider_id: s.provider_id.clone(),
             play_count: stats.play_count,
             listen_seconds: stats.total_listen_time_secs,
             added_at: fav.added_at,
@@ -414,6 +428,189 @@ pub(super) async fn reorder(shared: &Shared, request: Request<Incoming>) -> Resp
     };
     match shared.control.reorder_favorites(body.ids).await {
         Ok(()) => no_content(),
+        Err(e) => control_error(e),
+    }
+}
+
+/// A station in a list sent to the player: what `GET /v1/favorites`
+/// gives, without the plays and listening time
+#[derive(Deserialize)]
+struct ImportStation {
+    name: String,
+    url: String,
+    #[serde(default)]
+    logo_url: Option<String>,
+    #[serde(default)]
+    country: Option<String>,
+    #[serde(default)]
+    language: Option<String>,
+    #[serde(default)]
+    genres: Vec<String>,
+    #[serde(default)]
+    codec: Option<String>,
+    #[serde(default)]
+    bitrate_kbps: Option<u32>,
+    #[serde(default)]
+    homepage: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default)]
+    provider_id: Option<String>,
+}
+
+impl ImportStation {
+    /// The favorite to save, or what is wrong with it
+    fn into_favorite(self) -> Result<Favorite, String> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err("name must not be empty".into());
+        }
+        check_stream(&self.url)?;
+        check_length("name", name, MAX_NAME_CHARS)?;
+        let text = |v: Option<String>| v.map(|v| v.trim().to_string()).filter(|v| !v.is_empty());
+        let (logo_url, homepage) = (text(self.logo_url), text(self.homepage));
+        check_length("logo_url", logo_url.as_deref().unwrap_or(""), MAX_URL_CHARS)?;
+        check_length("homepage", homepage.as_deref().unwrap_or(""), MAX_URL_CHARS)?;
+        let short = [
+            ("country", text(self.country)),
+            ("language", text(self.language)),
+            ("codec", text(self.codec)),
+            ("provider", text(self.provider)),
+            ("provider_id", text(self.provider_id)),
+        ];
+        for (field, value) in &short {
+            check_length(field, value.as_deref().unwrap_or(""), MAX_NAME_CHARS)?;
+        }
+        if self.genres.len() > MAX_GENRES {
+            return Err(format!("at most {MAX_GENRES} genres"));
+        }
+        for genre in &self.genres {
+            check_length("genre", genre, MAX_NAME_CHARS)?;
+        }
+        let [(_, country), (_, language), (_, codec), (_, provider), (_, provider_id)] = short;
+        let mut station = Station::new(name, self.url.trim());
+        station.logo_url = logo_url;
+        station.homepage = homepage;
+        station.country = country;
+        station.language = language;
+        station.codec = codec;
+        station.bitrate = self.bitrate_kbps.filter(|b| *b > 0);
+        station.genres = self
+            .genres
+            .into_iter()
+            .map(|g| g.trim().to_string())
+            .filter(|g| !g.is_empty())
+            .collect();
+        if let Some(provider) = provider {
+            station.provider = provider;
+        }
+        station.provider_id = provider_id;
+        Ok(Favorite::from_station(station))
+    }
+}
+
+#[derive(Deserialize)]
+struct ImportBody {
+    /// "add" or "replace"
+    mode: String,
+    /// Only tell what would change
+    #[serde(default)]
+    preview: bool,
+    /// In the order they should have
+    favorites: Vec<ImportStation>,
+}
+
+#[derive(Serialize)]
+struct ImportAnswer {
+    #[serde(flatten)]
+    outcome: radiotrope_app::data::favorites::ImportOutcome,
+    /// `POST /v1/favorites/import/undo` has a list to put back
+    can_undo: bool,
+    /// `favorites_rev` after the import
+    rev: u64,
+}
+
+/// `POST /v1/favorites/import`: add a list of favorites, or make it the
+/// list; with `"preview": true` only answers what would change
+pub(super) async fn import_favorites(
+    shared: &Shared,
+    request: Request<Incoming>,
+) -> Response<Body> {
+    let body: ImportBody = match read_json_up_to(request, MAX_IMPORT_BODY).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let mode = match body.mode.as_str() {
+        "add" => ImportMode::Add,
+        "replace" => ImportMode::Replace,
+        _ => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "bad_request",
+                "mode must be add or replace",
+            )
+        }
+    };
+    if body.favorites.len() > MAX_FAVORITES {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "too_many_favorites",
+            &format!("At most {MAX_FAVORITES} favorites can be sent"),
+        );
+    }
+    let mut list = Vec::with_capacity(body.favorites.len());
+    for (i, station) in body.favorites.into_iter().enumerate() {
+        match station.into_favorite() {
+            Ok(fav) => list.push(fav),
+            Err(text) => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    &format!("favorites[{i}]: {text}"),
+                )
+            }
+        }
+    }
+    match shared
+        .control
+        .import_favorites(mode, list, body.preview)
+        .await
+    {
+        Ok((outcome, can_undo)) => json(
+            StatusCode::OK,
+            &ImportAnswer {
+                outcome,
+                can_undo,
+                rev: shared.control.favorites_generation().await,
+            },
+        ),
+        Err(e) => control_error(e),
+    }
+}
+
+#[derive(Serialize)]
+struct UndoAnswer {
+    /// Favorites there are now
+    count: usize,
+    rev: u64,
+}
+
+/// `POST /v1/favorites/import/undo`: put back the favorites from before
+/// the last import
+pub(super) async fn undo_import(shared: &Shared) -> Response<Body> {
+    match shared.control.undo_favorites_import().await {
+        Ok(Some(count)) => json(
+            StatusCode::OK,
+            &UndoAnswer {
+                count,
+                rev: shared.control.favorites_generation().await,
+            },
+        ),
+        Ok(None) => error(
+            StatusCode::CONFLICT,
+            "nothing_to_undo",
+            "There is no import to undo",
+        ),
         Err(e) => control_error(e),
     }
 }

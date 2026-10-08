@@ -45,6 +45,45 @@ pub struct PlayMetadata {
     pub provider_id: Option<String>,
 }
 
+/// The favorites as they were before the last list taken in, in the
+/// favorites file's folder, for [`FavoritesManager::undo_import`]
+pub const BEFORE_IMPORT_FILE: &str = "favorites.before-import.json";
+
+/// How a list of favorites from elsewhere (another player, a file) is
+/// taken in
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportMode {
+    /// Add the stations not here yet, at the end; the ones here stay as
+    /// they are
+    Add,
+    /// Become the list: its stations, details and order
+    Replace,
+}
+
+/// What taking in a list did, or would do
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ImportOutcome {
+    /// Stations new here
+    pub added: usize,
+    /// Stations here already whose details change (Replace)
+    pub updated: usize,
+    /// Stations no longer favorites (Replace)
+    pub removed: usize,
+    /// Stations here already and left as they are
+    pub kept: usize,
+    /// Stations not added because the favorites are full (Add)
+    pub over_cap: usize,
+    /// Whether the stations both lists have change order (Replace)
+    pub reordered: bool,
+}
+
+impl ImportOutcome {
+    /// Whether taking the list in changes anything
+    pub fn changes(&self) -> bool {
+        self.added > 0 || self.updated > 0 || self.removed > 0 || self.reordered
+    }
+}
+
 /// Favorites file structure
 #[derive(Debug, Serialize, Deserialize)]
 struct FavoritesFile {
@@ -710,6 +749,167 @@ impl FavoritesManager {
         Ok(())
     }
 
+    /// Take in a list of favorites from elsewhere, in its order. Stations
+    /// match by stream URL, and only the first of a URL listed twice
+    /// counts. Plays and listening time stay as they are here.
+    ///
+    /// With `preview` nothing changes; the outcome says what would. A list
+    /// that changes something keeps the favorites as they were first, for
+    /// [`undo_import`](Self::undo_import). Replace with more than `cap`
+    /// stations is refused; Add stops at `cap` favorites.
+    pub fn import_list(
+        &mut self,
+        mode: ImportMode,
+        list: &[Favorite],
+        cap: usize,
+        preview: bool,
+    ) -> Result<ImportOutcome> {
+        self.reload_if_changed();
+        let mut seen = std::collections::HashSet::new();
+        let list: Vec<&Favorite> = list.iter().filter(|f| seen.insert(f.id())).collect();
+        let mut outcome = ImportOutcome::default();
+        let mut next = self.favorites.clone();
+
+        match mode {
+            ImportMode::Add => {
+                let mut order = self
+                    .favorites
+                    .values()
+                    .map(|f| f.sort_order)
+                    .max()
+                    .unwrap_or(-1);
+                for fav in list {
+                    let id = fav.id();
+                    if next.contains_key(&id) {
+                        outcome.kept += 1;
+                    } else if next.len() >= cap {
+                        outcome.over_cap += 1;
+                    } else {
+                        order += 1;
+                        let mut fav = fav.clone();
+                        fav.sort_order = order;
+                        next.insert(id, fav);
+                        outcome.added += 1;
+                    }
+                }
+            }
+            ImportMode::Replace => {
+                if list.len() > cap {
+                    return Err(AppError::Config(format!(
+                        "The list has {} stations; at most {cap} can be favorites",
+                        list.len()
+                    )));
+                }
+                next.clear();
+                for (i, fav) in list.iter().enumerate() {
+                    let id = fav.id();
+                    let mut fav = (*fav).clone();
+                    fav.sort_order = i as i32;
+                    match self.favorites.get(&id) {
+                        Some(here) => {
+                            // Added here when it was added here
+                            fav.added_at = here.added_at;
+                            if here.station == fav.station {
+                                outcome.kept += 1;
+                            } else {
+                                outcome.updated += 1;
+                            }
+                        }
+                        None => outcome.added += 1,
+                    }
+                    next.insert(id, fav);
+                }
+                outcome.removed = self
+                    .favorites
+                    .keys()
+                    .filter(|id| !next.contains_key(*id))
+                    .count();
+                let order_of = |map: &HashMap<String, Favorite>| {
+                    let mut both: Vec<(&i32, &String)> = map
+                        .iter()
+                        .filter(|(id, _)| {
+                            self.favorites.contains_key(*id) && next.contains_key(*id)
+                        })
+                        .map(|(id, f)| (&f.sort_order, id))
+                        .collect();
+                    both.sort();
+                    both.into_iter()
+                        .map(|(_, id)| id.clone())
+                        .collect::<Vec<_>>()
+                };
+                outcome.reordered = order_of(&self.favorites) != order_of(&next);
+            }
+        }
+
+        if preview || !outcome.changes() {
+            return Ok(outcome);
+        }
+        if let Some(path) = self.before_import_path() {
+            let file = FavoritesFile {
+                version: FAVORITES_VERSION,
+                favorites: self.favorites.values().cloned().collect(),
+            };
+            storage::save_to(&path, &file)?;
+        }
+        self.favorites = next;
+        self.dirty = true;
+        self.generation += 1;
+        Ok(outcome)
+    }
+
+    /// Write the favorites to `path` for another computer: the stations in
+    /// their order, without plays or listening time. Returns how many.
+    pub fn export_to(&self, path: &Path) -> Result<usize> {
+        let mut favorites: Vec<Favorite> = self
+            .sorted(FavoriteSort::Manual)
+            .into_iter()
+            .cloned()
+            .collect();
+        for (i, fav) in favorites.iter_mut().enumerate() {
+            fav.sort_order = i as i32;
+        }
+        let count = favorites.len();
+        let file = FavoritesFile {
+            version: FAVORITES_VERSION,
+            favorites,
+        };
+        let text = serde_json::to_string_pretty(&file)
+            .map_err(|e| AppError::Config(format!("Failed to write the favorites: {e}")))?;
+        std::fs::write(path, text)
+            .map_err(|e| AppError::Config(format!("Can't save {}: {e}", path.display())))?;
+        Ok(count)
+    }
+
+    /// Where the favorites from before the last list taken in are kept
+    fn before_import_path(&self) -> Option<PathBuf> {
+        self.path
+            .as_deref()
+            .map(|p| p.with_file_name(BEFORE_IMPORT_FILE))
+    }
+
+    /// Whether [`undo_import`](Self::undo_import) has a list to put back
+    pub fn can_undo_import(&self) -> bool {
+        self.before_import_path().is_some_and(|p| p.is_file())
+    }
+
+    /// Put back the favorites as they were before the last list taken in
+    /// (changes made since are lost). Returns how many there are now.
+    pub fn undo_import(&mut self) -> Result<usize> {
+        self.reload_if_changed();
+        let path = self
+            .before_import_path()
+            .filter(|p| p.is_file())
+            .ok_or_else(|| AppError::Config("There is no import to undo".into()))?;
+        let file = storage::parse_file::<StoredFavoritesFile>(&path)?
+            .ok_or_else(|| AppError::Config("There is no import to undo".into()))?;
+        self.favorites = read_entries(file, &path).0;
+        self.dirty = true;
+        self.generation += 1;
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(storage::backup_path(&path));
+        Ok(self.favorites.len())
+    }
+
     /// Move a favorite to the start or the end of the manual order
     pub fn move_to_edge(&mut self, id: &str, to_top: bool) -> Result<()> {
         self.reload_if_changed();
@@ -781,6 +981,22 @@ impl Default for FavoritesManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The favorites in a file another computer exported (or its own
+/// favorites.json), in their order. Entries that can't be read are left out.
+pub fn read_list(path: &Path) -> Result<Vec<Favorite>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| AppError::Config(format!("Can't read {}: {e}", path.display())))?;
+    let file: StoredFavoritesFile = serde_json::from_str(&text)
+        .map_err(|_| AppError::Config("This isn't a Radiotrope favorites file".into()))?;
+    let mut list: Vec<Favorite> = file
+        .favorites
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value::<Favorite>(entry).ok())
+        .collect();
+    list.sort_by_key(|f| f.sort_order);
+    Ok(list)
 }
 
 /// The stats file that goes with the favorites file at `path`
@@ -1657,6 +1873,193 @@ mod tests {
         let manager = FavoritesManager::load_from(&path).unwrap();
         assert!(manager.is_favorite("http://a.test"));
         assert!(manager.stats(&url_to_id("http://a.test")).is_empty());
+        remove_files(&path);
+    }
+
+    fn manual_urls(manager: &FavoritesManager) -> Vec<String> {
+        manager
+            .sorted(FavoriteSort::Manual)
+            .iter()
+            .map(|f| f.url().to_string())
+            .collect()
+    }
+
+    fn list(urls: &[&str]) -> Vec<Favorite> {
+        urls.iter().map(|u| Favorite::new(*u, *u)).collect()
+    }
+
+    #[test]
+    fn adding_a_list_keeps_what_is_here_and_adds_the_rest_at_the_end() {
+        let path = temp_path();
+        let mut manager = FavoritesManager::new();
+        manager.add(Favorite::new("Mine", "http://b.test")).unwrap();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        manager.save_to(&path).unwrap();
+        let theirs = list(&[
+            "http://c.test",
+            "http://b.test",
+            "http://d.test",
+            "http://c.test",
+        ]);
+
+        let preview = manager
+            .import_list(ImportMode::Add, &theirs, 1000, true)
+            .unwrap();
+        assert_eq!(manual_urls(&manager), ["http://b.test", "http://a.test"]);
+        assert!(!manager.can_undo_import());
+
+        let done = manager
+            .import_list(ImportMode::Add, &theirs, 1000, false)
+            .unwrap();
+        assert_eq!(done, preview);
+        assert_eq!((done.added, done.kept, done.removed), (2, 1, 0));
+        assert_eq!(
+            manual_urls(&manager),
+            [
+                "http://b.test",
+                "http://a.test",
+                "http://c.test",
+                "http://d.test"
+            ]
+        );
+        // The one here keeps its own name
+        assert_eq!(manager.get_by_url("http://b.test").unwrap().name(), "Mine");
+        assert!(manager.can_undo_import());
+        remove_files(&path);
+    }
+
+    #[test]
+    fn adding_stops_at_the_cap() {
+        let mut manager = FavoritesManager::new();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        let done = manager
+            .import_list(
+                ImportMode::Add,
+                &list(&["http://b.test", "http://c.test"]),
+                2,
+                false,
+            )
+            .unwrap();
+        assert_eq!((done.added, done.over_cap), (1, 1));
+        assert_eq!(manager.count(), 2);
+    }
+
+    #[test]
+    fn replacing_takes_the_list_its_details_and_order_and_keeps_the_stats() {
+        let mut manager = FavoritesManager::new();
+        for url in ["http://a.test", "http://b.test", "http://x.test"] {
+            manager.add(Favorite::new(url, url)).unwrap();
+        }
+        manager.add_listening("http://a.test", 600, true).unwrap();
+        let added_at = manager.get_by_url("http://a.test").unwrap().added_at;
+        let mut theirs = list(&["http://c.test", "http://b.test", "http://a.test"]);
+        theirs[2].station.name = "A renamed".into();
+        theirs[2].added_at = 1;
+
+        let done = manager
+            .import_list(ImportMode::Replace, &theirs, 1000, false)
+            .unwrap();
+        assert_eq!(
+            (
+                done.added,
+                done.updated,
+                done.kept,
+                done.removed,
+                done.reordered
+            ),
+            (1, 1, 1, 1, true)
+        );
+        assert_eq!(
+            manual_urls(&manager),
+            ["http://c.test", "http://b.test", "http://a.test"]
+        );
+        let a = manager.get_by_url("http://a.test").unwrap();
+        assert_eq!(a.name(), "A renamed");
+        assert_eq!(a.added_at, added_at);
+        assert_eq!(manager.stats(&a.id()).total_listen_time_secs, 600);
+    }
+
+    #[test]
+    fn replacing_with_the_same_list_changes_nothing() {
+        let mut manager = FavoritesManager::new();
+        for url in ["http://a.test", "http://b.test"] {
+            manager.add(Favorite::new(url, url)).unwrap();
+        }
+        let generation = manager.generation();
+        let same: Vec<Favorite> = manager
+            .sorted(FavoriteSort::Manual)
+            .into_iter()
+            .cloned()
+            .collect();
+        let done = manager
+            .import_list(ImportMode::Replace, &same, 1000, false)
+            .unwrap();
+        assert!(!done.changes());
+        assert_eq!(done.kept, 2);
+        assert_eq!(manager.generation(), generation);
+    }
+
+    #[test]
+    fn replacing_with_too_many_is_refused() {
+        let mut manager = FavoritesManager::new();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        assert!(manager
+            .import_list(
+                ImportMode::Replace,
+                &list(&["http://b.test", "http://c.test"]),
+                1,
+                false
+            )
+            .is_err());
+        assert_eq!(manual_urls(&manager), ["http://a.test"]);
+    }
+
+    #[test]
+    fn an_import_can_be_undone_once() {
+        let path = temp_path();
+        let mut manager = FavoritesManager::new();
+        for url in ["http://a.test", "http://b.test"] {
+            manager.add(Favorite::new(url, url)).unwrap();
+        }
+        manager.save_to(&path).unwrap();
+        assert!(manager.undo_import().is_err());
+
+        manager
+            .import_list(ImportMode::Replace, &list(&["http://c.test"]), 1000, false)
+            .unwrap();
+        manager.save_to(&path).unwrap();
+        assert_eq!(saved_urls(&path), ["http://c.test"]);
+
+        assert_eq!(manager.undo_import().unwrap(), 2);
+        manager.save_to(&path).unwrap();
+        assert_eq!(manual_urls(&manager), ["http://a.test", "http://b.test"]);
+        assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
+        assert!(!manager.can_undo_import());
+        assert!(manager.undo_import().is_err());
+        remove_files(&path);
+    }
+
+    #[test]
+    fn an_exported_file_reads_back_in_order_without_stats() {
+        let path = temp_path();
+        let mut manager = FavoritesManager::new();
+        for url in ["http://a.test", "http://b.test", "http://c.test"] {
+            manager.add(Favorite::new(url, url)).unwrap();
+        }
+        manager.add_listening("http://a.test", 60, true).unwrap();
+        manager
+            .move_to_edge(&url_to_id("http://c.test"), true)
+            .unwrap();
+        let file = path.with_file_name("export.json");
+        assert_eq!(manager.export_to(&file).unwrap(), 3);
+        assert!(!fs::read_to_string(&file).unwrap().contains("listen"));
+
+        let list = read_list(&file).unwrap();
+        let urls: Vec<&str> = list.iter().map(|f| f.url()).collect();
+        assert_eq!(urls, ["http://c.test", "http://a.test", "http://b.test"]);
+
+        fs::write(&file, "not json").unwrap();
+        assert!(read_list(&file).is_err());
         remove_files(&path);
     }
 }

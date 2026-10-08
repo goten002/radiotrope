@@ -6,6 +6,7 @@ import { Favorites, FavoriteStation } from "favorites.slint";
 import { Controls } from "controls.slint";
 import { Theme, Defaults } from "defaults.slint";
 import { NetworkStreamDialog } from "dialogs/network-stream.slint";
+import { ImportFavoritesDialog } from "dialogs/import-favorites.slint";
 import { StatisticsDialog } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
 import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint";
@@ -286,6 +287,21 @@ export component App inherits Window {
     // Star on a search result: add it to favorites or remove it
     callback toggle-browse-favorite(BrowseStation);
 
+    // Favorites to and from a file, and undoing a list taken in
+    callback export-favorites();
+    callback import-favorites();
+    callback import-favorites-chosen(/* replace */ bool);
+    callback undo-favorites-import();
+    in property <bool> can-undo-import;
+    in-out property <bool> show-import-favorites <=> import-dialog.show-dialog;
+    in-out property <string> import-title <=> import-dialog.title;
+    in-out property <string> import-subtitle <=> import-dialog.subtitle;
+    in-out property <string> import-add-summary <=> import-dialog.add-summary;
+    in-out property <string> import-replace-summary <=> import-dialog.replace-summary;
+    in-out property <string> import-message <=> import-dialog.message;
+    in-out property <bool> import-message-error <=> import-dialog.message-error;
+    in-out property <string> import-message-detail <=> import-dialog.message-detail;
+
     // Country picker proxy properties (for Rust access)
     in-out property <[CountryEntry]> countries <=> picker-dialog.countries;
     in-out property <string> country-filter <=> picker-dialog.filter-text;
@@ -430,6 +446,10 @@ export component App inherits Window {
                     }
                     // Reopen the country picked earlier in this session; the
                     // browser's "Countries" button goes back to the list
+                    export-favorites => { root.export-favorites(); }
+                    import-favorites => { root.import-favorites(); }
+                    undo-favorites-import => { root.undo-favorites-import(); }
+                    can-undo-import: root.can-undo-import;
                     open-country-picker => {
                         if browser-dialog.country-name != "" {
                             root.open-country(browser-dialog.country-name, browser-dialog.country-code, browser-dialog.country-flag);
@@ -564,6 +584,11 @@ export component App inherits Window {
     Rectangle {
         y: root.custom-frame ? menu-bar.height : 0;
         height: root.height - self.y;
+
+        import-dialog := ImportFavoritesDialog {
+            add-missing => { root.import-favorites-chosen(false); }
+            replace => { root.import-favorites-chosen(true); }
+        }
 
         stream-dialog := NetworkStreamDialog {
             accepted(url, name, logo, country) => {
