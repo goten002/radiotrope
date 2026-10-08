@@ -37,7 +37,7 @@ use radiotrope_app::config::ui::{
     RECORDING_NOTICE_TIME, SEARCH_PAGE_SIZE, SETTINGS_SAVE_DELAY, SHUTDOWN_GRACE,
     SHUTDOWN_SEND_TIMEOUT,
 };
-use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
+use radiotrope_app::data::favorites::{FavoritesManager, ImportMode, ImportOutcome, PlayMetadata};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::settings::Theme as ThemeSetting;
 use radiotrope_app::data::types::{FavoriteSort, Station};
@@ -1079,6 +1079,80 @@ fn main() {
             drop(f);
             refresh_favorites(&ui, &favs, &logo_svc);
         });
+    }
+
+    // Favorites to and from a file, and undoing a list taken in
+    {
+        // The list read from the file picked, until Add Missing or Replace
+        let pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>> =
+            Default::default();
+        {
+            let ui_weak = ui.as_weak();
+            let favs = favorites.clone();
+            ui.on_export_favorites(move || export_favorites(ui_weak.clone(), favs.clone()));
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let favs = favorites.clone();
+            let pending = pending.clone();
+            ui.on_import_favorites(move || {
+                import_favorites(ui_weak.clone(), favs.clone(), pending.clone())
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let favs = favorites.clone();
+            let logo_svc = logo_service.clone();
+            ui.on_import_favorites_chosen(move |replace| {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let list = std::mem::take(&mut *pending.borrow_mut());
+                let mode = if replace {
+                    ImportMode::Replace
+                } else {
+                    ImportMode::Add
+                };
+                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                let done = f
+                    .import_list(mode, &list, control::MAX_FAVORITES, false)
+                    .and_then(|outcome| f.save().map(|_| outcome));
+                drop(f);
+                match done {
+                    Ok(outcome) => {
+                        let (text, detail) = import_done_text(mode, &outcome, list.len());
+                        ui.set_import_message(text.into());
+                        ui.set_import_message_detail(detail.into());
+                        ui.set_import_message_error(false);
+                    }
+                    Err(e) => {
+                        ui.set_import_message(e.to_string().into());
+                        ui.set_import_message_detail(Default::default());
+                        ui.set_import_message_error(true);
+                    }
+                }
+                refresh_favorites(&ui, &favs, &logo_svc);
+            });
+        }
+        {
+            let ui_weak = ui.as_weak();
+            let favs = favorites.clone();
+            let logo_svc = logo_service.clone();
+            ui.on_undo_favorites_import(move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                let undone = f.undo_import().and_then(|_| f.save());
+                drop(f);
+                if let Err(e) = undone {
+                    show_favorites_file_message(
+                        &ui,
+                        "Undo Favorites Import",
+                        &e.to_string(),
+                        "",
+                        true,
+                    );
+                }
+                refresh_favorites(&ui, &favs, &logo_svc);
+            });
+        }
     }
 
     // Keep each browser mode's list (search, and the last country) while
@@ -4282,6 +4356,206 @@ fn invalidate_logo_image(id: &str) {
     });
 }
 
+/// Show the favorites file dialog with only a message (an export done, or
+/// what went wrong)
+fn show_favorites_file_message(ui: &App, title: &str, message: &str, detail: &str, error: bool) {
+    ui.set_import_title(title.into());
+    ui.set_import_subtitle(Default::default());
+    ui.set_import_message(message.into());
+    ui.set_import_message_detail(detail.into());
+    ui.set_import_message_error(error);
+    ui.set_show_import_favorites(true);
+}
+
+/// What taking in a list would change, for Import Favorites: "Adds 12,
+/// keeps 30"
+#[cfg(feature = "desktop")]
+fn import_preview_text(mode: ImportMode, o: &ImportOutcome) -> String {
+    if !o.changes() {
+        return match mode {
+            ImportMode::Add => "You have them all already.".into(),
+            ImportMode::Replace => "Nothing would change.".into(),
+        };
+    }
+    let mut parts = Vec::new();
+    if o.added > 0 {
+        parts.push(format!("adds {}", o.added));
+    }
+    if o.updated > 0 {
+        parts.push(format!("updates {}", o.updated));
+    }
+    if o.removed > 0 {
+        parts.push(format!("removes {}", o.removed));
+    }
+    if mode == ImportMode::Add && o.kept > 0 {
+        parts.push(format!("keeps {}", o.kept));
+    }
+    if mode == ImportMode::Replace && o.reordered {
+        parts.push("new order".into());
+    }
+    let mut text = parts.join(", ");
+    if let Some(first) = text.get(..1) {
+        text = first.to_uppercase() + &text[1..];
+    }
+    if o.over_cap > 0 {
+        text += &format!(
+            "; {} don't fit ({} favorites at most)",
+            o.over_cap,
+            control::MAX_FAVORITES
+        );
+    }
+    text + "."
+}
+
+/// What Import Favorites did, and a line on undoing it
+fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usize) -> (String, String) {
+    if !o.changes() {
+        return (
+            "Nothing changed: your favorites already match.".into(),
+            String::new(),
+        );
+    }
+    match mode {
+        ImportMode::Add => {
+            let mut text = match o.added {
+                1 => "Added 1 station.".to_string(),
+                n => format!("Added {n} stations."),
+            };
+            if o.over_cap > 0 {
+                text += &format!(" {} didn't fit.", o.over_cap);
+            }
+            (
+                text,
+                "Stations > Undo Favorites Import takes them out.".into(),
+            )
+        }
+        ImportMode::Replace => (
+            format!("Your favorites are now the file's {listed} stations."),
+            "Stations > Undo Favorites Import puts yours back.".into(),
+        ),
+    }
+}
+
+/// Save the favorites to a file the user picks
+#[cfg(feature = "desktop")]
+fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<FavoritesManager>>) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let save = rfd::AsyncFileDialog::new()
+        .set_title("Export Favorites")
+        .set_file_name("Radiotrope Favorites.json")
+        .add_filter("Radiotrope favorites", &["json"])
+        .set_parent(&ui.window().window_handle())
+        .save_file();
+    let spawned = slint::spawn_local(async move {
+        let Some(file) = save.await else { return };
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let path = file.path().to_path_buf();
+        let saved = favs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .export_to(&path);
+        match saved {
+            Ok(count) => show_favorites_file_message(
+                &ui,
+                "Export Favorites",
+                &format!("Saved {count} favorites. Open the file with Import Favorites."),
+                &path.display().to_string(),
+                false,
+            ),
+            Err(e) => {
+                show_favorites_file_message(&ui, "Export Favorites", &e.to_string(), "", true)
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        eprintln!("Failed to open the file dialog: {e}");
+    }
+}
+
+/// Pick a favorites file, then ask Add Missing or Replace
+#[cfg(feature = "desktop")]
+fn import_favorites(
+    ui_weak: slint::Weak<App>,
+    favs: Arc<Mutex<FavoritesManager>>,
+    pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>>,
+) {
+    let Some(ui) = ui_weak.upgrade() else { return };
+    let pick = rfd::AsyncFileDialog::new()
+        .set_title("Import Favorites")
+        .add_filter("Radiotrope favorites", &["json"])
+        .set_parent(&ui.window().window_handle())
+        .pick_file();
+    let spawned = slint::spawn_local(async move {
+        let Some(file) = pick.await else { return };
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let path = file.path().to_path_buf();
+        let list = match radiotrope_app::data::favorites::read_list(&path) {
+            Ok(list) if !list.is_empty() => list,
+            Ok(_) => {
+                return show_favorites_file_message(
+                    &ui,
+                    "Import Favorites",
+                    "The file has no favorites.",
+                    "",
+                    true,
+                )
+            }
+            Err(e) => {
+                return show_favorites_file_message(
+                    &ui,
+                    "Import Favorites",
+                    &e.to_string(),
+                    "",
+                    true,
+                )
+            }
+        };
+        let previews = {
+            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            [ImportMode::Add, ImportMode::Replace].map(|mode| {
+                f.import_list(mode, &list, control::MAX_FAVORITES, true)
+                    .map(|o| import_preview_text(mode, &o))
+                    .unwrap_or_else(|e| e.to_string())
+            })
+        };
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        ui.set_import_title("Import Favorites".into());
+        ui.set_import_subtitle(
+            match list.len() {
+                1 => format!("{name}: 1 station"),
+                n => format!("{name}: {n} stations"),
+            }
+            .into(),
+        );
+        let [add, replace] = previews;
+        ui.set_import_add_summary(add.into());
+        ui.set_import_replace_summary(replace.into());
+        ui.set_import_message(Default::default());
+        ui.set_import_message_detail(Default::default());
+        ui.set_import_message_error(false);
+        *pending.borrow_mut() = list;
+        ui.set_show_import_favorites(true);
+    });
+    if let Err(e) = spawned {
+        eprintln!("Failed to open the file dialog: {e}");
+    }
+}
+
+/// The kiosk build has no file dialog (the menu items are greyed out)
+#[cfg(not(feature = "desktop"))]
+fn export_favorites(_ui_weak: slint::Weak<App>, _favs: Arc<Mutex<FavoritesManager>>) {}
+
+#[cfg(not(feature = "desktop"))]
+fn import_favorites(
+    _ui_weak: slint::Weak<App>,
+    _favs: Arc<Mutex<FavoritesManager>>,
+    _pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>>,
+) {
+}
+
 /// Redraw the favorites list, and start fetching the logos it lacks
 fn refresh_favorites(
     ui: &App,
@@ -4297,6 +4571,7 @@ fn refresh_favorites(
         let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
         mark_browse_favorites(ui, &favs);
         note_favorites_shown(&favs);
+        ui.set_can_undo_import(favs.can_undo_import());
         favs.sorted(FavoriteSort::Manual)
             .into_iter()
             .map(|f| (f.clone(), favorite_to_slint(f, favs.stats(&f.id()))))

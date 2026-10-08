@@ -857,6 +857,29 @@ impl FavoritesManager {
         Ok(outcome)
     }
 
+    /// Write the favorites to `path` for another computer: the stations in
+    /// their order, without plays or listening time. Returns how many.
+    pub fn export_to(&self, path: &Path) -> Result<usize> {
+        let mut favorites: Vec<Favorite> = self
+            .sorted(FavoriteSort::Manual)
+            .into_iter()
+            .cloned()
+            .collect();
+        for (i, fav) in favorites.iter_mut().enumerate() {
+            fav.sort_order = i as i32;
+        }
+        let count = favorites.len();
+        let file = FavoritesFile {
+            version: FAVORITES_VERSION,
+            favorites,
+        };
+        let text = serde_json::to_string_pretty(&file)
+            .map_err(|e| AppError::Config(format!("Failed to write the favorites: {e}")))?;
+        std::fs::write(path, text)
+            .map_err(|e| AppError::Config(format!("Can't save {}: {e}", path.display())))?;
+        Ok(count)
+    }
+
     /// Where the favorites from before the last list taken in are kept
     fn before_import_path(&self) -> Option<PathBuf> {
         self.path
@@ -958,6 +981,22 @@ impl Default for FavoritesManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// The favorites in a file another computer exported (or its own
+/// favorites.json), in their order. Entries that can't be read are left out.
+pub fn read_list(path: &Path) -> Result<Vec<Favorite>> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| AppError::Config(format!("Can't read {}: {e}", path.display())))?;
+    let file: StoredFavoritesFile = serde_json::from_str(&text)
+        .map_err(|_| AppError::Config("This isn't a Radiotrope favorites file".into()))?;
+    let mut list: Vec<Favorite> = file
+        .favorites
+        .into_iter()
+        .filter_map(|entry| serde_json::from_value::<Favorite>(entry).ok())
+        .collect();
+    list.sort_by_key(|f| f.sort_order);
+    Ok(list)
 }
 
 /// The stats file that goes with the favorites file at `path`
@@ -1997,6 +2036,30 @@ mod tests {
         assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
         assert!(!manager.can_undo_import());
         assert!(manager.undo_import().is_err());
+        remove_files(&path);
+    }
+
+    #[test]
+    fn an_exported_file_reads_back_in_order_without_stats() {
+        let path = temp_path();
+        let mut manager = FavoritesManager::new();
+        for url in ["http://a.test", "http://b.test", "http://c.test"] {
+            manager.add(Favorite::new(url, url)).unwrap();
+        }
+        manager.add_listening("http://a.test", 60, true).unwrap();
+        manager
+            .move_to_edge(&url_to_id("http://c.test"), true)
+            .unwrap();
+        let file = path.with_file_name("export.json");
+        assert_eq!(manager.export_to(&file).unwrap(), 3);
+        assert!(!fs::read_to_string(&file).unwrap().contains("listen"));
+
+        let list = read_list(&file).unwrap();
+        let urls: Vec<&str> = list.iter().map(|f| f.url()).collect();
+        assert_eq!(urls, ["http://c.test", "http://a.test", "http://b.test"]);
+
+        fs::write(&file, "not json").unwrap();
+        assert!(read_list(&file).is_err());
         remove_files(&path);
     }
 }
