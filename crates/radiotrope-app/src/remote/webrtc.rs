@@ -81,7 +81,8 @@ pub(super) async fn offer(
         Ok(offer) => offer,
         Err(response) => return *response,
     };
-    let Ok(offer) = SdpOffer::from_sdp_string(&offer.sdp) else {
+    let offered = offer.sdp;
+    let Ok(offer) = SdpOffer::from_sdp_string(&offered) else {
         return bad_offer();
     };
     let Some(name) = shared.device_name(device_id) else {
@@ -171,10 +172,35 @@ pub(super) async fn offer(
     json(
         StatusCode::OK,
         &Answer {
-            sdp: answer.to_sdp_string(),
+            sdp: fill_refused(&answer.to_sdp_string(), &offered),
             call: id,
         },
     )
+}
+
+/// `answer` with each refused media line listing its offer's formats.
+/// str0m refuses what it has no codec for (the video Android's WebRTC
+/// offers by default) with an empty format list, and WebRTC refuses to
+/// read such an answer; a refused line may list any format, so it gets
+/// the offer's own
+fn fill_refused(answer: &str, offer: &str) -> String {
+    let mut offered = offer.lines().filter(|l| l.starts_with("m="));
+    let lines = answer.split("\r\n").map(|line| {
+        if !line.starts_with("m=") {
+            return line.to_string();
+        }
+        let theirs = offered.next();
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() > 3 {
+            return line.to_string();
+        }
+        let formats = theirs
+            .map(|m| m.split_whitespace().skip(3).collect::<Vec<_>>().join(" "))
+            .filter(|f| !f.is_empty())
+            .unwrap_or_else(|| "0".to_string());
+        format!("{} {formats}", fields.join(" "))
+    });
+    lines.collect::<Vec<_>>().join("\r\n")
 }
 
 /// `DELETE /v1/listen/webrtc/<call>`: the phone hangs up
@@ -457,6 +483,22 @@ mod tests {
             "{half}"
         );
         assert!(half.contains("3 went back; ICE Checking"), "{half}");
+    }
+
+    #[test]
+    fn a_refused_video_line_lists_the_offer_s_formats() {
+        let offer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111 63\r\na=mid:0\r\n\
+                     m=video 9 UDP/TLS/RTP/SAVPF 96 97\r\na=mid:1\r\n";
+        let answer = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n\
+                      m=video 0 UDP/TLS/RTP/SAVPF \r\na=mid:1\r\n";
+        assert_eq!(
+            fill_refused(answer, offer),
+            "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n\
+             m=video 0 UDP/TLS/RTP/SAVPF 96 97\r\na=mid:1\r\n"
+        );
+        // An answer with nothing refused stays as it is
+        let plain = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n";
+        assert_eq!(fill_refused(plain, offer), plain);
     }
 
     #[test]
