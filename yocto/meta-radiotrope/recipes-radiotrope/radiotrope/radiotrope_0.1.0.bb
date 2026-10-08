@@ -5,7 +5,14 @@ LICENSE = "GPL-3.0-or-later"
 LIC_FILES_CHKSUM = "file://LICENSE;md5=1ebbd3e34237af26da5dc08a4e440464"
 
 # Use cargo_bin from meta-rust-bin (modern Rust toolchain, standard Yocto Rust pattern)
-inherit cargo_bin systemd
+inherit cargo_bin systemd useradd
+
+# The player runs as its own user (see radiotrope.service), with its home,
+# settings and recordings in /var/lib/radiotrope
+USERADD_PACKAGES = "${PN}"
+GROUPADD_PARAM:${PN} = "-r audio; -r video; -r input; -r render"
+USERADD_PARAM:${PN} = "--system --home-dir /var/lib/radiotrope --no-create-home \
+    --shell ${base_sbindir}/nologin --user-group --groups audio,video,input,render radiotrope"
 
 # Systemd service file
 SRC_URI = "file://radiotrope.service"
@@ -28,6 +35,7 @@ do_unpack() {
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash.fb ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-power.sh ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-power.service ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-iwd.conf ${WORKDIR}/
 }
 
 # Allow cargo to fetch crates from crates.io (standard Yocto Rust pattern per meta-slint)
@@ -84,6 +92,9 @@ do_install() {
     install -m 0644 ${WORKDIR}/seatd.service ${D}${systemd_system_unitdir}/seatd.service
     install -m 0644 ${WORKDIR}/radiotrope-splash.service ${D}${systemd_system_unitdir}/radiotrope-splash.service
     install -m 0644 ${WORKDIR}/radiotrope-power.service ${D}${systemd_system_unitdir}/radiotrope-power.service
+
+    install -d ${D}${datadir}/dbus-1/system.d
+    install -m 0644 ${WORKDIR}/radiotrope-iwd.conf ${D}${datadir}/dbus-1/system.d/radiotrope-iwd.conf
 }
 
 # Cargo release profile strips the binary; skip Yocto's already-stripped QA check
@@ -95,4 +106,5 @@ FILES:${PN} += " \
     ${systemd_system_unitdir}/radiotrope-splash.service \
     ${systemd_system_unitdir}/radiotrope-power.service \
     ${datadir}/radiotrope/splash.fb \
+    ${datadir}/dbus-1/system.d/radiotrope-iwd.conf \
 "

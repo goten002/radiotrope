@@ -24,6 +24,30 @@ From the **project root** (not `yocto/`):
 kas-container build kas-radiotrope-pi3.yml
 ```
 
+This is the **release image**: no SSH unless you give a public key (below),
+no root password, and the player runs as its own `radiotrope` user.
+
+For development, the **dev image** adds passwordless root login over SSH.
+Anyone on the same network can then log in as root, so never ship it:
+
+```bash
+kas-container build kas-radiotrope-pi3-dev.yml
+```
+
+### SSH with a key
+
+Put your public key in `.config-seed/authorized_keys` (git ignores it) and
+build the release image. The image then runs an SSH server where root logs
+in with that key only, never with a password:
+
+```bash
+cp ~/.ssh/id_ed25519.pub .config-seed/authorized_keys
+kas-container build kas-radiotrope-pi3.yml
+ssh root@<pi address>
+```
+
+Without that file the release image has no SSH server.
+
 Or use the convenience script:
 
 ```bash
@@ -50,7 +74,22 @@ Replace `/dev/sdX` with your SD card device.
 - Auto-starts on boot via systemd service
 - ALSA + MA12070P driver for I2S audio
 - Goodix touch driver for DSI display
-- Dropbear SSH server for remote access
+- Dropbear SSH server only with a key (release) or passwordless root (dev image)
+
+## Where the player keeps its files
+
+The player runs as the `radiotrope` system user in a systemd sandbox
+(`radiotrope.service`): the system is read-only to it, and a bug in the
+player reaches only its own files. Everything it keeps is under
+`/var/lib/radiotrope`:
+
+- settings, favorites, paired phones: `/var/lib/radiotrope/.config/radiotrope/`
+- recordings: `/var/lib/radiotrope/Music/Radiotrope/`
+
+A recording folder on a USB stick must be under `/media`, `/run/media` or
+`/mnt`; the sandbox lets the player write only there besides its own
+folder. Wi-Fi works through iwd's D-Bus API, allowed for the `radiotrope`
+user by `radiotrope-iwd.conf`.
 
 ## How It Works
 
@@ -63,7 +102,9 @@ meta-radiotrope/
 ├── conf/layer.conf                              # Layer config
 ├── recipes-radiotrope/radiotrope/
 │   ├── radiotrope_0.1.0.bb                      # App recipe (cargo_bin)
-│   └── files/radiotrope.service                 # Systemd unit
+│   └── files/
+│       ├── radiotrope.service                   # Systemd unit (own user, sandbox)
+│       └── radiotrope-iwd.conf                  # D-Bus: the player may use iwd
 ├── recipes-core/images/
 │   └── radiotrope-image.bb                      # Image recipe
 ├── recipes-bsp/rpi-config/

@@ -3,12 +3,14 @@ DESCRIPTION = "Minimal Linux image for Raspberry Pi 3B+ running Radiotrope in ki
 
 inherit core-image
 
-IMAGE_FEATURES += " \
-    ssh-server-dropbear \
-    allow-empty-password \
-    allow-root-login \
-    debug-tweaks \
-"
+# SSH: the release image has none, unless a public key is given in
+# RADIOTROPE_SSH_KEYS (an authorized_keys file); then root may log in with
+# that key only. kas-radiotrope-pi3-dev.yml adds passwordless root login for
+# development; never ship that image.
+RADIOTROPE_SSH_KEYS ?= "/work/.config-seed/authorized_keys"
+IMAGE_FEATURES += "${@'ssh-server-dropbear allow-root-login' if os.path.isfile(d.getVar('RADIOTROPE_SSH_KEYS')) else ''}"
+# Rebuild the root file system when the key file changes
+do_rootfs[file-checksums] += "${@'${RADIOTROPE_SSH_KEYS}:True' if os.path.isfile(d.getVar('RADIOTROPE_SSH_KEYS')) else ''}"
 
 IMAGE_INSTALL += " \
     radiotrope \
@@ -54,10 +56,29 @@ SVCEOF
     install -d ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/multi-user.target.wants
     ln -sf ${systemd_system_unitdir}/disable-usb-eth.service ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/multi-user.target.wants/disable-usb-eth.service
 
-    # Pre-load favorites from desktop config
-    mkdir -p ${IMAGE_ROOTFS}/root/.config/radiotrope
+    # Pre-load favorites from desktop config, into the player's own home
+    # (the radiotrope user, see the radiotrope recipe)
+    install -d -m 0700 ${IMAGE_ROOTFS}/var/lib/radiotrope
+    install -d -m 0700 ${IMAGE_ROOTFS}/var/lib/radiotrope/.config
+    install -d -m 0700 ${IMAGE_ROOTFS}/var/lib/radiotrope/.config/radiotrope
     if [ -f /work/.config-seed/favorites.json ]; then
-        cp /work/.config-seed/favorites.json ${IMAGE_ROOTFS}/root/.config/radiotrope/favorites.json
+        install -m 0600 /work/.config-seed/favorites.json ${IMAGE_ROOTFS}/var/lib/radiotrope/.config/radiotrope/favorites.json
+    fi
+    chown -R radiotrope:radiotrope ${IMAGE_ROOTFS}/var/lib/radiotrope
+
+    # SSH with a key only, when a key was given
+    if [ -f "${RADIOTROPE_SSH_KEYS}" ]; then
+        install -d -m 0700 ${IMAGE_ROOTFS}/root/.ssh
+        install -m 0600 "${RADIOTROPE_SSH_KEYS}" ${IMAGE_ROOTFS}/root/.ssh/authorized_keys
+    fi
+    if [ "${@bb.utils.contains('IMAGE_FEATURES', 'allow-empty-password', 'dev', 'release', d)}" = "release" ] \
+        && [ -e ${IMAGE_ROOTFS}${sysconfdir}/default/dropbear ]; then
+        # -s: no password logins at all
+        if grep -q '^DROPBEAR_EXTRA_ARGS=' ${IMAGE_ROOTFS}${sysconfdir}/default/dropbear; then
+            sed -i 's/^DROPBEAR_EXTRA_ARGS="*\([^"]*\)"*/DROPBEAR_EXTRA_ARGS="\1 -s"/' ${IMAGE_ROOTFS}${sysconfdir}/default/dropbear
+        else
+            printf '\nDROPBEAR_EXTRA_ARGS="-s"\n' >> ${IMAGE_ROOTFS}${sysconfdir}/default/dropbear
+        fi
     fi
 }
 ROOTFS_POSTPROCESS_COMMAND += "setup_kiosk;"

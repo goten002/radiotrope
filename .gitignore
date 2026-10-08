@@ -28,3 +28,6 @@ pkg/
 # Embedded (Yocto / Raspberry Pi) build output; the layer, the kas file and
 # the WiFi and keyboard sources are tracked
 build/
+
+# A public key for SSH on the Pi image (see yocto/README.md)
+.config-seed/authorized_keys
