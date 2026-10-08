@@ -278,6 +278,10 @@ pub mod remote {
     /// still connected
     pub const LISTEN_CHECK: Duration = Duration::from_secs(1);
 
+    /// UDP ports phones' WebRTC calls use, one per call (a firewall needs
+    /// these open next to [`PORT`]); taken first to last
+    pub const WEBRTC_PORTS: std::ops::RangeInclusive<u16> = 8767..=8770;
+
     /// How long a phone's WebRTC call may take to connect after the answer
     pub const WEBRTC_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 }
