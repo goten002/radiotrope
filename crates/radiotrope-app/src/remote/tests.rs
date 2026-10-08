@@ -1038,9 +1038,10 @@ struct PhoneCall {
 impl PhoneCall {
     fn offer() -> (Self, String) {
         use str0m::media::{Direction, MediaKind};
+        // Like Android's WebRTC: Opus, and RED offered with it
         let mut rtc = str0m::RtcConfig::new()
             .clear_codecs()
-            .enable_opus(true, false)
+            .enable_opus(true, true)
             .build(Instant::now());
         let socket = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
         let candidate = str0m::Candidate::host(socket.local_addr().unwrap(), "udp").unwrap();
@@ -1134,7 +1135,8 @@ async fn a_paired_phone_listens_over_webrtc_and_hangs_up() {
     assert_eq!(status, 200, "{answer}");
     let sdp = answer["sdp"].as_str().unwrap().to_string();
     assert!(sdp.contains("opus/48000/2"), "{sdp}");
-    assert!(sdp.contains("stereo=1"), "{sdp}");
+    // The player takes the phone up on redundancy
+    assert!(sdp.contains("red/48000/2"), "{sdp}");
     let call = answer["call"].as_str().unwrap().to_string();
 
     // Silence comes while nothing plays: 50 packets a second

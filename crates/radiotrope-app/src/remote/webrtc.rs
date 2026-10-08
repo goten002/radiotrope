@@ -25,7 +25,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 use str0m::change::SdpOffer;
-use str0m::format::{Codec, FormatParams};
+use str0m::format::{Codec, PayloadParams};
 use str0m::media::{Frequency, MediaKind, MediaTime, Mid, Pt};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
@@ -36,6 +36,10 @@ use radiotrope_app::config::remote::{LISTEN_CHECK, WEBRTC_CONNECT_TIMEOUT, WEBRT
 use radiotrope_app::data::remote::random_hex;
 
 use super::server::{error, json, no_content, read_json, Body, Shared};
+
+/// How many packets back each redundant copy in a RED packet reaches:
+/// the previous one and the one before that
+const RED_DISTANCES: [u32; 2] = [1, 2];
 
 /// Payload type the player offers Opus on (the usual one; the phone's
 /// offer decides the real one)
@@ -110,22 +114,16 @@ pub(super) async fn offer(
     let Ok(local_addr) = socket.local_addr() else {
         return failed("Can't open a port for the sound");
     };
-    let mut config = RtcConfig::new().set_ice_lite(true).clear_codecs();
-    config.codec_config().add_config(
-        Pt::new_with_value(OPUS_PT),
-        None,
-        Codec::Opus,
-        Frequency::FORTY_EIGHT_KHZ,
-        Some(2),
-        FormatParams {
-            min_p_time: Some(10),
-            use_inband_fec: Some(true),
-            // Music: ask for stereo both ways
-            stereo: Some(true),
-            sprop_stereo: Some(true),
-            ..Default::default()
-        },
-    );
+    // Opus with RED (RFC 2198): each packet also carries the two before it,
+    // so a phone whose Wi-Fi drops a packet here and there rebuilds the sound
+    // without asking for it again or waiting. Three times the audio bytes
+    // (about 390 kbit/s), nothing on a local network. A phone that doesn't
+    // offer RED gets plain Opus. The decoder is stereo either way (opus/48000/2).
+    let config = RtcConfig::new()
+        .set_ice_lite(true)
+        .clear_codecs()
+        .enable_opus(true, true)
+        .set_red_distances(&RED_DISTANCES);
     let mut rtc = config.build(Instant::now());
     let Ok(candidate) = Candidate::host(local_addr, "udp") else {
         return failed("Can't open a port for the sound");
@@ -238,6 +236,17 @@ fn bind(local: IpAddr) -> std::io::Result<UdpSocket> {
         WEBRTC_PORTS.end()
     );
     UdpSocket::bind(SocketAddr::new(local, 0))
+}
+
+/// How the sound goes to the phone, for the log once a call plays
+fn redundancy(name: &str, opus: Option<&PayloadParams>) -> String {
+    match opus.and_then(|p| p.red()) {
+        Some(_) => format!(
+            "{name} gets Opus with RED: each packet repeats the {} before it",
+            RED_DISTANCES.len()
+        ),
+        None => format!("{name} gets plain Opus: the phone didn't offer RED (redundancy)"),
+    }
 }
 
 /// What happened on a call's socket, for the log
@@ -436,11 +445,11 @@ fn run(
                 if let (true, Some(mid)) = (connected, mid) {
                     if let Some(writer) = rtc.writer(mid) {
                         let pt = *pt.get_or_insert_with(|| {
-                            writer
+                            let opus = writer
                                 .payload_params()
-                                .find(|p| p.spec().codec == Codec::Opus)
-                                .map(|p| p.pt())
-                                .unwrap_or(Pt::new_with_value(OPUS_PT))
+                                .find(|p| p.spec().codec == Codec::Opus);
+                            eprintln!("Listening: {}", redundancy(name, opus));
+                            opus.map(|p| p.pt()).unwrap_or(Pt::new_with_value(OPUS_PT))
                         });
                         let at = MediaTime::new(media_time, Frequency::FORTY_EIGHT_KHZ);
                         media_time += LISTEN_OPUS_FRAME as u64;
