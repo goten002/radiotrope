@@ -1,11 +1,13 @@
-//! The Remote API: phones on the local network drive the player over HTTP
+//! The Remote API: phones on the local network drive the player over HTTPS
 //!
 //! JSON requests under `/v1`, and one Server-Sent Events stream
 //! (`/v1/events`) that sends the player's state whenever it changes. Every
 //! request but `info` and pairing carries a paired phone's token as
-//! `Authorization: Bearer <token>`. Plain HTTP, like network MCP: meant for
-//! the local network, so requests from addresses outside it are refused,
-//! and so are requests from web pages (an `Origin` header).
+//! `Authorization: Bearer <token>`. Served over TLS with the player's own
+//! certificate ([`PlayerCert`]), which phones pin when they pair, so nobody
+//! else on the network can read a token or pose as the player. Meant for
+//! the local network: requests from addresses outside it are refused, and
+//! so are requests from web pages (an `Origin` header).
 
 use std::convert::Infallible;
 use std::net::{IpAddr, SocketAddr, TcpListener as StdListener};
@@ -29,6 +31,7 @@ use radiotrope_app::config::remote::{
     MAX_CONNECTIONS,
 };
 use radiotrope_app::data::remote::RemoteStore;
+use radiotrope_app::data::remote_cert::PlayerCert;
 use radiotrope_app::data::types::{url_to_id, Station};
 use radiotrope_app::network::logo::LogoService;
 
@@ -67,6 +70,8 @@ pub struct Shared {
     pub tickets: Arc<Mutex<listen::Tickets>>,
     /// Phones listening over WebRTC
     pub calls: Arc<Mutex<webrtc::Calls>>,
+    /// The player's certificate and key, for every connection
+    pub tls: Arc<rustls::ServerConfig>,
 }
 
 impl Shared {
@@ -136,6 +141,23 @@ impl Drop for Server {
         // A restart binds the same port next, so wait for it to be free
         let _ = self.stopped.recv_timeout(Duration::from_secs(2));
     }
+}
+
+/// TLS with the player's own certificate. aws-lc-rs as the crypto: it is
+/// already built for WebRTC, on Windows and the Pi too.
+pub fn tls_config(cert: &PlayerCert) -> Result<Arc<rustls::ServerConfig>, String> {
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.key_der.clone()));
+    let mut config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()
+        .and_then(|b| {
+            b.with_no_client_auth()
+                .with_single_cert(vec![CertificateDer::from(cert.cert_der.clone())], key)
+        })
+        .map_err(|e| format!("Can't use the player's certificate: {e}"))?;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(Arc::new(config))
 }
 
 /// Start listening on `addr`. Binding happens before this returns, so its
@@ -236,6 +258,19 @@ async fn serve_connection(
     shared: Shared,
     cancel: CancellationToken,
 ) {
+    // The handshake has as long as a request's headers would
+    let acceptor = tokio_rustls::TlsAcceptor::from(shared.tls.clone());
+    let stream = tokio::select! {
+        _ = cancel.cancelled() => return,
+        accepted = tokio::time::timeout(HEADER_READ_TIMEOUT, acceptor.accept(stream)) => {
+            match accepted {
+                Ok(Ok(stream)) => stream,
+                // Not TLS (an old app speaking plain HTTP), too slow, or a
+                // client that refused the certificate
+                _ => return,
+            }
+        }
+    };
     let handler_cancel = cancel.clone();
     let handler = hyper::service::service_fn(move |request: Request<Incoming>| {
         let shared = shared.clone();
@@ -288,6 +323,7 @@ pub async fn handle(
     match (&method, parts.as_slice()) {
         (&Method::GET, ["v1", "info"]) => return info(shared, &request),
         (&Method::POST, ["v1", "pair"]) => return pair_start(shared, request).await,
+        (&Method::POST, ["v1", "pair", "qr"]) => return pair_qr(shared, request).await,
         (&Method::POST, ["v1", "pair", id, "code"]) => {
             let id = id.to_string();
             return pair_code(shared, &id, request).await;
@@ -511,33 +547,7 @@ async fn pair_code(
         .check(pairing_id, &body.code, Instant::now());
     shared.changed();
     match checked {
-        Ok((device_id, device_name)) => {
-            let paired = {
-                let mut store = shared.store();
-                store
-                    .pair(&device_id, &device_name, unix_now())
-                    .map(|token| (token, store.player_id.clone()))
-            };
-            match paired {
-                Ok((token, player_id)) => {
-                    // On disk before the phone has its token
-                    shared.save_store().await;
-                    json(
-                        StatusCode::OK,
-                        &Paired {
-                            token,
-                            player_id,
-                            player_name: shared.name.to_string(),
-                        },
-                    )
-                }
-                Err(e) => error(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "failed",
-                    &format!("Can't pair: {e}"),
-                ),
-            }
-        }
+        Ok((device_id, device_name)) => give_token(shared, &device_id, &device_name).await,
         Err(CheckError::WrongCode { tries_left }) => json(
             StatusCode::FORBIDDEN,
             &WrongCode {
@@ -562,6 +572,69 @@ async fn pair_code(
             "Too many wrong codes. Open Remote Control on the player to pair again.",
         ),
     }
+}
+
+/// The phone is paired: a new token for it, saved before the phone has it
+async fn give_token(shared: &Shared, device_id: &str, device_name: &str) -> Response<Body> {
+    let paired = {
+        let mut store = shared.store();
+        store
+            .pair(device_id, device_name, unix_now())
+            .map(|token| (token, store.player_id.clone()))
+    };
+    match paired {
+        Ok((token, player_id)) => {
+            shared.save_store().await;
+            shared.changed();
+            json(
+                StatusCode::OK,
+                &Paired {
+                    token,
+                    player_id,
+                    player_name: shared.name.to_string(),
+                },
+            )
+        }
+        Err(e) => error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "failed",
+            &format!("Can't pair: {e}"),
+        ),
+    }
+}
+
+#[derive(Deserialize)]
+struct PairQr {
+    secret: String,
+    device_id: String,
+    #[serde(default)]
+    device_name: String,
+}
+
+/// `POST /v1/pair/qr`: the phone sends the secret from the QR code the
+/// player shows
+async fn pair_qr(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
+    let body: PairQr = match read_json(request).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let device_id = body.device_id.trim();
+    if device_id.is_empty() || device_id.chars().count() > MAX_DEVICE_ID_CHARS {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "device_id must be 1 to 128 characters",
+        );
+    }
+    if !shared.pairing().take_qr(body.secret.trim(), Instant::now()) {
+        return error(
+            StatusCode::UNAUTHORIZED,
+            "bad_qr",
+            "This QR code has run out. Show a new one on the player.",
+        );
+    }
+    let name = radiotrope_app::data::remote::device_name(&body.device_name);
+    give_token(shared, device_id, &name).await
 }
 
 async fn unpair(shared: &Shared, caller: &Caller) -> Response<Body> {

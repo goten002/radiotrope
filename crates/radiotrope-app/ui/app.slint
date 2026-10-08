@@ -12,7 +12,7 @@ import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint"
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
-import { RemoteControlDialog, PairingCodeDialog, RemoteDevice } from "dialogs/remote-control.slint";
+import { RemoteControlDialog, PairingCodeDialog, PairingQrDialog, RemoteDevice } from "dialogs/remote-control.slint";
 import { SleepTimerDialog } from "dialogs/sleep-timer.slint";
 import { ScheduleDialog, ScheduleRow, ScheduleDraft } from "dialogs/schedule.slint";
 import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
@@ -196,6 +196,8 @@ export component App inherits Window {
     callback remote-apply-name(string);
     callback remote-remove-device(string);
     callback remote-cancel-pairing();
+    callback remote-pair-qr();
+    callback remote-cancel-qr();
     in-out property <bool> remote-on <=> remote-dialog.enabled-on;
     in-out property <string> remote-status <=> remote-dialog.status;
     in-out property <bool> remote-status-error <=> remote-dialog.status-error;
@@ -210,6 +212,9 @@ export component App inherits Window {
     in-out property <string> pairing-device;
     in-out property <string> pairing-code;
     in-out property <int> pairing-seconds;
+    in-out property <bool> pairing-qr-shown;
+    in-out property <image> pairing-qr;
+    in-out property <int> pairing-qr-seconds;
     // Agents using the player now, for the chip in the menu bar
     in property <int> agent-count;
     in property <[AgentRow]> agent-list;
@@ -682,6 +687,7 @@ export component App inherits Window {
             toggled(on) => { root.remote-toggled(on); }
             apply-name(text) => { root.remote-apply-name(text); }
             remove-device(id) => { root.remote-remove-device(id); }
+            pair-qr => { root.remote-pair-qr(); }
         }
 
         about-dialog := AboutDialog {
@@ -705,6 +711,13 @@ export component App inherits Window {
             code: root.pairing-code;
             seconds-left: root.pairing-seconds;
             cancel => { root.remote-cancel-pairing(); }
+        }
+
+        PairingQrDialog {
+            show-dialog: root.pairing-qr-shown;
+            qr: root.pairing-qr;
+            seconds-left: root.pairing-qr-seconds;
+            cancel => { root.remote-cancel-qr(); }
         }
     }
 
@@ -736,7 +749,7 @@ export component App inherits Window {
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
-        || root.pairing-shown;
+        || root.pairing-shown || root.pairing-qr-shown;
     changed dialog-open => {
         if !self.dialog-open {
             shortcuts.focus();

@@ -54,6 +54,14 @@ mdns-sd = { version = "0.21", default-features = false }
 # Listening on a phone over WebRTC (Sans-IO; pure-Rust crypto, so it builds
 # the same on Linux, Windows and the Pi)
 str0m = { version = "0.24", default-features = false, features = ["rust-crypto"] }
+# Remote Control over TLS: a certificate the player makes for itself, which
+# phones pin when they pair (aws-lc-rs and rcgen already come with str0m)
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "aws_lc_rs"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "aws_lc_rs"] }
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+sha2 = "0.10"
+# The QR code a phone scans to pair
+qrcode = { version = "0.14", default-features = false }
 rfd = { version = "0.17", optional = true }
 # The system tray icon (desktop): Win32 on Windows, D-Bus StatusNotifierItem
 # on Linux (ksni, no GTK)

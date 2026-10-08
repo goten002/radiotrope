@@ -8,6 +8,7 @@ pub mod favorites;
 pub mod flags;
 pub mod recordings;
 pub mod remote;
+pub mod remote_cert;
 pub mod schedule;
 pub mod settings;
 pub mod storage;

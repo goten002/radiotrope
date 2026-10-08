@@ -92,6 +92,7 @@ export component RemoteControlDialog inherits Rectangle {
     callback toggled(bool);
     callback apply-name(string);
     callback remove-device(string);
+    callback pair-qr();
 
     public function open() {
         root.opened();
@@ -191,15 +192,30 @@ export component RemoteControlDialog inherits Rectangle {
             background: Theme.hairline;
         }
 
-        Text {
-            text: "Paired phones";
-            color: Theme.text-secondary;
-            font-size: Theme.font-md;
-            font-weight: 600;
+        HorizontalLayout {
+            spacing: 8px;
+
+            Text {
+                text: "Paired phones";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                font-weight: 600;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+            }
+            SecondaryButton {
+                label: "Pair a Phone";
+                icon: @image-url("../icons/qrcode.svg");
+                enabled: root.enabled-on;
+                clicked => {
+                    root.confirm-remove = "";
+                    root.pair-qr();
+                }
+            }
         }
 
         if root.devices.length == 0: Text {
-            text: "No phones yet. Open Radiotrope Remote on a phone on this network and type the code the player shows.";
+            text: "No phones yet. Press Pair a Phone and scan the code with Radiotrope Remote, or add the player in the app and type the code it shows.";
             color: Theme.text-tertiary;
             font-size: Theme.font-md;
             wrap: word-wrap;
@@ -253,6 +269,60 @@ export component PairingCodeDialog inherits Rectangle {
             font-size: Theme.font-md;
             horizontal-alignment: center;
             wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            SecondaryButton {
+                label: "Cancel";
+                clicked => { root.cancel(); }
+            }
+        }
+    }
+}
+
+// A QR code a phone scans to pair: works once, for a short while
+export component PairingQrDialog inherits Rectangle {
+    in property <bool> show-dialog: false;
+    in property <image> qr;
+    // Seconds before the code runs out
+    in property <int> seconds-left;
+    callback cancel();
+
+    if show-dialog: DialogShell {
+        title: "Pair a Phone";
+        subtitle: "Scan this code with Radiotrope Remote";
+        card-width: Defaults.pairing-code-width;
+        close-requested => { root.cancel(); }
+
+        HorizontalLayout {
+            alignment: center;
+            // Black on white in every theme, as scanners expect
+            Rectangle {
+                width: Defaults.pairing-qr-size;
+                height: Defaults.pairing-qr-size;
+                border-radius: Theme.radius-md;
+                background: white;
+
+                Image {
+                    width: parent.width - 8px;
+                    height: parent.height - 8px;
+                    source: root.qr;
+                    image-rendering: pixelated;
+                    image-fit: contain;
+                    accessible-role: image;
+                    accessible-label: "Pairing QR code";
+                }
+            }
+        }
+
+        Text {
+            // e.g. "Works once · 1:58"
+            text: "Works once · " + floor(root.seconds-left / 60) + ":"
+                + (mod(root.seconds-left, 60) < 10 ? "0" : "") + mod(root.seconds-left, 60);
+            color: Theme.text-secondary;
+            font-size: Theme.font-md;
+            horizontal-alignment: center;
         }
 
         HorizontalLayout {
