@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, TrySendError};
 
 use radiotrope::audio::PlaybackState;
-use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
+use radiotrope_app::data::favorites::{FavoritesManager, ImportMode, ImportOutcome, PlayMetadata};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
 use radiotrope_app::data::types::{
@@ -451,6 +451,47 @@ impl Control {
                 .collect()
         })
         .await
+    }
+
+    /// Take in a list of favorites from a phone or a file (see
+    /// [`FavoritesManager::import_list`]); with `preview` only tells what
+    /// would change. Also tells whether an import can now be undone.
+    pub async fn import_favorites(
+        &self,
+        mode: ImportMode,
+        list: Vec<Favorite>,
+        preview: bool,
+    ) -> Result<(ImportOutcome, bool), Error> {
+        self.with_favorites(move |control, favorites| {
+            let outcome = favorites
+                .import_list(mode, &list, MAX_FAVORITES, preview)
+                .map_err(|e| Error::Failed(e.to_string()))?;
+            if !preview && outcome.changes() {
+                control
+                    .save_favorites(favorites)
+                    .map_err(|e| Error::Failed(format!("Failed to save: {e}")))?;
+            }
+            Ok((outcome, favorites.can_undo_import()))
+        })
+        .await?
+    }
+
+    /// Put back the favorites from before the last import; tells how many
+    /// there are now, or `None` when there is nothing to undo
+    pub async fn undo_favorites_import(&self) -> Result<Option<usize>, Error> {
+        self.with_favorites(move |control, favorites| {
+            if !favorites.can_undo_import() {
+                return Ok(None);
+            }
+            let count = favorites
+                .undo_import()
+                .map_err(|e| Error::Failed(e.to_string()))?;
+            control
+                .save_favorites(favorites)
+                .map_err(|e| Error::Failed(format!("Failed to save: {e}")))?;
+            Ok(Some(count))
+        })
+        .await?
     }
 
     /// The plays and listening time of the favorite with this id
