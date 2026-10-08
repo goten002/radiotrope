@@ -1410,6 +1410,7 @@ async fn a_phone_downloads_and_deletes_a_recording() {
         .unwrap()
         .ends_with("Jazz%20FM%20-%202026-10-08%2020-15-03.mp3"));
     let etag = header_value(&head, "etag").unwrap();
+    assert_eq!(recordings[0]["etag"], etag.as_str());
 
     // The rest after an interrupted download
     let headers = format!("{auth}Range: bytes=4-\r\nIf-Match: {etag}\r\n");

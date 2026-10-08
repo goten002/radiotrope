@@ -201,8 +201,8 @@ pub struct Entry {
     pub format: &'static str,
     /// Being recorded (or written) now: it can't be downloaded or deleted
     pub recording: bool,
-    #[serde(skip)]
-    etag: String,
+    /// What `If-Match` sends to delete it, or to resume its download
+    pub etag: String,
 }
 
 /// The format of a file named as the player names recordings,
