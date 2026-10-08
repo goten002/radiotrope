@@ -207,21 +207,39 @@ fn bind(local: IpAddr) -> std::io::Result<UdpSocket> {
     UdpSocket::bind(SocketAddr::new(local, 0))
 }
 
+/// What happened on a call's socket, for the log
+#[derive(Default)]
+struct Trace {
+    /// Packets that came in, and the first one's sender
+    received: u64,
+    from: Option<SocketAddr>,
+    /// Packets sent back
+    sent: u64,
+    /// The last ICE state reached
+    ice: Option<IceConnectionState>,
+}
+
 /// Why a call that never connected didn't, for the log
-fn not_connected(name: &str, local_addr: SocketAddr, received: u64) -> String {
-    let secs = WEBRTC_CONNECT_TIMEOUT.as_secs();
-    if received == 0 {
+fn not_connected(name: &str, local_addr: SocketAddr, trace: &Trace, secs: u64) -> String {
+    if trace.received == 0 {
         format!(
-            "{name}'s call didn't connect in {secs} s: nothing from the phone reached UDP \
-             {local_addr}. A firewall on this computer (or Wi-Fi client isolation) is \
-             blocking it; allow UDP ports {}-{} for Radiotrope.",
+            "{name}'s call ended after {secs} s without connecting: nothing from the phone \
+             reached UDP {local_addr}. A firewall on this computer (or Wi-Fi client \
+             isolation) is blocking it; allow UDP ports {}-{} for Radiotrope.",
             WEBRTC_PORTS.start(),
             WEBRTC_PORTS.end()
         )
     } else {
+        let from = trace
+            .from
+            .map_or_else(|| "?".to_string(), |a| a.to_string());
+        let ice = trace
+            .ice
+            .map_or_else(|| "never started".to_string(), |s| format!("{s:?}"));
         format!(
-            "{name}'s call didn't connect in {secs} s: {received} packets came to UDP \
-             {local_addr}, but the answers didn't get back to the phone"
+            "{name}'s call ended after {secs} s without connecting: {} packets came to UDP \
+             {local_addr} from {from}, {} went back; ICE {ice}",
+            trace.received, trace.sent
         )
     }
 }
@@ -238,8 +256,8 @@ fn run(
     let Ok(local_addr) = socket.local_addr() else {
         return;
     };
-    // Packets the phone got through to us: none means something blocks UDP
-    let mut received: u64 = 0;
+    // What got through, both ways: nothing in means something blocks UDP
+    let mut trace = Trace::default();
     let started = Instant::now();
     let mut buf = vec![0; MAX_DATAGRAM];
     let mut mid: Option<Mid> = None;
@@ -253,16 +271,26 @@ fn run(
         let timeout = loop {
             match rtc.poll_output() {
                 Ok(Output::Timeout(t)) => break t,
-                Ok(Output::Transmit(t)) => {
-                    let _ = socket.send_to(&t.contents, t.destination);
-                }
+                Ok(Output::Transmit(t)) => match socket.send_to(&t.contents, t.destination) {
+                    Ok(_) => trace.sent += 1,
+                    Err(e) if trace.sent == 0 => {
+                        eprintln!("Listening: can't send to {}: {e}", t.destination)
+                    }
+                    Err(_) => {}
+                },
                 Ok(Output::Event(event)) => match event {
                     Event::Connected => {
                         connected = true;
                         eprintln!("Listening: {name}'s call connected");
                     }
-                    Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
-                        break 'call
+                    Event::IceConnectionStateChange(state) => {
+                        if !connected {
+                            eprintln!("Listening: {name}'s call: ICE {state:?}");
+                        }
+                        trace.ice = Some(state);
+                        if state == IceConnectionState::Disconnected {
+                            break 'call;
+                        }
                     }
                     Event::MediaAdded(m) if m.kind == MediaKind::Audio => mid = Some(m.mid),
                     _ => {}
@@ -284,7 +312,6 @@ fn run(
                 break;
             }
             if !connected && now.duration_since(started) > WEBRTC_CONNECT_TIMEOUT {
-                eprintln!("Listening: {}", not_connected(name, local_addr, received));
                 break;
             }
         }
@@ -326,7 +353,8 @@ fn run(
         buf.resize(MAX_DATAGRAM, 0);
         let input = match socket.recv_from(&mut buf) {
             Ok((n, source)) => {
-                received += 1;
+                trace.received += 1;
+                trace.from.get_or_insert(source);
                 buf.truncate(n);
                 let Ok(contents) = buf.as_slice().try_into() else {
                     continue;
@@ -355,6 +383,13 @@ fn run(
             eprintln!("Listening: {e}");
             break;
         }
+    }
+    if !connected {
+        let secs = started.elapsed().as_secs();
+        eprintln!(
+            "Listening: {}",
+            not_connected(name, local_addr, &trace, secs)
+        );
     }
     rtc.disconnect();
     // Say goodbye if anything is still queued
@@ -406,11 +441,22 @@ mod tests {
     #[test]
     fn the_log_says_whether_the_phone_got_through() {
         let addr: SocketAddr = "192.168.1.20:8767".parse().unwrap();
-        let blocked = not_connected("Pixel", addr, 0);
+        let blocked = not_connected("Pixel", addr, &Trace::default(), 8);
+        assert!(blocked.contains("after 8 s"), "{blocked}");
         assert!(blocked.contains("nothing from the phone reached UDP 192.168.1.20:8767"));
         assert!(blocked.contains("allow UDP ports 8767-8770"));
-        let half = not_connected("Pixel", addr, 12);
-        assert!(half.contains("12 packets came"), "{half}");
+        let trace = Trace {
+            received: 12,
+            from: Some("192.168.1.50:40000".parse().unwrap()),
+            sent: 3,
+            ice: Some(IceConnectionState::Checking),
+        };
+        let half = not_connected("Pixel", addr, &trace, 8);
+        assert!(
+            half.contains("12 packets came to UDP 192.168.1.20:8767 from 192.168.1.50:40000"),
+            "{half}"
+        );
+        assert!(half.contains("3 went back; ICE Checking"), "{half}");
     }
 
     #[test]
