@@ -47,6 +47,13 @@ const AUDIO_TICK: Duration = Duration::from_millis(5);
 /// Largest UDP packet read
 const MAX_DATAGRAM: usize = 2000;
 
+/// A wait this long between two packets of sound is a pause in what the
+/// phone gets (packets are 20 ms each)
+const PAUSE: Duration = Duration::from_millis(150);
+
+/// How often pauses in the sound are summed up in the log
+const PAUSE_REPORT: Duration = Duration::from_secs(10);
+
 /// A call in progress
 pub struct Call {
     device_id: String,
@@ -245,6 +252,52 @@ struct Trace {
     ice: Option<IceConnectionState>,
 }
 
+/// Pauses in the sound sent on a connected call, for the log: the player
+/// should send a packet every 20 ms, so a long wait means the phone's
+/// sound stutters because of the player, not the network
+#[derive(Default)]
+struct Pauses {
+    last_packet: Option<Instant>,
+    packets: u64,
+    count: u64,
+    longest: Duration,
+}
+
+impl Pauses {
+    fn sent(&mut self, now: Instant) {
+        if let Some(last) = self.last_packet {
+            let wait = now.duration_since(last);
+            if wait >= PAUSE {
+                self.count += 1;
+                self.longest = self.longest.max(wait);
+            }
+        }
+        self.last_packet = Some(now);
+        self.packets += 1;
+    }
+
+    /// The log line for the last report period, if the sound paused; starts
+    /// a new period
+    fn report(&mut self, name: &str) -> Option<String> {
+        let line = (self.count > 0).then(|| {
+            format!(
+                "{name}'s sound paused {} times in the last {} s (longest {} ms); \
+                 {} packets went (about {} expected)",
+                self.count,
+                PAUSE_REPORT.as_secs(),
+                self.longest.as_millis(),
+                self.packets,
+                PAUSE_REPORT.as_millis() / 20
+            )
+        });
+        *self = Self {
+            last_packet: self.last_packet,
+            ..Self::default()
+        };
+        line
+    }
+}
+
 /// Why a call that never connected didn't, for the log
 fn not_connected(name: &str, local_addr: SocketAddr, trace: &Trace, secs: u64) -> String {
     if trace.received == 0 {
@@ -291,6 +344,8 @@ fn run(
     let mut connected = false;
     let mut media_time: u64 = 0;
     let mut last_check = Instant::now();
+    let mut pauses = Pauses::default();
+    let mut last_report = Instant::now();
 
     'call: loop {
         // Drain everything the last change produced
@@ -340,6 +395,12 @@ fn run(
             if !connected && now.duration_since(started) > WEBRTC_CONNECT_TIMEOUT {
                 break;
             }
+            if connected && now.duration_since(last_report) >= PAUSE_REPORT {
+                last_report = now;
+                if let Some(line) = pauses.report(name) {
+                    eprintln!("Listening: {line}");
+                }
+            }
         }
 
         // One packet of audio per change
@@ -356,10 +417,12 @@ fn run(
                         });
                         let at = MediaTime::new(media_time, Frequency::FORTY_EIGHT_KHZ);
                         media_time += LISTEN_OPUS_FRAME as u64;
-                        if let Err(e) = writer.write(pt, Instant::now(), at, packet) {
+                        let now = Instant::now();
+                        if let Err(e) = writer.write(pt, now, at, packet) {
                             eprintln!("Listening: {e}");
                             break;
                         }
+                        pauses.sent(now);
                         continue;
                     }
                 }
@@ -483,6 +546,32 @@ mod tests {
             "{half}"
         );
         assert!(half.contains("3 went back; ICE Checking"), "{half}");
+    }
+
+    #[test]
+    fn pauses_in_the_sound_are_summed_up() {
+        let mut pauses = Pauses::default();
+        let start = Instant::now();
+        for i in 0..10 {
+            pauses.sent(start + Duration::from_millis(20 * i));
+        }
+        // Steady packets: nothing to say
+        assert_eq!(pauses.report("Pixel"), None);
+        pauses.sent(start + Duration::from_millis(180));
+        pauses.sent(start + Duration::from_millis(700));
+        pauses.sent(start + Duration::from_millis(720));
+        let line = pauses.report("Pixel").unwrap();
+        assert!(
+            line.contains("Pixel's sound paused 1 times in the last 10 s (longest 520 ms)"),
+            "{line}"
+        );
+        assert!(
+            line.contains("3 packets went (about 500 expected)"),
+            "{line}"
+        );
+        // A new period starts from the last packet
+        pauses.sent(start + Duration::from_millis(740));
+        assert_eq!(pauses.report("Pixel"), None);
     }
 
     #[test]
