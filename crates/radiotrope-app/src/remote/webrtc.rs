@@ -3,8 +3,11 @@
 //! The phone sends its offer (`POST /v1/listen/webrtc`, with its token and
 //! all its ICE candidates in the SDP) and gets the player's answer back in
 //! the same request, so no other signalling is needed. The player is an
-//! ICE-lite peer with one host candidate: a UDP port on the address the
-//! phone reached the API on. Each call has its own thread and socket.
+//! ICE-lite peer with one host candidate: a UDP port from
+//! [`WEBRTC_PORTS`] on the address the phone reached the API on, so a
+//! firewall rule can name them. Each call has its own thread and socket.
+//! Why a call didn't connect goes to the log (stderr, or radiotrope.log on
+//! Windows).
 //!
 //! A call runs until the phone hangs up (`DELETE /v1/listen/webrtc/<id>`,
 //! or the connection goes quiet), is unpaired, or Remote Control is turned
@@ -29,7 +32,7 @@ use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig}
 use tokio_util::sync::CancellationToken;
 
 use radiotrope::audio::recording::{ListenError, ListenStream, LISTEN_OPUS_FRAME};
-use radiotrope_app::config::remote::{LISTEN_CHECK, WEBRTC_CONNECT_TIMEOUT};
+use radiotrope_app::config::remote::{LISTEN_CHECK, WEBRTC_CONNECT_TIMEOUT, WEBRTC_PORTS};
 use radiotrope_app::data::remote::random_hex;
 
 use super::server::{error, json, no_content, read_json, Body, Shared};
@@ -92,7 +95,7 @@ pub(super) async fn offer(
         return no_audio();
     };
 
-    let socket = match UdpSocket::bind(SocketAddr::new(local, 0)) {
+    let socket = match bind(local) {
         Ok(socket) => socket,
         Err(e) => return failed(&format!("Can't open a port for the sound: {e}")),
     };
@@ -145,6 +148,7 @@ pub(super) async fn offer(
     let checks = shared.clone();
     let call_id = id.clone();
     let device = device_id.to_string();
+    eprintln!("Listening: {name} calls; sound goes from UDP {local_addr}");
     let spawned = std::thread::Builder::new()
         .name("listen-webrtc".into())
         .spawn(move || {
@@ -155,7 +159,7 @@ pub(super) async fn offer(
                     && !cancel.is_cancelled()
                     && checks.device_name(&device).is_some()
             };
-            run(rtc, socket, audio, wanted);
+            run(rtc, socket, audio, wanted, &name);
             checks.calls().remove(&call_id);
             checks.changed();
         });
@@ -185,12 +189,57 @@ pub(super) fn hang_up(shared: &Shared, device_id: &str, call: &str) -> Response<
     }
 }
 
+/// A UDP socket on `local` with the first free port of [`WEBRTC_PORTS`],
+/// or any port when all are taken (a firewall may then block it)
+fn bind(local: IpAddr) -> std::io::Result<UdpSocket> {
+    for port in WEBRTC_PORTS {
+        match UdpSocket::bind(SocketAddr::new(local, port)) {
+            Ok(socket) => return Ok(socket),
+            Err(e) if e.kind() == ErrorKind::AddrInUse => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    eprintln!(
+        "Listening: UDP ports {}-{} are all in use; using any free port",
+        WEBRTC_PORTS.start(),
+        WEBRTC_PORTS.end()
+    );
+    UdpSocket::bind(SocketAddr::new(local, 0))
+}
+
+/// Why a call that never connected didn't, for the log
+fn not_connected(name: &str, local_addr: SocketAddr, received: u64) -> String {
+    let secs = WEBRTC_CONNECT_TIMEOUT.as_secs();
+    if received == 0 {
+        format!(
+            "{name}'s call didn't connect in {secs} s: nothing from the phone reached UDP \
+             {local_addr}. A firewall on this computer (or Wi-Fi client isolation) is \
+             blocking it; allow UDP ports {}-{} for Radiotrope.",
+            WEBRTC_PORTS.start(),
+            WEBRTC_PORTS.end()
+        )
+    } else {
+        format!(
+            "{name}'s call didn't connect in {secs} s: {received} packets came to UDP \
+             {local_addr}, but the answers didn't get back to the phone"
+        )
+    }
+}
+
 /// Send the audio until the call ends: drive `rtc` with the socket's
 /// packets and the clock, and write each Opus packet as it comes
-fn run(mut rtc: Rtc, socket: UdpSocket, audio: ListenStream, wanted: impl Fn() -> bool) {
+fn run(
+    mut rtc: Rtc,
+    socket: UdpSocket,
+    audio: ListenStream,
+    wanted: impl Fn() -> bool,
+    name: &str,
+) {
     let Ok(local_addr) = socket.local_addr() else {
         return;
     };
+    // Packets the phone got through to us: none means something blocks UDP
+    let mut received: u64 = 0;
     let started = Instant::now();
     let mut buf = vec![0; MAX_DATAGRAM];
     let mut mid: Option<Mid> = None;
@@ -208,7 +257,10 @@ fn run(mut rtc: Rtc, socket: UdpSocket, audio: ListenStream, wanted: impl Fn() -
                     let _ = socket.send_to(&t.contents, t.destination);
                 }
                 Ok(Output::Event(event)) => match event {
-                    Event::Connected => connected = true,
+                    Event::Connected => {
+                        connected = true;
+                        eprintln!("Listening: {name}'s call connected");
+                    }
                     Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                         break 'call
                     }
@@ -228,7 +280,11 @@ fn run(mut rtc: Rtc, socket: UdpSocket, audio: ListenStream, wanted: impl Fn() -
         let now = Instant::now();
         if now.duration_since(last_check) >= LISTEN_CHECK {
             last_check = now;
-            if !wanted() || (!connected && now.duration_since(started) > WEBRTC_CONNECT_TIMEOUT) {
+            if !wanted() {
+                break;
+            }
+            if !connected && now.duration_since(started) > WEBRTC_CONNECT_TIMEOUT {
+                eprintln!("Listening: {}", not_connected(name, local_addr, received));
                 break;
             }
         }
@@ -270,6 +326,7 @@ fn run(mut rtc: Rtc, socket: UdpSocket, audio: ListenStream, wanted: impl Fn() -
         buf.resize(MAX_DATAGRAM, 0);
         let input = match socket.recv_from(&mut buf) {
             Ok((n, source)) => {
+                received += 1;
                 buf.truncate(n);
                 let Ok(contents) = buf.as_slice().try_into() else {
                     continue;
@@ -340,4 +397,27 @@ fn no_audio() -> Response<Body> {
         "no_audio",
         "The player has no audio output to listen to",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_log_says_whether_the_phone_got_through() {
+        let addr: SocketAddr = "192.168.1.20:8767".parse().unwrap();
+        let blocked = not_connected("Pixel", addr, 0);
+        assert!(blocked.contains("nothing from the phone reached UDP 192.168.1.20:8767"));
+        assert!(blocked.contains("allow UDP ports 8767-8770"));
+        let half = not_connected("Pixel", addr, 12);
+        assert!(half.contains("12 packets came"), "{half}");
+    }
+
+    #[test]
+    fn calls_take_the_firewall_friendly_ports_first() {
+        let socket = bind(IpAddr::from([127, 0, 0, 1])).unwrap();
+        let port = socket.local_addr().unwrap().port();
+        // Other tests may hold some of them; never a port below the range
+        assert!(port >= *WEBRTC_PORTS.start(), "{port}");
+    }
 }
