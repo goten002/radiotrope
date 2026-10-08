@@ -36,8 +36,8 @@ mod resample;
 mod wav;
 
 pub use listen::{
-    Listen, ListenError, ListenFormat, ListenStream, LISTEN_BITRATE_KBPS, LISTEN_CHANNELS,
-    LISTEN_OPUS_FRAME, LISTEN_OPUS_KBPS, LISTEN_OPUS_RATE, LISTEN_SAMPLE_RATE, MAX_LISTENERS,
+    Listen, ListenError, ListenStream, LISTEN_CHANNELS, LISTEN_OPUS_FRAME, LISTEN_OPUS_KBPS,
+    LISTEN_OPUS_RATE, MAX_LISTENERS,
 };
 #[cfg(test)]
 pub(crate) use opus::encode_ogg_opus;
@@ -977,16 +977,16 @@ mod tests {
         let status = recorder.stop().unwrap();
         assert_eq!(status.error, None);
         assert!(status.duration.abs_diff(Duration::from_secs(2)) < Duration::from_millis(50));
-        // Two seconds at 192 kbps is 48 kB; the phone got the audio, not
+        // Two seconds is 100 Opus packets; the phone got the audio, not
         // just silence, which would take two seconds to come
         let started = Instant::now();
         let mut got = 0;
-        while got < 40_000 && started.elapsed() < Duration::from_secs(1) {
-            if let Ok(piece) = phone.recv_timeout(Duration::from_millis(50)) {
-                got += piece.len();
+        while got < 80 && started.elapsed() < Duration::from_secs(1) {
+            if phone.recv_timeout(Duration::from_millis(50)).is_ok() {
+                got += 1;
             }
         }
-        assert!(got >= 40_000, "the phone got {got} bytes");
+        assert!(got >= 80, "the phone got {got} packets");
     }
 
     #[test]
