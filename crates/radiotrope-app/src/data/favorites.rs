@@ -4,9 +4,14 @@
 //! (an agent's own player) may save the same file: what it saved is taken
 //! in before each change and save here (see
 //! [`FavoritesManager::reload_if_changed`]).
+//!
+//! Plays and listening time are kept in stats.json next to favorites.json
+//! ([`StationStats`]), so favorites.json changes only when a favorite does.
 
 use crate::data::storage::{self, FileStamp};
-use crate::data::types::{url_to_id, Favorite, FavoriteFilter, FavoriteSort, FavoriteUpdate};
+use crate::data::types::{
+    url_to_id, Favorite, FavoriteFilter, FavoriteSort, FavoriteUpdate, StationStats,
+};
 use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -15,8 +20,19 @@ use std::path::{Path, PathBuf};
 /// Favorites data file name
 const FAVORITES_FILE: &str = "favorites.json";
 
-/// Favorites file format version for migrations
-const FAVORITES_VERSION: u32 = 1;
+/// Favorites file format version for migrations. 2: plays and listening
+/// time moved to [`STATS_FILE`]
+const FAVORITES_VERSION: u32 = 2;
+
+/// Plays and listening time, in the favorites file's folder
+pub const STATS_FILE: &str = "stats.json";
+
+/// Stats file format version
+const STATS_VERSION: u32 = 1;
+
+/// How long the stats of a station that is no longer a favorite are kept
+/// after it was last played, so adding it back brings them back
+const ORPHAN_STATS_SECS: u64 = 90 * 24 * 60 * 60;
 
 /// Metadata describing a station to play (see [`FavoritesManager::resolve_play`])
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -41,6 +57,14 @@ struct FavoritesFile {
 #[derive(Deserialize)]
 struct StoredFavoritesFile {
     favorites: Vec<serde_json::Value>,
+}
+
+/// The stats file: plays and listening time by favorite id
+#[derive(Debug, Serialize, Deserialize)]
+struct StatsFile {
+    version: u32,
+    #[serde(default)]
+    stations: HashMap<String, StationStats>,
 }
 
 impl Default for FavoritesFile {
@@ -69,6 +93,15 @@ pub struct FavoritesManager {
     /// The favorites as that read or write left them: what differs from
     /// them now are the changes made here
     base: HashMap<String, Favorite>,
+    /// Plays and listening time by favorite id, kept for a while after a
+    /// favorite is removed
+    stats: HashMap<String, StationStats>,
+    /// Whether the stats have unsaved changes
+    stats_dirty: bool,
+    /// The stats file's stamp when this manager last read or wrote it
+    stats_seen: Option<FileStamp>,
+    /// The stats as that read or write left them
+    stats_base: HashMap<String, StationStats>,
 }
 
 impl FavoritesManager {
@@ -81,6 +114,10 @@ impl FavoritesManager {
             path: None,
             seen: None,
             base: HashMap::new(),
+            stats: HashMap::new(),
+            stats_dirty: false,
+            stats_seen: None,
+            stats_base: HashMap::new(),
         }
     }
 
@@ -101,15 +138,37 @@ impl FavoritesManager {
         // Taken before the read, so a save in between shows as a change
         let seen = storage::stamp(path);
 
+        let mut old_stats = HashMap::new();
         if let Some(file) = storage::load_from::<StoredFavoritesFile>(path)? {
-            manager.favorites = read_entries(file, path);
+            (manager.favorites, old_stats) = read_entries(file, path);
         }
 
         manager.path = Some(path.to_path_buf());
         manager.seen = seen;
         manager.base = manager.favorites.clone();
         manager.dirty = false;
+
+        let stats_path = stats_path_for(path);
+        manager.stats_seen = storage::stamp(&stats_path);
+        match storage::load_from::<StatsFile>(&stats_path) {
+            Ok(Some(file)) => manager.stats = file.stations,
+            // First run since the stats moved out of favorites.json: they
+            // are written to the stats file with the next save
+            Ok(None) => {
+                manager.stats = old_stats;
+                manager.stats_dirty = !manager.stats.is_empty();
+            }
+            Err(e) => eprintln!("Stats: {e}"),
+        }
+        if !manager.stats_dirty {
+            manager.stats_base = manager.stats.clone();
+        }
         Ok(manager)
+    }
+
+    /// Where the stats are kept, next to the favorites file
+    fn stats_path(&self) -> Option<PathBuf> {
+        self.path.as_deref().map(stats_path_for)
     }
 
     /// Take in what another radiotrope process saved to the file since this
@@ -120,6 +179,11 @@ impl FavoritesManager {
     ///
     /// A missing or damaged file is no news: the next save writes it anew.
     pub fn reload_if_changed(&mut self) -> bool {
+        let stats = self.reload_stats_if_changed();
+        self.reload_favorites_if_changed() || stats
+    }
+
+    fn reload_favorites_if_changed(&mut self) -> bool {
         let Some(path) = self.path.clone() else {
             return false;
         };
@@ -130,7 +194,7 @@ impl FavoritesManager {
         // Before the read, as at load
         self.seen = stamp;
         let theirs = match storage::parse_file::<StoredFavoritesFile>(&path) {
-            Ok(Some(file)) => read_entries(file, &path),
+            Ok(Some(file)) => read_entries(file, &path).0,
             Ok(None) => return false,
             Err(e) => {
                 eprintln!("Favorites: {e}");
@@ -158,6 +222,44 @@ impl FavoritesManager {
         true
     }
 
+    /// [`reload_if_changed`](Self::reload_if_changed) for the stats: the
+    /// stations whose stats changed here keep them, the others take what
+    /// the other process saved
+    fn reload_stats_if_changed(&mut self) -> bool {
+        let Some(path) = self.stats_path() else {
+            return false;
+        };
+        let stamp = storage::stamp(&path);
+        if stamp.is_none() || stamp == self.stats_seen {
+            return false;
+        }
+        self.stats_seen = stamp;
+        let theirs = match storage::parse_file::<StatsFile>(&path) {
+            Ok(Some(file)) => file.stations,
+            Ok(None) => return false,
+            Err(e) => {
+                eprintln!("Stats: {e}");
+                return false;
+            }
+        };
+        let mut merged = theirs.clone();
+        for id in self.stats.keys().chain(self.stats_base.keys()) {
+            let ours = self.stats.get(id);
+            if ours != self.stats_base.get(id) {
+                match ours {
+                    Some(stats) => merged.insert(id.clone(), *stats),
+                    None => merged.remove(id),
+                };
+            }
+        }
+        self.stats_base = theirs;
+        if merged == self.stats {
+            return false;
+        }
+        self.stats = merged;
+        true
+    }
+
     /// Save favorites to default storage location
     pub fn save(&mut self) -> Result<()> {
         let path = storage::data_path(FAVORITES_FILE)?;
@@ -169,27 +271,57 @@ impl FavoritesManager {
     /// What another process saved there since is kept too (see
     /// [`reload_if_changed`](Self::reload_if_changed)).
     pub fn save_to(&mut self, path: &Path) -> Result<()> {
-        if !self.dirty {
+        if !self.dirty && !self.stats_dirty {
             return Ok(());
         }
         if self.path.as_deref() != Some(path) {
             // A file this manager hasn't read: the favorites already in it
-            // stay, next to the ones here
+            // stay, next to the ones here (stats too)
             self.path = Some(path.to_path_buf());
             self.seen = None;
             self.base.clear();
+            self.stats_seen = None;
+            self.stats_base.clear();
         }
         self.reload_if_changed();
 
-        let file = FavoritesFile {
-            version: FAVORITES_VERSION,
-            favorites: self.favorites.values().cloned().collect(),
-        };
+        if self.dirty {
+            let file = FavoritesFile {
+                version: FAVORITES_VERSION,
+                favorites: self.favorites.values().cloned().collect(),
+            };
+            self.seen = Some(storage::save_to_stamped(path, &file)?);
+            self.base = self.favorites.clone();
+            self.dirty = false;
+        }
 
-        self.seen = Some(storage::save_to_stamped(path, &file)?);
-        self.base = self.favorites.clone();
-        self.dirty = false;
+        if self.stats_dirty {
+            self.drop_old_orphan_stats();
+            let file = StatsFile {
+                version: STATS_VERSION,
+                stations: self.stats.clone(),
+            };
+            self.stats_seen = Some(storage::save_to_stamped(&stats_path_for(path), &file)?);
+            self.stats_base = self.stats.clone();
+            self.stats_dirty = false;
+        }
         Ok(())
+    }
+
+    /// Forget the stats of stations that are no longer favorites and
+    /// weren't played for [`ORPHAN_STATS_SECS`]
+    fn drop_old_orphan_stats(&mut self) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let favorites = &self.favorites;
+        self.stats.retain(|id, stats| {
+            favorites.contains_key(id)
+                || stats
+                    .last_played
+                    .is_some_and(|t| now.saturating_sub(t) < ORPHAN_STATS_SECS)
+        });
     }
 
     /// Force save to default location (ignore dirty flag)
@@ -206,7 +338,13 @@ impl FavoritesManager {
 
     /// Check if there are unsaved changes
     pub fn is_dirty(&self) -> bool {
-        self.dirty
+        self.dirty || self.stats_dirty
+    }
+
+    /// The plays and listening time of the favorite with this id (all zero
+    /// when it was never played)
+    pub fn stats(&self, id: &str) -> StationStats {
+        self.stats.get(id).copied().unwrap_or_default()
     }
 
     /// Add a new favorite
@@ -346,6 +484,13 @@ impl FavoritesManager {
             // ID is computed from URL, so after applying update with new URL,
             // favorite.id() will return the new_id
             self.favorites.insert(favorite.id(), favorite);
+            // The stats follow the favorite to its new id
+            if new_id != id {
+                if let Some(stats) = self.stats.remove(id) {
+                    self.stats.insert(new_id, stats);
+                    self.stats_dirty = true;
+                }
+            }
         } else {
             // No URL change, just update in place
             let favorite = self
@@ -405,17 +550,14 @@ impl FavoritesManager {
                 favorites.sort_by_key(|f| std::cmp::Reverse(f.added_at));
             }
             FavoriteSort::RecentlyPlayed => {
-                favorites.sort_by(|a, b| {
-                    let a_time = a.last_played.unwrap_or(0);
-                    let b_time = b.last_played.unwrap_or(0);
-                    b_time.cmp(&a_time)
-                });
+                favorites.sort_by_key(|f| std::cmp::Reverse(self.stats(&f.id()).last_played));
             }
             FavoriteSort::MostPlayed => {
-                favorites.sort_by_key(|f| std::cmp::Reverse(f.play_count));
+                favorites.sort_by_key(|f| std::cmp::Reverse(self.stats(&f.id()).play_count));
             }
             FavoriteSort::MostListened => {
-                favorites.sort_by_key(|f| std::cmp::Reverse(f.total_listen_time_secs));
+                favorites
+                    .sort_by_key(|f| std::cmp::Reverse(self.stats(&f.id()).total_listen_time_secs));
             }
         }
 
@@ -445,17 +587,14 @@ impl FavoritesManager {
                 favorites.sort_by_key(|f| std::cmp::Reverse(f.added_at));
             }
             FavoriteSort::RecentlyPlayed => {
-                favorites.sort_by(|a, b| {
-                    let a_time = a.last_played.unwrap_or(0);
-                    let b_time = b.last_played.unwrap_or(0);
-                    b_time.cmp(&a_time)
-                });
+                favorites.sort_by_key(|f| std::cmp::Reverse(self.stats(&f.id()).last_played));
             }
             FavoriteSort::MostPlayed => {
-                favorites.sort_by_key(|f| std::cmp::Reverse(f.play_count));
+                favorites.sort_by_key(|f| std::cmp::Reverse(self.stats(&f.id()).play_count));
             }
             FavoriteSort::MostListened => {
-                favorites.sort_by_key(|f| std::cmp::Reverse(f.total_listen_time_secs));
+                favorites
+                    .sort_by_key(|f| std::cmp::Reverse(self.stats(&f.id()).total_listen_time_secs));
             }
         }
 
@@ -511,12 +650,17 @@ impl FavoritesManager {
     /// Record a play session for a favorite
     pub fn record_play(&mut self, id: &str, duration_secs: u64) -> Result<()> {
         self.reload_if_changed();
-        let favorite = self
-            .favorites
-            .get_mut(id)
-            .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
-        favorite.record_play(duration_secs);
-        self.dirty = true;
+        if !self.favorites.contains_key(id) {
+            return Err(AppError::Config(format!(
+                "Favorite with ID '{}' not found",
+                id
+            )));
+        }
+        self.stats
+            .entry(id.to_string())
+            .or_default()
+            .record_play(duration_secs);
+        self.stats_dirty = true;
         self.generation += 1;
         Ok(())
     }
@@ -542,21 +686,26 @@ impl FavoritesManager {
     pub fn add_listening(&mut self, url: &str, secs: u64, new_play: bool) -> Option<&Favorite> {
         self.reload_if_changed();
         let id = self.find_match(url, None)?.id();
-        let favorite = self.favorites.get_mut(&id)?;
-        favorite.add_listening(secs, new_play);
-        self.dirty = true;
-        Some(favorite)
+        self.stats
+            .entry(id.clone())
+            .or_default()
+            .add_listening(secs, new_play);
+        self.stats_dirty = true;
+        self.favorites.get(&id)
     }
 
     /// Clear the stats of a favorite
     pub fn reset_stats(&mut self, id: &str) -> Result<()> {
         self.reload_if_changed();
-        let favorite = self
-            .favorites
-            .get_mut(id)
-            .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
-        favorite.reset_stats();
-        self.dirty = true;
+        if !self.favorites.contains_key(id) {
+            return Err(AppError::Config(format!(
+                "Favorite with ID '{}' not found",
+                id
+            )));
+        }
+        if self.stats.remove(id).is_some() {
+            self.stats_dirty = true;
+        }
         self.generation += 1;
         Ok(())
     }
@@ -634,14 +783,27 @@ impl Default for FavoritesManager {
     }
 }
 
-/// The favorites in a file read from `path`, by ID
-fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favorite> {
-    // TODO: Handle version migrations when FAVORITES_VERSION increases
+/// The stats file that goes with the favorites file at `path`
+fn stats_path_for(path: &Path) -> PathBuf {
+    path.with_file_name(STATS_FILE)
+}
+
+/// The favorites in a file read from `path`, by ID, and the stats a
+/// version 1 file still kept in each favorite
+fn read_entries(
+    file: StoredFavoritesFile,
+    path: &Path,
+) -> (HashMap<String, Favorite>, HashMap<String, StationStats>) {
     let mut favorites = HashMap::new();
+    let mut stats = HashMap::new();
     let mut skipped = 0;
     for entry in file.favorites {
+        let old_stats = serde_json::from_value::<StationStats>(entry.clone()).unwrap_or_default();
         match serde_json::from_value::<Favorite>(entry) {
             Ok(favorite) => {
+                if !old_stats.is_empty() {
+                    stats.insert(favorite.id(), old_stats);
+                }
                 favorites.insert(favorite.id(), favorite);
             }
             Err(e) => {
@@ -655,7 +817,7 @@ fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favor
     if skipped > 0 {
         storage::keep_copy(path);
     }
-    favorites
+    (favorites, stats)
 }
 
 #[cfg(test)]
@@ -670,7 +832,11 @@ mod tests {
 
     fn temp_path() -> std::path::PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        temp_dir().join(format!("radiotrope_fav_test_{}.json", id))
+        // A folder each, since the stats file sits next to the favorites
+        let dir = temp_dir().join(format!("radiotrope_fav_test_{}_{}", std::process::id(), id));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir.join(FAVORITES_FILE)
     }
 
     fn empty_manager() -> FavoritesManager {
@@ -686,16 +852,13 @@ mod tests {
         let generation = manager.generation();
 
         manager.reset_stats(&id).unwrap();
-        let fav = manager.get(&id).unwrap();
-        assert_eq!(fav.play_count, 0);
-        assert_eq!(fav.total_listen_time_secs, 0);
-        assert!(fav.last_played.is_none());
+        assert!(manager.stats(&id).is_empty());
         assert!(manager.generation() > generation);
         assert!(manager.reset_stats("missing").is_err());
 
         // Still listening after the reset: counts as a play again
         manager.add_listening("http://a.test", 60, false).unwrap();
-        assert_eq!(manager.get(&id).unwrap().play_count, 1);
+        assert_eq!(manager.stats(&id).play_count, 1);
     }
 
     #[test]
@@ -706,10 +869,10 @@ mod tests {
 
         manager.add_listening("http://a.test", 60, true).unwrap();
         manager.add_listening("http://a.test", 60, false).unwrap();
-        let fav = manager.get_by_url("http://a.test").unwrap();
-        assert_eq!(fav.play_count, 1);
-        assert_eq!(fav.total_listen_time_secs, 120);
-        assert!(fav.last_played.is_some());
+        let stats = manager.stats(&url_to_id("http://a.test"));
+        assert_eq!(stats.play_count, 1);
+        assert_eq!(stats.total_listen_time_secs, 120);
+        assert!(stats.last_played.is_some());
         assert!(manager.is_dirty());
         // No full refresh while listening
         assert_eq!(manager.generation(), gen);
@@ -827,14 +990,18 @@ mod tests {
     fn test_sorting() {
         let mut manager = empty_manager();
 
-        let mut fav1 = Favorite::new("Zebra Radio", "http://zebra.com");
-        fav1.play_count = 5;
-
-        let mut fav2 = Favorite::new("Apple Radio", "http://apple.com");
-        fav2.play_count = 10;
-
-        manager.add(fav1).unwrap();
-        manager.add(fav2).unwrap();
+        manager
+            .add(Favorite::new("Zebra Radio", "http://zebra.com"))
+            .unwrap();
+        manager
+            .add(Favorite::new("Apple Radio", "http://apple.com"))
+            .unwrap();
+        for _ in 0..5 {
+            manager.record_play_by_url("http://zebra.com", 60).unwrap();
+        }
+        for _ in 0..10 {
+            manager.record_play_by_url("http://apple.com", 60).unwrap();
+        }
 
         // By name
         let sorted = manager.sorted(FavoriteSort::Name);
@@ -908,7 +1075,7 @@ mod tests {
         }
 
         // Cleanup
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     #[test]
@@ -945,7 +1112,7 @@ mod tests {
         for copy in copies {
             let _ = fs::remove_file(copy);
         }
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     #[test]
@@ -971,7 +1138,7 @@ mod tests {
         manager.save_to(&path).unwrap();
         assert!(path.exists());
 
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     #[test]
@@ -990,7 +1157,7 @@ mod tests {
         manager.force_save_to(&path).unwrap();
         assert!(!manager.is_dirty());
 
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     #[test]
@@ -1013,11 +1180,10 @@ mod tests {
                 .with_audio_info(Some("MP3".to_string()), Some(320));
 
             fav.station.homepage = Some("http://station.com".to_string());
-            fav.play_count = 42;
-            fav.total_listen_time_secs = 3600;
 
             let id = fav.id();
             manager.add(fav).unwrap();
+            manager.record_play(&id, 3600).unwrap();
             // Set sort_order after add (add() auto-assigns order)
             manager.get_mut(&id).unwrap().sort_order = 5;
             manager.save_to(&path).unwrap();
@@ -1042,12 +1208,13 @@ mod tests {
             assert_eq!(fav.station.codec, Some("MP3".to_string()));
             assert_eq!(fav.station.bitrate, Some(320));
             assert_eq!(fav.station.homepage, Some("http://station.com".to_string()));
-            assert_eq!(fav.play_count, 42);
-            assert_eq!(fav.total_listen_time_secs, 3600);
+            let stats = manager.stats(&fav.id());
+            assert_eq!(stats.play_count, 1);
+            assert_eq!(stats.total_listen_time_secs, 3600);
             assert_eq!(fav.sort_order, 5);
         }
 
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     #[test]
@@ -1078,7 +1245,7 @@ mod tests {
             assert_eq!(manager.get_by_url(url).unwrap().name(), "Modified");
         }
 
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     #[test]
@@ -1112,7 +1279,7 @@ mod tests {
             assert!(!manager.is_favorite("http://remove.com"));
         }
 
-        let _ = fs::remove_file(&path);
+        remove_files(&path);
     }
 
     // =========================================================================
@@ -1236,8 +1403,9 @@ mod tests {
     }
 
     fn remove_files(path: &Path) {
-        let _ = fs::remove_file(path);
-        let _ = fs::remove_file(storage::backup_path(path));
+        if let Some(dir) = path.parent() {
+            let _ = fs::remove_dir_all(dir);
+        }
     }
 
     #[test]
@@ -1270,7 +1438,7 @@ mod tests {
 
         let saved = FavoritesManager::load_from(&path).unwrap();
         assert_eq!(urls(&saved), ["http://a.test"]);
-        let a = saved.get_by_url("http://a.test").unwrap();
+        let a = saved.stats(&url_to_id("http://a.test"));
         assert_eq!(a.total_listen_time_secs, 60);
         remove_files(&path);
     }
@@ -1284,7 +1452,7 @@ mod tests {
         gui.save_to(&path).unwrap();
 
         let saved = FavoritesManager::load_from(&path).unwrap();
-        let secs = |url| saved.get_by_url(url).unwrap().total_listen_time_secs;
+        let secs = |url| saved.stats(&url_to_id(url)).total_listen_time_secs;
         assert_eq!((secs("http://a.test"), secs("http://b.test")), (60, 120));
         remove_files(&path);
     }
@@ -1348,7 +1516,7 @@ mod tests {
     #[test]
     fn a_missing_or_damaged_file_is_no_news() {
         let (path, mut gui, _agent) = two_players(&["http://a.test"]);
-        remove_files(&path);
+        fs::remove_file(&path).unwrap();
         assert!(!gui.reload_if_changed());
         assert_eq!(urls(&gui), ["http://a.test"]);
 
@@ -1372,6 +1540,123 @@ mod tests {
         fresh.save_to(&path).unwrap();
 
         assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
+        remove_files(&path);
+    }
+
+    fn stats_file(path: &Path) -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(stats_path_for(path)).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn stats_of_a_version_1_file_move_to_the_stats_file() {
+        let path = temp_path();
+        fs::write(
+            &path,
+            r#"{"version": 1, "favorites": [
+                {"name": "A", "url": "http://a.test", "added_at": 1, "sort_order": 0,
+                 "play_count": 4, "total_listen_time_secs": 700, "last_played": 99},
+                {"name": "B", "url": "http://b.test", "added_at": 2, "sort_order": 1}
+            ]}"#,
+        )
+        .unwrap();
+
+        let mut manager = FavoritesManager::load_from(&path).unwrap();
+        let a = url_to_id("http://a.test");
+        assert_eq!(manager.stats(&a).play_count, 4);
+        assert_eq!(manager.stats(&a).total_listen_time_secs, 700);
+        assert!(manager.stats(&url_to_id("http://b.test")).is_empty());
+        assert!(manager.is_dirty());
+
+        manager.save_to(&path).unwrap();
+        let stats = stats_file(&path);
+        assert_eq!(stats["stations"][&a]["play_count"], 4);
+        assert_eq!(stats["stations"][&a]["last_played"], 99);
+
+        // Read back from the stats file, not the old favorites
+        manager.add(Favorite::new("C", "http://c.test")).unwrap();
+        manager.save_to(&path).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("play_count"));
+        assert!(saved.contains("\"version\": 2"));
+        let again = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(again.stats(&a).total_listen_time_secs, 700);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn listening_saves_the_stats_file_only() {
+        let (path, mut gui, _agent) = two_players(&["http://a.test"]);
+        let before = fs::read_to_string(&path).unwrap();
+        let stamp = storage::stamp(&path);
+
+        gui.add_listening("http://a.test", 60, true).unwrap();
+        gui.save_to(&path).unwrap();
+
+        assert_eq!(storage::stamp(&path), stamp);
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+        let id = url_to_id("http://a.test");
+        assert_eq!(
+            stats_file(&path)["stations"][&id]["total_listen_time_secs"],
+            60
+        );
+        remove_files(&path);
+    }
+
+    #[test]
+    fn stats_follow_a_new_stream_url() {
+        let mut manager = empty_manager();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        manager.add_listening("http://a.test", 120, true).unwrap();
+        let old = url_to_id("http://a.test");
+
+        manager
+            .update(&old, FavoriteUpdate::new().url("http://a2.test"))
+            .unwrap();
+
+        assert!(manager.stats(&old).is_empty());
+        let new = manager.stats(&url_to_id("http://a2.test"));
+        assert_eq!(new.total_listen_time_secs, 120);
+    }
+
+    #[test]
+    fn stats_come_back_when_a_removed_favorite_is_added_again() {
+        let path = temp_path();
+        let mut manager = FavoritesManager::new();
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        manager.add(Favorite::new("B", "http://b.test")).unwrap();
+        manager.add_listening("http://a.test", 300, true).unwrap();
+        // Played long ago, then removed: forgotten at the next save
+        manager.stats.insert(
+            url_to_id("http://b.test"),
+            StationStats {
+                play_count: 1,
+                total_listen_time_secs: 60,
+                last_played: Some(1),
+            },
+        );
+        manager.remove_by_url("http://a.test").unwrap();
+        manager.remove_by_url("http://b.test").unwrap();
+        manager.save_to(&path).unwrap();
+
+        let mut manager = FavoritesManager::load_from(&path).unwrap();
+        assert!(manager.stats(&url_to_id("http://b.test")).is_empty());
+        manager.add(Favorite::new("A", "http://a.test")).unwrap();
+        let a = manager.stats(&url_to_id("http://a.test"));
+        assert_eq!(a.total_listen_time_secs, 300);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_damaged_stats_file_costs_the_stats_only() {
+        let (path, mut gui, _agent) = two_players(&["http://a.test"]);
+        gui.add_listening("http://a.test", 60, true).unwrap();
+        gui.save_to(&path).unwrap();
+        fs::write(stats_path_for(&path), "{ not json").unwrap();
+        let _ = fs::remove_file(storage::backup_path(&stats_path_for(&path)));
+
+        let manager = FavoritesManager::load_from(&path).unwrap();
+        assert!(manager.is_favorite("http://a.test"));
+        assert!(manager.stats(&url_to_id("http://a.test")).is_empty());
         remove_files(&path);
     }
 }

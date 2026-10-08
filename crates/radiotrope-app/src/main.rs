@@ -3857,16 +3857,19 @@ fn mark_browse_favorites(ui: &App, favs: &FavoritesManager) {
     // Lists put aside for the other mode get theirs when shown again
 }
 
-fn favorite_to_slint(f: &radiotrope_app::data::types::Favorite) -> FavoriteStation {
+fn favorite_to_slint(
+    f: &radiotrope_app::data::types::Favorite,
+    stats: radiotrope_app::data::types::StationStats,
+) -> FavoriteStation {
     FavoriteStation {
         id: f.id().into(),
         name: f.name().into(),
         url: f.url().into(),
         logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
         country: f.station.country.as_deref().unwrap_or("").into(),
-        listen_time: format_listen_time(f.total_listen_time_secs).into(),
-        last_played: format_last_played(f.last_played).into(),
-        play_count: f.play_count.min(i32::MAX as u32) as i32,
+        listen_time: format_listen_time(stats.total_listen_time_secs).into(),
+        last_played: format_last_played(stats.last_played).into(),
+        play_count: stats.play_count.min(i32::MAX as u32) as i32,
         session_time: format_listen_time(session_listen_secs(&f.id())).into(),
     }
 }
@@ -3980,13 +3983,14 @@ fn update_favorite_stats(ui: &App, favs: &FavoritesManager) {
         let Some(mut row) = model.row_data(i) else {
             continue;
         };
-        let Some(fav) = favs.get(&row.id) else {
+        if favs.get(&row.id).is_none() {
             continue;
-        };
+        }
+        let stats = favs.stats(&row.id);
         let listen_time: slint::SharedString =
-            format_listen_time(fav.total_listen_time_secs).into();
-        let last_played: slint::SharedString = format_last_played(fav.last_played).into();
-        let play_count = fav.play_count.min(i32::MAX as u32) as i32;
+            format_listen_time(stats.total_listen_time_secs).into();
+        let last_played: slint::SharedString = format_last_played(stats.last_played).into();
+        let play_count = stats.play_count.min(i32::MAX as u32) as i32;
         let session_time: slint::SharedString =
             format_listen_time(session_listen_secs(&row.id)).into();
         if row.listen_time != listen_time
@@ -4286,16 +4290,18 @@ fn refresh_favorites(
 ) {
     // The logos are read and decoded after the lock is let go: an agent
     // waiting on the favorites isn't held up by them
-    let sorted: Vec<radiotrope_app::data::types::Favorite> = {
+    let (sorted, items): (
+        Vec<radiotrope_app::data::types::Favorite>,
+        Vec<FavoriteStation>,
+    ) = {
         let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
         mark_browse_favorites(ui, &favs);
         note_favorites_shown(&favs);
         favs.sorted(FavoriteSort::Manual)
             .into_iter()
-            .cloned()
-            .collect()
+            .map(|f| (f.clone(), favorite_to_slint(f, favs.stats(&f.id()))))
+            .unzip()
     };
-    let items: Vec<FavoriteStation> = sorted.iter().map(favorite_to_slint).collect();
 
     // Build parallel logo and fog models, using in-memory cache to avoid
     // re-decoding

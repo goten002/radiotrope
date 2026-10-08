@@ -7,7 +7,7 @@ use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::types::{Favorite, Station};
+use radiotrope_app::data::types::{Favorite, Station, StationStats};
 use radiotrope_app::providers::{CategoryType, SearchOrder, StationFilter};
 
 use super::server::{control_error, error, json, no_content, read_json, Body, Shared};
@@ -201,8 +201,8 @@ pub(super) struct FavoriteItem {
     last_played: Option<u64>,
 }
 
-impl From<&Favorite> for FavoriteItem {
-    fn from(fav: &Favorite) -> Self {
+impl FavoriteItem {
+    fn new(fav: &Favorite, stats: StationStats) -> Self {
         let id = fav.id();
         let s = &fav.station;
         FavoriteItem {
@@ -217,10 +217,10 @@ impl From<&Favorite> for FavoriteItem {
             codec: s.codec.clone(),
             bitrate_kbps: s.bitrate.filter(|b| *b > 0),
             homepage: s.homepage.clone(),
-            play_count: fav.play_count,
-            listen_seconds: fav.total_listen_time_secs,
+            play_count: stats.play_count,
+            listen_seconds: stats.total_listen_time_secs,
             added_at: fav.added_at,
-            last_played: fav.last_played,
+            last_played: stats.last_played,
         }
     }
 }
@@ -236,12 +236,15 @@ struct FavoritesList {
 /// `GET /v1/favorites`
 pub(super) async fn favorites(shared: &Shared) -> Response<Body> {
     let rev = shared.control.favorites_generation().await;
-    match shared.control.favorites_in_order().await {
+    match shared.control.favorites_with_stats().await {
         Ok(favorites) => json(
             StatusCode::OK,
             &FavoritesList {
                 rev,
-                favorites: favorites.iter().map(FavoriteItem::from).collect(),
+                favorites: favorites
+                    .iter()
+                    .map(|(fav, stats)| FavoriteItem::new(fav, *stats))
+                    .collect(),
             },
         ),
         Err(e) => control_error(e),
@@ -306,7 +309,7 @@ pub(super) async fn add_favorite(shared: &Shared, request: Request<Incoming>) ->
             )
         }
     };
-    let item = FavoriteItem::from(&fav);
+    let item = FavoriteItem::new(&fav, StationStats::default());
     match shared.control.add_favorite(fav).await {
         Ok(()) => json(StatusCode::CREATED, &item),
         Err(e) => control_error(e),
@@ -378,7 +381,8 @@ pub(super) async fn edit_favorite(
     }
     match shared.control.edit_favorite(id.to_string(), edit).await {
         Ok((old, new)) => {
-            let item = FavoriteItem::from(&new);
+            let stats = shared.control.favorite_stats(new.id()).await;
+            let item = FavoriteItem::new(&new, stats);
             if let Some(edited) = &shared.window.favorite_edited {
                 edited(old, new);
             }
