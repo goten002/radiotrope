@@ -365,6 +365,10 @@ fn run(
     let mut last_check = Instant::now();
     let mut pauses = Pauses::default();
     let mut last_report = Instant::now();
+    // Why a connected call ended, and when the phone was last heard, for
+    // the log
+    let mut why = "it stopped";
+    let mut heard = Instant::now();
 
     'call: loop {
         // Drain everything the last change produced
@@ -389,6 +393,7 @@ fn run(
                         }
                         trace.ice = Some(state);
                         if state == IceConnectionState::Disconnected {
+                            why = "nothing came from the phone for 15 s";
                             break 'call;
                         }
                     }
@@ -397,11 +402,13 @@ fn run(
                 },
                 Err(e) => {
                     eprintln!("Listening: {e}");
+                    why = "an error (above)";
                     break 'call;
                 }
             }
         };
         if !rtc.is_alive() {
+            why = "the phone closed it";
             break;
         }
 
@@ -409,6 +416,7 @@ fn run(
         if now.duration_since(last_check) >= LISTEN_CHECK {
             last_check = now;
             if !wanted() {
+                why = "the phone hung up, or Remote Control went off";
                 break;
             }
             if !connected && now.duration_since(started) > WEBRTC_CONNECT_TIMEOUT {
@@ -439,6 +447,7 @@ fn run(
                         let now = Instant::now();
                         if let Err(e) = writer.write(pt, now, at, packet) {
                             eprintln!("Listening: {e}");
+                            why = "an error (above)";
                             break;
                         }
                         pauses.sent(now);
@@ -449,7 +458,10 @@ fn run(
             }
             Err(crossbeam_channel::TryRecvError::Empty) => {}
             // Fell behind, or listening stopped
-            Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+            Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                why = "the player's sound stopped coming to it";
+                break;
+            }
         }
 
         let wait = timeout
@@ -462,6 +474,7 @@ fn run(
         let input = match socket.recv_from(&mut buf) {
             Ok((n, source)) => {
                 trace.received += 1;
+                heard = Instant::now();
                 trace.from.get_or_insert(source);
                 buf.truncate(n);
                 let Ok(contents) = buf.as_slice().try_into() else {
@@ -484,15 +497,24 @@ fn run(
             Err(e) if e.kind() == ErrorKind::ConnectionReset => Input::Timeout(Instant::now()),
             Err(e) => {
                 eprintln!("Listening: {e}");
+                why = "an error (above)";
                 break;
             }
         };
         if let Err(e) = rtc.handle_input(input) {
             eprintln!("Listening: {e}");
+            why = "an error (above)";
             break;
         }
     }
-    if !connected {
+    if connected {
+        eprintln!(
+            "Listening: {name}'s call ended after {} s: {why} (last packet from the phone {} s \
+             before)",
+            started.elapsed().as_secs(),
+            heard.elapsed().as_secs()
+        );
+    } else {
         let secs = started.elapsed().as_secs();
         eprintln!(
             "Listening: {}",
