@@ -253,14 +253,18 @@ struct Trace {
 }
 
 /// Pauses in the sound sent on a connected call, for the log: the player
-/// should send a packet every 20 ms, so a long wait means the phone's
-/// sound stutters because of the player, not the network
+/// should send a packet every 20 ms, so a long wait, or a packet the
+/// computer refused to send, means the phone's sound stutters because of
+/// this side, not the network
 #[derive(Default)]
 struct Pauses {
     last_packet: Option<Instant>,
     packets: u64,
     count: u64,
     longest: Duration,
+    /// Packets the socket refused, and the last reason
+    unsent: u64,
+    send_error: Option<String>,
 }
 
 impl Pauses {
@@ -276,20 +280,35 @@ impl Pauses {
         self.packets += 1;
     }
 
-    /// The log line for the last report period, if the sound paused; starts
-    /// a new period
+    fn unsent(&mut self, error: &std::io::Error) {
+        self.unsent += 1;
+        self.send_error = Some(error.to_string());
+    }
+
+    /// The log line for the last report period, if the sound paused or
+    /// packets weren't sent; starts a new period
     fn report(&mut self, name: &str) -> Option<String> {
-        let line = (self.count > 0).then(|| {
-            format!(
-                "{name}'s sound paused {} times in the last {} s (longest {} ms); \
+        let mut parts = Vec::new();
+        if self.count > 0 {
+            parts.push(format!(
+                "sound paused {} times in the last {} s (longest {} ms); \
                  {} packets went (about {} expected)",
                 self.count,
                 PAUSE_REPORT.as_secs(),
                 self.longest.as_millis(),
                 self.packets,
                 PAUSE_REPORT.as_millis() / 20
-            )
-        });
+            ));
+        }
+        if self.unsent > 0 {
+            parts.push(format!(
+                "{} packets of sound couldn't be sent in the last {} s ({})",
+                self.unsent,
+                PAUSE_REPORT.as_secs(),
+                self.send_error.as_deref().unwrap_or("?")
+            ));
+        }
+        let line = (!parts.is_empty()).then(|| format!("{name}: {}", parts.join("; ")));
         *self = Self {
             last_packet: self.last_packet,
             ..Self::default()
@@ -357,7 +376,7 @@ fn run(
                     Err(e) if trace.sent == 0 => {
                         eprintln!("Listening: can't send to {}: {e}", t.destination)
                     }
-                    Err(_) => {}
+                    Err(e) => pauses.unsent(&e),
                 },
                 Ok(Output::Event(event)) => match event {
                     Event::Connected => {
@@ -562,7 +581,7 @@ mod tests {
         pauses.sent(start + Duration::from_millis(720));
         let line = pauses.report("Pixel").unwrap();
         assert!(
-            line.contains("Pixel's sound paused 1 times in the last 10 s (longest 520 ms)"),
+            line.contains("Pixel: sound paused 1 times in the last 10 s (longest 520 ms)"),
             "{line}"
         );
         assert!(
@@ -572,6 +591,15 @@ mod tests {
         // A new period starts from the last packet
         pauses.sent(start + Duration::from_millis(740));
         assert_eq!(pauses.report("Pixel"), None);
+        // Packets the computer refused to send are counted too
+        let refused = std::io::Error::other("No buffer space available");
+        pauses.unsent(&refused);
+        pauses.unsent(&refused);
+        assert_eq!(
+            pauses.report("Pixel").unwrap(),
+            "Pixel: 2 packets of sound couldn't be sent in the last 10 s \
+             (No buffer space available)"
+        );
     }
 
     #[test]
