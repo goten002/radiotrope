@@ -4,6 +4,7 @@
 // headers, info rows, chips, icon buttons, form fields)
 
 import { Theme, Defaults } from "defaults.slint";
+import { ScrollBar } from "scroll-bar.slint";
 
 // Clock for the small status animations: steps by Defaults.motion-step
 // while something plays, connects or records (the window runs the timer)
@@ -1063,7 +1064,7 @@ component DropdownItem inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
-    height: 28px;
+    height: Defaults.dropdown-row-height;
     border-radius: Theme.radius-sm;
     background: touch.has-hover ? Theme.menu-hover : transparent;
     animate background { duration: Theme.fast; }
@@ -1148,23 +1149,48 @@ export component Dropdown inherits Rectangle {
         x: 0;
         y: root.height + 2px;
         width: root.width;
+        // Long lists (the Scheduler's stations) stop at a few rows and
+        // scroll, so the popup always fits the window
+        height: min(list.preferred-height, Defaults.dropdown-max-height);
 
         PopupCard {
-            VerticalLayout {
-                padding: 4px;
-                for label[index] in root.items: DropdownItem {
-                    label: label;
-                    selected: index == root.selected;
-                    // Picks before closing: the list's rows (and their
-                    // index) go away with the popup
-                    clicked => {
-                        if root.selected != index {
-                            root.selected = index;
-                            root.changed(index);
+            flick := Flickable {
+                content-height: list.preferred-height;
+                width: parent.width - (scroll.visible ? 12px : 0px);
+                x: 0;
+                // Opens with the pick in view
+                init => {
+                    self.content-y = -clamp(
+                        4px + root.selected * Defaults.dropdown-row-height
+                            - (self.height - Defaults.dropdown-row-height) / 2,
+                        0px, max(0px, self.content-height - self.height));
+                }
+
+                list := VerticalLayout {
+                    padding: 4px;
+                    for label[index] in root.items: DropdownItem {
+                        label: label;
+                        selected: index == root.selected;
+                        // Picks before closing: the list's rows (and their
+                        // index) go away with the popup
+                        clicked => {
+                            if root.selected != index {
+                                root.selected = index;
+                                root.changed(index);
+                            }
+                            popup.close();
                         }
-                        popup.close();
                     }
                 }
+            }
+
+            scroll := ScrollBar {
+                x: parent.width - self.width - 4px;
+                y: 4px;
+                height: parent.height - 8px;
+                viewport-height: flick.height;
+                content-height: flick.content-height;
+                content-y <=> flick.content-y;
             }
         }
     }

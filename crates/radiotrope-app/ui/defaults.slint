@@ -224,6 +224,11 @@ export global Defaults {
     // the gap kept to the window's edges
     out property <length> schedule-list-chrome: 160px;
     out property <length> sleep-timer-width: 520px;
+    // A dropdown's list rows, and how tall its list grows before it
+    // scrolls: 12 rows (the Scheduler's volumes all show), short enough
+    // for the Pi's 480 px window
+    out property <length> dropdown-row-height: 28px;
+    out property <length> dropdown-max-height: 344px;
     // The Sleep Timer's length in the middle, wide enough for "12 h 55 min"
     out property <length> sleep-readout-width: 190px;
     // The Sleep Timer steps by this many minutes and goes up to a day
