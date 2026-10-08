@@ -139,6 +139,16 @@ impl OpusPackets {
         })
     }
 
+    /// Change the bitrate from the next packet on; the receiver needs no
+    /// notice, every Opus packet carries its own size
+    pub(super) fn set_bitrate(&mut self, kbps: u32) {
+        let bitrate = (kbps.clamp(MIN_KBPS, MAX_KBPS) * 1000) as i32;
+        // SAFETY: a live encoder; this request takes one opus_int32.
+        unsafe {
+            ffi::opus_encoder_ctl(self.encoder.0, ffi::OPUS_SET_BITRATE_REQUEST, bitrate);
+        }
+    }
+
     /// Samples per channel in each packet
     pub(super) const FRAME: usize = FRAME;
 
