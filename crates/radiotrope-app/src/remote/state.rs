@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::Serialize;
 
-use radiotrope::audio::PlaybackState;
+use radiotrope::audio::{PlaybackState, RecordingFormat};
 use radiotrope_app::data::schedule;
 use radiotrope_app::data::types::url_to_id;
 
@@ -51,6 +51,8 @@ pub struct State {
     /// An alarm's station didn't start and the player beeps instead
     pub alarm_mode: bool,
     pub recording: Option<RecordingState>,
+    /// What the next recording is made with (the folder is the window's)
+    pub recording_settings: RecordingSettingsState,
     /// Names of the phones listening to the station now
     pub listeners: Vec<String>,
     pub sleep_timer: Option<SleepState>,
@@ -99,6 +101,16 @@ pub struct RecordingState {
     pub file: String,
     pub seconds: u64,
     pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RecordingSettingsState {
+    /// "mp3", "opus" or "wav"
+    pub format: &'static str,
+    /// MP3/Opus bitrate in kbps; 0 is Auto (the station's bitrate). WAV has none.
+    pub bitrate: u32,
+    /// Record with the equalizer; only counts while the equalizer is on
+    pub with_eq: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -168,6 +180,15 @@ impl State {
                 seconds: r.duration.as_secs(),
                 bytes: r.bytes,
             }),
+            recording_settings: RecordingSettingsState {
+                format: match s.recording_setup.format {
+                    RecordingFormat::Mp3 => "mp3",
+                    RecordingFormat::Opus => "opus",
+                    RecordingFormat::Wav => "wav",
+                },
+                bitrate: s.recording_setup.bitrate.unwrap_or(0),
+                with_eq: s.recording_setup.with_eq,
+            },
             sleep_timer: s.sleep.as_ref().map(|t| SleepState {
                 until: t.until.format("%H:%M").to_string(),
                 seconds_left: (t.until - now).num_seconds().max(0),

@@ -323,6 +323,13 @@ impl Control {
             .accent_color = Some(hex);
     }
 
+    /// Change the recording settings the next recording starts with; the
+    /// window saves them
+    pub fn set_recording_settings(&self, change: &crate::app::state::RecordingSettingsChange) {
+        let mut s = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        change.apply_to_setup(&mut s.recording_setup);
+    }
+
     // -- Directory ----------------------------------------------------------
 
     /// One page of the directory's stations matching `filter`

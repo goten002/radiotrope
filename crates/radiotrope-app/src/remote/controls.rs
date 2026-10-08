@@ -1,4 +1,4 @@
-//! Recording, the equalizer, the Sleep Timer, the Scheduler and the accent,
+//! Recording and its settings, the equalizer, the Sleep Timer, the Scheduler and the accent,
 //! for phones
 
 use hyper::body::Incoming;
@@ -8,12 +8,12 @@ use serde::{Deserialize, Serialize};
 use radiotrope::audio::PRESETS;
 use radiotrope::config::eq::{FREQ_LABELS, MAX_GAIN_DB, MIN_GAIN_DB};
 use radiotrope_app::data::schedule::{self, Action, End, Entry, MAX_MINUTES};
-use radiotrope_app::data::settings::parse_hex_rgb;
+use radiotrope_app::data::settings::{parse_hex_rgb, RecordingFormat};
 use radiotrope_app::data::types::url_to_id;
 
 use super::server::{control_error, done, error, json, no_content, read_json, Body, Shared};
 use super::state::{EqState, SleepState, State, ACCENT_SWATCHES, DEFAULT_ACCENT};
-use crate::app::state::AppCommand;
+use crate::app::state::{AppCommand, RecordingSettingsChange};
 use crate::control::{EntryRequest, RecordingStart, RecordingStop};
 
 // -- Recording ---------------------------------------------------------------
@@ -58,6 +58,60 @@ pub(super) async fn stop_recording(shared: &Shared) -> Response<Body> {
         Err(e) => return control_error(e),
     };
     json(StatusCode::OK, &RecordingStopped { result, message })
+}
+
+// -- Recording settings ------------------------------------------------------
+
+/// The bitrates the Recording Settings dialog offers besides Auto (0)
+const RECORDING_BITRATES: [u32; 5] = [96, 128, 192, 256, 320];
+
+/// What to change; what is left out stays. The folder is set only in the
+/// window.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RecordingSettingsBody {
+    /// "mp3", "opus" or "wav"
+    #[serde(default)]
+    format: Option<String>,
+    /// kbps, one of the dialog's; 0 is Auto
+    #[serde(default)]
+    bitrate: Option<u32>,
+    #[serde(default)]
+    with_eq: Option<bool>,
+}
+
+/// `PUT /v1/recording-settings`: format, bitrate and the equalizer switch,
+/// saved and shown in the window as if changed there
+pub(super) async fn set_recording_settings(
+    shared: &Shared,
+    request: Request<Incoming>,
+) -> Response<Body> {
+    let body: RecordingSettingsBody = match read_json(request).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let bad = |text: &str| error(StatusCode::BAD_REQUEST, "bad_request", text);
+    let format = match body.format.as_deref() {
+        None => None,
+        Some(id @ ("mp3" | "opus" | "wav")) => Some(RecordingFormat::from_id(id)),
+        Some(_) => return bad("format must be mp3, opus or wav"),
+    };
+    let bitrate = match body.bitrate {
+        None => None,
+        Some(0) => Some(None),
+        Some(kbps) if RECORDING_BITRATES.contains(&kbps) => Some(Some(kbps)),
+        Some(_) => return bad("bitrate must be 0 (Auto), 96, 128, 192, 256 or 320"),
+    };
+    let change = RecordingSettingsChange {
+        format,
+        bitrate,
+        with_eq: body.with_eq,
+    };
+    shared.control.set_recording_settings(&change);
+    if let Some(save) = &shared.window.recording_settings {
+        save(change);
+    }
+    no_content()
 }
 
 // -- Equalizer ---------------------------------------------------------------

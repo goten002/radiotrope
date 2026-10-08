@@ -254,6 +254,44 @@ impl RecordingSetup {
     }
 }
 
+/// Recording settings a phone changed; what is `None` stays as it was.
+/// The folder isn't here: it is only set from the window.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RecordingSettingsChange {
+    pub format: Option<radiotrope_app::data::settings::RecordingFormat>,
+    /// `Some(None)` is Auto
+    pub bitrate: Option<Option<u32>>,
+    pub with_eq: Option<bool>,
+}
+
+impl RecordingSettingsChange {
+    /// Make the change in settings that are about to be saved
+    pub fn apply(&self, settings: &mut Settings) {
+        if let Some(format) = self.format {
+            settings.recording_format = format;
+        }
+        if let Some(bitrate) = self.bitrate {
+            settings.recording_bitrate = bitrate;
+        }
+        if let Some(on) = self.with_eq {
+            settings.record_with_eq = on;
+        }
+    }
+
+    /// Make the change in the settings recordings start with
+    pub fn apply_to_setup(&self, setup: &mut RecordingSetup) {
+        if let Some(format) = self.format {
+            setup.format = format.into();
+        }
+        if let Some(bitrate) = self.bitrate {
+            setup.bitrate = bitrate;
+        }
+        if let Some(on) = self.with_eq {
+            setup.with_eq = on;
+        }
+    }
+}
+
 /// Progress of the running recording
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordingProgress {

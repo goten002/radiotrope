@@ -371,6 +371,9 @@ pub async fn handle(
         (&Method::DELETE, ["v1", "favorites", id]) => library::remove_favorite(shared, id).await,
         (&Method::POST, ["v1", "recording"]) => controls::start_recording(shared).await,
         (&Method::DELETE, ["v1", "recording"]) => controls::stop_recording(shared).await,
+        (&Method::PUT, ["v1", "recording-settings"]) => {
+            controls::set_recording_settings(shared, request).await
+        }
         (&Method::GET, ["v1", "eq"]) => controls::eq(shared),
         (&Method::PUT, ["v1", "eq"]) => controls::set_eq(shared, request).await,
         (&Method::PUT, ["v1", "sleep-timer"]) => controls::sleep_timer(shared, request).await,
