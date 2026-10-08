@@ -228,12 +228,17 @@ pub mod remote {
     /// The mDNS service type phones look for
     pub const SERVICE_TYPE: &str = "_radiotrope._tcp.local.";
 
-    /// The API version phones check before they talk to the player
-    pub const API_VERSION: u32 = 1;
+    /// The API version phones check before they talk to the player.
+    /// 2: TLS, with the player's certificate pinned when a phone pairs
+    pub const API_VERSION: u32 = 2;
 
     /// File in the config folder holding the player's id and the paired
     /// phones with their tokens, readable by the user only
     pub const FILE: &str = "remote.json";
+
+    /// File next to it holding the certificate the player serves the
+    /// Remote API with, and its private key, readable by the user only
+    pub const CERT_FILE: &str = "remote-cert.pem";
 
     /// How long a pairing code shown on the player works
     pub const CODE_LIFETIME: Duration = Duration::from_secs(120);

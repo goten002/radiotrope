@@ -1,4 +1,5 @@
-//! The Remote API end to end, over real HTTP on this computer
+//! The Remote API end to end, over real HTTPS on this computer, with the
+//! player's certificate pinned as the app pins it
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::AtomicU64;
@@ -11,6 +12,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use radiotrope_app::data::favorites::FavoritesManager;
 use radiotrope_app::data::remote::RemoteStore;
+use radiotrope_app::data::remote_cert::{self, PlayerCert};
 use radiotrope_app::data::types::{url_to_id, Favorite};
 use radiotrope_app::providers::ProviderRegistry;
 
@@ -30,6 +32,98 @@ struct Player {
     _server: server::Server,
     state: Arc<Mutex<AppSnapshot>>,
     dir: std::path::PathBuf,
+    /// The fingerprint of the certificate the player serves
+    fingerprint: String,
+}
+
+/// A connection to the player, over TLS
+type Conn = tokio_rustls::client::TlsStream<tokio::net::TcpStream>;
+
+/// Accepts only the certificate with this fingerprint, as the app does
+#[derive(Debug)]
+struct Pinned {
+    fingerprint: String,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+}
+
+impl rustls::client::danger::ServerCertVerifier for Pinned {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        _server_name: &rustls::pki_types::ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        if remote_cert::fingerprint(end_entity) == self.fingerprint {
+            Ok(rustls::client::danger::ServerCertVerified::assertion())
+        } else {
+            Err(rustls::Error::General("not the paired player".into()))
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls::pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &self.provider.signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.provider
+            .signature_verification_algorithms
+            .supported_schemes()
+    }
+}
+
+/// Connect to the player on `port`, accepting only the certificate with
+/// `fingerprint`
+async fn connect_pinned(port: u16, fingerprint: &str) -> std::io::Result<Conn> {
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(Pinned {
+            fingerprint: fingerprint.to_string(),
+            provider,
+        }))
+        .with_no_client_auth();
+    let tcp = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    let name = rustls::pki_types::ServerName::try_from("radiotrope.local").unwrap();
+    tokio_rustls::TlsConnector::from(Arc::new(config))
+        .connect(name, tcp)
+        .await
+}
+
+/// Read until the other side closes; a close without TLS's goodbye counts
+/// as the end too
+async fn read_all(stream: &mut Conn, into: &mut Vec<u8>) -> std::io::Result<()> {
+    match stream.read_to_end(into).await {
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(()),
+        other => other.map(|_| ()),
+    }
 }
 
 impl Drop for Player {
@@ -56,6 +150,7 @@ impl Player {
         fake_controller(commands, state.clone());
         let store_path = dir.join("remote.json");
         let store = RemoteStore::load_or_create_at(&store_path).unwrap();
+        let cert = PlayerCert::load_or_create_at(&dir.join("remote-cert.pem")).unwrap();
         let accents = Arc::new(Mutex::new(Vec::new()));
         let edits = Arc::new(Mutex::new(Vec::new()));
         let (shown_accents, shown_edits) = (accents.clone(), edits.clone());
@@ -79,6 +174,7 @@ impl Player {
             window: Arc::new(window),
             tickets: Default::default(),
             calls: Default::default(),
+            tls: server::tls_config(&cert).unwrap(),
         };
         let server = server::start(SocketAddr::from(([127, 0, 0, 1], 0)), shared.clone()).unwrap();
         Player {
@@ -89,7 +185,13 @@ impl Player {
             _server: server,
             state,
             dir,
+            fingerprint: cert.fingerprint(),
         }
+    }
+
+    /// A connection to the player, its certificate checked
+    async fn connect(&self) -> Conn {
+        connect_pinned(self.port, &self.fingerprint).await.unwrap()
     }
 
     /// Send a request; the status and the JSON body (Null when empty)
@@ -120,15 +222,16 @@ impl Player {
              Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
             body.len()
         );
-        let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", self.port))
-            .await
-            .unwrap();
+        let mut stream = self.connect().await;
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = Vec::new();
-        tokio::time::timeout(Duration::from_secs(15), stream.read_to_end(&mut response))
-            .await
-            .expect("no answer within 15 s")
-            .unwrap();
+        tokio::time::timeout(
+            Duration::from_secs(15),
+            read_all(&mut stream, &mut response),
+        )
+        .await
+        .expect("no answer within 15 s")
+        .unwrap();
         let text = String::from_utf8_lossy(&response).to_string();
         let status = text[9..12].parse().unwrap();
         let body = text.split_once("\r\n\r\n").map(|(_, b)| b).unwrap_or("");
@@ -268,7 +371,7 @@ async fn anyone_on_the_network_sees_who_the_player_is() {
     let (status, info) = player.request("GET", "/v1/info", None, None).await;
     assert_eq!(status, 200);
     assert_eq!(info["name"], "Test PC");
-    assert_eq!(info["api"], 1);
+    assert_eq!(info["api"], 2);
     assert_eq!(info["paired"], false);
     assert_eq!(info["id"].as_str().unwrap().len(), 32);
 }
@@ -402,15 +505,13 @@ async fn a_phone_plays_a_favorite_and_sets_the_volume() {
 async fn the_event_stream_starts_with_the_state_and_follows_it() {
     let player = Player::start();
     let token = player.pair("phone-1").await;
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", player.port))
-        .await
-        .unwrap();
+    let mut stream = player.connect().await;
     let request = format!(
         "GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\r\n"
     );
     stream.write_all(request.as_bytes()).await.unwrap();
 
-    async fn read_until(stream: &mut tokio::net::TcpStream, seen: &mut String, needle: &str) {
+    async fn read_until(stream: &mut Conn, seen: &mut String, needle: &str) {
         let mut buf = [0u8; 4096];
         while !seen.contains(needle) {
             let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
@@ -444,6 +545,84 @@ async fn web_pages_are_refused() {
         .await;
     assert_eq!(status, 403);
     assert_eq!(body["code"], "web_page");
+}
+
+#[tokio::test]
+async fn plain_http_gets_no_answer() {
+    let player = Player::start();
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", player.port))
+        .await
+        .unwrap();
+    stream
+        .write_all(b"GET /v1/info HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    let _ = tokio::time::timeout(Duration::from_secs(15), stream.read_to_end(&mut response))
+        .await
+        .expect("closed within 15 s");
+    assert!(!String::from_utf8_lossy(&response).contains("Test PC"));
+}
+
+#[tokio::test]
+async fn a_phone_refuses_a_player_with_another_certificate() {
+    let player = Player::start();
+    let (other, _) = PlayerCert::generate().unwrap();
+    assert!(connect_pinned(player.port, &other.fingerprint())
+        .await
+        .is_err());
+    assert!(connect_pinned(player.port, &player.fingerprint)
+        .await
+        .is_ok());
+}
+
+#[tokio::test]
+async fn a_phone_pairs_with_the_qr_code_once() {
+    let player = Player::start();
+    let secret = player
+        .shared
+        .pairing
+        .lock()
+        .unwrap()
+        .start_qr(Instant::now())
+        .unwrap();
+    let pair = json!({"secret": secret, "device_id": "phone-qr", "device_name": "Pixel"});
+    let (status, paired) = player
+        .request("POST", "/v1/pair/qr", None, Some(pair.clone()))
+        .await;
+    assert_eq!(status, 200, "{paired}");
+    let token = paired["token"].as_str().unwrap();
+    let (status, _) = player.request("GET", "/v1/state", Some(token), None).await;
+    assert_eq!(status, 200);
+
+    // Used: the same code pairs nobody else
+    let again = json!({"secret": secret, "device_id": "phone-2"});
+    let (status, body) = player
+        .request("POST", "/v1/pair/qr", None, Some(again))
+        .await;
+    assert_eq!(status, 401);
+    assert_eq!(body["code"], "bad_qr");
+
+    // A made-up secret, with no code shown
+    let made_up = json!({"secret": "00".repeat(16), "device_id": "phone-3"});
+    let (status, _) = player
+        .request("POST", "/v1/pair/qr", None, Some(made_up))
+        .await;
+    assert_eq!(status, 401);
+}
+
+#[test]
+fn the_qr_code_holds_what_the_phone_needs() {
+    let payload = super::qr_payload(
+        "ab",
+        "cd",
+        "ef",
+        &["192.168.1.20:8766".into(), "10.0.0.2:8766".into()],
+    );
+    assert_eq!(
+        payload,
+        "radiotrope://pair?v=2&id=ab&fp=cd&s=ef&a=192.168.1.20:8766,10.0.0.2:8766"
+    );
 }
 
 #[test]
@@ -790,10 +969,8 @@ async fn timers_recording_and_search_check_what_they_are_given() {
 
 /// Open the listening stream at `url` (no token); the connection, after the
 /// response's headers, which come back as text
-async fn open_listening(player: &Player, url: &str) -> (tokio::net::TcpStream, String) {
-    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", player.port))
-        .await
-        .unwrap();
+async fn open_listening(player: &Player, url: &str) -> (Conn, String) {
+    let mut stream = player.connect().await;
     let request = format!("GET {url} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
     stream.write_all(request.as_bytes()).await.unwrap();
     let mut head = Vec::new();

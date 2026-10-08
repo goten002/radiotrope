@@ -1,7 +1,12 @@
-//! Pairing a phone with a 4-digit code
+//! Pairing a phone: with a QR code, or with a 4-digit code
 //!
-//! A phone asks to pair; the player shows a code, and the phone sends back
-//! what the user typed. A code works for [`CODE_LIFETIME`] and takes
+//! QR: the user asks the player for a QR code; it holds a one-time secret
+//! (128 bits, so it can't be guessed) and the certificate's fingerprint, and
+//! the phone that scans it sends the secret back. It works once, for
+//! [`CODE_LIFETIME`].
+//!
+//! Code: a phone asks to pair; the player shows a code, and the phone sends
+//! back what the user typed. A code works for [`CODE_LIFETIME`] and takes
 //! [`CODE_TRIES`] wrong guesses, then the player shows a new one; after
 //! [`MAX_FAILED_PAIRINGS`] codes guessed wrong within
 //! [`FAILED_PAIRING_WINDOW`], pairing stops until the user opens the Remote
@@ -23,6 +28,13 @@ pub struct Pairing {
     failures: Vec<Instant>,
     /// Too many failures: no pairing until [`Pairing::unlock`]
     locked: bool,
+    /// The QR code shown, if any
+    qr: Option<QrOffer>,
+}
+
+struct QrOffer {
+    secret: String,
+    expires: Instant,
 }
 
 struct Pending {
@@ -132,6 +144,42 @@ impl Pairing {
         p.tries_left = CODE_TRIES;
         p.expires = now + CODE_LIFETIME;
         Err(CheckError::NewCode)
+    }
+
+    /// The user asked for a QR code: the secret it holds. Asking again
+    /// makes a new one, and the old one stops working.
+    pub fn start_qr(&mut self, now: Instant) -> Option<String> {
+        let secret = random_hex(16).ok()?;
+        self.qr = Some(QrOffer {
+            secret: secret.clone(),
+            expires: now + CODE_LIFETIME,
+        });
+        Some(secret)
+    }
+
+    /// A phone sends the secret it scanned: true once, for the QR code
+    /// shown, while it lasts
+    pub fn take_qr(&mut self, secret: &str, now: Instant) -> bool {
+        let matches = self.qr.as_ref().is_some_and(|q| {
+            now < q.expires && radiotrope_app::data::agent_token::matches(&q.secret, secret)
+        });
+        if matches {
+            self.qr = None;
+        }
+        matches
+    }
+
+    /// The QR code's secret and how long it has left, while one is shown
+    pub fn qr_shown(&self, now: Instant) -> Option<(String, Duration)> {
+        self.qr
+            .as_ref()
+            .filter(|q| now < q.expires)
+            .map(|q| (q.secret.clone(), q.expires - now))
+    }
+
+    /// The user closed the QR window
+    pub fn cancel_qr(&mut self) {
+        self.qr = None;
     }
 
     /// The user closed the code window
@@ -256,6 +304,28 @@ mod tests {
             now += FAILED_PAIRING_WINDOW;
         }
         assert!(!p.is_locked());
+    }
+
+    #[test]
+    fn a_qr_code_works_once_and_not_after_its_time() {
+        let now = Instant::now();
+        let mut p = Pairing::default();
+        let secret = p.start_qr(now).unwrap();
+        assert_eq!(secret.len(), 32);
+        assert!(p.qr_shown(now).is_some());
+        assert!(!p.take_qr("0123", now));
+        assert!(p.take_qr(&secret, now));
+        assert!(!p.take_qr(&secret, now));
+        assert!(p.qr_shown(now).is_none());
+
+        let secret = p.start_qr(now).unwrap();
+        assert!(!p.take_qr(&secret, now + CODE_LIFETIME));
+
+        // A new code replaces the old one
+        let old = p.start_qr(now).unwrap();
+        let new = p.start_qr(now).unwrap();
+        assert!(!p.take_qr(&old, now));
+        assert!(p.take_qr(&new, now));
     }
 
     #[test]

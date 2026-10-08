@@ -102,7 +102,27 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
         }
     });
 
+    ui.on_remote_pair_qr({
+        let remote = remote.clone();
+        move || {
+            remote.start_qr_pairing();
+        }
+    });
+    ui.on_remote_cancel_qr({
+        let remote = remote.clone();
+        let ui_weak = ui.as_weak();
+        move || {
+            remote.cancel_qr_pairing();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_pairing_qr_shown(false);
+            }
+        }
+    });
+
     let ui_weak = ui.as_weak();
+    // What the QR code drawn holds, so it is drawn again only when that
+    // changes (a new code, or the computer's addresses)
+    let mut drawn_qr = String::new();
     // Compared as shown, so "Used 4 min ago" redraws once a minute
     let mut seen_changes = remote.changes();
     let mut shown_devices: Vec<RemoteDevice> = Vec::new();
@@ -121,6 +141,23 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
             }
             None => ui.set_pairing_shown(false),
         }
+        match remote.shown_qr() {
+            Some((payload, left)) => {
+                if payload != drawn_qr {
+                    if let Some(image) = qr_image(&payload) {
+                        ui.set_pairing_qr(image);
+                    }
+                    drawn_qr = payload;
+                }
+                ui.set_pairing_qr_seconds(left.as_secs_f32().ceil() as i32);
+                ui.set_pairing_qr_shown(true);
+            }
+            // Used by a phone, run out, or cancelled
+            None => {
+                ui.set_pairing_qr_shown(false);
+                drawn_qr.clear();
+            }
+        }
         let changes = remote.changes();
         let rows = rows(&remote.devices(), now());
         if changes != seen_changes || rows != shown_devices {
@@ -130,6 +167,31 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
         }
     });
     timer
+}
+
+/// Modules of white around the code; the white tile adds a little more
+const QR_QUIET: usize = 4;
+
+/// The QR code for `payload`, a pixel per module: black on white, drawn
+/// pixelated at the size the dialog gives it
+fn qr_image(payload: &str) -> Option<slint::Image> {
+    use slint::{Rgba8Pixel, SharedPixelBuffer};
+    let code =
+        qrcode::QrCode::with_error_correction_level(payload.as_bytes(), qrcode::EcLevel::M).ok()?;
+    let width = code.width();
+    let size = width + 2 * QR_QUIET;
+    let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(size as u32, size as u32);
+    let white = Rgba8Pixel::new(255, 255, 255, 255);
+    let black = Rgba8Pixel::new(0, 0, 0, 255);
+    let pixels = buffer.make_mut_slice();
+    pixels.fill(white);
+    for (i, color) in code.to_colors().into_iter().enumerate() {
+        if color == qrcode::Color::Dark {
+            let (x, y) = (i % width + QR_QUIET, i / width + QR_QUIET);
+            pixels[y * size + x] = black;
+        }
+    }
+    Some(slint::Image::from_rgba8(buffer))
 }
 
 fn show_status_later(ui: &App) -> crate::remote::ShowStatus {

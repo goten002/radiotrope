@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use radiotrope_app::config::remote::PORT;
 use radiotrope_app::data::remote::{Device, RemoteStore};
+use radiotrope_app::data::remote_cert::PlayerCert;
 use radiotrope_app::data::settings::Settings;
 use radiotrope_app::data::types::Favorite;
 use radiotrope_app::network::logo::LogoService;
@@ -35,6 +36,8 @@ use pairing::{Pairing, Shown};
 /// settings say
 pub struct Remote {
     shared: server::Shared,
+    /// The certificate's fingerprint, which the QR code carries
+    fingerprint: String,
     running: Mutex<Option<Running>>,
     /// Counts the changes asked for, so a change set up late never undoes
     /// a newer one
@@ -81,7 +84,13 @@ impl Remote {
                 devices: Vec::new(),
             }
         });
-        Self::with_store(control, logos, window, store, None)
+        let cert = PlayerCert::load_or_create().unwrap_or_else(|e| {
+            eprintln!("Remote Control: can't read or save the certificate, so phones pair again after each start: {e}");
+            PlayerCert::generate()
+                .map(|(cert, _)| cert)
+                .expect("a certificate can be made")
+        });
+        Self::with_store(control, logos, window, store, None, cert)
     }
 
     fn with_store(
@@ -90,8 +99,11 @@ impl Remote {
         window: WindowHooks,
         store: RemoteStore,
         store_path: Option<std::path::PathBuf>,
+        cert: PlayerCert,
     ) -> Self {
+        let tls = server::tls_config(&cert).expect("the player's own certificate works");
         Self {
+            fingerprint: cert.fingerprint(),
             shared: server::Shared {
                 control,
                 store: Arc::new(Mutex::new(store)),
@@ -103,6 +115,7 @@ impl Remote {
                 window: Arc::new(window),
                 tickets: Default::default(),
                 calls: Default::default(),
+                tls,
             },
             running: Mutex::new(None),
             asked: AtomicU64::new(0),
@@ -247,9 +260,58 @@ impl Remote {
         self.shared.changes.fetch_add(1, Ordering::SeqCst);
     }
 
+    /// The user asked to pair a phone with a QR code: show a new one.
+    /// False while Remote Control is off.
+    pub fn start_qr_pairing(&self) -> bool {
+        if self.running.lock().map(|r| r.is_none()).unwrap_or(true) {
+            return false;
+        }
+        let started = self.pairing().start_qr(Instant::now()).is_some();
+        self.shared.changes.fetch_add(1, Ordering::SeqCst);
+        started
+    }
+
+    /// What the QR code holds, and how long it has left, while one is shown
+    pub fn shown_qr(&self) -> Option<(String, Duration)> {
+        let (secret, left) = self.pairing().qr_shown(Instant::now())?;
+        let addresses: Vec<String> = crate::mcp::network::interfaces()
+            .into_iter()
+            .filter(|i| i.usable)
+            .map(|i| format!("{}:{PORT}", i.ip))
+            .collect();
+        let player_id = self.store().player_id.clone();
+        Some((
+            qr_payload(&player_id, &self.fingerprint, &secret, &addresses),
+            left,
+        ))
+    }
+
+    /// The user closed the QR window
+    pub fn cancel_qr_pairing(&self) {
+        self.pairing().cancel_qr();
+        self.shared.changes.fetch_add(1, Ordering::SeqCst);
+    }
+
     /// The user opened the dialog: pairing works again after too many
     /// wrong codes
     pub fn unlock_pairing(&self) {
         self.pairing().unlock();
     }
+}
+
+/// What a pairing QR code holds: the player's id, its certificate's
+/// fingerprint, the one-time secret and where to reach the player, e.g.
+/// `radiotrope://pair?v=2&id=…&fp=…&s=…&a=192.168.1.20:8766`. Every value is
+/// hex or an address, so nothing needs escaping.
+pub fn qr_payload(
+    player_id: &str,
+    fingerprint: &str,
+    secret: &str,
+    addresses: &[String],
+) -> String {
+    format!(
+        "radiotrope://pair?v={}&id={player_id}&fp={fingerprint}&s={secret}&a={}",
+        radiotrope_app::config::remote::API_VERSION,
+        addresses.join(",")
+    )
 }
