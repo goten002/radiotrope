@@ -161,6 +161,24 @@ impl Player {
         paired["token"].as_str().unwrap().to_string()
     }
 
+    /// GET `path` until `done` holds for its answer (2 s at most)
+    async fn eventually(
+        &self,
+        path: &str,
+        token: Option<&str>,
+        done: impl Fn(&Value) -> bool,
+    ) -> Value {
+        let mut answer = Value::Null;
+        for _ in 0..100 {
+            answer = self.request("GET", path, token, None).await.1;
+            if done(&answer) {
+                return answer;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("{path} never got there: {answer}");
+    }
+
     fn shown_code(&self) -> String {
         self.shared
             .pairing
@@ -577,9 +595,11 @@ async fn a_phone_sets_the_equalizer() {
         )
         .await;
     assert_eq!(status, 204);
-    let (_, state) = player.request("GET", "/v1/state", t, None).await;
+    // The player takes the commands up in its own time
+    let state = player
+        .eventually("/v1/state", t, |s| s["eq"]["preset"] == "Voice")
+        .await;
     assert_eq!(state["eq"]["enabled"], true);
-    assert_eq!(state["eq"]["preset"], "Voice");
 
     // Gains past the faders' ends are held at them
     let (status, _) = player
@@ -591,7 +611,9 @@ async fn a_phone_sets_the_equalizer() {
         )
         .await;
     assert_eq!(status, 204);
-    let (_, eq) = player.request("GET", "/v1/eq", t, None).await;
+    let eq = player
+        .eventually("/v1/eq", t, |e| e["preamp"] == -2.0)
+        .await;
     assert_eq!(eq["preset"], Value::Null);
     assert_eq!(eq["gains"][0], 12.0);
     assert_eq!(eq["gains"][9], -12.0);

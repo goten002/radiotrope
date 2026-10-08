@@ -74,6 +74,8 @@ pub struct StationState {
     pub country: Option<String>,
     /// Where to get its logo from this player, e.g. "/v1/logos/1a2b..."
     pub logo: Option<String>,
+    /// Where the logo comes from, so a phone can save the station with it
+    pub logo_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -128,6 +130,7 @@ impl State {
                 .as_deref()
                 .filter(|_| s.station_logo_url.is_some())
                 .map(|url| format!("/v1/logos/{}", url_to_id(url))),
+            logo_url: s.station_logo_url.clone(),
         });
         State {
             playback: playback_name(s),
@@ -284,6 +287,10 @@ mod tests {
         };
         let state = State::from_snapshot(&s, 0);
         let station = state.station.unwrap();
+        assert_eq!(
+            station.logo_url.as_deref(),
+            Some("http://jazz.test/logo.png")
+        );
         assert_eq!(
             station.logo,
             Some(format!(
