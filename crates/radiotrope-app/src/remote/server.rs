@@ -37,7 +37,7 @@ use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
 use super::state::State;
-use super::{controls, library, listen, recordings, webrtc, WindowHooks};
+use super::{controls, library, recordings, webrtc, WindowHooks};
 use crate::control::{self, Control, Played, MAX_NAME_CHARS, MAX_URL_CHARS};
 
 pub(super) type Body = BoxBody<Bytes, Infallible>;
@@ -66,8 +66,6 @@ pub struct Shared {
     pub changes: Arc<AtomicU64>,
     /// What the window does about a phone's changes
     pub window: Arc<WindowHooks>,
-    /// Tickets phones were given to open the listening stream
-    pub tickets: Arc<Mutex<listen::Tickets>>,
     /// Phones listening over WebRTC
     pub calls: Arc<Mutex<webrtc::Calls>>,
     /// The player's certificate and key, for every connection
@@ -83,10 +81,6 @@ impl Shared {
 
     fn pairing(&self) -> std::sync::MutexGuard<'_, Pairing> {
         self.pairing.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    pub(super) fn tickets(&self) -> std::sync::MutexGuard<'_, listen::Tickets> {
-        self.tickets.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     pub(super) fn calls(&self) -> std::sync::MutexGuard<'_, webrtc::Calls> {
@@ -330,10 +324,6 @@ pub async fn handle(
             let id = id.to_string();
             return pair_code(shared, &id, request).await;
         }
-        // The ticket in the address stands for the token
-        (&Method::GET, ["v1", "listen", "stream"]) => {
-            return listen::stream(shared, &request, cancel)
-        }
         _ => {}
     }
 
@@ -357,7 +347,6 @@ pub async fn handle(
             json(StatusCode::OK, &state_now(shared, rev))
         }
         (&Method::GET, ["v1", "events"]) => events(shared, cancel),
-        (&Method::POST, ["v1", "listen"]) => listen::ticket(shared, &caller.device_id),
         (&Method::POST, ["v1", "listen", "webrtc"]) => {
             webrtc::offer(shared, &caller.device_id, local, request, cancel).await
         }

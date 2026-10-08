@@ -172,7 +172,6 @@ impl Player {
             logos: None,
             changes: Arc::new(AtomicU64::new(0)),
             window: Arc::new(window),
-            tickets: Default::default(),
             calls: Default::default(),
             tls: server::tls_config(&cert).unwrap(),
             recordings: Default::default(),
@@ -1028,135 +1027,6 @@ async fn timers_recording_and_search_check_what_they_are_given() {
     assert_eq!(status, 404);
 }
 
-/// Open the listening stream at `url` (no token); the connection, after the
-/// response's headers, which come back as text
-async fn open_listening(player: &Player, url: &str) -> (Conn, String) {
-    let mut stream = player.connect().await;
-    let request = format!("GET {url} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n");
-    stream.write_all(request.as_bytes()).await.unwrap();
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut byte))
-            .await
-            .expect("no answer within 5 s")
-            .unwrap();
-        assert_eq!(n, 1, "closed before the headers ended");
-        head.push(byte[0]);
-    }
-    (stream, String::from_utf8_lossy(&head).to_string())
-}
-
-#[tokio::test]
-async fn a_paired_phone_listens_with_a_ticket_that_works_once() {
-    let player = Player::start();
-    player.state.lock().unwrap().listen = Some(radiotrope::audio::Listen::new());
-    let token = player.pair("phone-1").await;
-
-    // No token, no ticket
-    let (status, _) = player.request("POST", "/v1/listen", None, None).await;
-    assert_eq!(status, 401);
-
-    let (status, ticket) = player
-        .request("POST", "/v1/listen", Some(&token), None)
-        .await;
-    assert_eq!(status, 200, "{ticket}");
-    assert_eq!(ticket["content_type"], "audio/mpeg");
-    assert_eq!(ticket["bitrate_kbps"], 192);
-    let url = ticket["url"].as_str().unwrap().to_string();
-    assert!(url.starts_with("/v1/listen/stream?t="), "{url}");
-
-    let (mut stream, head) = open_listening(&player, &url).await;
-    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
-    assert!(head.contains("content-type: audio/mpeg"), "{head}");
-    // Silence comes while nothing plays: about 24 kB a second
-    let mut audio = vec![0u8; 8_000];
-    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut audio))
-        .await
-        .expect("no audio within 5 s")
-        .unwrap();
-
-    // The state names the phone while it listens
-    let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
-    assert_eq!(state["listeners"], json!(["Pixel"]));
-
-    // The same ticket doesn't open a second stream
-    let (_, head) = open_listening(&player, &url).await;
-    assert!(head.starts_with("HTTP/1.1 401"), "{head}");
-
-    // Hanging up stops the listening
-    drop(stream);
-    let started = Instant::now();
-    loop {
-        let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
-        if state["listeners"] == json!([]) {
-            break;
-        }
-        assert!(started.elapsed() < Duration::from_secs(5), "{state}");
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-}
-
-#[tokio::test]
-async fn unpairing_ends_the_phone_s_listening() {
-    let player = Player::start();
-    let listen = radiotrope::audio::Listen::new();
-    player.state.lock().unwrap().listen = Some(listen.clone());
-    let token = player.pair("phone-1").await;
-    let (_, ticket) = player
-        .request("POST", "/v1/listen", Some(&token), None)
-        .await;
-    let (mut stream, head) = open_listening(&player, ticket["url"].as_str().unwrap()).await;
-    assert!(head.starts_with("HTTP/1.1 200"), "{head}");
-    assert_eq!(listen.listeners(), 1);
-
-    let (status, _) = player
-        .request("DELETE", "/v1/pair", Some(&token), None)
-        .await;
-    assert_eq!(status, 204);
-    // Even a phone that stopped reading is let go
-    let started = Instant::now();
-    while listen.listeners() > 0 {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "still listening after unpairing"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    // And the stream ends: what is left to read finishes with the last chunk
-    let mut rest = Vec::new();
-    let mut buf = [0u8; 65536];
-    while !rest.ends_with(b"0\r\n\r\n") {
-        let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
-            .await
-            .expect("the stream didn't end")
-            .unwrap();
-        assert!(n > 0, "closed without ending the stream");
-        rest.extend_from_slice(&buf[..n]);
-    }
-}
-
-#[tokio::test]
-async fn listening_needs_the_audio_engine() {
-    let player = Player::start();
-    let token = player.pair("phone-1").await;
-    let (status, body) = player
-        .request("POST", "/v1/listen", Some(&token), None)
-        .await;
-    assert_eq!(status, 503, "{body}");
-    assert_eq!(body["code"], "no_audio");
-}
-
-#[tokio::test]
-async fn a_made_up_ticket_is_refused() {
-    let player = Player::start();
-    player.state.lock().unwrap().listen = Some(radiotrope::audio::Listen::new());
-    let (_, head) = open_listening(&player, "/v1/listen/stream?t=1234").await;
-    assert!(head.starts_with("HTTP/1.1 401"), "{head}");
-    let (_, head) = open_listening(&player, "/v1/listen/stream").await;
-    assert!(head.starts_with("HTTP/1.1 401"), "{head}");
-}
-
 /// A phone's side of a WebRTC call, on this computer: offers to receive
 /// audio and counts the Opus packets that arrive
 struct PhoneCall {
@@ -1325,6 +1195,73 @@ async fn a_broken_offer_is_refused() {
     // Nobody joined the listeners
     let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
     assert_eq!(state["listeners"], json!([]));
+}
+
+#[tokio::test]
+async fn listening_needs_the_audio_engine() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let (_, offer) = PhoneCall::offer();
+    let (status, body) = player
+        .request(
+            "POST",
+            "/v1/listen/webrtc",
+            Some(&token),
+            Some(json!({ "sdp": offer })),
+        )
+        .await;
+    assert_eq!(status, 503, "{body}");
+    assert_eq!(body["code"], "no_audio");
+}
+
+#[tokio::test]
+async fn unpairing_ends_the_phone_s_call() {
+    let player = Player::start();
+    let listen = radiotrope::audio::Listen::new();
+    player.state.lock().unwrap().listen = Some(listen.clone());
+    let token = player.pair("phone-1").await;
+    let (phone, offer) = PhoneCall::offer();
+    let (status, answer) = player
+        .request(
+            "POST",
+            "/v1/listen/webrtc",
+            Some(&token),
+            Some(json!({ "sdp": offer })),
+        )
+        .await;
+    assert_eq!(status, 200, "{answer}");
+    let sdp = answer["sdp"].as_str().unwrap().to_string();
+    let calling = std::thread::spawn(move || phone.run(&sdp, Duration::from_secs(8)));
+    assert_eq!(listen.listeners(), 1);
+
+    let (status, _) = player
+        .request("DELETE", "/v1/pair", Some(&token), None)
+        .await;
+    assert_eq!(status, 204);
+    let started = Instant::now();
+    while listen.listeners() > 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "still listening after unpairing"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    drop(calling);
+}
+
+#[tokio::test]
+async fn the_old_http_stream_is_gone() {
+    let player = Player::start();
+    player.state.lock().unwrap().listen = Some(radiotrope::audio::Listen::new());
+    let token = player.pair("phone-1").await;
+    let (status, _) = player
+        .request("POST", "/v1/listen", Some(&token), None)
+        .await;
+    assert_eq!(status, 404);
+    let (status, _) = player
+        .request("GET", "/v1/listen/stream?t=1234", Some(&token), None)
+        .await;
+    assert_eq!(status, 404);
 }
 
 /// A file in the recording folder, last written a minute ago

@@ -8,9 +8,8 @@
 //!
 //! A call runs until the phone hangs up (`DELETE /v1/listen/webrtc/<id>`,
 //! or the connection goes quiet), is unpaired, or Remote Control is turned
-//! off. Next to the MP3 stream in [`super::listen`], this one plays with a
-//! fraction of a second of delay: no player buffer, just WebRTC's jitter
-//! buffer.
+//! off. It plays with a fraction of a second of delay: no player buffer,
+//! just WebRTC's jitter buffer. This is the only way a phone listens.
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -29,11 +28,10 @@ use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, IceConnectionState, Input, Output, Rtc, RtcConfig};
 use tokio_util::sync::CancellationToken;
 
-use radiotrope::audio::recording::{ListenFormat, ListenStream, LISTEN_OPUS_FRAME};
+use radiotrope::audio::recording::{ListenError, ListenStream, LISTEN_OPUS_FRAME};
 use radiotrope_app::config::remote::{LISTEN_CHECK, WEBRTC_CONNECT_TIMEOUT};
 use radiotrope_app::data::remote::random_hex;
 
-use super::listen::{no_audio, subscribe_error};
 use super::server::{error, json, no_content, read_json, Body, Shared};
 
 /// Payload type the player offers Opus on (the usual one; the phone's
@@ -127,7 +125,7 @@ pub(super) async fn offer(
         Err(_) => return bad_offer(),
     };
 
-    let audio = match listen.subscribe_as(&name, ListenFormat::Opus) {
+    let audio = match listen.subscribe(&name) {
         Ok(audio) => audio,
         Err(e) => return subscribe_error(e),
     };
@@ -318,4 +316,28 @@ fn bad_offer() -> Response<Body> {
 
 fn failed(message: &str) -> Response<Body> {
     error(StatusCode::SERVICE_UNAVAILABLE, "failed", message)
+}
+
+/// Why a phone couldn't join the listeners, as a response
+fn subscribe_error(e: ListenError) -> Response<Body> {
+    match e {
+        ListenError::TooMany => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "too_many_listeners",
+            &ListenError::TooMany.to_string(),
+        ),
+        e => error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "failed",
+            &format!("Can't start listening: {e}"),
+        ),
+    }
+}
+
+fn no_audio() -> Response<Body> {
+    error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "no_audio",
+        "The player has no audio output to listen to",
+    )
 }

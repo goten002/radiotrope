@@ -7,7 +7,6 @@
 
 mod controls;
 mod library;
-mod listen;
 pub mod mdns;
 pub mod pairing;
 pub mod recordings;
@@ -114,7 +113,6 @@ impl Remote {
                 logos,
                 changes: Arc::new(AtomicU64::new(0)),
                 window: Arc::new(window),
-                tickets: Default::default(),
                 calls: Default::default(),
                 tls,
                 recordings: Default::default(),
