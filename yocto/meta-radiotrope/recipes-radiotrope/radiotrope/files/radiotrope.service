@@ -5,15 +5,47 @@ Wants=seatd.service
 
 [Service]
 Type=simple
-ExecStartPre=-/bin/systemctl stop radiotrope-splash
-ExecStartPre=-/usr/bin/psplash-write "QUIT"
+# Run as root ("+"): the splash belongs to the system
+ExecStartPre=-+/bin/systemctl stop radiotrope-splash
+ExecStartPre=-+/usr/bin/psplash-write "QUIT"
 ExecStart=/usr/bin/radiotrope
 Environment=SLINT_BACKEND=linuxkms
 Restart=on-failure
 RestartSec=3
 TimeoutStopSec=5
-User=root
+
+# Its own user: a bug in the player reaches only the player's files.
+# Home, settings and recordings are in /var/lib/radiotrope; the screen and
+# input come through seatd (group video), sound through ALSA (group audio)
+User=radiotrope
+Group=radiotrope
 SupplementaryGroups=audio video input render
+StateDirectory=radiotrope
+StateDirectoryMode=0700
+RuntimeDirectory=radiotrope
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=%t/radiotrope
+UMask=0077
+
+# Sandbox: the rest of the system is read-only or hidden. A recording
+# folder on a USB stick must be under /media, /run/media or /mnt.
+# No PrivateDevices, DeviceAllow or ProtectClock: those would close
+# /dev/dri, /dev/input and /dev/snd
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=-/media -/run/media -/mnt
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
 
 [Install]
 WantedBy=multi-user.target

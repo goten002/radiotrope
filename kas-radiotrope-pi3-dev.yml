@@ -1,0 +1,13 @@
+# Development image: the release image plus passwordless root login over
+# SSH, for working on the Pi. Anyone on the same network can then log in
+# as root, so never use this image outside development.
+#
+#   kas-container build kas-radiotrope-pi3-dev.yml
+header:
+  version: 14
+  includes:
+    - kas-radiotrope-pi3.yml
+
+local_conf_header:
+  dev: |
+    EXTRA_IMAGE_FEATURES:append = " ssh-server-dropbear allow-empty-password empty-root-password allow-root-login post-install-logging"
