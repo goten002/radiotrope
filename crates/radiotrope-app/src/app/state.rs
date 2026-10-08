@@ -136,6 +136,9 @@ pub struct AppSnapshot {
     pub last_error: Option<String>,
     /// True while a stream is being resolved (not yet playing or failed)
     pub is_resolving: bool,
+    /// True once the resolved stream is handed to the engine, until it
+    /// plays, stops or fails. `playback` is still Stopped meanwhile.
+    pub is_connecting: bool,
     /// An alarm's station didn't start and the alarm beeps instead.
     /// `playback` is Playing, so Stop silences it, but the station isn't.
     pub alarm_beep: bool,
@@ -282,6 +285,7 @@ impl Default for AppSnapshot {
             is_muted: false,
             last_error: None,
             is_resolving: false,
+            is_connecting: false,
             alarm_beep: false,
             fade_gain: 1.0,
             play_seq: 0,

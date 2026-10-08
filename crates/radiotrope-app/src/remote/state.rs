@@ -32,7 +32,7 @@ pub const ACCENT_SWATCHES: [(&str, &str); 10] = [
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct State {
-    /// "stopped", "resolving", "playing" or "paused"
+    /// "stopped", "resolving", "connecting", "playing" or "paused"
     pub playback: &'static str,
     pub station: Option<StationState>,
     pub title: Option<String>,
@@ -200,6 +200,11 @@ fn playback_name(s: &AppSnapshot) -> &'static str {
     if s.is_resolving {
         return "resolving";
     }
+    // The station is picked but not heard yet: a phone keeps showing it
+    // as the one starting, not as stopped
+    if s.is_connecting && s.playback == PlaybackState::Stopped {
+        return "connecting";
+    }
     match s.playback {
         PlaybackState::Stopped => "stopped",
         PlaybackState::Playing => "playing",
@@ -243,6 +248,26 @@ mod tests {
         assert!(state.station.is_none());
         assert_eq!(state.accent, DEFAULT_ACCENT);
         assert_eq!(state.favorites_rev, 3);
+    }
+
+    #[test]
+    fn a_station_handed_to_the_engine_is_connecting() {
+        let mut s = AppSnapshot {
+            station_url: Some("http://jazz.test/stream".into()),
+            is_resolving: true,
+            ..Default::default()
+        };
+        assert_eq!(State::from_snapshot(&s, 0).playback, "resolving");
+        s.is_resolving = false;
+        s.is_connecting = true;
+        let state = State::from_snapshot(&s, 0);
+        assert_eq!(state.playback, "connecting");
+        assert_eq!(
+            state.station.unwrap().url.as_deref(),
+            Some("http://jazz.test/stream")
+        );
+        s.is_connecting = false;
+        assert_eq!(State::from_snapshot(&s, 0).playback, "stopped");
     }
 
     #[test]
