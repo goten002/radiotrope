@@ -33,9 +33,12 @@ repos:
       meta-python:
       meta-networking:
 
+  # Pinned: the layer tracks the newest Rust, so an unpinned rebuild could
+  # pick up a toolchain the player was never built with
   meta-rust-bin:
     url: https://github.com/rust-embedded/meta-rust-bin.git
     branch: master
+    commit: eaea247f32f247ab525112d2fbc16e16a553d880
     path: yocto/meta-rust-bin
 
   # Our custom layer
@@ -60,11 +63,9 @@ local_conf_header:
     # Add merus-amp overlay for InnoMaker AMP Pro HAT
     RPI_KERNEL_DEVICETREE_OVERLAYS:append = " overlays/merus-amp.dtbo"
 
-    # Silent boot — hide kernel messages, show psplash instead
+    # Silent boot: no kernel messages, the radiotrope-splash service draws
+    # the splash until the player starts
     CMDLINE:append = " quiet loglevel=0 logo.nologo vt.global_cursor_default=0 console=tty3 systemd.show_status=false"
-
-    # Enable psplash
-    IMAGE_FEATURES:append = " splash"
 
     # Accept all licenses for firmware blobs
     LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"

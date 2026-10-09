@@ -7,7 +7,6 @@ Wants=seatd.service
 Type=simple
 # Run as root ("+"): the splash belongs to the system
 ExecStartPre=-+/bin/systemctl stop radiotrope-splash
-ExecStartPre=-+/usr/bin/psplash-write "QUIT"
 ExecStart=/usr/bin/radiotrope
 Environment=SLINT_BACKEND=linuxkms
 Restart=on-failure

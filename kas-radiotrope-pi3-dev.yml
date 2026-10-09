@@ -11,3 +11,5 @@ header:
 local_conf_header:
   dev: |
     EXTRA_IMAGE_FEATURES:append = " ssh-server-dropbear allow-empty-password empty-root-password allow-root-login post-install-logging"
+    # An editor for poking at the Pi over SSH
+    IMAGE_INSTALL:append = " nano"

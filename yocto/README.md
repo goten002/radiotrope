@@ -104,15 +104,39 @@ meta-radiotrope/
 │   ├── radiotrope_0.1.0.bb                      # App recipe (cargo_bin)
 │   └── files/
 │       ├── radiotrope.service                   # Systemd unit (own user, sandbox)
+│       ├── seatd.service                        # Seat daemon (screen and touch access)
+│       ├── radiotrope-splash.service, .sh, splash.fb  # Boot splash until the player starts
 │       └── radiotrope-iwd.conf                  # D-Bus: the player may use iwd
 ├── recipes-core/images/
 │   └── radiotrope-image.bb                      # Image recipe
+├── recipes-core/systemd-conf/
+│   └── files/80-wireless.network                # DHCP on Wi-Fi (systemd-networkd)
+├── recipes-connectivity/iwd/
+│   └── files/main.conf                          # iwd: Wi-Fi only, auto-connect
 ├── recipes-bsp/rpi-config/
-│   └── rpi-config_%.bbappend                    # DT overlays (display + amp)
+│   └── rpi-config_%.bbappend                    # config.txt: KMS, display, amp, memory
 └── recipes-kernel/linux/
-    ├── linux-raspberrypi_%.bbappend             # Kernel config fragment
-    └── files/merus-amp.cfg                      # Enable MA12070P driver
+    ├── linux-raspberrypi_%.bbappend             # Kernel config fragments
+    └── files/merus-amp.cfg, splash-boot.cfg     # MA12070P driver, deferred console
 ```
+
+## First boot checklist
+
+Things to look at the first time a new image runs on the Pi, over SSH
+(dev image, or the release image with a key):
+
+- Screen and touch: the player appears after the splash; a tap lands where
+  the finger is (`libinput debug-events` shows touches if not).
+- Sound: `aplay -l` lists only the amplifier (`merus-amp`), as card 0.
+- Wi-Fi: Tools > Wi-Fi Settings finds networks and joins one; `ip addr
+  show wlan0` has an address.
+- Clock: the Pi has no clock of its own. `timedatectl` says "System clock
+  synchronized: yes" within a minute of Wi-Fi coming up; the Scheduler,
+  the Sleep Timer and HTTPS stations all depend on it.
+- Memory: `free -m` shows most of the 1 GB free; `dmesg | grep -i cma`
+  has no allocation failures (the image reserves 96 MB for the display).
+- Modules: `lsmod` lists what is loaded; the image installs every kernel
+  module (`kernel-modules`), which can be trimmed to that list later.
 
 ## Desktop vs Embedded Build
 

@@ -25,6 +25,20 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
       - run: cargo check --workspace
 
+  # The Raspberry Pi build (linuxkms backend, no desktop crates): checked
+  # here so a desktop change can't break it unnoticed until an image build
+  embedded:
+    name: Check (embedded)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: embedded
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libinput-dev libudev-dev libseat-dev libxkbcommon-dev libdrm-dev libgbm-dev
+      - run: cargo check -p radiotrope-app --no-default-features --features embedded
+
   test:
     name: Test
     runs-on: ubuntu-latest
