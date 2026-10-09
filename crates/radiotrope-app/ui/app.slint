@@ -224,9 +224,12 @@ export component App inherits Window {
     in property <[AgentRow]> agent-list;
 
     // WiFi (embedded only — connected from Rust when feature = "embedded")
+    callback wifi-opened();
     callback wifi-scan-requested();
     callback wifi-connect-requested(string, string); // object-path, password
     callback wifi-disconnect-requested();
+    callback wifi-forget-requested(string); // object-path
+    callback wifi-power-requested(bool);
     callback wifi-backspace(string) -> string;
 
     in-out property <string> station-name;
@@ -334,6 +337,13 @@ export component App inherits Window {
     in-out property <bool> wifi-scanning <=> wifi-dialog.is-scanning;
     in-out property <string> wifi-current-ssid <=> wifi-dialog.current-ssid;
     in-out property <string> wifi-connection-status <=> wifi-dialog.connection-status;
+    in-out property <bool> wifi-status-is-error <=> wifi-dialog.status-is-error;
+    // The radio is on (off: the list is greyed)
+    in-out property <bool> wifi-powered <=> wifi-dialog.powered;
+    // Our address on the Wi-Fi network, "" while there is none
+    in-out property <string> wifi-ip <=> wifi-dialog.ip;
+    // "no-adapter", "off", "disconnected", "connecting" or "connected"
+    in-out property <string> wifi-state <=> wifi-dialog.state;
 
     // Theme proxy: the View menu's choice, and the theme it gives
     in-out property <string> theme-mode <=> Theme.theme-mode;
@@ -425,7 +435,7 @@ export component App inherits Window {
                     toggle-custom-frame => { root.switch-title-bar(!root.custom-frame); }
                     open-wifi-settings => {
                         root.show-wifi-settings = true;
-                        root.wifi-scan-requested();
+                        root.wifi-opened();
                     }
                     open-network-stream => {
                         stream-dialog.show-dialog = true;
@@ -729,6 +739,8 @@ export component App inherits Window {
             scan-requested() => { root.wifi-scan-requested(); }
             connect-requested(path, password) => { root.wifi-connect-requested(path, password); }
             disconnect-requested() => { root.wifi-disconnect-requested(); }
+            forget-requested(path) => { root.wifi-forget-requested(path); }
+            power-requested(on) => { root.wifi-power-requested(on); }
             close-requested() => { root.show-wifi-settings = false; }
             wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
         }

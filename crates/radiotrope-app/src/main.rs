@@ -2273,217 +2273,148 @@ fn open_url(url: &str) {
     }
 }
 
-/// Set up WiFi settings UI callbacks
+/// Wire the Wi-Fi page to the iwd thread (Raspberry Pi build only). The
+/// thread reports through `WifiEvent`s, applied on the UI thread here.
 #[cfg(feature = "embedded")]
 fn setup_wifi(ui: &App) {
-    // Backspace handler for virtual keyboard (Slint has no string substring)
+    use radiotrope_app::wifi::{WifiCommand, WifiEvent, WifiManager, WifiState};
+
+    // Backspace for the on-screen keyboard (Slint has no string slicing)
     ui.on_wifi_backspace(|text| {
-        let s = text.to_string();
-        let mut chars: Vec<char> = s.chars().collect();
+        let mut chars: Vec<char> = text.chars().collect();
         chars.pop();
-        let result: String = chars.into_iter().collect();
-        result.into()
+        chars.into_iter().collect::<String>().into()
     });
 
-    let wifi_mgr = Arc::new(radiotrope_app::wifi::WifiManager::new().ok());
+    let manager = {
+        let ui_weak = ui.as_weak();
+        WifiManager::start(move |event| {
+            let ui_weak = ui_weak.clone();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    apply_wifi_event(&ui, event);
+                }
+            });
+        })
+    };
 
-    // Scan callback
     {
-        let mgr = wifi_mgr.clone();
+        let manager = manager.clone();
         let ui_weak = ui.as_weak();
         ui.on_wifi_scan_requested(move || {
-            let mgr = mgr.clone();
-            let ui_weak = ui_weak.clone();
-            std::thread::Builder::new()
-                .name("wifi-scan".into())
-                .spawn(move || {
-                    if let Some(ref mgr) = *mgr {
-                        let ui_weak2 = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak2.upgrade() {
-                                ui.set_wifi_scanning(true);
-                            }
-                        });
-
-                        let networks = mgr.scan().unwrap_or_default();
-                        let ui_weak2 = ui_weak.clone();
-                        let entries: Vec<_> = networks
-                            .iter()
-                            .map(|n| WifiNetworkEntry {
-                                ssid: n.ssid.clone().into(),
-                                signal_percent: n.signal_percent() as i32,
-                                security: n.security.to_string().into(),
-                                connected: n.connected,
-                                object_path: n.object_path.clone().into(),
-                            })
-                            .collect();
-
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak2.upgrade() {
-                                let model = std::rc::Rc::new(slint::VecModel::from(entries));
-                                ui.set_wifi_networks(slint::ModelRc::from(model));
-                                ui.set_wifi_scanning(false);
-                            }
-                        });
-                    }
-                })
-                .ok();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_wifi_scanning(true);
+            }
+            manager.send(WifiCommand::Scan);
         });
     }
-
-    // Connect callback
     {
-        let mgr = wifi_mgr.clone();
+        let manager = manager.clone();
         let ui_weak = ui.as_weak();
         ui.on_wifi_connect_requested(move |path, password| {
-            let mgr = mgr.clone();
-            let ui_weak = ui_weak.clone();
-            let path = path.to_string();
-            let password = password.to_string();
-            std::thread::Builder::new()
-                .name("wifi-connect".into())
-                .spawn(move || {
-                    if let Some(ref mgr) = *mgr {
-                        let pass = if password.is_empty() {
-                            None
-                        } else {
-                            Some(password.as_str())
-                        };
-
-                        // Show connecting status immediately
-                        let ui_weak2 = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak2.upgrade() {
-                                ui.set_wifi_connection_status("Connecting...".into());
-                            }
-                        });
-
-                        match mgr.connect(&path, pass) {
-                            Ok(()) => {
-                                // Wait for connection to establish
-                                std::thread::sleep(Duration::from_secs(3));
-                                let ssid = mgr.current_ssid().unwrap_or_default();
-
-                                // Rescan to refresh the list with connected state
-                                let networks = mgr.scan().unwrap_or_default();
-                                let entries: Vec<_> = networks
-                                    .iter()
-                                    .map(|n| WifiNetworkEntry {
-                                        ssid: n.ssid.clone().into(),
-                                        signal_percent: n.signal_percent() as i32,
-                                        security: n.security.to_string().into(),
-                                        connected: n.connected,
-                                        object_path: n.object_path.clone().into(),
-                                    })
-                                    .collect();
-
-                                let ui_weak2 = ui_weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak2.upgrade() {
-                                        if ssid.is_empty() {
-                                            ui.set_wifi_connection_status("Connected".into());
-                                        } else {
-                                            ui.set_wifi_connection_status(
-                                                format!("Connected to {}", ssid).into(),
-                                            );
-                                        }
-                                        ui.set_wifi_current_ssid(ssid.into());
-                                        let model =
-                                            std::rc::Rc::new(slint::VecModel::from(entries));
-                                        ui.set_wifi_networks(slint::ModelRc::from(model));
-                                    }
-                                });
-
-                                // Clear status after 5 seconds
-                                std::thread::sleep(Duration::from_secs(5));
-                                let ui_weak2 = ui_weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak2.upgrade() {
-                                        ui.set_wifi_connection_status("".into());
-                                    }
-                                });
-                            }
-                            Err(e) => {
-                                let ui_weak2 = ui_weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak2.upgrade() {
-                                        ui.set_wifi_connection_status(
-                                            format!("Failed: {}", e).into(),
-                                        );
-                                    }
-                                });
-
-                                // Clear error after 5 seconds
-                                std::thread::sleep(Duration::from_secs(5));
-                                let ui_weak2 = ui_weak.clone();
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    if let Some(ui) = ui_weak2.upgrade() {
-                                        ui.set_wifi_connection_status("".into());
-                                    }
-                                });
-                            }
-                        }
-                    }
-                })
-                .ok();
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_wifi_connection_status("Connecting...".into());
+            }
+            let passphrase = (!password.is_empty()).then(|| password.to_string());
+            manager.send(WifiCommand::Connect {
+                object_path: path.to_string(),
+                passphrase,
+            });
+        });
+    }
+    {
+        let manager = manager.clone();
+        ui.on_wifi_disconnect_requested(move || manager.send(WifiCommand::Disconnect));
+    }
+    {
+        let manager = manager.clone();
+        ui.on_wifi_forget_requested(move |path| {
+            manager.send(WifiCommand::Forget {
+                object_path: path.to_string(),
+            });
+            // The list shows "Saved": read it again
+            manager.send(WifiCommand::Scan);
+        });
+    }
+    {
+        let manager = manager.clone();
+        ui.on_wifi_power_requested(move |on| manager.send(WifiCommand::SetPowered(on)));
+    }
+    {
+        let manager = manager.clone();
+        ui.on_wifi_opened(move || {
+            manager.send(WifiCommand::Refresh);
+            manager.send(WifiCommand::Scan);
         });
     }
 
-    // Disconnect callback
-    {
-        let mgr = wifi_mgr.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_wifi_disconnect_requested(move || {
-            let mgr = mgr.clone();
-            let ui_weak = ui_weak.clone();
-            std::thread::Builder::new()
-                .name("wifi-disconnect".into())
-                .spawn(move || {
-                    if let Some(ref mgr) = *mgr {
-                        let _ = mgr.disconnect();
-
-                        // Show disconnected status
-                        let ui_weak2 = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak2.upgrade() {
-                                ui.set_wifi_connection_status("Disconnected".into());
-                                ui.set_wifi_current_ssid("".into());
-                            }
-                        });
-
-                        // Wait then rescan to refresh the list
-                        std::thread::sleep(Duration::from_secs(2));
-                        let networks = mgr.scan().unwrap_or_default();
-                        let entries: Vec<_> = networks
-                            .iter()
-                            .map(|n| WifiNetworkEntry {
-                                ssid: n.ssid.clone().into(),
-                                signal_percent: n.signal_percent() as i32,
-                                security: n.security.to_string().into(),
-                                connected: n.connected,
-                                object_path: n.object_path.clone().into(),
-                            })
-                            .collect();
-
-                        let ui_weak2 = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak2.upgrade() {
-                                let model = std::rc::Rc::new(slint::VecModel::from(entries));
-                                ui.set_wifi_networks(slint::ModelRc::from(model));
-                            }
-                        });
-
-                        // Clear status after 5 seconds
-                        std::thread::sleep(Duration::from_secs(5));
-                        let ui_weak2 = ui_weak.clone();
-                        let _ = slint::invoke_from_event_loop(move || {
-                            if let Some(ui) = ui_weak2.upgrade() {
-                                ui.set_wifi_connection_status("".into());
-                            }
-                        });
+    /// Show what the Wi-Fi thread reported
+    fn apply_wifi_event(ui: &App, event: WifiEvent) {
+        match event {
+            WifiEvent::Status(status) => {
+                ui.set_wifi_powered(status.powered());
+                ui.set_wifi_current_ssid(status.ssid.into());
+                ui.set_wifi_ip(status.ip.into());
+                ui.set_wifi_state(
+                    match status.state {
+                        None | Some(WifiState::NoAdapter) => "no-adapter",
+                        Some(WifiState::Off) => "off",
+                        Some(WifiState::Disconnected) => "disconnected",
+                        Some(WifiState::Connecting) => "connecting",
+                        Some(WifiState::Connected) | Some(WifiState::Roaming) => "connected",
                     }
-                })
-                .ok();
+                    .into(),
+                );
+                if status.scanning {
+                    ui.set_wifi_scanning(true);
+                }
+            }
+            WifiEvent::Networks(networks) => {
+                let entries: Vec<WifiNetworkEntry> = networks
+                    .iter()
+                    .map(|n| WifiNetworkEntry {
+                        ssid: n.ssid.clone().into(),
+                        signal_bars: n.signal_bars() as i32,
+                        signal_text: format!(
+                            "{} ({} dBm)",
+                            radiotrope_app::wifi::signal_words(n.signal_dbm),
+                            n.signal_dbm
+                        )
+                        .into(),
+                        security: n.security.to_string().into(),
+                        open: n.security == radiotrope_app::wifi::WifiSecurity::Open,
+                        connected: n.connected,
+                        known: n.known,
+                        object_path: n.object_path.clone().into(),
+                    })
+                    .collect();
+                ui.set_wifi_networks(ModelRc::from(std::rc::Rc::new(VecModel::from(entries))));
+                ui.set_wifi_scanning(false);
+            }
+            WifiEvent::Connected(Ok(ssid)) => {
+                show_wifi_status(ui, format!("Connected to {ssid}"), false);
+            }
+            WifiEvent::Connected(Err(e)) => {
+                show_wifi_status(ui, e.to_string(), true);
+            }
+            WifiEvent::Failed(e) => {
+                show_wifi_status(ui, e.to_string(), true);
+            }
+        }
+    }
+
+    /// A line in the Wi-Fi page for a few seconds; a newer line is left alone
+    fn show_wifi_status(ui: &App, text: String, is_error: bool) {
+        let text: slint::SharedString = text.into();
+        ui.set_wifi_connection_status(text.clone());
+        ui.set_wifi_status_is_error(is_error);
+        let ui_weak = ui.as_weak();
+        slint::Timer::single_shot(Duration::from_secs(6), move || {
+            if let Some(ui) = ui_weak.upgrade() {
+                if ui.get_wifi_connection_status() == text {
+                    ui.set_wifi_connection_status("".into());
+                }
+            }
         });
     }
 }
