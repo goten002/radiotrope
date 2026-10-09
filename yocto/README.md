@@ -74,6 +74,7 @@ Replace `/dev/sdX` with your SD card device.
 - Auto-starts on boot via systemd service
 - ALSA + MA12070P driver for I2S audio
 - Goodix touch driver for DSI display; the touchscreen is the only input (no buttons or knobs)
+- Power Off and Restart in the player's Open menu (each asks twice); the sandboxed player creates a file in /run/radiotrope and a root path unit runs `systemctl poweroff` or `reboot`
 - Dropbear SSH server only with a key (release) or passwordless root (dev image)
 
 ## Where the player keeps its files
@@ -135,6 +136,9 @@ Things to look at the first time a new image runs on the Pi, over SSH
   the Sleep Timer and HTTPS stations all depend on it.
 - Memory: `free -m` shows most of the 1 GB free; `dmesg | grep -i cma`
   has no allocation failures (the image reserves 96 MB for the display).
+- Power Off and Restart: Open > Restart (pressed twice) reboots within a
+  few seconds and Open > Power Off halts; `systemctl status
+  radiotrope-poweroff.path radiotrope-reboot.path` shows both active.
 - Modules: `lsmod` lists what is loaded; the image installs every kernel
   module (`kernel-modules`), which can be trimmed to that list later.
 

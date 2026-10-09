@@ -14,6 +14,9 @@ export global Platform {
     out property <bool> has-system-theme: false;
     // No system clipboard on the kiosk
     out property <bool> has-clipboard: false;
+    // The Open menu ends in Power Off and Restart instead of Quit: the
+    // player is the whole screen, so quitting would only leave it black
+    out property <bool> has-power-off: true;
 }
 
 export { WifiSettingsDialog, WifiNetworkEntry } from "../../dialogs/wifi-settings.slint";

@@ -1,0 +1,10 @@
+[Unit]
+Description=Restart when the player asks (Open menu)
+
+[Path]
+# The player runs sandboxed as user radiotrope and can't call systemd;
+# it creates this file in its runtime directory instead
+PathExists=/run/radiotrope/reboot
+
+[Install]
+WantedBy=multi-user.target
