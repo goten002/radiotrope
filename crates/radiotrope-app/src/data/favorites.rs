@@ -177,9 +177,8 @@ impl FavoritesManager {
         // Taken before the read, so a save in between shows as a change
         let seen = storage::stamp(path);
 
-        let mut old_stats = HashMap::new();
         if let Some(file) = storage::load_from::<StoredFavoritesFile>(path)? {
-            (manager.favorites, old_stats) = read_entries(file, path);
+            manager.favorites = read_entries(file, path);
         }
 
         manager.path = Some(path.to_path_buf());
@@ -191,17 +190,10 @@ impl FavoritesManager {
         manager.stats_seen = storage::stamp(&stats_path);
         match storage::load_from::<StatsFile>(&stats_path) {
             Ok(Some(file)) => manager.stats = file.stations,
-            // First run since the stats moved out of favorites.json: they
-            // are written to the stats file with the next save
-            Ok(None) => {
-                manager.stats = old_stats;
-                manager.stats_dirty = !manager.stats.is_empty();
-            }
+            Ok(None) => {}
             Err(e) => eprintln!("Stats: {e}"),
         }
-        if !manager.stats_dirty {
-            manager.stats_base = manager.stats.clone();
-        }
+        manager.stats_base = manager.stats.clone();
         Ok(manager)
     }
 
@@ -233,7 +225,7 @@ impl FavoritesManager {
         // Before the read, as at load
         self.seen = stamp;
         let theirs = match storage::parse_file::<StoredFavoritesFile>(&path) {
-            Ok(Some(file)) => read_entries(file, &path).0,
+            Ok(Some(file)) => read_entries(file, &path),
             Ok(None) => return false,
             Err(e) => {
                 eprintln!("Favorites: {e}");
@@ -902,7 +894,7 @@ impl FavoritesManager {
             .ok_or_else(|| AppError::Config("There is no import to undo".into()))?;
         let file = storage::parse_file::<StoredFavoritesFile>(&path)?
             .ok_or_else(|| AppError::Config("There is no import to undo".into()))?;
-        self.favorites = read_entries(file, &path).0;
+        self.favorites = read_entries(file, &path);
         self.dirty = true;
         self.generation += 1;
         let _ = std::fs::remove_file(&path);
@@ -1004,22 +996,13 @@ fn stats_path_for(path: &Path) -> PathBuf {
     path.with_file_name(STATS_FILE)
 }
 
-/// The favorites in a file read from `path`, by ID, and the stats a
-/// version 1 file still kept in each favorite
-fn read_entries(
-    file: StoredFavoritesFile,
-    path: &Path,
-) -> (HashMap<String, Favorite>, HashMap<String, StationStats>) {
+/// The favorites in a file read from `path`, by ID
+fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favorite> {
     let mut favorites = HashMap::new();
-    let mut stats = HashMap::new();
     let mut skipped = 0;
     for entry in file.favorites {
-        let old_stats = serde_json::from_value::<StationStats>(entry.clone()).unwrap_or_default();
         match serde_json::from_value::<Favorite>(entry) {
             Ok(favorite) => {
-                if !old_stats.is_empty() {
-                    stats.insert(favorite.id(), old_stats);
-                }
                 favorites.insert(favorite.id(), favorite);
             }
             Err(e) => {
@@ -1033,7 +1016,7 @@ fn read_entries(
     if skipped > 0 {
         storage::keep_copy(path);
     }
-    (favorites, stats)
+    favorites
 }
 
 #[cfg(test)]
@@ -1761,42 +1744,6 @@ mod tests {
 
     fn stats_file(path: &Path) -> serde_json::Value {
         serde_json::from_str(&fs::read_to_string(stats_path_for(path)).unwrap()).unwrap()
-    }
-
-    #[test]
-    fn stats_of_a_version_1_file_move_to_the_stats_file() {
-        let path = temp_path();
-        fs::write(
-            &path,
-            r#"{"version": 1, "favorites": [
-                {"name": "A", "url": "http://a.test", "added_at": 1, "sort_order": 0,
-                 "play_count": 4, "total_listen_time_secs": 700, "last_played": 99},
-                {"name": "B", "url": "http://b.test", "added_at": 2, "sort_order": 1}
-            ]}"#,
-        )
-        .unwrap();
-
-        let mut manager = FavoritesManager::load_from(&path).unwrap();
-        let a = url_to_id("http://a.test");
-        assert_eq!(manager.stats(&a).play_count, 4);
-        assert_eq!(manager.stats(&a).total_listen_time_secs, 700);
-        assert!(manager.stats(&url_to_id("http://b.test")).is_empty());
-        assert!(manager.is_dirty());
-
-        manager.save_to(&path).unwrap();
-        let stats = stats_file(&path);
-        assert_eq!(stats["stations"][&a]["play_count"], 4);
-        assert_eq!(stats["stations"][&a]["last_played"], 99);
-
-        // Read back from the stats file, not the old favorites
-        manager.add(Favorite::new("C", "http://c.test")).unwrap();
-        manager.save_to(&path).unwrap();
-        let saved = fs::read_to_string(&path).unwrap();
-        assert!(!saved.contains("play_count"));
-        assert!(saved.contains("\"version\": 2"));
-        let again = FavoritesManager::load_from(&path).unwrap();
-        assert_eq!(again.stats(&a).total_listen_time_secs, 700);
-        remove_files(&path);
     }
 
     #[test]

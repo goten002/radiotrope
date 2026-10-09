@@ -31,8 +31,9 @@ const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", 
 
 /// Largest width or height of a cached logo, in pixels.
 ///
-/// Logos are displayed at 70px at most; 160px keeps them sharp at 2x scale.
-pub const LOGO_MAX_SIZE: u32 = 160;
+/// 256px keeps the player's logos sharp at 2x scale and is large enough for
+/// the phone app, which shows the player's cached logos.
+pub const LOGO_MAX_SIZE: u32 = 256;
 
 /// Get the application cache directory path
 ///
