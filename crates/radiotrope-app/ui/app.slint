@@ -58,6 +58,8 @@ export component App inherits Window {
     in property <bool> tray-available: true;
     // End the app (Quit in the Open menu, Ctrl+Q); closing may only hide
     callback quit-app();
+    // Power Off and Restart in the Open menu (the Pi): true means restart
+    callback power-requested(bool);
     // The play button, for the tray icon's menu and middle click
     public function play-or-stop() {
         controls.play-or-stop();
@@ -433,6 +435,8 @@ export component App inherits Window {
                     hide-on-minimize <=> root.hide-on-minimize;
                     tray-available: root.tray-available;
                     quit-app => { root.quit-app(); }
+                    power-off => { root.power-requested(false); }
+                    restart => { root.power-requested(true); }
                     toggle-custom-frame => { root.switch-title-bar(!root.custom-frame); }
                     open-wifi-settings => {
                         root.show-wifi-settings = true;

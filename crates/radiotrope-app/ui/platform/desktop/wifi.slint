@@ -15,6 +15,8 @@ export global Platform {
     out property <bool> has-system-theme: true;
     // A system clipboard: clicking the song title copies it
     out property <bool> has-clipboard: true;
+    // Power Off and Restart in the Open menu (the Pi); the desktop has Quit
+    out property <bool> has-power-off: false;
 }
 
 export struct WifiNetworkEntry {

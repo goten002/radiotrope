@@ -1,0 +1,6 @@
+[Unit]
+Description=Restart asked by the player
+
+[Service]
+Type=oneshot
+ExecStart=/bin/systemctl reboot

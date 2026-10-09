@@ -34,6 +34,10 @@ do_unpack() {
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.sh ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash.fb ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-iwd.conf ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-poweroff.path ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-poweroff.service ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-reboot.path ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-reboot.service ${WORKDIR}/
 }
 
 # Allow cargo to fetch crates from crates.io (standard Yocto Rust pattern per meta-slint)
@@ -73,7 +77,7 @@ RDEPENDS:${PN} = " \
     ca-certificates \
 "
 
-SYSTEMD_SERVICE:${PN} = "radiotrope.service seatd.service radiotrope-splash.service"
+SYSTEMD_SERVICE:${PN} = "radiotrope.service seatd.service radiotrope-splash.service radiotrope-poweroff.path radiotrope-reboot.path"
 SYSTEMD_AUTO_ENABLE = "enable"
 
 do_install() {
@@ -88,6 +92,10 @@ do_install() {
     install -m 0644 ${WORKDIR}/radiotrope.service ${D}${systemd_system_unitdir}/radiotrope.service
     install -m 0644 ${WORKDIR}/seatd.service ${D}${systemd_system_unitdir}/seatd.service
     install -m 0644 ${WORKDIR}/radiotrope-splash.service ${D}${systemd_system_unitdir}/radiotrope-splash.service
+    install -m 0644 ${WORKDIR}/radiotrope-poweroff.path ${D}${systemd_system_unitdir}/radiotrope-poweroff.path
+    install -m 0644 ${WORKDIR}/radiotrope-poweroff.service ${D}${systemd_system_unitdir}/radiotrope-poweroff.service
+    install -m 0644 ${WORKDIR}/radiotrope-reboot.path ${D}${systemd_system_unitdir}/radiotrope-reboot.path
+    install -m 0644 ${WORKDIR}/radiotrope-reboot.service ${D}${systemd_system_unitdir}/radiotrope-reboot.service
 
     install -d ${D}${datadir}/dbus-1/system.d
     install -m 0644 ${WORKDIR}/radiotrope-iwd.conf ${D}${datadir}/dbus-1/system.d/radiotrope-iwd.conf
@@ -100,6 +108,10 @@ FILES:${PN} += " \
     ${systemd_system_unitdir}/radiotrope.service \
     ${systemd_system_unitdir}/seatd.service \
     ${systemd_system_unitdir}/radiotrope-splash.service \
+    ${systemd_system_unitdir}/radiotrope-poweroff.path \
+    ${systemd_system_unitdir}/radiotrope-poweroff.service \
+    ${systemd_system_unitdir}/radiotrope-reboot.path \
+    ${systemd_system_unitdir}/radiotrope-reboot.service \
     ${datadir}/radiotrope/splash.fb \
     ${datadir}/dbus-1/system.d/radiotrope-iwd.conf \
 "

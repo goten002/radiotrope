@@ -349,6 +349,11 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> hide-on-minimize;
     in property <bool> tray-available: true;
     callback quit-app();
+    // Power Off and Restart (the Pi's Open menu); each asks twice
+    callback power-off();
+    callback restart();
+    property <bool> confirm-power-off: false;
+    property <bool> confirm-restart: false;
 
 
     HorizontalLayout {
@@ -359,7 +364,11 @@ export component MenuBar inherits Rectangle {
         open-menu := MenuTitle {
             label: "Open";
             enabled: root.menus-enabled;
-            clicked => { open-popup.show(); }
+            clicked => {
+                root.confirm-power-off = false;
+                root.confirm-restart = false;
+                open-popup.show();
+            }
         }
 
         stations-menu := MenuTitle {
@@ -530,13 +539,44 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 MenuSeparator {}
-                MenuItem {
+                if !Platform.has-power-off: MenuItem {
                     label: "Quit";
                     icon: @image-url("icons/power-off.svg");
                     shortcut: "Ctrl+Q";
                     clicked => {
                         open-popup.close();
                         root.quit-app();
+                    }
+                }
+                // The Pi: Power Off and Restart ask twice, and the first
+                // press stays until the menu is opened again. Wide enough
+                // for the longer label, so asking doesn't move the menu
+                if Platform.has-power-off: MenuItem {
+                    label: root.confirm-restart ? "Press Again to Restart" : "Restart";
+                    icon: @image-url("icons/rotate-right.svg");
+                    min-width: 230px;
+                    clicked => {
+                        if root.confirm-restart {
+                            open-popup.close();
+                            root.restart();
+                        } else {
+                            root.confirm-restart = true;
+                            root.confirm-power-off = false;
+                        }
+                    }
+                }
+                if Platform.has-power-off: MenuItem {
+                    label: root.confirm-power-off ? "Press Again to Power Off" : "Power Off";
+                    icon: @image-url("icons/power-off.svg");
+                    min-width: 230px;
+                    clicked => {
+                        if root.confirm-power-off {
+                            open-popup.close();
+                            root.power-off();
+                        } else {
+                            root.confirm-power-off = true;
+                            root.confirm-restart = false;
+                        }
                     }
                 }
             }

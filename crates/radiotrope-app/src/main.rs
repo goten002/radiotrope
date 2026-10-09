@@ -854,9 +854,11 @@ fn main() {
         });
     }
 
-    // WiFi settings (Raspberry Pi build only)
+    // WiFi settings and Power Off / Restart (Raspberry Pi build only)
     #[cfg(feature = "embedded")]
     setup_wifi(&ui);
+    #[cfg(feature = "embedded")]
+    setup_power(&ui);
 
     setup_about(&ui);
     setup_text_util(&ui);
@@ -2275,6 +2277,26 @@ fn open_url(url: &str) {
 
 /// Wire the Wi-Fi page to the iwd thread (Raspberry Pi build only). The
 /// thread reports through `WifiEvent`s, applied on the UI thread here.
+/// Power Off and Restart on the Pi. The player runs sandboxed as its own
+/// user, so it can't call systemd itself: it creates a file in its runtime
+/// directory and a root path unit (radiotrope-poweroff.path,
+/// radiotrope-reboot.path) does the rest. Playback and a recording end
+/// cleanly when systemd stops the service on the way down.
+#[cfg(feature = "embedded")]
+fn setup_power(ui: &App) {
+    ui.on_power_requested(|restart| {
+        let flag = if restart { "reboot" } else { "poweroff" };
+        let dir = std::env::var_os("XDG_RUNTIME_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/run/radiotrope"));
+        let path = dir.join(flag);
+        match std::fs::write(&path, b"") {
+            Ok(()) => println!("{flag} requested through {}", path.display()),
+            Err(e) => eprintln!("{flag}: could not create {}: {e}", path.display()),
+        }
+    });
+}
+
 #[cfg(feature = "embedded")]
 fn setup_wifi(ui: &App) {
     use radiotrope_app::wifi::{WifiCommand, WifiEvent, WifiManager, WifiState};
