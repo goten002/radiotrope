@@ -231,6 +231,7 @@ export component App inherits Window {
     callback wifi-forget-requested(string); // object-path
     callback wifi-power-requested(bool);
     callback wifi-backspace(string) -> string;
+    pure callback wifi-mask(string) -> string;
 
     in-out property <string> station-name;
     in-out property <string> codec-info;
@@ -743,6 +744,9 @@ export component App inherits Window {
             power-requested(on) => { root.wifi-power-requested(on); }
             close-requested() => { root.show-wifi-settings = false; }
             wifi-backspace-requested(text) => { return root.wifi-backspace(text); }
+            mask-requested(text) => { return root.wifi-mask(text); }
+            playing: root.is-playing;
+            touch-scroll: root.touch-scroll;
         }
 
         // Over every other dialog: a phone waits for this code

@@ -2285,6 +2285,8 @@ fn setup_wifi(ui: &App) {
         chars.pop();
         chars.into_iter().collect::<String>().into()
     });
+    // The password field shows one dot per character until the eye is tapped
+    ui.on_wifi_mask(|text| "•".repeat(text.chars().count()).into());
 
     let manager = {
         let ui_weak = ui.as_weak();
