@@ -58,7 +58,7 @@ local_conf_header:
     BOOT_SPACE = "131072"
 
     # Add merus-amp overlay for InnoMaker AMP Pro HAT
-    RPI_KERNEL_DEVICETREE_OVERLAYS:append = " overlays/merus-amp.dtbo overlays/rotary-encoder.dtbo"
+    RPI_KERNEL_DEVICETREE_OVERLAYS:append = " overlays/merus-amp.dtbo"
 
     # Silent boot — hide kernel messages, show psplash instead
     CMDLINE:append = " quiet loglevel=0 logo.nologo vt.global_cursor_default=0 console=tty3 systemd.show_status=false"

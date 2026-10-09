@@ -33,8 +33,6 @@ do_unpack() {
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.service ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.sh ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash.fb ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-power.sh ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-power.service ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-iwd.conf ${WORKDIR}/
 }
 
@@ -75,14 +73,13 @@ RDEPENDS:${PN} = " \
     ca-certificates \
 "
 
-SYSTEMD_SERVICE:${PN} = "radiotrope.service seatd.service radiotrope-splash.service radiotrope-power.service"
+SYSTEMD_SERVICE:${PN} = "radiotrope.service seatd.service radiotrope-splash.service"
 SYSTEMD_AUTO_ENABLE = "enable"
 
 do_install() {
     install -d ${D}${bindir}
     install -m 0755 ${B}/${RUST_TARGET}/release/radiotrope ${D}${bindir}/radiotrope
     install -m 0755 ${WORKDIR}/radiotrope-splash.sh ${D}${bindir}/radiotrope-splash
-    install -m 0755 ${WORKDIR}/radiotrope-power.sh ${D}${bindir}/radiotrope-power
 
     install -d ${D}${datadir}/radiotrope
     install -m 0644 ${WORKDIR}/splash.fb ${D}${datadir}/radiotrope/splash.fb
@@ -91,7 +88,6 @@ do_install() {
     install -m 0644 ${WORKDIR}/radiotrope.service ${D}${systemd_system_unitdir}/radiotrope.service
     install -m 0644 ${WORKDIR}/seatd.service ${D}${systemd_system_unitdir}/seatd.service
     install -m 0644 ${WORKDIR}/radiotrope-splash.service ${D}${systemd_system_unitdir}/radiotrope-splash.service
-    install -m 0644 ${WORKDIR}/radiotrope-power.service ${D}${systemd_system_unitdir}/radiotrope-power.service
 
     install -d ${D}${datadir}/dbus-1/system.d
     install -m 0644 ${WORKDIR}/radiotrope-iwd.conf ${D}${datadir}/dbus-1/system.d/radiotrope-iwd.conf
@@ -104,7 +100,6 @@ FILES:${PN} += " \
     ${systemd_system_unitdir}/radiotrope.service \
     ${systemd_system_unitdir}/seatd.service \
     ${systemd_system_unitdir}/radiotrope-splash.service \
-    ${systemd_system_unitdir}/radiotrope-power.service \
     ${datadir}/radiotrope/splash.fb \
     ${datadir}/dbus-1/system.d/radiotrope-iwd.conf \
 "
