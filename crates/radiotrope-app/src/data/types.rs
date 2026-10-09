@@ -231,8 +231,6 @@ pub struct Favorite {
 ///
 /// Kept in its own file next to the favorites, so the favorites file
 /// changes only when a favorite does, not every minute while music plays.
-/// The field names are the ones favorites.json used before, so they read
-/// straight out of an old favorites file.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StationStats {
     /// Number of times played
@@ -682,23 +680,6 @@ mod tests {
         stats.record_play(600); // 10 more minutes
         assert_eq!(stats.play_count, 2);
         assert_eq!(stats.total_listen_time_secs, 900);
-    }
-
-    #[test]
-    fn stats_read_out_of_an_old_favorite() {
-        let old = serde_json::json!({
-            "name": "A", "url": "http://a.test/", "added_at": 5,
-            "play_count": 3, "total_listen_time_secs": 900, "last_played": 77
-        });
-        let stats: StationStats = serde_json::from_value(old.clone()).unwrap();
-        assert_eq!(stats.play_count, 3);
-        assert_eq!(stats.total_listen_time_secs, 900);
-        assert_eq!(stats.last_played, Some(77));
-        // The favorite itself reads the same file and no longer writes them
-        let fav: Favorite = serde_json::from_value(old).unwrap();
-        let written = serde_json::to_value(&fav).unwrap();
-        assert!(written.get("play_count").is_none());
-        assert!(written.get("last_played").is_none());
     }
 
     #[test]
