@@ -1,264 +1,160 @@
+// On-screen keyboard for the Pi's touchscreen: the full width of the
+// screen, 44 px keys, letters with Shift, a symbols layer with every
+// character a Wi-Fi password can hold. The text it types lives in the
+// owner (`text`); Backspace goes through `backspace` because Slint can't
+// cut a string.
 import { Theme } from "defaults.slint";
 
 component KeyButton inherits Rectangle {
     in property <string> key;
+    // What the key puts in; the key itself when empty
+    in property <string> inserts: "";
+    in property <bool> accent: false;
+    in property <bool> enabled: true;
+    in property <length> text-size: 19px;
+    in property <color> text-color: Theme.text-primary;
     callback pressed();
 
-    height: 38px;
-    min-width: 28px;
-    border-radius: Theme.radius-sm;
-    background: ta.pressed ? Theme.accent : Theme.panel;
+    height: 44px;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: root.accent ? transparent : Theme.hairline;
+    background: !root.enabled ? Theme.disabled-bg
+        : root.accent ? (ta.pressed ? Theme.accent-hover : Theme.accent)
+        : ta.pressed ? Theme.menu-hover : Theme.card;
     animate background { duration: Theme.fast; }
 
+    accessible-role: button;
+    accessible-label: root.key;
+    accessible-enabled: root.enabled;
+
     ta := TouchArea {
+        enabled: root.enabled;
         clicked => { root.pressed(); }
     }
 
     Text {
         text: root.key;
-        color: Theme.text-primary;
-        font-size: Theme.font-2xl;
+        color: !root.enabled ? Theme.disabled-text
+            : root.accent ? Theme.on-accent : root.text-color;
+        font-size: root.text-size;
+        font-weight: root.accent ? 700 : 400;
         horizontal-alignment: center;
         vertical-alignment: center;
+        accessible-role: none;
     }
 }
 
 export component VirtualKeyboard inherits Rectangle {
     in-out property <string> text: "";
-    in property <bool> show-keyboard: false;
+    // Done is greyed while the text is shorter than this
+    in property <int> min-length: 0;
+    in property <string> done-label: "Done";
     callback submitted(string);
-    callback cancelled();
     callback backspace();
 
-    public function set-text(t: string) {
-        self.text = t;
+    property <bool> shift: false;
+    property <bool> symbols: false;
+    property <[string]> row1: root.symbols ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "0"]
+        : root.shift ? ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"]
+        : ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"];
+    property <[string]> row2: root.symbols
+        ? (root.shift ? ["~", "`", "'", "\"", ";", ":", "[", "]", "{", "}"]
+                      : ["!", "@", "#", "$", "%", "^", "&", "*", "(", ")"])
+        : root.shift ? ["A", "S", "D", "F", "G", "H", "J", "K", "L"]
+        : ["a", "s", "d", "f", "g", "h", "j", "k", "l"];
+    property <[string]> row3: root.symbols
+        ? (root.shift ? ["<", ">", "|", "\\", "€", "£", "°"] : ["-", "_", "=", "+", ".", ",", "?", "/"])
+        : root.shift ? ["Z", "X", "C", "V", "B", "N", "M"]
+        : ["z", "x", "c", "v", "b", "n", "m"];
+
+    function type(key: string) {
+        root.text += key;
+        // Shift is for one letter, as on a phone
+        if !root.symbols {
+            root.shift = false;
+        }
     }
 
-    property <bool> shift-active: false;
-    property <bool> symbols-mode: false;
+    height: layout.preferred-height;
+    background: Theme.panel;
 
-    visible: show-keyboard;
-    background: Theme.surface;
+    layout := VerticalLayout {
+        padding: 6px;
+        spacing: 5px;
 
-    VerticalLayout {
-        padding: 4px;
-        spacing: 3px;
-
-        // Text input field
-        Rectangle {
-            height: 36px;
-            border-radius: Theme.radius-md;
-            background: Theme.panel;
-
-            HorizontalLayout {
-                padding-left: 10px;
-                padding-right: 10px;
-
-                Text {
-                    text: root.text == "" ? "Enter password..." : root.text;
-                    color: root.text == "" ? Theme.text-secondary : Theme.text-primary;
-                    font-size: Theme.font-lg;
-                    vertical-alignment: center;
-                }
-            }
-        }
-
-        // Row 1: Q W E R T Y U I O P
-        if !root.symbols-mode : HorizontalLayout {
-            spacing: 3px;
-            KeyButton { key: root.shift-active ? "Q" : "q"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "W" : "w"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "E" : "e"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "R" : "r"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "T" : "t"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "Y" : "y"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "U" : "u"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "I" : "i"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "O" : "o"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "P" : "p"; pressed => { root.text += self.key; root.shift-active = false; } }
-        }
-
-        // Row 1 symbols: 1 2 3 4 5 6 7 8 9 0
-        if root.symbols-mode : HorizontalLayout {
-            spacing: 3px;
-            KeyButton { key: "1"; pressed => { root.text += self.key; } }
-            KeyButton { key: "2"; pressed => { root.text += self.key; } }
-            KeyButton { key: "3"; pressed => { root.text += self.key; } }
-            KeyButton { key: "4"; pressed => { root.text += self.key; } }
-            KeyButton { key: "5"; pressed => { root.text += self.key; } }
-            KeyButton { key: "6"; pressed => { root.text += self.key; } }
-            KeyButton { key: "7"; pressed => { root.text += self.key; } }
-            KeyButton { key: "8"; pressed => { root.text += self.key; } }
-            KeyButton { key: "9"; pressed => { root.text += self.key; } }
-            KeyButton { key: "0"; pressed => { root.text += self.key; } }
-        }
-
-        // Row 2: A S D F G H J K L
-        if !root.symbols-mode : HorizontalLayout {
-            spacing: 3px;
-            padding-left: 14px;
-            padding-right: 14px;
-            KeyButton { key: root.shift-active ? "A" : "a"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "S" : "s"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "D" : "d"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "F" : "f"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "G" : "g"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "H" : "h"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "J" : "j"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "K" : "k"; pressed => { root.text += self.key; root.shift-active = false; } }
-            KeyButton { key: root.shift-active ? "L" : "l"; pressed => { root.text += self.key; root.shift-active = false; } }
-        }
-
-        // Row 2 symbols: ! @ # $ % ^ & * (
-        if root.symbols-mode : HorizontalLayout {
-            spacing: 3px;
-            padding-left: 14px;
-            padding-right: 14px;
-            KeyButton { key: "!"; pressed => { root.text += self.key; } }
-            KeyButton { key: "@"; pressed => { root.text += self.key; } }
-            KeyButton { key: "#"; pressed => { root.text += self.key; } }
-            KeyButton { key: "$"; pressed => { root.text += self.key; } }
-            KeyButton { key: "%"; pressed => { root.text += self.key; } }
-            KeyButton { key: "^"; pressed => { root.text += self.key; } }
-            KeyButton { key: "&"; pressed => { root.text += self.key; } }
-            KeyButton { key: "*"; pressed => { root.text += self.key; } }
-            KeyButton { key: "("; pressed => { root.text += self.key; } }
-        }
-
-        // Row 3: Shift + Z X C V B N M + Backspace
         HorizontalLayout {
-            spacing: 3px;
-
-            // Shift / symbols key
-            Rectangle {
-                border-radius: Theme.radius-sm;
-                background: root.shift-active ? Theme.accent : Theme.panel;
-                min-width: 42px;
-                height: 38px;
-
-                TouchArea { clicked => { root.shift-active = !root.shift-active; } }
-
-                Text {
-                    text: "Shift";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-md;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "Z" : "z"; pressed => { root.text += self.key; root.shift-active = false; } }
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "X" : "x"; pressed => { root.text += self.key; root.shift-active = false; } }
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "C" : "c"; pressed => { root.text += self.key; root.shift-active = false; } }
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "V" : "v"; pressed => { root.text += self.key; root.shift-active = false; } }
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "B" : "b"; pressed => { root.text += self.key; root.shift-active = false; } }
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "N" : "n"; pressed => { root.text += self.key; root.shift-active = false; } }
-            if !root.symbols-mode : KeyButton { key: root.shift-active ? "M" : "m"; pressed => { root.text += self.key; root.shift-active = false; } }
-
-            if root.symbols-mode : KeyButton { key: "-"; pressed => { root.text += self.key; } }
-            if root.symbols-mode : KeyButton { key: "_"; pressed => { root.text += self.key; } }
-            if root.symbols-mode : KeyButton { key: "="; pressed => { root.text += self.key; } }
-            if root.symbols-mode : KeyButton { key: "+"; pressed => { root.text += self.key; } }
-            if root.symbols-mode : KeyButton { key: "."; pressed => { root.text += self.key; } }
-            if root.symbols-mode : KeyButton { key: ","; pressed => { root.text += self.key; } }
-            if root.symbols-mode : KeyButton { key: "?"; pressed => { root.text += self.key; } }
-
-            // Backspace
-            Rectangle {
-                border-radius: Theme.radius-sm;
-                background: bksp-ta.pressed ? Theme.accent : Theme.panel;
-                animate background { duration: Theme.fast; }
-                min-width: 50px;
-                height: 38px;
-
-                bksp-ta := TouchArea {
-                    clicked => {
-                        root.backspace();
-                    }
-                }
-
-                Text {
-                    text: "Del";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-lg;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+            spacing: 5px;
+            for key in root.row1: KeyButton {
+                key: key;
+                pressed => { root.type(self.key); }
             }
         }
 
-        // Row 4: 123/ABC + Space + Done + Cancel
         HorizontalLayout {
-            spacing: 3px;
-            height: 38px;
+            spacing: 5px;
+            // The home row sits in by half a key, as on a real keyboard
+            if !root.symbols: Rectangle { width: 36px; }
+            for key in root.row2: KeyButton {
+                key: key;
+                pressed => { root.type(self.key); }
+            }
+            if !root.symbols: Rectangle { width: 36px; }
+        }
 
-            Rectangle {
-                border-radius: Theme.radius-sm;
-                background: sym-ta.pressed ? Theme.accent : Theme.panel;
-                animate background { duration: Theme.fast; }
-                min-width: 50px;
+        HorizontalLayout {
+            spacing: 5px;
+            KeyButton {
+                key: root.shift ? "⇧" : "⇧";
+                text-size: 20px;
+                text-color: root.shift ? Theme.accent-text : Theme.text-secondary;
+                horizontal-stretch: 0;
+                width: 80px;
+                background: root.shift ? Theme.accent-soft : Theme.card;
+                pressed => { root.shift = !root.shift; }
+            }
+            for key in root.row3: KeyButton {
+                key: key;
+                pressed => { root.type(self.key); }
+            }
+            KeyButton {
+                key: "⌫";
+                text-size: 20px;
+                text-color: Theme.text-secondary;
+                horizontal-stretch: 0;
+                width: 80px;
+                pressed => { root.backspace(); }
+            }
+        }
 
-                sym-ta := TouchArea { clicked => { root.symbols-mode = !root.symbols-mode; } }
-
-                Text {
-                    text: root.symbols-mode ? "ABC" : "123";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-lg;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+        HorizontalLayout {
+            spacing: 5px;
+            KeyButton {
+                key: root.symbols ? "ABC" : "?123";
+                text-size: 14px;
+                text-color: Theme.text-secondary;
+                horizontal-stretch: 0;
+                width: 96px;
+                pressed => {
+                    root.symbols = !root.symbols;
+                    root.shift = false;
                 }
             }
-
-            Rectangle {
-                border-radius: Theme.radius-sm;
-                background: space-ta.pressed ? Theme.accent : Theme.panel;
-                animate background { duration: Theme.fast; }
-                horizontal-stretch: 1;
-
-                space-ta := TouchArea { clicked => { root.text += " "; } }
-
-                Text {
-                    text: "space";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-lg;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+            KeyButton {
+                key: "space";
+                text-size: 13px;
+                text-color: Theme.text-secondary;
+                pressed => { root.type(" "); }
             }
-
-            Rectangle {
-                border-radius: Theme.radius-sm;
-                background: done-ta.pressed ? Theme.accent-hover : Theme.accent;
-                animate background { duration: Theme.fast; }
-                min-width: 60px;
-
-                done-ta := TouchArea { clicked => { root.submitted(root.text); } }
-
-                Text {
-                    text: "Done";
-                    color: Theme.on-accent;
-                    font-size: Theme.font-lg;
-                    font-weight: 700;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-
-            Rectangle {
-                border-radius: Theme.radius-sm;
-                background: cancel-ta.pressed ? Theme.accent : Theme.panel;
-                animate background { duration: Theme.fast; }
-                min-width: 54px;
-
-                cancel-ta := TouchArea { clicked => { root.cancelled(); } }
-
-                Text {
-                    text: "Cancel";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-base;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
+            KeyButton {
+                key: root.done-label;
+                accent: true;
+                text-size: 15px;
+                horizontal-stretch: 0;
+                width: 140px;
+                enabled: root.text.character-count >= root.min-length;
+                pressed => { root.submitted(root.text); }
             }
         }
     }

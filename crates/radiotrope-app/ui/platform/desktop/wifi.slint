@@ -41,6 +41,8 @@ export component WifiSettingsDialog {
     in property <string> ip: "";
     in property <string> state: "no-adapter";
     in property <[WifiNetworkEntry]> networks: [];
+    in property <bool> playing: false;
+    in property <bool> touch-scroll: false;
 
     callback scan-requested();
     callback connect-requested(string, string);
@@ -49,6 +51,7 @@ export component WifiSettingsDialog {
     callback power-requested(bool);
     callback close-requested();
     callback wifi-backspace-requested(string) -> string;
+    pure callback mask-requested(string) -> string;
 
     width: 0px;
     height: 0px;
