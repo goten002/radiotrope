@@ -21,8 +21,6 @@ IMAGE_INSTALL += " \
     seatd \
     fontconfig \
     liberation-fonts \
-    libgpiod \
-    libgpiod-tools \
     iwd \
     linux-firmware-bcm43430 \
     nano \

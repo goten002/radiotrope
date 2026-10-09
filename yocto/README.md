@@ -73,7 +73,7 @@ Replace `/dev/sdX` with your SD card device.
 - Radiotrope binary with `embedded` feature (Slint linuxkms backend)
 - Auto-starts on boot via systemd service
 - ALSA + MA12070P driver for I2S audio
-- Goodix touch driver for DSI display
+- Goodix touch driver for DSI display; the touchscreen is the only input (no buttons or knobs)
 - Dropbear SSH server only with a key (release) or passwordless root (dev image)
 
 ## Where the player keeps its files

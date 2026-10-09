@@ -21,9 +21,6 @@ do_deploy:append() {
     # Disable HDMI permanently — DSI display only (saves ~65mW)
     echo "hdmi_blanking=2" >> ${DEPLOYDIR}/${BOOTFILES_DIR_NAME}/config.txt
 
-    # Rotary encoder for volume control (KY-040 on GPIO 5/6)
-    echo "dtoverlay=rotary-encoder,pin_a=5,pin_b=6,relative_axis=1,steps-per-period=1" >> ${DEPLOYDIR}/${BOOTFILES_DIR_NAME}/config.txt
-
     # Keep firmware splash (rainbow) as early visual feedback
     # It gets replaced by our splash as soon as /dev/fb0 is available
     echo "boot_delay=0" >> ${DEPLOYDIR}/${BOOTFILES_DIR_NAME}/config.txt
