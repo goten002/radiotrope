@@ -12,6 +12,10 @@ IMAGE_FEATURES += "${@'ssh-server-dropbear allow-root-login' if os.path.isfile(d
 # Rebuild the root file system when the key file changes
 do_rootfs[file-checksums] += "${@'${RADIOTROPE_SSH_KEYS}:True' if os.path.isfile(d.getVar('RADIOTROPE_SSH_KEYS')) else ''}"
 
+# kernel-modules is every module the kernel builds (the machine recommends
+# it too). Trim it to the modules in use once the image has run on the Pi:
+# `lsmod` there gives the list. Wi-Fi firmware for the 3B+ (BCM43455) comes
+# with the machine's recommendations.
 IMAGE_INSTALL += " \
     radiotrope \
     alsa-utils \
@@ -22,8 +26,6 @@ IMAGE_INSTALL += " \
     fontconfig \
     liberation-fonts \
     iwd \
-    linux-firmware-bcm43430 \
-    nano \
 "
 
 # Image size — keep minimal
@@ -36,23 +38,6 @@ setup_kiosk() {
     # Mask serial getty
     ln -sf /dev/null ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/serial-getty@ttyS0.service
     ln -sf /dev/null ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/serial-getty@ttyAMA0.service
-    # Disable USB/Ethernet at boot (saves ~300mW, not needed — WiFi only)
-    install -d ${IMAGE_ROOTFS}${systemd_system_unitdir}
-    cat > ${IMAGE_ROOTFS}${systemd_system_unitdir}/disable-usb-eth.service << 'SVCEOF'
-[Unit]
-Description=Disable USB/Ethernet controller
-After=multi-user.target
-
-[Service]
-Type=oneshot
-ExecStart=/bin/sh -c "echo '1-1' > /sys/bus/usb/drivers/usb/unbind"
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-SVCEOF
-    install -d ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/multi-user.target.wants
-    ln -sf ${systemd_system_unitdir}/disable-usb-eth.service ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/multi-user.target.wants/disable-usb-eth.service
 
     # Pre-load favorites from desktop config, into the player's own home
     # (the radiotrope user, see the radiotrope recipe)
