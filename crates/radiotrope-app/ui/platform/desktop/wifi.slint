@@ -9,19 +9,25 @@ export global Platform {
     out property <bool> has-file-manager: true;
     // A desktop window: the app can draw its own title bar
     out property <bool> has-window-frame: true;
-    // A system clipboard: clicking the song title copies it
     // A system tray icon, and the View menu's tray options
     out property <bool> has-tray: true;
     // The OS reports its light/dark setting: the View menu's System Theme
     out property <bool> has-system-theme: true;
+    // A system clipboard: clicking the song title copies it
     out property <bool> has-clipboard: true;
 }
 
 export struct WifiNetworkEntry {
     ssid: string,
-    signal-percent: int,
+    // 0-4
+    signal-bars: int,
+    // "Good (-61 dBm)"
+    signal-text: string,
     security: string,
+    open: bool,
     connected: bool,
+    // Saved in iwd (auto-connects)
+    known: bool,
     object-path: string,
 }
 
@@ -30,11 +36,17 @@ export component WifiSettingsDialog {
     in property <bool> is-scanning: false;
     in property <string> current-ssid: "";
     in property <string> connection-status: "";
+    in property <bool> status-is-error: false;
+    in property <bool> powered: false;
+    in property <string> ip: "";
+    in property <string> state: "no-adapter";
     in property <[WifiNetworkEntry]> networks: [];
 
     callback scan-requested();
     callback connect-requested(string, string);
     callback disconnect-requested();
+    callback forget-requested(string);
+    callback power-requested(bool);
     callback close-requested();
     callback wifi-backspace-requested(string) -> string;
 

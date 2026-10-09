@@ -7,11 +7,12 @@ export global Platform {
     out property <bool> has-file-manager: false;
     // Full screen on the Pi: no title bar or window buttons
     out property <bool> has-window-frame: false;
-    // No system clipboard on the kiosk
     // A system tray icon, and the View menu's tray options
     out property <bool> has-tray: false;
-    // The OS reports its light/dark setting: the View menu's System Theme (no desktop to ask on the Pi)
+    // The OS reports its light/dark setting: the View menu's System Theme
+    // (no desktop to ask on the Pi)
     out property <bool> has-system-theme: false;
+    // No system clipboard on the kiosk
     out property <bool> has-clipboard: false;
 }
 

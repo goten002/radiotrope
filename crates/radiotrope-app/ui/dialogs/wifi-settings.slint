@@ -3,9 +3,15 @@ import { VirtualKeyboard } from "../virtual-keyboard.slint";
 
 export struct WifiNetworkEntry {
     ssid: string,
-    signal-percent: int,
+    // 0-4
+    signal-bars: int,
+    // "Good (-61 dBm)"
+    signal-text: string,
     security: string,
+    open: bool,
     connected: bool,
+    // Saved in iwd (auto-connects)
+    known: bool,
     object-path: string,
 }
 
@@ -14,11 +20,17 @@ export component WifiSettingsDialog inherits Rectangle {
     in property <bool> is-scanning: false;
     in property <string> current-ssid: "";
     in property <string> connection-status: "";
+    in property <bool> status-is-error: false;
+    in property <bool> powered: false;
+    in property <string> ip: "";
+    in property <string> state: "no-adapter";
     in property <[WifiNetworkEntry]> networks: [];
 
     callback scan-requested();
     callback connect-requested(string, string);
     callback disconnect-requested();
+    callback forget-requested(string);
+    callback power-requested(bool);
     callback close-requested();
     callback wifi-backspace-requested(string) -> string;
 
@@ -153,9 +165,7 @@ export component WifiSettingsDialog inherits Rectangle {
                 if root.connection-status != "" : Rectangle {
                     height: 28px;
                     border-radius: Theme.radius-sm;
-                    background: root.connection-status == "Disconnected" ? Theme.surface :
-                                root.connection-status == "Connecting..." ? Theme.accent.with-alpha(0.1) :
-                                Theme.accent.with-alpha(0.15);
+                    background: root.status-is-error ? Theme.danger.with-alpha(0.15) : Theme.accent.with-alpha(0.15);
 
                     HorizontalLayout {
                         padding-left: 12px;
@@ -164,9 +174,7 @@ export component WifiSettingsDialog inherits Rectangle {
 
                         Text {
                             text: root.connection-status;
-                            color: root.connection-status == "Disconnected" ? Theme.text-secondary :
-                                   root.connection-status == "Connecting..." ? Theme.accent-text :
-                                   Theme.accent-text;
+                            color: root.status-is-error ? Theme.danger : Theme.accent-text;
                             font-size: Theme.font-md;
                             font-weight: 500;
                             vertical-alignment: center;
@@ -190,7 +198,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             clicked => {
                                 if network.connected {
                                     root.disconnect-requested();
-                                } else if network.security == "Open" {
+                                } else if network.open {
                                     root.connect-requested(network.object-path, "");
                                 } else {
                                     root.selected-network-path = network.object-path;
@@ -237,7 +245,7 @@ export component WifiSettingsDialog inherits Rectangle {
 
                         // Security badge
                         Rectangle {
-                            visible: network.security != "Open" && !network.connected;
+                            visible: !network.open && !network.connected;
                             x: parent.width - 56px;
                             y: (parent.height - 22px) / 2;
                             width: 44px;
