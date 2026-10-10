@@ -518,6 +518,9 @@ export component MenuBar inherits Rectangle {
         }
     }
 
+    // An item acts first and closes its menu after: closing drops the
+    // popup's elements, and a statement after close() in an item under an
+    // `if` (Quit, Restart, Power Off) never ran
     open-popup := PopupWindow {
         x: root.menu-start;
         y: 32px;
@@ -534,8 +537,8 @@ export component MenuBar inherits Rectangle {
                     label: "Network Stream";
                     icon: @image-url("icons/link.svg");
                     clicked => {
-                        open-popup.close();
                         root.open-network-stream();
+                        open-popup.close();
                     }
                 }
                 MenuSeparator {}
@@ -544,8 +547,8 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/power-off.svg");
                     shortcut: "Ctrl+Q";
                     clicked => {
-                        open-popup.close();
                         root.quit-app();
+                        open-popup.close();
                     }
                 }
                 // The Pi: Power Off and Restart ask twice, and the first
@@ -557,8 +560,8 @@ export component MenuBar inherits Rectangle {
                     min-width: 230px;
                     clicked => {
                         if root.confirm-restart {
-                            open-popup.close();
                             root.restart();
+                            open-popup.close();
                         } else {
                             root.confirm-restart = true;
                             root.confirm-power-off = false;
@@ -571,8 +574,8 @@ export component MenuBar inherits Rectangle {
                     min-width: 230px;
                     clicked => {
                         if root.confirm-power-off {
-                            open-popup.close();
                             root.power-off();
+                            open-popup.close();
                         } else {
                             root.confirm-power-off = true;
                             root.confirm-restart = false;
@@ -597,16 +600,16 @@ export component MenuBar inherits Rectangle {
                     label: "Search Stations";
                     icon: @image-url("icons/magnifying-glass.svg");
                     clicked => {
-                        stations-popup.close();
                         root.open-station-search();
+                        stations-popup.close();
                     }
                 }
                 MenuItem {
                     label: "By Country";
                     icon: @image-url("icons/earth-europe.svg");
                     clicked => {
-                        stations-popup.close();
                         root.open-country-picker();
+                        stations-popup.close();
                     }
                 }
                 MenuSeparator {}
@@ -616,8 +619,8 @@ export component MenuBar inherits Rectangle {
                     enabled: Platform.has-file-manager;
                     icon: @image-url("icons/file-export.svg");
                     clicked => {
-                        stations-popup.close();
                         root.export-favorites();
+                        stations-popup.close();
                     }
                 }
                 MenuItem {
@@ -625,8 +628,8 @@ export component MenuBar inherits Rectangle {
                     enabled: Platform.has-file-manager;
                     icon: @image-url("icons/file-import.svg");
                     clicked => {
-                        stations-popup.close();
                         root.import-favorites();
+                        stations-popup.close();
                     }
                 }
                 MenuItem {
@@ -634,8 +637,8 @@ export component MenuBar inherits Rectangle {
                     enabled: root.can-undo-import;
                     icon: @image-url("icons/rotate-left.svg");
                     clicked => {
-                        stations-popup.close();
                         root.undo-favorites-import();
+                        stations-popup.close();
                     }
                 }
             }
@@ -657,16 +660,16 @@ export component MenuBar inherits Rectangle {
                     label: "Minimize";
                     icon: @image-url("icons/window-minimize.svg");
                     clicked => {
-                        window-popup.close();
                         root.minimize();
+                        window-popup.close();
                     }
                 }
                 MenuItem {
                     label: root.maximized ? "Restore" : "Maximize";
                     icon: root.maximized ? @image-url("icons/window-restore.svg") : @image-url("icons/window-maximize.svg");
                     clicked => {
-                        window-popup.close();
                         root.maximized = !root.maximized;
+                        window-popup.close();
                     }
                 }
                 CheckMenuItem {
@@ -682,8 +685,8 @@ export component MenuBar inherits Rectangle {
                     label: "Close";
                     icon: @image-url("icons/xmark.svg");
                     clicked => {
-                        window-popup.close();
                         root.close-window();
+                        window-popup.close();
                     }
                 }
             }
@@ -733,8 +736,8 @@ export component MenuBar inherits Rectangle {
                     label: "Accent Color";
                     icon: @image-url("icons/palette.svg");
                     clicked => {
-                        view-popup.close();
                         root.open-accent-color();
+                        view-popup.close();
                     }
                 }
                 MenuSeparator {}
@@ -834,8 +837,8 @@ export component MenuBar inherits Rectangle {
                     label: "About Radiotrope";
                     icon: @image-url("icons/circle-info.svg");
                     clicked => {
-                        help-popup.close();
                         root.open-about();
+                        help-popup.close();
                     }
                 }
             }
