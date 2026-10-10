@@ -69,3 +69,7 @@ local_conf_header:
 
     # Accept all licenses for firmware blobs
     LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"
+
+    # kas-container runs on Debian 13, which Scarthgap's list of tested
+    # build hosts predates; our image builds there, so stop the warning
+    SANITY_TESTED_DISTROS:append = " debian-13 \n"
