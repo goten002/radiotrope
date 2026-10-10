@@ -132,7 +132,6 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
     // Compared as shown, so "Used 4 min ago" redraws once a minute
     let mut seen_changes = remote.changes();
     let mut shown_devices: Vec<RemoteDevice> = Vec::new();
-    let mut shown_activity: Vec<String> = Vec::new();
     timer.start(slint::TimerMode::Repeated, REFRESH, move || {
         let Some(ui) = ui_weak.upgrade() else { return };
         match remote.shown_pairing() {
@@ -172,21 +171,16 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
             ui.set_remote_devices(Rc::new(VecModel::from(rows.clone())).into());
             shown_devices = rows;
         }
-        let activity = activity_lines(&remote.recordings_activity(), chrono::Local::now());
-        if activity != shown_activity {
-            let model: Vec<slint::SharedString> = activity.iter().map(|l| l.into()).collect();
-            ui.set_remote_activity(Rc::new(VecModel::from(model)).into());
-            shown_activity = activity;
-        }
     });
     timer
 }
 
-/// Modules of white around the code; the white tile adds a little more
+/// Empty modules around the code; the tile adds a little more
 const QR_QUIET: usize = 4;
 
-/// The QR code for `payload`, a pixel per module: black on white, drawn
-/// pixelated at the size the dialog gives it
+/// The QR code for `payload`, a pixel per module: black on transparent, so
+/// the light theme's card shows through and the dark theme puts a white
+/// tile behind it. Drawn pixelated at the size the dialog gives it
 fn qr_image(payload: &str) -> Option<slint::Image> {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
     let code =
@@ -194,10 +188,8 @@ fn qr_image(payload: &str) -> Option<slint::Image> {
     let width = code.width();
     let size = width + 2 * QR_QUIET;
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(size as u32, size as u32);
-    let white = Rgba8Pixel::new(255, 255, 255, 255);
     let black = Rgba8Pixel::new(0, 0, 0, 255);
     let pixels = buffer.make_mut_slice();
-    pixels.fill(white);
     for (i, color) in code.to_colors().into_iter().enumerate() {
         if color == qrcode::Color::Dark {
             let (x, y) = (i % width + QR_QUIET, i / width + QR_QUIET);
@@ -231,31 +223,6 @@ fn rows(devices: &[Device], now: i64) -> Vec<RemoteDevice> {
             id: d.id.as_str().into(),
             name: d.name.as_str().into(),
             seen: seen_label(d.last_used.max(d.paired_at), now).into(),
-        })
-        .collect()
-}
-
-/// How many of the phones' downloads and deletions the dialog shows
-const ACTIVITY_SHOWN: usize = 5;
-
-/// "Pixel 8 downloaded Jazz FM - 2026-10-08 20-15-03.mp3 · 14:02", newest
-/// first; the date shows for days before today
-fn activity_lines(
-    activity: &[crate::remote::recordings::Activity],
-    now: chrono::DateTime<chrono::Local>,
-) -> Vec<String> {
-    use chrono::TimeZone;
-    activity
-        .iter()
-        .take(ACTIVITY_SHOWN)
-        .map(|a| {
-            let when = match chrono::Local.timestamp_opt(a.at, 0).single() {
-                Some(t) if t.date_naive() == now.date_naive() => t.format("%H:%M").to_string(),
-                Some(t) => t.format("%b %-d %H:%M").to_string(),
-                None => String::new(),
-            };
-            let did = if a.deleted { "deleted" } else { "downloaded" };
-            format!("{} {did} {} · {when}", a.device, a.file)
         })
         .collect()
 }
@@ -303,38 +270,5 @@ mod tests {
         assert_eq!(seen_label(0, 3 * 86_400), "Used 3 days ago");
         // A clock set back
         assert_eq!(seen_label(500, 100), "Used just now");
-    }
-
-    #[test]
-    fn activity_lines_say_who_did_what_when() {
-        use crate::remote::recordings::Activity;
-        use chrono::TimeZone;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 8, 15, 0, 0)
-            .unwrap();
-        let at = |h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, h, 14, 2, 0)
-                .unwrap()
-                .timestamp()
-        };
-        let a = |deleted, at| Activity {
-            device: "Pixel 8".into(),
-            deleted,
-            file: "Jazz FM - 2026-10-08 20-15-03.mp3".into(),
-            at,
-        };
-        let lines = activity_lines(&[a(false, at(8)), a(true, at(7))], now);
-        assert_eq!(
-            lines,
-            [
-                "Pixel 8 downloaded Jazz FM - 2026-10-08 20-15-03.mp3 · 14:02",
-                "Pixel 8 deleted Jazz FM - 2026-10-08 20-15-03.mp3 · Oct 7 14:02",
-            ]
-        );
-        assert_eq!(
-            activity_lines(&vec![a(false, at(8)); 9], now).len(),
-            ACTIVITY_SHOWN
-        );
     }
 }

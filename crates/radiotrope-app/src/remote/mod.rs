@@ -299,11 +299,6 @@ impl Remote {
         self.shared.changes.fetch_add(1, Ordering::SeqCst);
     }
 
-    /// The last downloads and deletions by phones, newest first
-    pub fn recordings_activity(&self) -> Vec<recordings::Activity> {
-        self.shared.recordings.activity()
-    }
-
     /// The user opened the dialog: pairing works again after too many
     /// wrong codes
     pub fn unlock_pairing(&self) {

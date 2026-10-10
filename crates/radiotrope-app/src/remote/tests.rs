@@ -1625,13 +1625,4 @@ async fn a_phone_downloads_and_deletes_a_recording() {
     assert!(!file.exists());
     assert!(folder.join("notes.txt").exists());
     assert_eq!(player.request_raw("GET", &path, &auth).await.0, 404);
-
-    let activity = player.shared.recordings.activity();
-    assert_eq!(
-        activity.len(),
-        2,
-        "the download and the deletion, not the resume"
-    );
-    assert!(activity[0].deleted);
-    assert_eq!(activity[0].device, "Pixel");
 }

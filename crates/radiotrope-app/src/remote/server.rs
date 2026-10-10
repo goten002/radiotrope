@@ -397,7 +397,7 @@ pub async fn handle(
             recordings::download(shared, &caller.device_id, id, &request, cancel).await
         }
         (&Method::DELETE, ["v1", "recordings", id]) => {
-            recordings::delete(shared, &caller.device_id, id, &request).await
+            recordings::delete(shared, id, &request).await
         }
         (&Method::GET, ["v1", "appearance"]) => controls::appearance(shared),
         (&Method::PUT, ["v1", "appearance"]) => controls::set_appearance(shared, request).await,

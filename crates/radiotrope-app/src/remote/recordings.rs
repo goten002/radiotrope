@@ -41,8 +41,6 @@ const CHUNK: usize = 64 * 1024;
 /// A file written to this recently may still be being written (by the
 /// player's command line, say): it is treated as being recorded
 const STILL_WRITING: Duration = Duration::from_secs(10);
-/// How many of the last downloads and deletions the dialog keeps
-const ACTIVITY_KEPT: usize = 20;
 /// How many files the player finished recording it remembers as finished
 const FINISHED_KEPT: usize = 8;
 /// Formats the player records, and what phones are told they are
@@ -61,20 +59,9 @@ pub struct Recordings {
     /// Counts deletions and the switch going on or off
     changes: AtomicU64,
     downloads: Mutex<HashMap<String, usize>>,
-    activity: Mutex<VecDeque<Activity>>,
     /// The file the player was recording when last seen, and the files it
     /// finished since: closed, so not "still being written" however new
     recorded: Mutex<(Option<PathBuf>, VecDeque<PathBuf>)>,
-}
-
-/// A phone downloaded or deleted a recording
-#[derive(Debug, Clone, PartialEq)]
-pub struct Activity {
-    pub device: String,
-    pub deleted: bool,
-    pub file: String,
-    /// Unix time
-    pub at: i64,
 }
 
 impl Default for Recordings {
@@ -90,7 +77,6 @@ impl Default for Recordings {
             key,
             changes: AtomicU64::new(0),
             downloads: Mutex::default(),
-            activity: Mutex::default(),
             recorded: Mutex::default(),
         }
     }
@@ -144,28 +130,6 @@ impl Recordings {
     fn finished(&self, path: &Path) -> bool {
         let recorded = self.recorded.lock().unwrap_or_else(|e| e.into_inner());
         recorded.1.iter().any(|f| f == path)
-    }
-
-    /// The last downloads and deletions, newest first
-    pub fn activity(&self) -> Vec<Activity> {
-        self.activity_list().iter().rev().cloned().collect()
-    }
-
-    fn activity_list(&self) -> std::sync::MutexGuard<'_, VecDeque<Activity>> {
-        self.activity.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn note(&self, device: String, deleted: bool, file: &str) {
-        let mut list = self.activity_list();
-        list.push_back(Activity {
-            device,
-            deleted,
-            file: file.to_string(),
-            at: unix_now(),
-        });
-        while list.len() > ACTIVITY_KEPT {
-            list.pop_front();
-        }
     }
 
     /// The id phones use for the file `name`
@@ -516,15 +480,6 @@ pub(super) async fn download(
     if start > 0 && file.seek(SeekFrom::Start(start)).is_err() {
         return not_found();
     }
-    if start == 0 {
-        // A download beginning, not a resume
-        let device = shared
-            .device_name(device_id)
-            .unwrap_or_else(|| "A phone".into());
-        shared.recordings.note(device, false, &entry.name);
-        shared.changed();
-    }
-
     // Read on a plain thread and hand the pieces to the connection
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(4);
     let checks = shared.clone();
@@ -605,7 +560,6 @@ pub(super) async fn download(
 /// is still the one the phone listed
 pub(super) async fn delete(
     shared: &Shared,
-    device_id: &str,
     id: &str,
     request: &Request<Incoming>,
 ) -> Response<Body> {
@@ -646,10 +600,6 @@ pub(super) async fn delete(
     .unwrap_or_else(|e| Err(io::Error::other(e.to_string())));
     match removed {
         Ok(()) => {
-            let device = shared
-                .device_name(device_id)
-                .unwrap_or_else(|| "A phone".into());
-            shared.recordings.note(device, true, &entry.name);
             shared.recordings.changes.fetch_add(1, Ordering::SeqCst);
             shared.changed();
             no_content()
@@ -718,13 +668,6 @@ fn percent_encode(name: &str) -> String {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -865,18 +808,6 @@ mod tests {
         drop(first);
         assert!(recordings.take_download("phone1").is_some());
         drop(second);
-    }
-
-    #[test]
-    fn activity_keeps_the_last_ones_newest_first() {
-        let recordings = Recordings::default();
-        for i in 0..25 {
-            recordings.note("Pixel".into(), i % 2 == 0, &format!("f{i}"));
-        }
-        let list = recordings.activity();
-        assert_eq!(list.len(), ACTIVITY_KEPT);
-        assert_eq!(list[0].file, "f24");
-        assert!(list[0].deleted);
     }
 
     #[test]

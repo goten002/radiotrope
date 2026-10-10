@@ -203,7 +203,6 @@ export component App inherits Window {
     callback remote-cancel-qr();
     callback remote-share-toggled(bool);
     in-out property <bool> remote-share-recordings <=> remote-dialog.share-recordings;
-    in-out property <[string]> remote-activity <=> remote-dialog.activity;
     in-out property <bool> remote-on <=> remote-dialog.enabled-on;
     in-out property <string> remote-status <=> remote-dialog.status;
     in-out property <bool> remote-status-error <=> remote-dialog.status-error;

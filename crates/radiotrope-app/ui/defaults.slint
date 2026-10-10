@@ -213,8 +213,13 @@ export global Defaults {
     out property <length> network-stream-width: 460px;
     out property <length> recording-width: 480px;
     out property <length> remote-control-width: 520px;
+    // A paired phone's row, and the Remote Control dialog's height without
+    // its list of phones (window margin, padding, title, settings), so the
+    // list scrolls once the window is too short for all of them
+    out property <length> remote-device-height: 48px;
+    out property <length> remote-devices-chrome: 360px;
     out property <length> pairing-code-width: 360px;
-    // The pairing QR code on its white tile; fits the Pi's 480 px height
+    // The pairing QR code (on a white tile in the dark theme); fits the Pi's 480 px height
     out property <length> pairing-qr-size: 220px;
     out property <length> schedule-width: 560px;
     // The Scheduler's list is at least this tall (the empty box too) and
