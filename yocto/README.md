@@ -34,6 +34,15 @@ Anyone on the same network can then log in as root, so never ship it:
 kas-container build kas-radiotrope-pi3-dev.yml
 ```
 
+The kas 5 container runs Debian 13, which Scarthgap has not tested as a
+build host, so every build prints a "host distribution not validated"
+warning. It is harmless. To build on a tested host instead, pick the
+Debian 12 variant of the same image:
+
+```bash
+KAS_CONTAINER_IMAGE_DISTRO=debian-bookworm kas-container build kas-radiotrope-pi3.yml
+```
+
 A rebuild after `git pull` picks up changes to the Rust and Slint sources,
 the layer and the kas file on its own: bitbake checksums the source tree
 the recipe copies in. The upstream layers are pinned to commits in the kas
