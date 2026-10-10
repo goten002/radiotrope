@@ -67,6 +67,10 @@ local_conf_header:
     # the splash until the player starts
     CMDLINE:append = " quiet loglevel=0 logo.nologo vt.global_cursor_default=0 console=tty3 systemd.show_status=false"
 
+    # The Pi announces itself as "radiotrope-pi" (default would be the
+    # machine name, raspberrypi3-64)
+    hostname:pn-base-files = "radiotrope-pi"
+
     # Accept all licenses for firmware blobs
     LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"
 
