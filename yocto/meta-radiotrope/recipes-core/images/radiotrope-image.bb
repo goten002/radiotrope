@@ -26,6 +26,7 @@ IMAGE_INSTALL += " \
     fontconfig \
     liberation-fonts \
     iwd \
+    wifi-powersave \
 "
 
 # Image size — keep minimal

@@ -114,6 +114,8 @@ meta-radiotrope/
 │   └── files/80-wireless.network                # DHCP on Wi-Fi (systemd-networkd)
 ├── recipes-connectivity/iwd/
 │   └── files/main.conf                          # iwd: Wi-Fi only, auto-connect
+├── recipes-connectivity/wifi-powersave/
+│   └── files/80-wifi-powersave.rules            # udev: Wi-Fi power save off (stable link)
 ├── recipes-bsp/rpi-config/
 │   └── rpi-config_%.bbappend                    # config.txt: KMS, display, amp, memory
 └── recipes-kernel/linux/
@@ -130,7 +132,8 @@ Things to look at the first time a new image runs on the Pi, over SSH
   the finger is (`libinput debug-events` shows touches if not).
 - Sound: `aplay -l` lists only the amplifier (`merus-amp`), as card 0.
 - Wi-Fi: Tools > Wi-Fi Settings finds networks and joins one; `ip addr
-  show wlan0` has an address.
+  show wlan0` has an address, and `iw dev wlan0 get power_save` says
+  "off" (the driver's default, on, makes the Pi 3 link drop and stall).
 - Clock: the Pi has no clock of its own. `timedatectl` says "System clock
   synchronized: yes" within a minute of Wi-Fi coming up; the Scheduler,
   the Sleep Timer and HTTPS stations all depend on it.
