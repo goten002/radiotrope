@@ -1,0 +1,5 @@
+# The Pi's brcmfmac driver starts every Wi-Fi interface with 802.11 power
+# save on, and on the Pi 3 that drops and stalls the link (the radio naps
+# between beacons and misses frames). The player streams all the time, so
+# keep the radio awake. Runs again if the interface is re-added.
+ACTION=="add", SUBSYSTEM=="net", KERNEL=="wlan*", RUN+="/usr/sbin/iw dev $name set power_save off"
