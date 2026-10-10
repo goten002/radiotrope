@@ -3,6 +3,7 @@ import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, Toggle, InfoTip, IconButton, Icon } from "../components.slint";
 import { CopyLine, RowLabel } from "agents.slint";
+import { ScrollBar } from "../scroll-bar.slint";
 
 // A paired phone, and when it was last used ("Used 5 min ago")
 export struct RemoteDevice {
@@ -17,7 +18,7 @@ component DeviceRow inherits Rectangle {
     in property <bool> confirm-remove;
     callback remove();
 
-    height: 48px;
+    height: Defaults.remote-device-height;
     border-radius: Theme.radius-md;
     background: Theme.elevated;
 
@@ -84,9 +85,9 @@ export component RemoteControlDialog inherits Rectangle {
     in property <string> name-placeholder;
     in property <[RemoteDevice]> devices;
     in-out property <bool> share-recordings: false;
-    // Phones' last downloads and deletions, newest first, e.g.
-    // "Pixel 8 downloaded Jazz FM - 2026-10-08 20-15-03.mp3 · 14:02"
-    in property <[string]> activity;
+    // The height the paired phones can take in this window
+    property <length> list-room: max(Defaults.remote-device-height,
+        root.height - Defaults.remote-devices-chrome);
 
     // Being edited; reset from the saved name when the dialog opens
     in-out property <string> edit-name;
@@ -242,32 +243,39 @@ export component RemoteControlDialog inherits Rectangle {
             wrap: word-wrap;
         }
 
-        for device in root.devices: DeviceRow {
-            device: device;
-            confirm-remove: root.confirm-remove == device.id;
-            remove => {
-                if root.confirm-remove == device.id {
-                    root.confirm-remove = "";
-                    root.remove-device(device.id);
-                } else {
-                    root.confirm-remove = device.id;
+        // As tall as the phones while the window has room, scrolling past that
+        if root.devices.length > 0: Rectangle {
+            height: min(root.list-room, list.preferred-height);
+
+            flick := Flickable {
+                content-height: list.preferred-height;
+                width: parent.width - (scroll.visible ? 12px : 0px);
+                x: 0;
+
+                list := VerticalLayout {
+                    spacing: 6px;
+
+                    for device in root.devices: DeviceRow {
+                        device: device;
+                        confirm-remove: root.confirm-remove == device.id;
+                        remove => {
+                            if root.confirm-remove == device.id {
+                                root.confirm-remove = "";
+                                root.remove-device(device.id);
+                            } else {
+                                root.confirm-remove = device.id;
+                            }
+                        }
+                    }
                 }
             }
-        }
 
-        if root.activity.length > 0: VerticalLayout {
-            spacing: 4px;
-            Text {
-                text: "Recent file activity";
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
-                font-weight: 600;
-            }
-            for line in root.activity: Text {
-                text: line;
-                color: Theme.text-secondary;
-                font-size: Theme.font-sm;
-                overflow: elide;
+            scroll := ScrollBar {
+                x: parent.width - self.width;
+                height: parent.height;
+                viewport-height: flick.height;
+                content-height: flick.content-height;
+                content-y <=> flick.content-y;
             }
         }
     }

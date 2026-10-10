@@ -132,7 +132,6 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
     // Compared as shown, so "Used 4 min ago" redraws once a minute
     let mut seen_changes = remote.changes();
     let mut shown_devices: Vec<RemoteDevice> = Vec::new();
-    let mut shown_activity: Vec<String> = Vec::new();
     timer.start(slint::TimerMode::Repeated, REFRESH, move || {
         let Some(ui) = ui_weak.upgrade() else { return };
         match remote.shown_pairing() {
@@ -171,12 +170,6 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
             seen_changes = changes;
             ui.set_remote_devices(Rc::new(VecModel::from(rows.clone())).into());
             shown_devices = rows;
-        }
-        let activity = activity_lines(&remote.recordings_activity(), chrono::Local::now());
-        if activity != shown_activity {
-            let model: Vec<slint::SharedString> = activity.iter().map(|l| l.into()).collect();
-            ui.set_remote_activity(Rc::new(VecModel::from(model)).into());
-            shown_activity = activity;
         }
     });
     timer
@@ -234,31 +227,6 @@ fn rows(devices: &[Device], now: i64) -> Vec<RemoteDevice> {
         .collect()
 }
 
-/// How many of the phones' downloads and deletions the dialog shows
-const ACTIVITY_SHOWN: usize = 5;
-
-/// "Pixel 8 downloaded Jazz FM - 2026-10-08 20-15-03.mp3 · 14:02", newest
-/// first; the date shows for days before today
-fn activity_lines(
-    activity: &[crate::remote::recordings::Activity],
-    now: chrono::DateTime<chrono::Local>,
-) -> Vec<String> {
-    use chrono::TimeZone;
-    activity
-        .iter()
-        .take(ACTIVITY_SHOWN)
-        .map(|a| {
-            let when = match chrono::Local.timestamp_opt(a.at, 0).single() {
-                Some(t) if t.date_naive() == now.date_naive() => t.format("%H:%M").to_string(),
-                Some(t) => t.format("%b %-d %H:%M").to_string(),
-                None => String::new(),
-            };
-            let did = if a.deleted { "deleted" } else { "downloaded" };
-            format!("{} {did} {} · {when}", a.device, a.file)
-        })
-        .collect()
-}
-
 /// "Used just now", "Used 5 min ago", "Used 3 h ago", "Used 2 days ago"
 fn seen_label(at: i64, now: i64) -> String {
     let ago = (now - at).max(0);
@@ -302,38 +270,5 @@ mod tests {
         assert_eq!(seen_label(0, 3 * 86_400), "Used 3 days ago");
         // A clock set back
         assert_eq!(seen_label(500, 100), "Used just now");
-    }
-
-    #[test]
-    fn activity_lines_say_who_did_what_when() {
-        use crate::remote::recordings::Activity;
-        use chrono::TimeZone;
-        let now = chrono::Local
-            .with_ymd_and_hms(2026, 10, 8, 15, 0, 0)
-            .unwrap();
-        let at = |h| {
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, h, 14, 2, 0)
-                .unwrap()
-                .timestamp()
-        };
-        let a = |deleted, at| Activity {
-            device: "Pixel 8".into(),
-            deleted,
-            file: "Jazz FM - 2026-10-08 20-15-03.mp3".into(),
-            at,
-        };
-        let lines = activity_lines(&[a(false, at(8)), a(true, at(7))], now);
-        assert_eq!(
-            lines,
-            [
-                "Pixel 8 downloaded Jazz FM - 2026-10-08 20-15-03.mp3 · 14:02",
-                "Pixel 8 deleted Jazz FM - 2026-10-08 20-15-03.mp3 · Oct 7 14:02",
-            ]
-        );
-        assert_eq!(
-            activity_lines(&vec![a(false, at(8)); 9], now).len(),
-            ACTIVITY_SHOWN
-        );
     }
 }
