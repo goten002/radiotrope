@@ -72,7 +72,15 @@ EXTRA_CARGO_FLAGS = "--no-default-features"
 # [buildpaths]. Map the build tree to a fixed name, as poky's own rust
 # class does
 EXTRA_RUSTFLAGS = "--remap-path-prefix=${TMPDIR}=/usr/src/debug"
-EXTRA_CARGO_FLAGS = "--no-default-features"
+
+# The C parts of the crates (aws-lc, opus, lame) compile out of the cargo
+# registry under cargo_home and keep __FILE__ in their error strings. The
+# default DEBUG_PREFIX_MAP covers S, B and the sysroots only, so map
+# cargo_home too, or the binary still refers to TMPDIR
+DEBUG_PREFIX_MAP += " \
+    -fmacro-prefix-map=${CARGO_HOME}=${TARGET_DBGSRC_DIR}/cargo_home \
+    -fdebug-prefix-map=${CARGO_HOME}=${TARGET_DBGSRC_DIR}/cargo_home \
+"
 
 # Build the radiotrope-app binary (workspace member)
 CARGO_MANIFEST_PATH = "${S}/crates/radiotrope-app/Cargo.toml"
