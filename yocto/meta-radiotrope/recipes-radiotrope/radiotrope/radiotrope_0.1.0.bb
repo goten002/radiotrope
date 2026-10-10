@@ -20,8 +20,13 @@ SRC_URI = " \
     file://seatd.service \
     file://radiotrope-splash.service \
     file://radiotrope-splash.sh \
-    file://splash-16.fb \
-    file://splash-32.fb \
+    file://radiotrope-shutdown-splash.service \
+    file://splash-boot-16.fb.gz;unpack=0 \
+    file://splash-boot-32.fb.gz;unpack=0 \
+    file://splash-reboot-16.fb.gz;unpack=0 \
+    file://splash-reboot-32.fb.gz;unpack=0 \
+    file://splash-poweroff-16.fb.gz;unpack=0 \
+    file://splash-poweroff-32.fb.gz;unpack=0 \
     file://radiotrope-iwd.conf \
     file://radiotrope-poweroff.path \
     file://radiotrope-poweroff.service \
@@ -107,7 +112,7 @@ RDEPENDS:${PN} = " \
     ca-certificates \
 "
 
-SYSTEMD_SERVICE:${PN} = "radiotrope.service seatd.service radiotrope-splash.service radiotrope-poweroff.path radiotrope-reboot.path"
+SYSTEMD_SERVICE:${PN} = "radiotrope.service seatd.service radiotrope-splash.service radiotrope-shutdown-splash.service radiotrope-poweroff.path radiotrope-reboot.path"
 SYSTEMD_AUTO_ENABLE = "enable"
 
 do_install() {
@@ -116,13 +121,16 @@ do_install() {
     install -m 0755 ${WORKDIR}/radiotrope-splash.sh ${D}${bindir}/radiotrope-splash
 
     install -d ${D}${datadir}/radiotrope
-    install -m 0644 ${WORKDIR}/splash-16.fb ${D}${datadir}/radiotrope/splash-16.fb
-    install -m 0644 ${WORKDIR}/splash-32.fb ${D}${datadir}/radiotrope/splash-32.fb
+    for screen in boot reboot poweroff; do
+        install -m 0644 ${WORKDIR}/splash-$screen-16.fb.gz ${D}${datadir}/radiotrope/
+        install -m 0644 ${WORKDIR}/splash-$screen-32.fb.gz ${D}${datadir}/radiotrope/
+    done
 
     install -d ${D}${systemd_system_unitdir}
     install -m 0644 ${WORKDIR}/radiotrope.service ${D}${systemd_system_unitdir}/radiotrope.service
     install -m 0644 ${WORKDIR}/seatd.service ${D}${systemd_system_unitdir}/seatd.service
     install -m 0644 ${WORKDIR}/radiotrope-splash.service ${D}${systemd_system_unitdir}/radiotrope-splash.service
+    install -m 0644 ${WORKDIR}/radiotrope-shutdown-splash.service ${D}${systemd_system_unitdir}/radiotrope-shutdown-splash.service
     install -m 0644 ${WORKDIR}/radiotrope-poweroff.path ${D}${systemd_system_unitdir}/radiotrope-poweroff.path
     install -m 0644 ${WORKDIR}/radiotrope-poweroff.service ${D}${systemd_system_unitdir}/radiotrope-poweroff.service
     install -m 0644 ${WORKDIR}/radiotrope-reboot.path ${D}${systemd_system_unitdir}/radiotrope-reboot.path
@@ -139,11 +147,11 @@ FILES:${PN} += " \
     ${systemd_system_unitdir}/radiotrope.service \
     ${systemd_system_unitdir}/seatd.service \
     ${systemd_system_unitdir}/radiotrope-splash.service \
+    ${systemd_system_unitdir}/radiotrope-shutdown-splash.service \
     ${systemd_system_unitdir}/radiotrope-poweroff.path \
     ${systemd_system_unitdir}/radiotrope-poweroff.service \
     ${systemd_system_unitdir}/radiotrope-reboot.path \
     ${systemd_system_unitdir}/radiotrope-reboot.service \
-    ${datadir}/radiotrope/splash-16.fb \
-    ${datadir}/radiotrope/splash-32.fb \
+    ${datadir}/radiotrope/splash-*.fb.gz \
     ${datadir}/dbus-1/system.d/radiotrope-iwd.conf \
 "
