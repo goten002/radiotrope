@@ -334,12 +334,13 @@ export component PairingQrDialog inherits Rectangle {
 
         HorizontalLayout {
             alignment: center;
-            // Black on white in every theme, as scanners expect
+            // Black on light in every theme, as scanners expect: the light
+            // theme's card itself, or a white tile in the dark theme
             Rectangle {
                 width: Defaults.pairing-qr-size;
                 height: Defaults.pairing-qr-size;
                 border-radius: Theme.radius-md;
-                background: white;
+                background: Theme.dark-mode ? white : transparent;
 
                 Image {
                     width: parent.width - 8px;

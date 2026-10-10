@@ -182,11 +182,12 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
     timer
 }
 
-/// Modules of white around the code; the white tile adds a little more
+/// Empty modules around the code; the tile adds a little more
 const QR_QUIET: usize = 4;
 
-/// The QR code for `payload`, a pixel per module: black on white, drawn
-/// pixelated at the size the dialog gives it
+/// The QR code for `payload`, a pixel per module: black on transparent, so
+/// the light theme's card shows through and the dark theme puts a white
+/// tile behind it. Drawn pixelated at the size the dialog gives it
 fn qr_image(payload: &str) -> Option<slint::Image> {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
     let code =
@@ -194,10 +195,8 @@ fn qr_image(payload: &str) -> Option<slint::Image> {
     let width = code.width();
     let size = width + 2 * QR_QUIET;
     let mut buffer = SharedPixelBuffer::<Rgba8Pixel>::new(size as u32, size as u32);
-    let white = Rgba8Pixel::new(255, 255, 255, 255);
     let black = Rgba8Pixel::new(0, 0, 0, 255);
     let pixels = buffer.make_mut_slice();
-    pixels.fill(white);
     for (i, color) in code.to_colors().into_iter().enumerate() {
         if color == qrcode::Color::Dark {
             let (x, y) = (i % width + QR_QUIET, i / width + QR_QUIET);
