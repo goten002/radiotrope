@@ -39,16 +39,6 @@ setup_kiosk() {
     ln -sf /dev/null ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/serial-getty@ttyS0.service
     ln -sf /dev/null ${IMAGE_ROOTFS}${sysconfdir}/systemd/system/serial-getty@ttyAMA0.service
 
-    # Pre-load favorites from desktop config, into the player's own home
-    # (the radiotrope user, see the radiotrope recipe)
-    install -d -m 0700 ${IMAGE_ROOTFS}/var/lib/radiotrope
-    install -d -m 0700 ${IMAGE_ROOTFS}/var/lib/radiotrope/.config
-    install -d -m 0700 ${IMAGE_ROOTFS}/var/lib/radiotrope/.config/radiotrope
-    if [ -f /work/.config-seed/favorites.json ]; then
-        install -m 0600 /work/.config-seed/favorites.json ${IMAGE_ROOTFS}/var/lib/radiotrope/.config/radiotrope/favorites.json
-    fi
-    chown -R radiotrope:radiotrope ${IMAGE_ROOTFS}/var/lib/radiotrope
-
     # SSH with a key only, when a key was given
     if [ -f "${RADIOTROPE_SSH_KEYS}" ]; then
         install -d -m 0700 ${IMAGE_ROOTFS}/root/.ssh
