@@ -32,7 +32,8 @@ do_unpack() {
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/seatd.service ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.service ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.sh ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash.fb ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash-16.fb ${WORKDIR}/
+    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash-32.fb ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-iwd.conf ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-poweroff.path ${WORKDIR}/
     cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-poweroff.service ${WORKDIR}/
@@ -86,7 +87,8 @@ do_install() {
     install -m 0755 ${WORKDIR}/radiotrope-splash.sh ${D}${bindir}/radiotrope-splash
 
     install -d ${D}${datadir}/radiotrope
-    install -m 0644 ${WORKDIR}/splash.fb ${D}${datadir}/radiotrope/splash.fb
+    install -m 0644 ${WORKDIR}/splash-16.fb ${D}${datadir}/radiotrope/splash-16.fb
+    install -m 0644 ${WORKDIR}/splash-32.fb ${D}${datadir}/radiotrope/splash-32.fb
 
     install -d ${D}${systemd_system_unitdir}
     install -m 0644 ${WORKDIR}/radiotrope.service ${D}${systemd_system_unitdir}/radiotrope.service
@@ -112,6 +114,7 @@ FILES:${PN} += " \
     ${systemd_system_unitdir}/radiotrope-poweroff.service \
     ${systemd_system_unitdir}/radiotrope-reboot.path \
     ${systemd_system_unitdir}/radiotrope-reboot.service \
-    ${datadir}/radiotrope/splash.fb \
+    ${datadir}/radiotrope/splash-16.fb \
+    ${datadir}/radiotrope/splash-32.fb \
     ${datadir}/dbus-1/system.d/radiotrope-iwd.conf \
 "

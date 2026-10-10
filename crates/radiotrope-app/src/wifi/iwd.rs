@@ -282,7 +282,10 @@ impl Session {
             .await
             .map_err(|e| map_error(e, false))?;
         let mut networks = Vec::with_capacity(ordered.len());
-        for (path, signal_dbm) in ordered {
+        for (path, signal) in ordered {
+            // iwd reports the strength in hundredths of a dBm (-6000 is
+            // -60 dBm); the UI thinks in whole dBm
+            let signal_dbm = signal / 100;
             let Ok(network) = self.network(path.as_str()).await else {
                 continue;
             };
@@ -347,7 +350,13 @@ impl Session {
             .unwrap_or_else(|e| e.into_inner()) = None;
         match result {
             Ok(()) => Ok(network.name().await.unwrap_or_default()),
-            Err(e) => Err(map_error(e, asked)),
+            Err(e) => {
+                // iwd's own words go to the journal: "Failed" after a
+                // passphrase reads as a wrong password to the user, but
+                // it can also be the driver or the kernel crypto
+                eprintln!("wifi: connect to {path} failed (asked for passphrase: {asked}): {e}");
+                Err(map_error(e, asked))
+            }
         }
     }
 
