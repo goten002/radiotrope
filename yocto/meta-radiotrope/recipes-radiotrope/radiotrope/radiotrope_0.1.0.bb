@@ -49,8 +49,12 @@ do_compile[network] = "1"
 # compiler is a wrapper script
 export MP3LAME_SYS_OVERRIDE_HOST = "${HOST_SYS}"
 
-# Build with embedded feature flags (linuxkms backend, software renderer)
+# Build with the embedded feature only (linuxkms backend, software
+# renderer). The class adds --features but not --no-default-features, and
+# the crate's default is the desktop feature (winit, tray icon, file
+# dialogs), which has no business on the Pi
 CARGO_FEATURES = "embedded"
+EXTRA_CARGO_FLAGS = "--no-default-features"
 
 # Rust writes source paths into the binary (panic messages, debug info),
 # and Yocto flags anything under TMPDIR as a leaked build path
