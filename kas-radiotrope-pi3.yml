@@ -10,10 +10,13 @@ target: radiotrope-image
 build_system: oe
 
 repos:
-  # Upstream layers — clone into yocto/ to keep project root clean
+  # Upstream layers — clone into yocto/ to keep project root clean. Each
+  # is pinned to the commit the image was last built with (kas warns
+  # about a bare branch); move the pin on purpose, with a rebuild
   poky:
     url: https://git.yoctoproject.org/poky
     branch: scarthgap
+    commit: b301218f4da7793624db3545efd8bf66888b77b0
     path: yocto/poky
     layers:
       meta:
@@ -22,11 +25,13 @@ repos:
   meta-raspberrypi:
     url: https://git.yoctoproject.org/meta-raspberrypi
     branch: scarthgap
+    commit: 2c646d29912dcc873469a57b1c207e1549c5094d
     path: yocto/meta-raspberrypi
 
   meta-openembedded:
     url: https://git.openembedded.org/meta-openembedded
     branch: scarthgap
+    commit: 4d3e2639dec542b58708244662d5ce36810fc510
     path: yocto/meta-openembedded
     layers:
       meta-oe:

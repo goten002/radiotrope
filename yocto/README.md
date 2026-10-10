@@ -34,6 +34,11 @@ Anyone on the same network can then log in as root, so never ship it:
 kas-container build kas-radiotrope-pi3-dev.yml
 ```
 
+A rebuild after `git pull` picks up changes to the Rust and Slint sources,
+the layer and the kas file on its own: bitbake checksums the source tree
+the recipe copies in. The upstream layers are pinned to commits in the kas
+file; move a pin on purpose and rebuild.
+
 ### SSH with a key
 
 Put your public key in `.config-seed/authorized_keys` (git ignores it) and

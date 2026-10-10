@@ -14,31 +14,42 @@ GROUPADD_PARAM:${PN} = "-r audio; -r video; -r input; -r render"
 USERADD_PARAM:${PN} = "--system --home-dir /var/lib/radiotrope --no-create-home \
     --shell ${base_sbindir}/nologin --user-group --groups audio,video,input,render radiotrope"
 
-# Systemd service file
-SRC_URI = "file://radiotrope.service"
+# The unit files, splash and D-Bus policy next to this recipe
+SRC_URI = " \
+    file://radiotrope.service \
+    file://seatd.service \
+    file://radiotrope-splash.service \
+    file://radiotrope-splash.sh \
+    file://splash-16.fb \
+    file://splash-32.fb \
+    file://radiotrope-iwd.conf \
+    file://radiotrope-poweroff.path \
+    file://radiotrope-poweroff.service \
+    file://radiotrope-reboot.path \
+    file://radiotrope-reboot.service \
+"
 
 S = "${WORKDIR}/radiotrope"
 
-# Copy project source into an isolated workdir to avoid Cargo workspace
-# conflicts with other Rust recipes (rust-native bootstrap finds /work/Cargo.toml)
-do_unpack() {
+# The player's source is the checkout kas-container mounts at /work. It is
+# copied into its own workdir so cargo doesn't see the workspace at /work
+# (rust-native's bootstrap finds /work/Cargo.toml otherwise). bitbake
+# checksums what is copied, so a change to the Rust or Slint sources
+# rebuilds the player; a plain pull-and-build is enough
+RADIOTROPE_SRC ?= "/work"
+RADIOTROPE_SRC_PARTS = "Cargo.toml Cargo.lock LICENSE crates assets"
+do_unpack[file-checksums] += "${@' '.join('%s/%s:True' % (d.getVar('RADIOTROPE_SRC'), p) for p in d.getVar('RADIOTROPE_SRC_PARTS').split())}"
+
+python do_unpack:append() {
+    bb.build.exec_func("radiotrope_copy_source", d)
+}
+
+radiotrope_copy_source() {
+    rm -rf ${S}
     mkdir -p ${S}
-    cp -a /work/Cargo.toml /work/Cargo.lock /work/LICENSE ${S}/ 2>/dev/null || true
-    cp -a /work/crates ${S}/
-    # The UI and the station flags are compiled in from assets/
-    cp -a /work/assets ${S}/
-    # Copy service files and splash data to WORKDIR
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope.service ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/seatd.service ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.service ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-splash.sh ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash-16.fb ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/splash-32.fb ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-iwd.conf ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-poweroff.path ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-poweroff.service ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-reboot.path ${WORKDIR}/
-    cp -a /work/yocto/meta-radiotrope/recipes-radiotrope/radiotrope/files/radiotrope-reboot.service ${WORKDIR}/
+    for part in ${RADIOTROPE_SRC_PARTS}; do
+        cp -a ${RADIOTROPE_SRC}/$part ${S}/
+    done
 }
 
 # Allow cargo to fetch crates from crates.io (standard Yocto Rust pattern per meta-slint)
