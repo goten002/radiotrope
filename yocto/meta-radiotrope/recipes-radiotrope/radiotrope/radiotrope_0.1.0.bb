@@ -51,6 +51,12 @@ export MP3LAME_SYS_OVERRIDE_HOST = "${HOST_SYS}"
 
 # Build with embedded feature flags (linuxkms backend, software renderer)
 CARGO_FEATURES = "embedded"
+
+# Rust writes source paths into the binary (panic messages, debug info),
+# and Yocto flags anything under TMPDIR as a leaked build path
+# [buildpaths]. Map the build tree to a fixed name, as poky's own rust
+# class does
+EXTRA_RUSTFLAGS = "--remap-path-prefix=${TMPDIR}=/usr/src/debug"
 EXTRA_CARGO_FLAGS = "--no-default-features"
 
 # Build the radiotrope-app binary (workspace member)
