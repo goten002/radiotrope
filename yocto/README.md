@@ -106,7 +106,7 @@ meta-radiotrope/
 │   └── files/
 │       ├── radiotrope.service                   # Systemd unit (own user, sandbox)
 │       ├── seatd.service                        # Seat daemon (screen and touch access)
-│       ├── radiotrope-splash.service, .sh, splash.fb  # Boot splash until the player starts
+│       ├── radiotrope-splash.service, .sh, splash.png, splash-16/32.fb  # Boot splash (scripts/make-splash.py)
 │       └── radiotrope-iwd.conf                  # D-Bus: the player may use iwd
 ├── recipes-core/images/
 │   └── radiotrope-image.bb                      # Image recipe
