@@ -43,7 +43,7 @@ in with that key only, never with a password:
 ```bash
 cp ~/.ssh/id_ed25519.pub .config-seed/authorized_keys
 kas-container build kas-radiotrope-pi3.yml
-ssh root@<pi address>
+ssh root@<pi address>   # the Pi shows up on the router as radiotrope-pi
 ```
 
 Without that file the release image has no SSH server.
