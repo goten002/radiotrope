@@ -80,6 +80,7 @@ Replace `/dev/sdX` with your SD card device.
 - ALSA + MA12070P driver for I2S audio
 - Goodix touch driver for DSI display; the touchscreen is the only input (no buttons or knobs)
 - Power Off and Restart in the player's Open menu (each asks twice); the sandboxed player creates a file in /run/radiotrope and a root path unit runs `systemctl poweroff` or `reboot`
+- Splash screens: "Booting..." until the player starts, "Restarting..." or "Shutting down..." once it has stopped (the three PNGs and their framebuffer forms come from `yocto/scripts/make-splash.py`, which needs Pillow and numpy)
 - Dropbear SSH server only with a key (release) or passwordless root (dev image)
 
 ## Where the player keeps its files
@@ -111,7 +112,9 @@ meta-radiotrope/
 │   └── files/
 │       ├── radiotrope.service                   # Systemd unit (own user, sandbox)
 │       ├── seatd.service                        # Seat daemon (screen and touch access)
-│       ├── radiotrope-splash.service, .sh, splash.png, splash-16/32.fb  # Boot splash (scripts/make-splash.py)
+│       ├── radiotrope-splash.service, .sh         # Boot splash (loops until the player starts)
+│       ├── radiotrope-shutdown-splash.service     # Restart / power-off splash (after the player stops)
+│       ├── splash-{boot,reboot,poweroff}.png, -16/32.fb.gz  # The three screens (scripts/make-splash.py)
 │       └── radiotrope-iwd.conf                  # D-Bus: the player may use iwd
 ├── recipes-core/images/
 │   └── radiotrope-image.bb                      # Image recipe
@@ -144,9 +147,10 @@ Things to look at the first time a new image runs on the Pi, over SSH
   the Sleep Timer and HTTPS stations all depend on it.
 - Memory: `free -m` shows most of the 1 GB free; `dmesg | grep -i cma`
   has no allocation failures (the image reserves 96 MB for the display).
-- Power Off and Restart: Open > Restart (pressed twice) reboots within a
-  few seconds and Open > Power Off halts; `systemctl status
-  radiotrope-poweroff.path radiotrope-reboot.path` shows both active.
+- Power Off and Restart: Open > Restart (pressed twice) shows
+  "Restarting..." and reboots within a few seconds, Open > Power Off shows
+  "Shutting down..." and halts; `systemctl status radiotrope-poweroff.path
+  radiotrope-reboot.path` shows both active.
 - Modules: `lsmod` lists what is loaded; the image installs every kernel
   module (`kernel-modules`), which can be trimmed to that list later.
 

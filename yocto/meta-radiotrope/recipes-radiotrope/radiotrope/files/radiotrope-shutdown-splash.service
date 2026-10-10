@@ -1,0 +1,14 @@
+[Unit]
+Description=Radiotrope Shutdown Splash
+# Units stop in the reverse of their start order, so Before= the player
+# means this unit's ExecStop runs once the player has released the screen
+Before=radiotrope.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=/usr/bin/radiotrope-splash shutdown
+
+[Install]
+WantedBy=multi-user.target
