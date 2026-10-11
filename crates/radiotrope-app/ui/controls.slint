@@ -11,14 +11,19 @@ component VolumeSlider inherits Rectangle {
     out property <bool> touch-pressed: touch.pressed;
     callback value-changed(float);
     callback mute-toggled();
+    // How far clicks and drags reach above and below the slider's own
+    // height (the parent's padding), so the whole bar height takes them
+    in property <length> grab-y: 0px;
 
-    width: 120px;
-    height: 20px;
+    // The slider is the track plus a grab margin at each end; its height
+    // comes from the parent, all of it clickable
+    width: Defaults.volume-width + 2 * Defaults.volume-grab;
+    min-height: 20px;
 
     property <bool> active: touch.has-hover || touch.pressed;
     property <float> shown: Math.clamp(root.value, 0, 100) / 100;
     property <color> fill-color: root.muted ? Theme.text-tertiary : Theme.accent;
-    property <length> knob: root.active ? 16px : 12px;
+    property <length> knob: root.active ? Defaults.volume-knob-active : Defaults.volume-knob;
     animate knob { duration: Theme.fast; }
     // Keeps the value bubble up briefly after a scroll or key press
     property <bool> nudged;
@@ -56,73 +61,85 @@ component VolumeSlider inherits Rectangle {
         }
     }
 
-    track := Rectangle {
-        height: 6px;
+    // The track, knob and value bubble, centred in the grab area
+    bar := Rectangle {
+        x: Defaults.volume-grab;
         y: (root.height - self.height) / 2;
-        border-radius: self.height / 2;
-        background: Theme.text-primary.with-alpha(0.12);
-
-        // Up to the knob, faint, while a fade holds the sound below it
-        if root.level < 0.999: Rectangle {
-            x: 0;
-            width: Math.max(self.height, (root.width - root.knob) * root.shown + root.knob / 2);
-            border-radius: self.height / 2;
-            background: root.fill-color.with-alpha(0.35);
-        }
-
-        // Filled portion, greyed while muted; during a fade, as loud as it
-        // plays now
-        Rectangle {
-            x: 0;
-            width: Math.max(self.height, (root.width - root.knob) * root.shown * Math.clamp(root.level, 0, 1) + root.knob / 2);
-            border-radius: self.height / 2;
-            background: root.fill-color;
-            animate background { duration: Theme.fast; }
-        }
-    }
-
-    // Knob: panel-coloured centre with a ring in the fill colour
-    thumb := Rectangle {
-        x: (root.width - root.knob) * root.shown;
-        y: (root.height - root.knob) / 2;
-        width: root.knob;
-        height: root.knob;
-        border-radius: root.knob / 2;
-        background: Theme.panel;
-        border-width: 2px;
-        border-color: root.fill-color;
-        drop-shadow-blur: 4px;
-        drop-shadow-color: #00000040;
-    }
-
-    // Value bubble above the knob while hovered, dragging, scrolling or using keys
-    bubble := Rectangle {
-        property <bool> visible-now: touch.has-hover || touch.pressed || root.nudged;
-        opacity: visible-now ? 1 : 0;
-        animate opacity { duration: Theme.fast; }
-        width: 44px;
+        width: Defaults.volume-width;
         height: 20px;
-        x: thumb.x + thumb.width / 2 - self.width / 2;
-        y: -self.height - 4px;
-        border-radius: 5px;
-        background: Theme.card;
-        border-width: 1px;
-        border-color: Theme.hairline;
-        drop-shadow-blur: 6px;
-        drop-shadow-color: Theme.shadow-soft;
 
-        Text {
-            text: root.muted && !touch.pressed ? "Muted" : Math.round(root.value) + "%";
-            font-size: Theme.font-sm;
-            font-weight: 600;
-            color: Theme.text-primary;
-            horizontal-alignment: center;
-            vertical-alignment: center;
+        track := Rectangle {
+            height: Defaults.volume-track;
+            y: (bar.height - self.height) / 2;
+            border-radius: self.height / 2;
+            background: Theme.text-primary.with-alpha(0.12);
+
+            // Up to the knob, faint, while a fade holds the sound below it
+            if root.level < 0.999: Rectangle {
+                x: 0;
+                width: Math.max(self.height, (bar.width - root.knob) * root.shown + root.knob / 2);
+                border-radius: self.height / 2;
+                background: root.fill-color.with-alpha(0.35);
+            }
+
+            // Filled portion, greyed while muted; during a fade, as loud as it
+            // plays now
+            Rectangle {
+                x: 0;
+                width: Math.max(self.height, (bar.width - root.knob) * root.shown * Math.clamp(root.level, 0, 1) + root.knob / 2);
+                border-radius: self.height / 2;
+                background: root.fill-color;
+                animate background { duration: Theme.fast; }
+            }
+        }
+
+        // Knob: panel-coloured centre with a ring in the fill colour
+        thumb := Rectangle {
+            x: (bar.width - root.knob) * root.shown;
+            y: (bar.height - root.knob) / 2;
+            width: root.knob;
+            height: root.knob;
+            border-radius: root.knob / 2;
+            background: Theme.panel;
+            border-width: 2px;
+            border-color: root.fill-color;
+            drop-shadow-blur: 4px;
+            drop-shadow-color: #00000040;
+        }
+
+        // Value bubble above the knob while hovered, dragging, scrolling or using keys
+        bubble := Rectangle {
+            property <bool> visible-now: touch.has-hover || touch.pressed || root.nudged;
+            opacity: visible-now ? 1 : 0;
+            animate opacity { duration: Theme.fast; }
+            width: 44px;
+            height: 20px;
+            x: thumb.x + thumb.width / 2 - self.width / 2;
+            y: -self.height - 4px;
+            border-radius: 5px;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            drop-shadow-blur: 6px;
+            drop-shadow-color: Theme.shadow-soft;
+
+            Text {
+                text: root.muted && !touch.pressed ? "Muted" : Math.round(root.value) + "%";
+                font-size: Theme.font-sm;
+                font-weight: 600;
+                color: Theme.text-primary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
         }
     }
 
     touch := TouchArea {
+        y: -root.grab-y;
+        height: root.height + 2 * root.grab-y;
         mouse-cursor: pointer;
+        // Where the pointer is along the track, as a volume
+        property <float> at: Math.clamp((self.mouse-x - Defaults.volume-grab - root.knob / 2) / (bar.width - root.knob) * 100, 0, 100);
 
         pointer-event(e) => {
             if (e.kind == PointerEventKind.down) {
@@ -133,12 +150,12 @@ component VolumeSlider inherits Rectangle {
 
         moved => {
             if (self.pressed) {
-                root.value-changed(Math.clamp((self.mouse-x - root.knob / 2) / (root.width - root.knob) * 100, 0, 100));
+                root.value-changed(self.at);
             }
         }
 
         clicked => {
-            root.value-changed(Math.clamp((self.mouse-x - root.knob / 2) / (root.width - root.knob) * 100, 0, 100));
+            root.value-changed(self.at);
         }
 
         scroll-event(e) => {
@@ -189,7 +206,11 @@ component VolumeSlider inherits Rectangle {
     }
 
     if keys.has-focus && root.key-focus: FocusRing {
-        radius: root.height / 2;
+        x: bar.x;
+        y: bar.y;
+        width: bar.width;
+        height: bar.height;
+        radius: bar.height / 2;
     }
 }
 
@@ -427,7 +448,8 @@ export component Controls inherits Rectangle {
             }
 
             vol-row := HorizontalLayout {
-                spacing: 8px;
+                // The slider's grab margin keeps the track 8 px from the icon
+                spacing: 0px;
 
                 // Mute button
                 VerticalLayout {
@@ -448,18 +470,17 @@ export component Controls inherits Rectangle {
                     }
                 }
 
-                // Volume slider
-                VerticalLayout {
-                    alignment: center;
-                    vol-slider := VolumeSlider {
-                        value: root.volume * 100;
-                        muted: root.is-muted;
-                        level: root.volume-level;
-                        mute-toggled => { root.mute-clicked(); }
-                        value-changed(val) => {
-                            root.volume = val / 100;
-                            root.volume-changed(root.volume);
-                        }
+                // Volume slider, as tall as the bar's row
+                vol-slider := VolumeSlider {
+                    // Down to the bar's edges, past the row's 6 px padding
+                    grab-y: 6px;
+                    value: root.volume * 100;
+                    muted: root.is-muted;
+                    level: root.volume-level;
+                    mute-toggled => { root.mute-clicked(); }
+                    value-changed(val) => {
+                        root.volume = val / 100;
+                        root.volume-changed(root.volume);
                     }
                 }
             }
