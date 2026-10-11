@@ -4,7 +4,7 @@ import { DialogShell, Toggle, ButtonKeys, FocusRing } from "../components.slint"
 
 // A round − or + next to the length
 component StepButton inherits Rectangle {
-    in property <string> label;
+    in property <image> icon;
     in property <string> name;
     in property <bool> enabled: true;
     callback clicked();
@@ -30,13 +30,14 @@ component StepButton inherits Rectangle {
         }
     }
 
-    Text {
-        text: root.label;
-        color: root.enabled ? Theme.text-primary : Theme.disabled-text;
-        font-size: 18px;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    // An icon, not a "−" or "+" glyph: the font sets those off centre
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        source: root.icon;
+        colorize: root.enabled ? Theme.text-primary : Theme.disabled-text;
         accessible-role: none;
     }
 
@@ -181,7 +182,7 @@ export component SleepTimerDialog inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 StepButton {
-                    label: "−";
+                    icon: @image-url("../icons/minus.svg");
                     name: root.step(-1) + " minutes less";
                     enabled: root.length > Defaults.sleep-step-minutes;
                     clicked => { root.bump(-1); }
@@ -246,7 +247,7 @@ export component SleepTimerDialog inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 StepButton {
-                    label: "+";
+                    icon: @image-url("../icons/plus.svg");
                     name: root.step(1) + " minutes more";
                     enabled: root.length < Defaults.sleep-max-minutes;
                     clicked => { root.bump(1); }
