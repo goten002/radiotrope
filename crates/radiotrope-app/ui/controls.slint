@@ -451,10 +451,22 @@ export component Controls inherits Rectangle {
                 // The slider's grab margin keeps the track 8 px from the icon
                 spacing: 0px;
 
-                // Mute button
-                VerticalLayout {
-                    alignment: center;
-                    IconButton {
+                // Mute button. The whole column clicks it, down to the bar's
+                // edges like the slider, so the pointer is the hand all over
+                // the volume controls
+                Rectangle {
+                    width: mute-button.width;
+
+                    mute-touch := TouchArea {
+                        y: -6px;
+                        height: parent.height + 12px;
+                        mouse-cursor: pointer;
+                        clicked => { root.mute-clicked(); }
+                    }
+
+                    mute-button := IconButton {
+                        y: (parent.height - self.height) / 2;
+                        outer-hover: mute-touch.has-hover;
                         icon: root.is-muted ? @image-url("icons/volume-xmark.svg")
                             : root.volume < 0.01 ? @image-url("icons/volume-off.svg")
                             : root.volume < 0.33 ? @image-url("icons/volume-low.svg")
