@@ -4,7 +4,7 @@ import { DialogShell, Toggle, ButtonKeys, FocusRing } from "../components.slint"
 
 // A round − or + next to the length
 component StepButton inherits Rectangle {
-    in property <string> label;
+    in property <image> icon;
     in property <string> name;
     in property <bool> enabled: true;
     callback clicked();
@@ -30,13 +30,14 @@ component StepButton inherits Rectangle {
         }
     }
 
-    Text {
-        text: root.label;
-        color: root.enabled ? Theme.text-primary : Theme.disabled-text;
-        font-size: 18px;
-        font-weight: 500;
-        horizontal-alignment: center;
-        vertical-alignment: center;
+    // An icon, not a "−" or "+" glyph: the font sets those off centre
+    Image {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 14px;
+        height: 14px;
+        source: root.icon;
+        colorize: root.enabled ? Theme.text-primary : Theme.disabled-text;
         accessible-role: none;
     }
 
@@ -62,9 +63,9 @@ component LengthChip inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
-    height: 26px;
-    width: chip-text.preferred-width + 22px;
-    border-radius: 13px;
+    height: 32px;
+    width: chip-text.preferred-width + 30px;
+    border-radius: 16px;
     border-width: 1px;
     border-color: root.selected ? Theme.accent : Theme.hairline;
     background: root.selected ? Theme.accent-soft
@@ -82,7 +83,7 @@ component LengthChip inherits Rectangle {
     chip-text := Text {
         text: root.label;
         color: root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-        font-size: Theme.font-md;
+        font-size: Theme.font-lg;
         font-weight: 500;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -104,7 +105,8 @@ component LengthChip inherits Rectangle {
 }
 
 // Stops playback after a while. One length, changed with − and +, the
-// wheel or the arrow keys (5 minute steps) or set by a chip, and one Start.
+// wheel or the arrow keys (15 minute steps, 5 below 15 minutes) or set by a
+// chip, and one Start.
 // It opens on the length used last time. While running it shows the time
 // left, Restart and Stop Timer.
 export component SleepTimerDialog inherits Rectangle {
@@ -128,7 +130,7 @@ export component SleepTimerDialog inherits Rectangle {
 
     // The length to start, in minutes
     property <int> length: 30;
-    property <[int]> lengths: [15, 30, 45, 60, 120, 180, 240, 360];
+    property <[int]> lengths: [15, 30, 45, 60, 120];
 
     public function open() {
         root.length = root.clamped(root.last);
@@ -139,9 +141,17 @@ export component SleepTimerDialog inherits Rectangle {
         clamp(minutes, Defaults.sleep-step-minutes, Defaults.sleep-max-minutes)
     }
 
-    // Five minutes more or less, onto the 5 minute steps
+    // The step − (-1) or + (1) takes: 5 minutes below 15, else 15
+    pure function step(steps: int) -> int {
+        let big = Defaults.sleep-big-step-minutes;
+        (steps > 0 && root.length < big) || (steps < 0 && root.length <= big)
+            ? Defaults.sleep-step-minutes : big
+    }
+
+    // One step more or less, onto that step's grid (12 goes to 10 or 15,
+    // 20 to 15 or 30)
     function bump(steps: int) {
-        let step = Defaults.sleep-step-minutes;
+        let step = root.step(steps);
         let base = steps > 0 ? floor(root.length / step) * step : ceil(root.length / step) * step;
         root.length = root.clamped(base + steps * step);
     }
@@ -172,8 +182,8 @@ export component SleepTimerDialog inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 StepButton {
-                    label: "−";
-                    name: "5 minutes less";
+                    icon: @image-url("../icons/minus.svg");
+                    name: root.step(-1) + " minutes less";
                     enabled: root.length > Defaults.sleep-step-minutes;
                     clicked => { root.bump(-1); }
                 }
@@ -237,8 +247,8 @@ export component SleepTimerDialog inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 StepButton {
-                    label: "+";
-                    name: "5 minutes more";
+                    icon: @image-url("../icons/plus.svg");
+                    name: root.step(1) + " minutes more";
                     enabled: root.length < Defaults.sleep-max-minutes;
                     clicked => { root.bump(1); }
                 }
@@ -247,7 +257,7 @@ export component SleepTimerDialog inherits Rectangle {
 
         if !root.active: HorizontalLayout {
             alignment: center;
-            spacing: 6px;
+            spacing: 8px;
 
             for minutes in root.lengths: LengthChip {
                 label: root.length-label(minutes);

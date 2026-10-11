@@ -236,8 +236,11 @@ export global Defaults {
     out property <length> dropdown-max-height: 344px;
     // The Sleep Timer's length in the middle, wide enough for "12 h 55 min"
     out property <length> sleep-readout-width: 190px;
-    // The Sleep Timer steps by this many minutes and goes up to a day
+    // The Sleep Timer's − and + step by the big step, and by the small
+    // step below it (5, 10, 15, 30, 45...); it goes from the small step up
+    // to a day
     out property <int> sleep-step-minutes: 5;
+    out property <int> sleep-big-step-minutes: 15;
     out property <int> sleep-max-minutes: 1440;
     out property <length> station-browser-width: 700px;
     out property <length> station-browser-height: 640px;
