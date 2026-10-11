@@ -122,15 +122,19 @@ export component IconButton inherits Rectangle {
     in property <bool> active: false;
     // Greyed out and not clickable, but keeps its place
     in property <bool> enabled: true;
+    // A bigger click area around the button is hovered: it lights up too
+    in property <bool> outer-hover: false;
     out property <bool> has-focus: focus.has-focus;
     callback clicked();
+
+    property <bool> hovered: touch.has-hover || root.outer-hover;
 
     width: 30px;
     height: 30px;
     border-radius: self.height / 2;
     background: !root.enabled ? transparent
         : touch.pressed ? Theme.menu-hover
-        : touch.has-hover ? Theme.menu-bar-hover
+        : root.hovered ? Theme.menu-bar-hover
         : root.active ? Theme.accent-soft : transparent;
     animate background { duration: Theme.fast; }
     forward-focus: focus;
@@ -156,7 +160,7 @@ export component IconButton inherits Rectangle {
         height: root.icon-size;
         colorize: !root.enabled ? Theme.disabled-text
             : root.active ? Theme.accent-text
-            : touch.has-hover ? root.hover-color : root.icon-color;
+            : root.hovered ? root.hover-color : root.icon-color;
         animate colorize { duration: Theme.fast; }
     }
 
