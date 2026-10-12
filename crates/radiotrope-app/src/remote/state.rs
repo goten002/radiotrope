@@ -5,7 +5,7 @@ use std::hash::{Hash, Hasher};
 
 use serde::Serialize;
 
-use radiotrope::audio::{PlaybackState, RecordingFormat};
+use radiotrope::audio::{LevelPhase, PlaybackState, RecordingFormat};
 use radiotrope_app::data::schedule;
 use radiotrope_app::data::types::url_to_id;
 
@@ -61,6 +61,7 @@ pub struct State {
     /// The next one, e.g. "Tomorrow 07:00: Play Jazz FM"
     pub next_scheduled: Option<String>,
     pub eq: EqState,
+    pub sound: SoundState,
     /// "#rrggbb"
     pub accent: String,
     /// Changes whenever the favorites change: list them again
@@ -131,6 +132,39 @@ pub struct EqState {
     /// The 10 bands' gains in dB
     pub gains: [f32; 10],
     pub preamp: f32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct SoundState {
+    /// Turn loud stations down and quiet ones up
+    pub match_volume: bool,
+    /// "quiet", "normal" or "loud"
+    pub level: &'static str,
+    /// "stereo", "mono" or "swap"
+    pub channels: &'static str,
+    /// -1 (left only) to 1 (right only)
+    pub balance: f32,
+    /// What matching does to the station playing now, in dB to half a dB;
+    /// none while nothing plays
+    pub station_gain_db: Option<f32>,
+    /// Matching is still finding out how loud this station is
+    pub learning: bool,
+}
+
+impl SoundState {
+    pub fn from_snapshot(s: &AppSnapshot) -> Self {
+        let readout = s.level.as_ref().filter(|r| r.phase() != LevelPhase::None);
+        Self {
+            match_volume: s.match_volume,
+            level: s.level_target.as_str(),
+            channels: s.sound_channels.as_str(),
+            balance: s.balance,
+            // To half a dB, so the gain gliding doesn't send an event for
+            // every step (adding 0 turns a -0 into 0)
+            station_gain_db: readout.map(|r| (r.gain_db() * 2.0).round() / 2.0 + 0.0),
+            learning: readout.is_some_and(|r| r.phase() == LevelPhase::Learning),
+        }
+    }
 }
 
 impl State {
@@ -206,6 +240,7 @@ impl State {
                 gains: s.eq_gains,
                 preamp: s.eq_preamp,
             },
+            sound: SoundState::from_snapshot(s),
             accent: s
                 .accent_color
                 .clone()

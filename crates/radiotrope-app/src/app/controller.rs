@@ -17,6 +17,7 @@ use radiotrope::audio::{
 use radiotrope::config::timeouts::RESOLVE_TIMEOUT_SECS;
 use radiotrope::stream::metadata::StreamMetadata;
 use radiotrope::stream::{StreamCancel, StreamResolver, StreamType};
+use radiotrope_app::data::levels::Levels;
 use radiotrope_app::data::recordings;
 
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
@@ -91,6 +92,10 @@ pub struct AppController {
     /// A recording kept open while its station, which failed, is started
     /// again
     resume: Option<resume::Resume>,
+    /// How loud the stations played were, for volume matching
+    levels: Levels,
+    /// The station whose loudness the engine is measuring
+    level_url: Option<String>,
 }
 
 impl AppController {
@@ -125,6 +130,8 @@ impl AppController {
             cover_source: None,
             engine_volume: None,
             resume: None,
+            levels: Levels::default(),
+            level_url: None,
         }
     }
 
@@ -141,12 +148,15 @@ impl AppController {
                 if let Some(tx) = self.stats_tx.take() {
                     let _ = tx.send(engine.shared_stats());
                 }
-                // Phones reach the listening through the shared state
-                self.shared_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .listen = Some(engine.listen());
+                // Phones reach the listening through the shared state, and
+                // the window and phones what volume matching does
+                {
+                    let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                    state.listen = Some(engine.listen());
+                    state.level = Some(engine.level_readout());
+                }
                 self.engine = Some(engine);
+                self.levels = Levels::load(unix_now());
             }
             Err(e) => {
                 // Not a missing device (the engine waits for one): say why
@@ -215,6 +225,7 @@ impl AppController {
 
         // Finish any recording before the engine goes away
         self.stop_recording();
+        self.remember_level();
 
         // Shutdown engine
         if let Some(engine) = self.engine.take() {
@@ -357,6 +368,47 @@ impl AppController {
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                 state.eq_enabled = on;
             }
+            AppCommand::SetMatchVolume(on) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_match_volume(on);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .match_volume = on;
+            }
+            AppCommand::SetLevelTarget(target) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_level_target(target);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .level_target = target;
+            }
+            AppCommand::SetChannels(channels) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_channels(channels);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .sound_channels = channels;
+            }
+            // NaN would make the balance meaningless: ignored, as the
+            // engine ignores it
+            AppCommand::SetBalance(balance) if balance.is_finite() => {
+                let balance = balance.clamp(-1.0, 1.0);
+                if let Some(engine) = &self.engine {
+                    engine.set_balance(balance);
+                }
+                let snapped = engine_balance(balance);
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .balance = snapped;
+            }
+            AppCommand::SetBalance(_) => {}
             AppCommand::StartRecording {
                 folder,
                 format,
@@ -380,8 +432,25 @@ impl AppController {
         false
     }
 
+    /// Keep what the station playing measured as for next time
+    fn remember_level(&mut self) {
+        let Some(url) = self.level_url.take() else {
+            return;
+        };
+        let Some(lufs) = self
+            .engine
+            .as_ref()
+            .and_then(|engine| engine.level_readout().loudness_lufs())
+        else {
+            return;
+        };
+        self.levels.remember(&url, lufs, unix_now());
+    }
+
     /// Stop the station, and the recording of it
     fn stop_playback(&mut self) {
+        // Before the engine stops measuring it
+        self.remember_level();
         self.stop_recording();
         self.cancel_stream();
         if let Some(engine) = &self.engine {
@@ -438,6 +507,7 @@ impl AppController {
         country: Option<String>,
     ) -> u64 {
         // Stop any current playback first, and any station still resolving
+        self.remember_level();
         self.cancel_stream();
         if let Some(engine) = &self.engine {
             engine.stop();
@@ -539,7 +609,7 @@ impl AppController {
         // This resolve is current — clear the resolving flag regardless of outcome.
         match result {
             Ok(resolved) => {
-                {
+                let url = {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     // Keep API name from Play command; fall back to stream-provided name
                     if state.station_name.is_none() {
@@ -554,7 +624,8 @@ impl AppController {
                     state.status_text = "Connecting...".into();
                     state.is_error = false;
                     state.is_connecting = true;
-                }
+                    state.station_url.clone().unwrap_or_default()
+                };
 
                 // Store metadata receiver for polling
                 let mut resolved = resolved;
@@ -562,7 +633,10 @@ impl AppController {
 
                 // Start playback. The engine cancels the stream when it stops.
                 if let Some(engine) = &self.engine {
+                    // A station heard before starts at its volume
+                    engine.set_start_loudness(self.levels.get(&url));
                     self.stream_id = Some(engine.play_stream(resolved));
+                    self.level_url = Some(url);
                 }
             }
             Err(e) => {
@@ -911,6 +985,18 @@ const AUTO_FALLBACK_KBPS: u32 = 256;
 
 /// The bitrate to record at: the chosen one, or for Auto the station's own
 /// (256 kbps when unknown), kept within 32–320 kbps.
+/// Seconds since 1970, for the station levels' dates
+fn unix_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// The balance as the engine keeps it: close to the centre is the centre
+fn engine_balance(balance: f32) -> f32 {
+    let mut params = radiotrope::audio::SoundParams::default();
+    params.set_balance(balance);
+    params.balance()
+}
+
 fn recording_kbps(chosen: Option<u32>, station: Option<u32>) -> u32 {
     chosen
         .or(station.filter(|k| *k > 0))
@@ -1056,6 +1142,7 @@ mod tests {
 
     mod stream_cancel {
         use super::*;
+        use radiotrope_app::data::settings::Settings;
         use std::io::{BufRead, BufReader, Write};
         use std::net::TcpListener;
 
@@ -1121,6 +1208,55 @@ mod tests {
             controller.handle_command(AppCommand::SetVolume(0.4));
             controller.handle_command(AppCommand::SetVolume(f32::NAN));
             assert_eq!(state.lock().unwrap().volume, 0.4);
+        }
+
+        #[test]
+        fn the_sound_settings_are_restored() {
+            let (mut controller, state) = controller();
+            let settings = Settings {
+                match_volume: false,
+                match_level: "loud".into(),
+                channels: "swap".into(),
+                balance: 0.4,
+                ..Settings::default()
+            };
+            for command in AppCommand::restore_sound(&settings) {
+                controller.handle_command(command);
+            }
+            let s = state.lock().unwrap();
+            assert!(!s.match_volume);
+            assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Loud);
+            assert_eq!(s.sound_channels, radiotrope::audio::Channels::Swap);
+            assert_eq!(s.balance, 0.4);
+        }
+
+        #[test]
+        fn unknown_sound_names_get_the_defaults() {
+            let (mut controller, state) = controller();
+            let settings = Settings {
+                match_level: "deafening".into(),
+                channels: "surround".into(),
+                ..Settings::default()
+            };
+            for command in AppCommand::restore_sound(&settings) {
+                controller.handle_command(command);
+            }
+            let s = state.lock().unwrap();
+            assert!(s.match_volume);
+            assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Normal);
+            assert_eq!(s.sound_channels, radiotrope::audio::Channels::Stereo);
+        }
+
+        #[test]
+        fn the_balance_snaps_to_the_centre_and_ignores_nan() {
+            let (mut controller, state) = controller();
+            controller.handle_command(AppCommand::SetBalance(-0.5));
+            controller.handle_command(AppCommand::SetBalance(f32::NAN));
+            assert_eq!(state.lock().unwrap().balance, -0.5);
+            controller.handle_command(AppCommand::SetBalance(0.02));
+            assert_eq!(state.lock().unwrap().balance, 0.0);
+            controller.handle_command(AppCommand::SetBalance(4.0));
+            assert_eq!(state.lock().unwrap().balance, 1.0);
         }
 
         #[test]
