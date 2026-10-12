@@ -21,7 +21,9 @@ component FilterRow inherits HorizontalLayout {
         horizontal-stretch: 1;
         spacing: 8px;
 
+        // Over the controls under it, so its bubble isn't hidden by them
         HorizontalLayout {
+            z: 1;
             spacing: 6px;
             alignment: start;
 
@@ -83,12 +85,13 @@ export component FiltersDialog inherits Rectangle {
 
     if show-dialog: DialogShell {
         title: "Filters";
-        subtitle: "Changes are saved as you make them";
         card-width: 440px;
         close-requested => { root.show-dialog = false; }
 
         VerticalLayout {
             FilterRow {
+                // Its bubble opens over the rows below
+                z: 1;
                 name: "Volume Leveler";
                 info: "Some stations are much louder than others. The leveler turns loud ones down and quiet ones up, so you don't have to reach for the volume when you switch. Quiet, Normal and Loud set how loud they all play.";
                 info-below: true;
