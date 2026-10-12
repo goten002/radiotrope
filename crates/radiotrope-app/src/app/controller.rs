@@ -641,6 +641,10 @@ impl AppController {
                     engine.set_start_loudness(self.levels.get(&url));
                     self.stream_id = Some(engine.play_stream(resolved));
                     self.level_url = Some(url);
+                    // The stream is the engine's now: cancelling it here on
+                    // a stop or a switch would cut the station off halfway
+                    // through Smooth Switching's fade-out
+                    self.stream_cancel = None;
                 }
             }
             Err(e) => {
@@ -1334,6 +1338,56 @@ mod tests {
                 assert_eq!(state.playback, PlaybackState::Stopped);
                 assert!(state.is_resolving);
             }
+            controller.handle_command(AppCommand::Stop);
+        }
+
+        /// A station that answers with MP3 frames (of silence) for a minute
+        fn mp3_station() -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}/live.mp3", listener.local_addr().unwrap());
+            std::thread::spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(mut stream) = stream else { continue };
+                    std::thread::spawn(move || {
+                        let mut request = BufReader::new(stream.try_clone().unwrap());
+                        let mut line = String::new();
+                        while request.read_line(&mut line).is_ok_and(|n| n > 2) {
+                            line.clear();
+                        }
+                        let _ = stream
+                            .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\n\r\n");
+                        // MPEG-1 Layer III, 128 kbps, 44.1 kHz: 417-byte frames
+                        let mut frame = vec![0u8; 417];
+                        frame[..4].copy_from_slice(&[0xFF, 0xFB, 0x90, 0x00]);
+                        for _ in 0..2_000 {
+                            if stream.write_all(&frame).is_err() {
+                                return;
+                            }
+                            std::thread::sleep(Duration::from_millis(26));
+                        }
+                    });
+                }
+            });
+            url
+        }
+
+        #[test]
+        fn a_stop_leaves_a_playing_stream_to_the_engine() {
+            let (mut controller, _state) = controller();
+            // No device needed: the engine waits for one
+            controller.engine = Some(AudioEngine::new().unwrap());
+            controller.start_stream(&mp3_station(), Some("MP3 FM".into()), None, None);
+            let cancel = controller.stream_cancel.clone().unwrap();
+            let resolved = controller
+                .cmd_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("the station must resolve");
+            controller.handle_command(resolved);
+            assert!(controller.stream_id.is_some(), "not handed to the engine");
+
+            // The engine ends it after its fade-out, not the stop
+            controller.cancel_stream();
+            assert!(!cancel.is_cancelled());
             controller.handle_command(AppCommand::Stop);
         }
 
