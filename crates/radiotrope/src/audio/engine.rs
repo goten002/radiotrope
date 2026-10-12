@@ -741,11 +741,6 @@ impl AudioEngine {
         self.with_sound(|p| p.set_target(target));
     }
 
-    /// Clip Guard; it stays on while the leveler is on
-    pub fn set_clip_guard(&self, on: bool) {
-        self.with_sound(|p| p.set_clip_guard(on));
-    }
-
     /// The Rumble Filter
     pub fn set_rumble_filter(&self, on: bool) {
         self.with_sound(|p| p.set_rumble_filter(on));
@@ -943,6 +938,8 @@ impl AudioEngine {
                                     && !waiting_for_output
                                     && sound.switches.smooth_switching() =>
                             {
+                                // Phones listening hear it fade out too
+                                recorder.listen().fade_out();
                                 fading = Some(Fading::start(
                                     station,
                                     &mut sink,
@@ -1062,6 +1059,8 @@ impl AudioEngine {
                                     && !waiting_for_output
                                     && sound.switches.smooth_switching() =>
                             {
+                                // Phones listening hear it fade out too
+                                recorder.listen().fade_out();
                                 fading = Some(Fading::start(
                                     station,
                                     &mut sink,
@@ -1294,6 +1293,9 @@ impl AudioEngine {
                                 // "Record without EQ" takes the station as it
                                 // comes; "with EQ" and phones listening take
                                 // it with every filter, before the volume
+                                // Phones listening tell it from the last
+                                // station, which may still be fading out
+                                recorder.listen().next_station();
                                 let source =
                                     RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
                                 let source =
@@ -1305,8 +1307,7 @@ impl AudioEngine {
                                     start_lufs,
                                 );
                                 let source = EqSource::new(source, eq_params.clone());
-                                let source =
-                                    LimiterSource::new(source).with_switch(sound.switches.clone());
+                                let source = LimiterSource::new(source);
                                 let source =
                                     RecordingTap::new(source, recorder.clone(), TapPoint::AfterEq);
                                 let analyzing = AnalyzingSource::new(

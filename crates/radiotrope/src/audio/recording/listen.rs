@@ -10,6 +10,9 @@
 //! audio comes (stopped, buffering, switching station) the encoder fills in
 //! silence at the pace of the clock, so a phone's player never runs dry.
 //!
+//! When the player fades a station out (Smooth Switching), the stream
+//! fades it out too, so a phone hears a switch as the speakers do.
+//!
 //! Like recording, listening never holds up playback: audio goes to the
 //! encoder with `try_send`, and a listener that falls too far behind is
 //! dropped (its stream ends, and the phone can connect again).
@@ -23,6 +26,7 @@ use crossbeam_channel::{bounded, Receiver, RecvTimeoutError, Sender, TrySendErro
 
 use super::opus::OpusPackets;
 use super::{TapPoint, QUEUE_BATCHES};
+use crate::config::sound::FADE_OUT_MS;
 
 /// Sample rate silence is filled in at
 const SILENCE_RATE: u32 = 44_100;
@@ -84,6 +88,8 @@ impl std::fmt::Display for ListenError {
 
 enum EncoderMsg {
     Pcm {
+        /// The station it is from (see [`Listen::next_station`])
+        station: u64,
         sample_rate: u32,
         channels: u16,
         samples: Vec<f32>,
@@ -118,6 +124,10 @@ struct ListenShared {
     dropped_batches: AtomicU64,
     /// Advertised bitrate of the playing station in kbps, 0 when unknown
     station_kbps: AtomicU32,
+    /// The station playing (see [`Listen::next_station`])
+    station: AtomicU64,
+    /// The station fading out, 0 for none
+    fading: AtomicU64,
 }
 
 /// Lets phones listen to the playing station. Cheap to clone; all clones
@@ -213,6 +223,25 @@ impl Listen {
         }
     }
 
+    /// A new station starts: the audio its taps hand over from now on is
+    /// told apart from the last station's, which may still be fading out
+    pub fn next_station(&self) -> u64 {
+        self.shared.station.fetch_add(1, Ordering::SeqCst) + 1
+    }
+
+    /// The station playing, as its taps hand it over
+    pub(super) fn station(&self) -> u64 {
+        self.shared.station.load(Ordering::SeqCst)
+    }
+
+    /// The station playing fades out: listeners hear it go quiet over
+    /// [`FADE_OUT_MS`], then silence until the next one
+    pub fn fade_out(&self) {
+        self.shared
+            .fading
+            .store(self.shared.station.load(Ordering::SeqCst), Ordering::SeqCst);
+    }
+
     /// Generation of the running encoder if it listens at `tap`, else 0
     pub(super) fn generation_for(&self, tap: TapPoint) -> u64 {
         if self.tap() == tap {
@@ -226,6 +255,7 @@ impl Listen {
     pub(super) fn submit(
         &self,
         generation: u64,
+        station: u64,
         sample_rate: u32,
         channels: u16,
         samples: Vec<f32>,
@@ -235,6 +265,7 @@ impl Listen {
             return;
         };
         let msg = EncoderMsg::Pcm {
+            station,
             sample_rate,
             channels,
             samples,
@@ -414,17 +445,25 @@ fn fail(shared: &ListenShared, error: &str) {
 /// of `shared`
 fn encoder_loop(shared: Weak<ListenShared>, rx: Receiver<EncoderMsg>) {
     let mut encoders = Encoders::default();
+    let mut fade = Fade::default();
     let mut last_audio = Instant::now();
     // How far silence has been filled in since the last audio
     let mut silence_until: Option<Instant> = None;
     loop {
         match rx.recv_timeout(IDLE_TICK) {
             Ok(EncoderMsg::Pcm {
+                station,
                 sample_rate,
                 channels,
                 samples,
             }) => {
-                let clamped: Vec<f32> = samples.iter().map(|s| s.clamp(-1.0, 1.0)).collect();
+                let mut clamped: Vec<f32> = samples.iter().map(|s| s.clamp(-1.0, 1.0)).collect();
+                let fading = shared
+                    .upgrade()
+                    .map_or(0, |s| s.fading.load(Ordering::SeqCst));
+                if fading != 0 && station == fading {
+                    fade.apply(station, sample_rate, channels, &mut clamped);
+                }
                 if !encoders.encode(&shared, sample_rate, channels, &clamped) {
                     return;
                 }
@@ -450,6 +489,34 @@ fn encoder_loop(shared: Weak<ListenShared>, rx: Receiver<EncoderMsg>) {
         }
         silence_until =
             Some(from + Duration::from_secs_f64(frames as f64 / f64::from(SILENCE_RATE)));
+    }
+}
+
+/// A station fading out, as the speakers hear it (see `OutputStage`)
+#[derive(Default)]
+struct Fade {
+    station: u64,
+    /// Frames of it faded so far
+    frames: u64,
+}
+
+impl Fade {
+    /// Fade `samples` of `station`, which fades out; silence once it has
+    fn apply(&mut self, station: u64, sample_rate: u32, channels: u16, samples: &mut [f32]) {
+        if station != self.station {
+            self.station = station;
+            self.frames = 0;
+        }
+        let total = (u64::from(sample_rate) * FADE_OUT_MS / 1000).max(1);
+        for frame in samples.chunks_mut(usize::from(channels.max(1))) {
+            let t = 1.0 - (self.frames.min(total) as f32 / total as f32);
+            // Smoothstep down: no corner at either end
+            let gain = t * t * (3.0 - 2.0 * t);
+            for x in frame {
+                *x *= gain;
+            }
+            self.frames += 1;
+        }
     }
 }
 
@@ -506,10 +573,10 @@ mod tests {
         assert_eq!(listen.generation_for(TapPoint::BeforeEq), 0);
         // A 48 kHz mono station, then a 44.1 kHz stereo one
         for _ in 0..10 {
-            listen.submit(generation, 48_000, 1, sine(48_000, 1, 4800));
+            listen.submit(generation, 0, 48_000, 1, sine(48_000, 1, 4800));
         }
         for _ in 0..10 {
-            listen.submit(generation, 44_100, 2, sine(44_100, 2, 4410));
+            listen.submit(generation, 0, 44_100, 2, sine(44_100, 2, 4410));
         }
         // About two seconds: 100 packets of 20 ms
         let got = read(&stream, 90, Duration::from_secs(5));
@@ -553,7 +620,7 @@ mod tests {
             listen.set_station_kbps(kbps);
             assert_eq!(listen.opus_kbps(), listen_opus_kbps(kbps));
             for _ in 0..10 {
-                listen.submit(generation, 48_000, 2, noise(&mut seed, 4800));
+                listen.submit(generation, 0, 48_000, 2, noise(&mut seed, 4800));
             }
             let got = read(&stream, 50, Duration::from_secs(5));
             assert_eq!(got.len(), 50);
@@ -577,7 +644,7 @@ mod tests {
         let b = listen.subscribe("Xiaomi").unwrap();
         let generation = listen.generation_for(TapPoint::AfterEq);
         for _ in 0..10 {
-            listen.submit(generation, 44_100, 2, sine(44_100, 2, 4410));
+            listen.submit(generation, 0, 44_100, 2, sine(44_100, 2, 4410));
         }
         let got_a = read(&a, 40, Duration::from_secs(5));
         let got_b = read(&b, 40, Duration::from_secs(5));
@@ -623,7 +690,7 @@ mod tests {
         let generation = listen.generation_for(TapPoint::AfterEq);
         // Far more audio than the listener's queue holds, never read
         for _ in 0..(LISTENER_QUEUE * 3) {
-            listen.submit(generation, 44_100, 2, sine(44_100, 2, 2048));
+            listen.submit(generation, 0, 44_100, 2, sine(44_100, 2, 2048));
             thread::sleep(Duration::from_millis(1));
         }
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -639,5 +706,36 @@ mod tests {
             }
         };
         assert_eq!(ended, RecvTimeoutError::Disconnected);
+    }
+
+    #[test]
+    fn a_fading_station_goes_quiet_then_silent() {
+        let mut fade = Fade::default();
+        // 400 ms at 1 kHz is 400 frames: hand over 600 stereo frames of 1.0
+        let mut samples = vec![1.0f32; 1_200];
+        fade.apply(7, 1_000, 2, &mut samples);
+        assert_eq!(samples[0], 1.0, "starts where it was");
+        assert!(samples.windows(2).all(|w| w[1] <= w[0]), "only goes down");
+        assert!((samples[400] - 0.5).abs() < 0.01, "halfway at half time");
+        assert!(samples[800..].iter().all(|&x| x == 0.0), "silent after");
+        // It carries on across batches, and starts over for the next fade
+        let mut more = vec![1.0f32; 10];
+        fade.apply(7, 1_000, 2, &mut more);
+        assert!(more.iter().all(|&x| x == 0.0));
+        fade.apply(8, 1_000, 2, &mut more);
+        let mut next = vec![1.0f32; 2];
+        fade.apply(9, 1_000, 2, &mut next);
+        assert_eq!(next[0], 1.0);
+    }
+
+    #[test]
+    fn only_the_station_playing_fades() {
+        let listen = Listen::new();
+        let first = listen.next_station();
+        listen.fade_out();
+        let second = listen.next_station();
+        assert_eq!(listen.shared.fading.load(Ordering::SeqCst), first);
+        assert_ne!(first, second);
+        assert_eq!(listen.station(), second);
     }
 }

@@ -131,10 +131,6 @@ pub struct Settings {
     #[serde(default = "default_match_level")]
     pub match_level: String,
 
-    /// Clip Guard (it runs anyway while the leveler is on)
-    #[serde(default = "default_true")]
-    pub clip_guard: bool,
-
     #[serde(default = "default_true")]
     pub rumble_filter: bool,
 
@@ -278,7 +274,6 @@ impl Default for Settings {
             eq_preset_name: Some("Flat".to_string()),
             match_volume: true,
             match_level: default_match_level(),
-            clip_guard: true,
             rumble_filter: true,
             smooth_switching: true,
             recording_dir: None,

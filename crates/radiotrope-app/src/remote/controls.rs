@@ -234,8 +234,6 @@ struct FiltersBody {
     #[serde(default)]
     level: Option<String>,
     #[serde(default)]
-    clip_guard: Option<bool>,
-    #[serde(default)]
     rumble_filter: Option<bool>,
     #[serde(default)]
     smooth_switching: Option<bool>,
@@ -262,9 +260,6 @@ pub(super) async fn set_filters(shared: &Shared, request: Request<Incoming>) -> 
                 )
             }
         }
-    }
-    if let Some(on) = body.clip_guard {
-        commands.push(AppCommand::SetClipGuard(on));
     }
     if let Some(on) = body.rumble_filter {
         commands.push(AppCommand::SetRumbleFilter(on));
