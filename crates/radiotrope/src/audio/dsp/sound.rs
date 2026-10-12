@@ -1,5 +1,5 @@
 //! Settings for the filters: the Volume Leveler (station volume matching)
-//! and the switches of Clip Guard, the Rumble Filter and Smooth Switching.
+//! and the switches of the Rumble Filter and Smooth Switching.
 //! What the leveler is doing to the station playing now is read back
 //! through [`LevelReadout`].
 
@@ -50,18 +50,11 @@ impl LevelTarget {
 /// the engine
 #[derive(Debug)]
 pub struct FilterSwitches {
-    /// Clip Guard as it runs: on while it is switched on, and always while
-    /// the Volume Leveler is on (the leveler can raise a station 9 dB)
-    clip_guard: AtomicBool,
     rumble_filter: AtomicBool,
     smooth_switching: AtomicBool,
 }
 
 impl FilterSwitches {
-    pub fn clip_guard(&self) -> bool {
-        self.clip_guard.load(Ordering::Relaxed)
-    }
-
     pub fn rumble_filter(&self) -> bool {
         self.rumble_filter.load(Ordering::Relaxed)
     }
@@ -74,7 +67,6 @@ impl FilterSwitches {
 impl Default for FilterSwitches {
     fn default() -> Self {
         Self {
-            clip_guard: AtomicBool::new(true),
             rumble_filter: AtomicBool::new(true),
             smooth_switching: AtomicBool::new(true),
         }
@@ -90,8 +82,6 @@ pub type SharedSoundParams = Arc<Mutex<SoundParams>>;
 pub struct SoundParams {
     match_volume: bool,
     target: LevelTarget,
-    /// Clip Guard as switched (see [`FilterSwitches`] for how it runs)
-    clip_guard: bool,
     rumble_filter: bool,
     smooth_switching: bool,
     switches: Arc<FilterSwitches>,
@@ -103,7 +93,6 @@ impl Default for SoundParams {
         Self {
             match_volume: true,
             target: LevelTarget::Normal,
-            clip_guard: true,
             rumble_filter: true,
             smooth_switching: true,
             switches: Arc::new(FilterSwitches::default()),
@@ -123,11 +112,6 @@ impl SoundParams {
 
     pub fn target(&self) -> LevelTarget {
         self.target
-    }
-
-    /// Clip Guard as switched; it runs anyway while the leveler is on
-    pub fn clip_guard(&self) -> bool {
-        self.clip_guard
     }
 
     pub fn rumble_filter(&self) -> bool {
@@ -158,24 +142,11 @@ impl SoundParams {
 
     pub fn set_match_volume(&mut self, on: bool) {
         self.match_volume = on;
-        self.update_clip_guard();
         self.changed();
-    }
-
-    fn update_clip_guard(&self) {
-        self.switches
-            .clip_guard
-            .store(self.clip_guard || self.match_volume, Ordering::Relaxed);
     }
 
     pub fn set_target(&mut self, target: LevelTarget) {
         self.target = target;
-        self.changed();
-    }
-
-    pub fn set_clip_guard(&mut self, on: bool) {
-        self.clip_guard = on;
-        self.update_clip_guard();
         self.changed();
     }
 
@@ -290,9 +261,9 @@ mod tests {
         let p = SoundParams::default();
         assert!(p.match_volume());
         assert_eq!(p.target(), LevelTarget::Normal);
-        assert!(p.clip_guard() && p.rumble_filter() && p.smooth_switching());
+        assert!(p.rumble_filter() && p.smooth_switching());
         let s = p.switches();
-        assert!(s.clip_guard() && s.rumble_filter() && s.smooth_switching());
+        assert!(s.rumble_filter() && s.smooth_switching());
     }
 
     #[test]
@@ -301,19 +272,6 @@ mod tests {
             assert_eq!(LevelTarget::parse(t.as_str()), Some(t));
         }
         assert_eq!(LevelTarget::parse("LOUD"), None);
-    }
-
-    #[test]
-    fn clip_guard_runs_while_the_leveler_is_on() {
-        let mut p = SoundParams::default();
-        let s = p.switches();
-        p.set_clip_guard(false);
-        assert!(!p.clip_guard());
-        assert!(s.clip_guard(), "the leveler still needs it");
-        p.set_match_volume(false);
-        assert!(!s.clip_guard());
-        p.set_match_volume(true);
-        assert!(s.clip_guard());
     }
 
     #[test]
@@ -331,10 +289,9 @@ mod tests {
         let g = p.generation();
         p.set_match_volume(false);
         p.set_target(LevelTarget::Loud);
-        p.set_clip_guard(false);
         p.set_rumble_filter(false);
         p.set_smooth_switching(false);
-        assert_eq!(p.generation(), g + 5);
+        assert_eq!(p.generation(), g + 4);
     }
 
     #[test]

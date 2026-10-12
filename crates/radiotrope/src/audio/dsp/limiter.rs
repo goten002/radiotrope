@@ -16,12 +16,10 @@
 
 use std::collections::VecDeque;
 use std::num::NonZero;
-use std::sync::Arc;
 use std::time::Duration;
 
 use rodio::Source;
 
-use super::sound::FilterSwitches;
 use crate::config::sound::*;
 
 /// Most channels handled; more pass through unlimited
@@ -63,10 +61,6 @@ struct Limiter {
     sum: f64,
     released: f32,
     frame: u64,
-    /// Switched off, it lets peaks through: the gain eases back to 1 and
-    /// nothing is clamped (the audio is still held back, so turning it on
-    /// or off makes no jump)
-    on: bool,
 }
 
 impl Limiter {
@@ -86,7 +80,6 @@ impl Limiter {
             sum: lookahead as f64,
             released: 1.0,
             frame: 0,
-            on: true,
         }
     }
 
@@ -99,9 +92,7 @@ impl Limiter {
             peak = peak.max(x.abs()).max(between_peak(x0, x1, x2, x));
             self.history[ch] = [x1, x2, x];
         }
-        let need = if !self.on {
-            1.0
-        } else if peak > self.ceiling && peak.is_finite() {
+        let need = if peak > self.ceiling && peak.is_finite() {
             self.ceiling / peak
         } else if peak.is_finite() {
             1.0
@@ -155,9 +146,6 @@ impl Limiter {
         if !x.is_finite() {
             return 0.0;
         }
-        if !self.on {
-            return x * gain;
-        }
         (x * gain).clamp(-self.ceiling, self.ceiling)
     }
 
@@ -184,8 +172,6 @@ pub struct LimiterSource<S> {
     /// audio in the old one
     carry: Option<f32>,
     ended: bool,
-    /// Clip Guard's switch; always on without one
-    switches: Option<Arc<FilterSwitches>>,
 }
 
 impl<S> LimiterSource<S>
@@ -204,14 +190,7 @@ where
             out: VecDeque::new(),
             carry: None,
             ended: false,
-            switches: None,
         }
-    }
-
-    /// Limit only while Clip Guard is on
-    pub fn with_switch(mut self, switches: Arc<FilterSwitches>) -> Self {
-        self.switches = Some(switches);
-        self
     }
 
     /// Read the next frame and limit it; false at the end of the stream.
@@ -240,9 +219,6 @@ where
             self.channels = channels;
             self.sample_rate = sample_rate;
             self.limiter = Limiter::new(usize::from(channels.get()), sample_rate.get());
-        }
-        if let Some(switches) = &self.switches {
-            self.limiter.on = switches.clip_guard();
         }
         self.frame.clear();
         self.frame.push(first);
@@ -475,38 +451,5 @@ mod tests {
         // Stereo part: alternating signs survive (channels not mixed up)
         let tail = &out[2_600..2_700];
         assert!(tail.windows(2).all(|w| w[0] * w[1] < 0.0));
-    }
-
-    #[test]
-    fn switched_off_it_lets_peaks_through() {
-        let mut params = crate::audio::dsp::SoundParams::default();
-        params.set_match_volume(false);
-        params.set_clip_guard(false);
-        let input = sine(2, 48_000, 440.0, 1.5, 0.5);
-        let out: Vec<f32> = LimiterSource::new(SamplesBuffer::new(
-            NonZero::new(2).unwrap(),
-            NonZero::new(48_000).unwrap(),
-            input,
-        ))
-        .with_switch(params.switches())
-        .collect();
-        let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
-        assert!(peak > 1.4, "{peak}");
-    }
-
-    #[test]
-    fn the_leveler_keeps_it_on() {
-        let mut params = crate::audio::dsp::SoundParams::default();
-        params.set_clip_guard(false);
-        let input = sine(2, 48_000, 440.0, 1.5, 0.5);
-        let out: Vec<f32> = LimiterSource::new(SamplesBuffer::new(
-            NonZero::new(2).unwrap(),
-            NonZero::new(48_000).unwrap(),
-            input,
-        ))
-        .with_switch(params.switches())
-        .collect();
-        let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
-        assert!(peak <= ceiling() + 1e-6, "{peak}");
     }
 }

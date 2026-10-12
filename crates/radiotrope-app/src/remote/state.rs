@@ -140,8 +140,6 @@ pub struct FiltersState {
     pub leveler: bool,
     /// "quiet", "normal" or "loud"
     pub level: &'static str,
-    /// Clip Guard as switched; it runs anyway while the leveler is on
-    pub clip_guard: bool,
     pub rumble_filter: bool,
     pub smooth_switching: bool,
     /// What the leveler does to the station playing now, in dB to half a
@@ -157,7 +155,6 @@ impl FiltersState {
         Self {
             leveler: s.match_volume,
             level: s.level_target.as_str(),
-            clip_guard: s.clip_guard,
             rumble_filter: s.rumble_filter,
             smooth_switching: s.smooth_switching,
             // To half a dB, so the gain gliding doesn't send an event for

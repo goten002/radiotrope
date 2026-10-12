@@ -386,15 +386,6 @@ impl AppController {
                     .unwrap_or_else(|e| e.into_inner())
                     .level_target = target;
             }
-            AppCommand::SetClipGuard(on) => {
-                if let Some(engine) = &self.engine {
-                    engine.set_clip_guard(on);
-                }
-                self.shared_state
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .clip_guard = on;
-            }
             AppCommand::SetRumbleFilter(on) => {
                 if let Some(engine) = &self.engine {
                     engine.set_rumble_filter(on);
@@ -1217,7 +1208,6 @@ mod tests {
             let settings = Settings {
                 match_volume: false,
                 match_level: "loud".into(),
-                clip_guard: false,
                 rumble_filter: false,
                 smooth_switching: false,
                 ..Settings::default()
@@ -1228,7 +1218,7 @@ mod tests {
             let s = state.lock().unwrap();
             assert!(!s.match_volume);
             assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Loud);
-            assert!(!s.clip_guard && !s.rumble_filter && !s.smooth_switching);
+            assert!(!s.rumble_filter && !s.smooth_switching);
         }
 
         #[test]

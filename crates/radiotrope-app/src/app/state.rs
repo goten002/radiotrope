@@ -52,7 +52,6 @@ pub enum AppCommand {
     // Filters
     SetMatchVolume(bool),
     SetLevelTarget(LevelTarget),
-    SetClipGuard(bool),
     SetRumbleFilter(bool),
     SetSmoothSwitching(bool),
 
@@ -132,7 +131,6 @@ impl AppCommand {
             AppCommand::SetLevelTarget(
                 LevelTarget::parse(&settings.match_level).unwrap_or_default(),
             ),
-            AppCommand::SetClipGuard(settings.clip_guard),
             AppCommand::SetRumbleFilter(settings.rumble_filter),
             AppCommand::SetSmoothSwitching(settings.smooth_switching),
         ]
@@ -195,8 +193,6 @@ pub struct AppSnapshot {
     // Filters
     pub match_volume: bool,
     pub level_target: LevelTarget,
-    /// Clip Guard as switched (it runs anyway while the leveler is on)
-    pub clip_guard: bool,
     pub rumble_filter: bool,
     pub smooth_switching: bool,
     /// What the leveler does to the station playing; `None` until the
@@ -375,7 +371,6 @@ impl Default for AppSnapshot {
             eq_preset_name: Some("Flat".to_string()),
             match_volume: true,
             level_target: LevelTarget::default(),
-            clip_guard: true,
             rumble_filter: true,
             smooth_switching: true,
             level: None,

@@ -409,6 +409,8 @@ pub struct RecordingTap<S> {
     generation: u64,
     /// Generation of the listening this tap feeds, 0 for none
     listen_generation: u64,
+    /// The station it is in, for listening (see `Listen::next_station`)
+    station: u64,
     until_check: u32,
     /// Position of the next sample within its frame (0 = frame start)
     frame_pos: u16,
@@ -424,12 +426,14 @@ where
     S: Source<Item = f32>,
 {
     pub fn new(inner: S, recorder: Recorder, point: TapPoint) -> Self {
+        let station = recorder.listen.station();
         Self {
             inner,
             recorder,
             point,
             generation: 0,
             listen_generation: 0,
+            station,
             until_check: 0,
             frame_pos: 0,
             frame_channels: 0,
@@ -537,6 +541,7 @@ impl<S> RecordingTap<S> {
             (true, true) => {
                 self.recorder.listen.submit(
                     self.listen_generation,
+                    self.station,
                     rate,
                     channels,
                     samples.clone(),
@@ -547,11 +552,13 @@ impl<S> RecordingTap<S> {
             (true, false) => self
                 .recorder
                 .submit(self.generation, rate, channels, samples),
-            (false, true) => {
-                self.recorder
-                    .listen
-                    .submit(self.listen_generation, rate, channels, samples)
-            }
+            (false, true) => self.recorder.listen.submit(
+                self.listen_generation,
+                self.station,
+                rate,
+                channels,
+                samples,
+            ),
             (false, false) => {}
         }
     }

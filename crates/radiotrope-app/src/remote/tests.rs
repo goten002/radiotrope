@@ -406,7 +406,6 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 AppCommand::SetEqEnabled(on) => state.lock().unwrap().eq_enabled = on,
                 AppCommand::SetMatchVolume(on) => state.lock().unwrap().match_volume = on,
                 AppCommand::SetLevelTarget(target) => state.lock().unwrap().level_target = target,
-                AppCommand::SetClipGuard(on) => state.lock().unwrap().clip_guard = on,
                 AppCommand::SetRumbleFilter(on) => state.lock().unwrap().rumble_filter = on,
                 AppCommand::SetSmoothSwitching(on) => state.lock().unwrap().smooth_switching = on,
                 AppCommand::SaveScheduleEntry { mut entry, reply } => {
@@ -1024,7 +1023,7 @@ async fn a_phone_sets_the_filters() {
     assert_eq!(status, 200, "{filters}");
     assert_eq!(filters["leveler"], true);
     assert_eq!(filters["level"], "normal");
-    assert_eq!(filters["clip_guard"], true);
+    assert_eq!(filters.get("clip_guard"), None, "gone");
     assert_eq!(filters["rumble_filter"], true);
     assert_eq!(filters["smooth_switching"], true);
     // Nothing playing
@@ -1039,7 +1038,6 @@ async fn a_phone_sets_the_filters() {
             Some(json!({
                 "leveler": false,
                 "level": "loud",
-                "clip_guard": false,
                 "rumble_filter": false,
                 "smooth_switching": false
             })),
@@ -1055,10 +1053,9 @@ async fn a_phone_sets_the_filters() {
     let f = &state["filters"];
     assert_eq!(f["leveler"], false);
     assert_eq!(f["level"], "loud");
-    assert_eq!(f["clip_guard"], false);
     assert_eq!(f["rumble_filter"], false);
 
-    for bad in [json!({"level": "LOUD"}), json!({"clip_guard": "yes"})] {
+    for bad in [json!({"level": "LOUD"}), json!({"rumble_filter": "yes"})] {
         let (status, body) = player.request("PUT", "/v1/filters", t, Some(bad)).await;
         assert_eq!(status, 400, "{body}");
     }

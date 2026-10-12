@@ -175,7 +175,6 @@ fn main() {
         state.eq_preset_name = settings.eq_preset_name.clone();
         state.match_volume = settings.match_volume;
         state.level_target = LevelTarget::parse(&settings.match_level).unwrap_or_default();
-        state.clip_guard = settings.clip_guard;
         state.rumble_filter = settings.rumble_filter;
         state.smooth_switching = settings.smooth_switching;
         state.accent_color = settings.accent_color.clone();
@@ -250,7 +249,6 @@ fn main() {
         &FilterSettings {
             match_volume: settings.match_volume,
             target: LevelTarget::parse(&settings.match_level).unwrap_or_default(),
-            clip_guard: settings.clip_guard,
             rumble_filter: settings.rumble_filter,
             smooth_switching: settings.smooth_switching,
         },
@@ -857,12 +855,6 @@ fn main() {
             if let Some(target) = LevelTarget::parse(&id) {
                 tx.send(app::state::AppCommand::SetLevelTarget(target));
             }
-        });
-    }
-    {
-        let tx = ui_tx.clone();
-        ui.on_clip_guard_toggled(move |on| {
-            tx.send(app::state::AppCommand::SetClipGuard(on));
         });
     }
     {
@@ -3179,7 +3171,6 @@ struct WindowSettings {
     eq_preset_name: Option<String>,
     match_volume: bool,
     match_level: LevelTarget,
-    clip_guard: bool,
     rumble_filter: bool,
     smooth_switching: bool,
     accent_color: Option<String>,
@@ -3237,7 +3228,6 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         eq_preset_name: s.eq_preset_name.clone(),
         match_volume: s.match_volume,
         match_level: s.level_target,
-        clip_guard: s.clip_guard,
         rumble_filter: s.rumble_filter,
         smooth_switching: s.smooth_switching,
         accent_color: s.accent_color.clone(),
@@ -3275,7 +3265,6 @@ fn write_settings(w: &WindowSettings) {
     settings.eq_preset_name = w.eq_preset_name.clone();
     settings.match_volume = w.match_volume;
     settings.match_level = w.match_level.as_str().to_string();
-    settings.clip_guard = w.clip_guard;
     settings.rumble_filter = w.rumble_filter;
     settings.smooth_switching = w.smooth_switching;
     settings.accent_color = w.accent_color.clone();
@@ -4500,7 +4489,6 @@ const AWAITING_STREAM: &str = "Awaiting stream";
 struct FilterSettings {
     match_volume: bool,
     target: LevelTarget,
-    clip_guard: bool,
     rumble_filter: bool,
     smooth_switching: bool,
 }
@@ -4510,7 +4498,6 @@ impl FilterSettings {
         Self {
             match_volume: s.match_volume,
             target: s.level_target,
-            clip_guard: s.clip_guard,
             rumble_filter: s.rumble_filter,
             smooth_switching: s.smooth_switching,
         }
@@ -4521,7 +4508,6 @@ impl FilterSettings {
 fn show_filters(ui: &App, f: &FilterSettings) {
     ui.set_match_volume(f.match_volume);
     ui.set_level_target(f.target.as_str().into());
-    ui.set_clip_guard(f.clip_guard);
     ui.set_rumble_filter(f.rumble_filter);
     ui.set_smooth_switching(f.smooth_switching);
 }
