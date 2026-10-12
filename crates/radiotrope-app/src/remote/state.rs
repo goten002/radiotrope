@@ -140,6 +140,12 @@ pub struct FiltersState {
     pub leveler: bool,
     /// "quiet", "normal" or "loud"
     pub level: &'static str,
+    /// The Hiss Reducer: "off", "light" or "strong"
+    pub hiss_reducer: &'static str,
+    pub hum_filter: bool,
+    /// The mains hum (50 or 60 Hz) the Hum Filter is taking out of the
+    /// station playing now; none when it hears none
+    pub hum_hz: Option<u32>,
     pub rumble_filter: bool,
     pub smooth_switching: bool,
     /// What the leveler does to the station playing now, in dB to half a
@@ -155,6 +161,9 @@ impl FiltersState {
         Self {
             leveler: s.match_volume,
             level: s.level_target.as_str(),
+            hiss_reducer: s.hiss.as_str(),
+            hum_filter: s.hum_filter,
+            hum_hz: s.hum.as_ref().filter(|_| s.hum_filter).and_then(|h| h.hz()),
             rumble_filter: s.rumble_filter,
             smooth_switching: s.smooth_switching,
             // To half a dB, so the gain gliding doesn't send an event for

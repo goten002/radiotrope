@@ -38,6 +38,19 @@ impl Biquad64 {
         )
     }
 
+    /// A notch at `freq`, `width` Hz wide, that leaves the rest alone
+    pub(crate) fn notch(freq: f64, width: f64, sample_rate: f64) -> Self {
+        let w = 2.0 * std::f64::consts::PI * (freq / sample_rate).min(0.49);
+        let (sin, cos) = w.sin_cos();
+        let q = (freq / width.max(0.1)).max(0.5);
+        let alpha = sin / (2.0 * q);
+        let a0 = 1.0 + alpha;
+        Self::new(
+            [1.0 / a0, -2.0 * cos / a0, 1.0 / a0],
+            [-2.0 * cos / a0, (1.0 - alpha) / a0],
+        )
+    }
+
     pub(crate) fn run(&mut self, x: f64) -> f64 {
         let y = self.b[0] * x + self.b[1] * self.x[0] + self.b[2] * self.x[1]
             - self.a[0] * self.y[0]
@@ -77,6 +90,15 @@ mod tests {
         assert!(gain_at(hp, 100.0, 48_000.0) > 0.97);
         assert!(gain_at(hp, 1_000.0, 48_000.0) > 0.999);
         assert!(gain_at(hp, 8.0, 48_000.0) < 0.15);
+    }
+
+    #[test]
+    fn a_notch_takes_out_only_its_frequency() {
+        let n = Biquad64::notch(50.0, 3.0, 48_000.0);
+        assert!(gain_at(n, 50.0, 48_000.0) < 0.05);
+        assert!(gain_at(n, 40.0, 48_000.0) > 0.97);
+        assert!(gain_at(n, 60.0, 48_000.0) > 0.97);
+        assert!(gain_at(n, 1_000.0, 48_000.0) > 0.999);
     }
 
     #[test]

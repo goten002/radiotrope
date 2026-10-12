@@ -1,7 +1,8 @@
-//! Settings for the filters: the Volume Leveler (station volume matching)
-//! and the switches of the Rumble Filter and Smooth Switching.
-//! What the leveler is doing to the station playing now is read back
-//! through [`LevelReadout`].
+//! Settings for the filters: the Volume Leveler (station volume matching),
+//! the Hiss Reducer's strength and the switches of the Hum Filter, the
+//! Rumble Filter and Smooth Switching. What the leveler is doing to the
+//! station playing now is read back through [`LevelReadout`], and the hum
+//! the Hum Filter removes through [`HumReadout`].
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,15 +47,70 @@ impl LevelTarget {
     }
 }
 
+/// How hard the Hiss Reducer works
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HissLevel {
+    #[default]
+    Off,
+    Light,
+    Strong,
+}
+
+impl HissLevel {
+    /// "off", "light" or "strong", as settings and the Remote API name it
+    pub fn as_str(self) -> &'static str {
+        match self {
+            HissLevel::Off => "off",
+            HissLevel::Light => "light",
+            HissLevel::Strong => "strong",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(HissLevel::Off),
+            "light" => Some(HissLevel::Light),
+            "strong" => Some(HissLevel::Strong),
+            _ => None,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            HissLevel::Off => 0,
+            HissLevel::Light => 1,
+            HissLevel::Strong => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => HissLevel::Light,
+            2 => HissLevel::Strong,
+            _ => HissLevel::Off,
+        }
+    }
+}
+
 /// The filters' on/off switches, read without the lock by the sources and
 /// the engine
 #[derive(Debug)]
 pub struct FilterSwitches {
+    hiss: AtomicU8,
+    hum_filter: AtomicBool,
     rumble_filter: AtomicBool,
     smooth_switching: AtomicBool,
 }
 
 impl FilterSwitches {
+    pub fn hiss(&self) -> HissLevel {
+        HissLevel::from_u8(self.hiss.load(Ordering::Relaxed))
+    }
+
+    pub fn hum_filter(&self) -> bool {
+        self.hum_filter.load(Ordering::Relaxed)
+    }
+
     pub fn rumble_filter(&self) -> bool {
         self.rumble_filter.load(Ordering::Relaxed)
     }
@@ -67,6 +123,8 @@ impl FilterSwitches {
 impl Default for FilterSwitches {
     fn default() -> Self {
         Self {
+            hiss: AtomicU8::new(0),
+            hum_filter: AtomicBool::new(true),
             rumble_filter: AtomicBool::new(true),
             smooth_switching: AtomicBool::new(true),
         }
@@ -82,6 +140,8 @@ pub type SharedSoundParams = Arc<Mutex<SoundParams>>;
 pub struct SoundParams {
     match_volume: bool,
     target: LevelTarget,
+    hiss: HissLevel,
+    hum_filter: bool,
     rumble_filter: bool,
     smooth_switching: bool,
     switches: Arc<FilterSwitches>,
@@ -93,6 +153,8 @@ impl Default for SoundParams {
         Self {
             match_volume: true,
             target: LevelTarget::Normal,
+            hiss: HissLevel::Off,
+            hum_filter: true,
             rumble_filter: true,
             smooth_switching: true,
             switches: Arc::new(FilterSwitches::default()),
@@ -112,6 +174,14 @@ impl SoundParams {
 
     pub fn target(&self) -> LevelTarget {
         self.target
+    }
+
+    pub fn hiss(&self) -> HissLevel {
+        self.hiss
+    }
+
+    pub fn hum_filter(&self) -> bool {
+        self.hum_filter
     }
 
     pub fn rumble_filter(&self) -> bool {
@@ -147,6 +217,18 @@ impl SoundParams {
 
     pub fn set_target(&mut self, target: LevelTarget) {
         self.target = target;
+        self.changed();
+    }
+
+    pub fn set_hiss(&mut self, level: HissLevel) {
+        self.hiss = level;
+        self.switches.hiss.store(level.to_u8(), Ordering::Relaxed);
+        self.changed();
+    }
+
+    pub fn set_hum_filter(&mut self, on: bool) {
+        self.hum_filter = on;
+        self.switches.hum_filter.store(on, Ordering::Relaxed);
         self.changed();
     }
 
@@ -252,6 +334,44 @@ impl LevelReadout {
     }
 }
 
+/// The hum the Hum Filter is removing now, written by the playing
+/// station's [`HumSource`](super::hum::HumSource) and read by the app.
+/// Lock-free.
+#[derive(Debug, Default)]
+pub struct HumReadout {
+    /// The station allowed to write (see [`LevelReadout`])
+    owner: AtomicU64,
+    /// The hum's frequency in Hz, 0 for none
+    hz: AtomicU32,
+}
+
+impl HumReadout {
+    pub fn new_shared() -> Arc<Self> {
+        Arc::new(Self::default())
+    }
+
+    /// 50 or 60 while hum is being removed
+    pub fn hz(&self) -> Option<u32> {
+        Some(self.hz.load(Ordering::Relaxed)).filter(|&hz| hz > 0)
+    }
+
+    pub(crate) fn claim(&self) -> u64 {
+        self.owner.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    pub(crate) fn set_if(&self, owner: u64, hz: Option<u32>) {
+        if self.owner.load(Ordering::Acquire) == owner {
+            self.hz.store(hz.unwrap_or(0), Ordering::Relaxed);
+        }
+    }
+
+    /// Nothing playing: and the last station can no longer write
+    pub(crate) fn clear(&self) {
+        self.owner.fetch_add(1, Ordering::AcqRel);
+        self.hz.store(0, Ordering::Relaxed);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,9 +381,15 @@ mod tests {
         let p = SoundParams::default();
         assert!(p.match_volume());
         assert_eq!(p.target(), LevelTarget::Normal);
-        assert!(p.rumble_filter() && p.smooth_switching());
+        assert!(p.hum_filter() && p.rumble_filter() && p.smooth_switching());
+        assert_eq!(
+            p.hiss(),
+            HissLevel::Off,
+            "it changes the sound: off at first"
+        );
         let s = p.switches();
-        assert!(s.rumble_filter() && s.smooth_switching());
+        assert!(s.hum_filter() && s.rumble_filter() && s.smooth_switching());
+        assert_eq!(s.hiss(), HissLevel::Off);
     }
 
     #[test]
@@ -272,6 +398,9 @@ mod tests {
             assert_eq!(LevelTarget::parse(t.as_str()), Some(t));
         }
         assert_eq!(LevelTarget::parse("LOUD"), None);
+        for h in [HissLevel::Off, HissLevel::Light, HissLevel::Strong] {
+            assert_eq!(HissLevel::parse(h.as_str()), Some(h));
+        }
     }
 
     #[test]
@@ -280,7 +409,10 @@ mod tests {
         let s = p.switches();
         p.set_rumble_filter(false);
         p.set_smooth_switching(false);
-        assert!(!s.rumble_filter() && !s.smooth_switching());
+        p.set_hum_filter(false);
+        p.set_hiss(HissLevel::Strong);
+        assert!(!s.rumble_filter() && !s.smooth_switching() && !s.hum_filter());
+        assert_eq!(s.hiss(), HissLevel::Strong);
     }
 
     #[test]
@@ -291,7 +423,9 @@ mod tests {
         p.set_target(LevelTarget::Loud);
         p.set_rumble_filter(false);
         p.set_smooth_switching(false);
-        assert_eq!(p.generation(), g + 4);
+        p.set_hum_filter(false);
+        p.set_hiss(HissLevel::Light);
+        assert_eq!(p.generation(), g + 6);
     }
 
     #[test]

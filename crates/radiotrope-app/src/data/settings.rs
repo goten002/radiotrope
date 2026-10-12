@@ -131,6 +131,14 @@ pub struct Settings {
     #[serde(default = "default_match_level")]
     pub match_level: String,
 
+    /// The Hiss Reducer: "off", "light" or "strong"
+    #[serde(default = "default_hiss_reducer")]
+    pub hiss_reducer: String,
+
+    /// Take out mains hum when it is heard
+    #[serde(default = "default_true")]
+    pub hum_filter: bool,
+
     #[serde(default = "default_true")]
     pub rumble_filter: bool,
 
@@ -241,6 +249,10 @@ fn default_match_level() -> String {
         .to_string()
 }
 
+fn default_hiss_reducer() -> String {
+    "off".to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -274,6 +286,8 @@ impl Default for Settings {
             eq_preset_name: Some("Flat".to_string()),
             match_volume: true,
             match_level: default_match_level(),
+            hiss_reducer: default_hiss_reducer(),
+            hum_filter: true,
             rumble_filter: true,
             smooth_switching: true,
             recording_dir: None,

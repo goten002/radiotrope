@@ -245,6 +245,37 @@ pub mod sound {
     /// The rumble filter's corner (Hz): below the lowest note of a bass
     pub const RUMBLE_HZ: f64 = 25.0;
 
+    /// How long the Hum Filter listens before each decision (ms)
+    pub const HUM_CHECK_MS: u32 = 1000;
+    /// How far a hum line stands above the sound beside it (dB)
+    pub const HUM_ABOVE_DB: f32 = 12.0;
+    /// Hz beside each line the Hum Filter compares it with
+    pub const HUM_BESIDE_HZ: f32 = 8.0;
+    /// The hum and harmonics it looks at, and removes
+    pub const HUM_HARMONICS: usize = 6;
+    /// Lines (of [`HUM_HARMONICS`]) that make it hum
+    pub const HUM_MIN_LINES: usize = 3;
+    /// Checks in a row with hum before it is removed
+    pub const HUM_FOUND_CHECKS: u32 = 6;
+    /// Checks in a row without it before removing stops
+    pub const HUM_GONE_CHECKS: u32 = 10;
+    /// Quietest hum worth removing (amplitude, about -80 dBFS)
+    pub const HUM_MIN_LEVEL: f32 = 1e-4;
+    /// Width of each notch (Hz)
+    pub const HUM_NOTCH_HZ: f64 = 3.0;
+    /// The notches fade in and out over this long (ms)
+    pub const HUM_FADE_MS: f32 = 1000.0;
+
+    /// The Hiss Reducer leaves the sound below this alone (Hz)...
+    pub const HISS_FROM_HZ: f32 = 1000.0;
+    /// ...and works fully above this (Hz)
+    pub const HISS_FULL_HZ: f32 = 2500.0;
+    /// How long it remembers the quietest each band got (s)
+    pub const HISS_MEMORY_SECS: f32 = 3.0;
+    /// Most it turns a band down: Light, Strong (dB)
+    pub const HISS_LIGHT_DB: f32 = -6.0;
+    pub const HISS_STRONG_DB: f32 = -12.0;
+
     /// A new station fades in over this long (ms)
     pub const FADE_IN_MS: f32 = 800.0;
     /// The old station fades out over this long when another starts (ms)

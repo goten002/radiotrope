@@ -60,18 +60,23 @@ component Line inherits Rectangle {
 }
 
 // The filters, each with its own switch; the Volume Leveler has its levels
-// and Off. What the leveler does to the station playing shows after its
+// and Off, the Hiss Reducer its strengths and Off. What the leveler does to the station playing shows after its
 // channels in the header.
 export component FiltersDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <bool> leveler-on: true;
     // "quiet", "normal" or "loud"
     in-out property <string> level-target: "normal";
+    // "off", "light" or "strong"
+    in-out property <string> hiss-reducer: "off";
+    in-out property <bool> hum-filter: true;
     in-out property <bool> rumble-filter: true;
     in-out property <bool> smooth-switching: true;
 
     callback leveler-toggled(bool);
     callback level-target-changed(string);
+    callback hiss-reducer-changed(string);
+    callback hum-filter-toggled(bool);
     callback rumble-filter-toggled(bool);
     callback smooth-switching-toggled(bool);
 
@@ -92,7 +97,7 @@ export component FiltersDialog inherits Rectangle {
         VerticalLayout {
             FilterRow {
                 // Its bubble opens over the rows below
-                z: 1;
+                z: 2;
                 name: "Volume Leveler";
                 info: "Some stations are much louder than others. The leveler turns loud ones down and quiet ones up, so you don't have to reach for the volume when you switch. Quiet, Normal and Loud set how loud they all play.";
                 info-below: true;
@@ -122,6 +127,34 @@ export component FiltersDialog inherits Rectangle {
                         }
                     }
                 }
+            }
+            Line { }
+            FilterRow {
+                // Its bubble also opens below, under the leveler's
+                z: 1;
+                name: "Hiss Reducer";
+                info: "Turns down the steady hiss or static some stations have in the background. Light is gentle; Strong removes more, but music can start to sound a little watery.";
+                info-below: true;
+                has-switch: false;
+
+                Picker {
+                    choices: [
+                        { id: "off", label: "Off" },
+                        { id: "light", label: "Light" },
+                        { id: "strong", label: "Strong" },
+                    ];
+                    compact: true;
+                    option-width: 54px;
+                    selected <=> root.hiss-reducer;
+                    changed(id) => { root.hiss-reducer-changed(id); }
+                }
+            }
+            Line { }
+            FilterRow {
+                name: "Hum Filter";
+                info: "Removes the low electrical buzz some stations carry. It only acts when it hears one.";
+                checked <=> root.hum-filter;
+                toggled(on) => { root.hum-filter-toggled(on); }
             }
             Line { }
             FilterRow {

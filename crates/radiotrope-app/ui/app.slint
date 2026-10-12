@@ -105,6 +105,8 @@ export component App inherits Window {
     // Filters
     callback match-volume-toggled(bool);
     callback level-target-changed(string);
+    callback hiss-reducer-changed(string);
+    callback hum-filter-toggled(bool);
     callback rumble-filter-toggled(bool);
     callback smooth-switching-toggled(bool);
     callback accent-color-changed(color);
@@ -340,6 +342,8 @@ export component App inherits Window {
     // Filters proxy properties
     in-out property <bool> match-volume <=> filters-dialog.leveler-on;
     in-out property <string> level-target <=> filters-dialog.level-target;
+    in-out property <string> hiss-reducer <=> filters-dialog.hiss-reducer;
+    in-out property <bool> hum-filter <=> filters-dialog.hum-filter;
     in-out property <bool> rumble-filter <=> filters-dialog.rumble-filter;
     in-out property <bool> smooth-switching <=> filters-dialog.smooth-switching;
 
@@ -387,6 +391,7 @@ export component App inherits Window {
     in-out property <string> stat-frames-played;
     in-out property <string> stat-decode-errors;
     in-out property <string> stat-underruns;
+    in-out property <string> stat-hum;
 
     // Shortcuts in the main window: Space plays or stops, Ctrl+F searches
     // stations, M mutes. Keys reach it only when the focused control
@@ -640,6 +645,7 @@ export component App inherits Window {
             stat-frames-played: root.stat-frames-played;
             stat-decode-errors: root.stat-decode-errors;
             stat-underruns: root.stat-underruns;
+            stat-hum: root.stat-hum;
         }
 
         eq-dialog := EqualizerDialog {
@@ -654,6 +660,8 @@ export component App inherits Window {
         filters-dialog := FiltersDialog {
             leveler-toggled(on) => { root.match-volume-toggled(on); }
             level-target-changed(id) => { root.level-target-changed(id); }
+            hiss-reducer-changed(id) => { root.hiss-reducer-changed(id); }
+            hum-filter-toggled(on) => { root.hum-filter-toggled(on); }
             rumble-filter-toggled(on) => { root.rumble-filter-toggled(on); }
             smooth-switching-toggled(on) => { root.smooth-switching-toggled(on); }
         }
