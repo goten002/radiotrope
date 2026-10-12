@@ -9,7 +9,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
-use radiotrope::audio::{LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat};
+use radiotrope::audio::{
+    HissLevel, HumReadout, LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat,
+};
 use radiotrope_app::data::schedule::{Action, Entry};
 use radiotrope_app::data::settings::Settings;
 
@@ -52,6 +54,8 @@ pub enum AppCommand {
     // Filters
     SetMatchVolume(bool),
     SetLevelTarget(LevelTarget),
+    SetHissReducer(HissLevel),
+    SetHumFilter(bool),
     SetRumbleFilter(bool),
     SetSmoothSwitching(bool),
 
@@ -131,6 +135,10 @@ impl AppCommand {
             AppCommand::SetLevelTarget(
                 LevelTarget::parse(&settings.match_level).unwrap_or_default(),
             ),
+            AppCommand::SetHissReducer(
+                HissLevel::parse(&settings.hiss_reducer).unwrap_or_default(),
+            ),
+            AppCommand::SetHumFilter(settings.hum_filter),
             AppCommand::SetRumbleFilter(settings.rumble_filter),
             AppCommand::SetSmoothSwitching(settings.smooth_switching),
         ]
@@ -193,11 +201,16 @@ pub struct AppSnapshot {
     // Filters
     pub match_volume: bool,
     pub level_target: LevelTarget,
+    pub hiss: HissLevel,
+    pub hum_filter: bool,
     pub rumble_filter: bool,
     pub smooth_switching: bool,
     /// What the leveler does to the station playing; `None` until the
     /// audio engine runs
     pub level: Option<Arc<LevelReadout>>,
+    /// The hum the Hum Filter takes out of the station playing; `None`
+    /// until the audio engine runs
+    pub hum: Option<Arc<HumReadout>>,
 
     // Recording
     /// Progress of the running recording, `None` when not recording
@@ -371,9 +384,12 @@ impl Default for AppSnapshot {
             eq_preset_name: Some("Flat".to_string()),
             match_volume: true,
             level_target: LevelTarget::default(),
+            hiss: HissLevel::Off,
+            hum_filter: true,
             rumble_filter: true,
             smooth_switching: true,
             level: None,
+            hum: None,
             recording: None,
             recording_notice: None,
             recording_setup: RecordingSetup::default(),

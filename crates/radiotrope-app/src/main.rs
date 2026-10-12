@@ -30,7 +30,7 @@ use slint::{Model, ModelRc, SharedPixelBuffer, VecModel};
 
 use radiotrope::audio::health::HealthState;
 use radiotrope::audio::{
-    AudioAnalysis, LevelPhase, LevelTarget, PlaybackState, SharedStats, StreamStats,
+    AudioAnalysis, HissLevel, LevelPhase, LevelTarget, PlaybackState, SharedStats, StreamStats,
 };
 use radiotrope::stream::StreamType;
 
@@ -175,6 +175,8 @@ fn main() {
         state.eq_preset_name = settings.eq_preset_name.clone();
         state.match_volume = settings.match_volume;
         state.level_target = LevelTarget::parse(&settings.match_level).unwrap_or_default();
+        state.hiss = HissLevel::parse(&settings.hiss_reducer).unwrap_or_default();
+        state.hum_filter = settings.hum_filter;
         state.rumble_filter = settings.rumble_filter;
         state.smooth_switching = settings.smooth_switching;
         state.accent_color = settings.accent_color.clone();
@@ -249,6 +251,8 @@ fn main() {
         &FilterSettings {
             match_volume: settings.match_volume,
             target: LevelTarget::parse(&settings.match_level).unwrap_or_default(),
+            hiss: HissLevel::parse(&settings.hiss_reducer).unwrap_or_default(),
+            hum_filter: settings.hum_filter,
             rumble_filter: settings.rumble_filter,
             smooth_switching: settings.smooth_switching,
         },
@@ -855,6 +859,20 @@ fn main() {
             if let Some(target) = LevelTarget::parse(&id) {
                 tx.send(app::state::AppCommand::SetLevelTarget(target));
             }
+        });
+    }
+    {
+        let tx = ui_tx.clone();
+        ui.on_hiss_reducer_changed(move |id| {
+            if let Some(level) = HissLevel::parse(&id) {
+                tx.send(app::state::AppCommand::SetHissReducer(level));
+            }
+        });
+    }
+    {
+        let tx = ui_tx.clone();
+        ui.on_hum_filter_toggled(move |on| {
+            tx.send(app::state::AppCommand::SetHumFilter(on));
         });
     }
     {
@@ -1507,6 +1525,7 @@ fn main() {
     let show_stats = {
         let ui_weak = ui.as_weak();
         let engine_stats = engine_stats.clone();
+        let state = shared_state.clone();
         std::rc::Rc::new(move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             // Stopped: clear what the last station left behind, so the
@@ -1526,6 +1545,11 @@ fn main() {
             let stats_copy = s.clone();
             drop(s);
             update_stats_ui(&ui, &stats_copy);
+            let hum = {
+                let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                hum_text(s.hum_filter, s.hum.as_ref().and_then(|h| h.hz()))
+            };
+            ui.set_stat_hum(hum.into());
         })
     };
     // Every 200 ms while the dialog is open; it stops itself once closed
@@ -3171,6 +3195,8 @@ struct WindowSettings {
     eq_preset_name: Option<String>,
     match_volume: bool,
     match_level: LevelTarget,
+    hiss: HissLevel,
+    hum_filter: bool,
     rumble_filter: bool,
     smooth_switching: bool,
     accent_color: Option<String>,
@@ -3228,6 +3254,8 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         eq_preset_name: s.eq_preset_name.clone(),
         match_volume: s.match_volume,
         match_level: s.level_target,
+        hiss: s.hiss,
+        hum_filter: s.hum_filter,
         rumble_filter: s.rumble_filter,
         smooth_switching: s.smooth_switching,
         accent_color: s.accent_color.clone(),
@@ -3265,6 +3293,8 @@ fn write_settings(w: &WindowSettings) {
     settings.eq_preset_name = w.eq_preset_name.clone();
     settings.match_volume = w.match_volume;
     settings.match_level = w.match_level.as_str().to_string();
+    settings.hiss_reducer = w.hiss.as_str().to_string();
+    settings.hum_filter = w.hum_filter;
     settings.rumble_filter = w.rumble_filter;
     settings.smooth_switching = w.smooth_switching;
     settings.accent_color = w.accent_color.clone();
@@ -3531,8 +3561,19 @@ fn clear_stats_ui(ui: &App) {
         App::set_stat_frames_played,
         App::set_stat_decode_errors,
         App::set_stat_underruns,
+        App::set_stat_hum,
     ] {
         set(ui, "--".into());
+    }
+}
+
+/// The Statistics dialog's "Hum removed": the mains frequency the Hum
+/// Filter is taking out, "None", or "Off"
+fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
+    match (filter_on, hz) {
+        (false, _) => "Off".into(),
+        (true, Some(hz)) => format!("{hz} Hz"),
+        (true, None) => "None".into(),
     }
 }
 
@@ -4489,6 +4530,8 @@ const AWAITING_STREAM: &str = "Awaiting stream";
 struct FilterSettings {
     match_volume: bool,
     target: LevelTarget,
+    hiss: HissLevel,
+    hum_filter: bool,
     rumble_filter: bool,
     smooth_switching: bool,
 }
@@ -4498,6 +4541,8 @@ impl FilterSettings {
         Self {
             match_volume: s.match_volume,
             target: s.level_target,
+            hiss: s.hiss,
+            hum_filter: s.hum_filter,
             rumble_filter: s.rumble_filter,
             smooth_switching: s.smooth_switching,
         }
@@ -4508,6 +4553,8 @@ impl FilterSettings {
 fn show_filters(ui: &App, f: &FilterSettings) {
     ui.set_match_volume(f.match_volume);
     ui.set_level_target(f.target.as_str().into());
+    ui.set_hiss_reducer(f.hiss.as_str().into());
+    ui.set_hum_filter(f.hum_filter);
     ui.set_rumble_filter(f.rumble_filter);
     ui.set_smooth_switching(f.smooth_switching);
 }

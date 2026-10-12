@@ -154,6 +154,7 @@ impl AppController {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.listen = Some(engine.listen());
                     state.level = Some(engine.level_readout());
+                    state.hum = Some(engine.hum_readout());
                 }
                 self.engine = Some(engine);
                 self.levels = Levels::load(unix_now());
@@ -385,6 +386,24 @@ impl AppController {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .level_target = target;
+            }
+            AppCommand::SetHissReducer(level) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_hiss(level);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hiss = level;
+            }
+            AppCommand::SetHumFilter(on) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_hum_filter(on);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hum_filter = on;
             }
             AppCommand::SetRumbleFilter(on) => {
                 if let Some(engine) = &self.engine {
@@ -1208,6 +1227,8 @@ mod tests {
             let settings = Settings {
                 match_volume: false,
                 match_level: "loud".into(),
+                hiss_reducer: "strong".into(),
+                hum_filter: false,
                 rumble_filter: false,
                 smooth_switching: false,
                 ..Settings::default()
@@ -1218,7 +1239,8 @@ mod tests {
             let s = state.lock().unwrap();
             assert!(!s.match_volume);
             assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Loud);
-            assert!(!s.rumble_filter && !s.smooth_switching);
+            assert_eq!(s.hiss, radiotrope::audio::HissLevel::Strong);
+            assert!(!s.hum_filter && !s.rumble_filter && !s.smooth_switching);
         }
 
         #[test]

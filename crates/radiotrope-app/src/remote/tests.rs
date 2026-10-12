@@ -406,6 +406,8 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 AppCommand::SetEqEnabled(on) => state.lock().unwrap().eq_enabled = on,
                 AppCommand::SetMatchVolume(on) => state.lock().unwrap().match_volume = on,
                 AppCommand::SetLevelTarget(target) => state.lock().unwrap().level_target = target,
+                AppCommand::SetHissReducer(level) => state.lock().unwrap().hiss = level,
+                AppCommand::SetHumFilter(on) => state.lock().unwrap().hum_filter = on,
                 AppCommand::SetRumbleFilter(on) => state.lock().unwrap().rumble_filter = on,
                 AppCommand::SetSmoothSwitching(on) => state.lock().unwrap().smooth_switching = on,
                 AppCommand::SaveScheduleEntry { mut entry, reply } => {
@@ -1024,9 +1026,12 @@ async fn a_phone_sets_the_filters() {
     assert_eq!(filters["leveler"], true);
     assert_eq!(filters["level"], "normal");
     assert_eq!(filters.get("clip_guard"), None, "gone");
+    assert_eq!(filters["hiss_reducer"], "off");
+    assert_eq!(filters["hum_filter"], true);
     assert_eq!(filters["rumble_filter"], true);
     assert_eq!(filters["smooth_switching"], true);
     // Nothing playing
+    assert_eq!(filters["hum_hz"], Value::Null);
     assert_eq!(filters["station_gain_db"], Value::Null);
     assert_eq!(filters["learning"], false);
 
@@ -1038,6 +1043,8 @@ async fn a_phone_sets_the_filters() {
             Some(json!({
                 "leveler": false,
                 "level": "loud",
+                "hiss_reducer": "strong",
+                "hum_filter": false,
                 "rumble_filter": false,
                 "smooth_switching": false
             })),
@@ -1053,9 +1060,16 @@ async fn a_phone_sets_the_filters() {
     let f = &state["filters"];
     assert_eq!(f["leveler"], false);
     assert_eq!(f["level"], "loud");
+    assert_eq!(f["hiss_reducer"], "strong");
+    assert_eq!(f["hum_filter"], false);
     assert_eq!(f["rumble_filter"], false);
 
-    for bad in [json!({"level": "LOUD"}), json!({"rumble_filter": "yes"})] {
+    for bad in [
+        json!({"level": "LOUD"}),
+        json!({"rumble_filter": "yes"}),
+        json!({"hiss_reducer": "medium"}),
+        json!({"hum_filter": 1}),
+    ] {
         let (status, body) = player.request("PUT", "/v1/filters", t, Some(bad)).await;
         assert_eq!(status, 400, "{body}");
     }

@@ -5,7 +5,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use radiotrope::audio::{LevelTarget, PRESETS};
+use radiotrope::audio::{HissLevel, LevelTarget, PRESETS};
 use radiotrope::config::eq::{FREQ_LABELS, MAX_GAIN_DB, MIN_GAIN_DB};
 use radiotrope_app::data::schedule::{self, Action, End, Entry, MAX_MINUTES};
 use radiotrope_app::data::settings::{parse_hex_rgb, RecordingFormat};
@@ -234,6 +234,10 @@ struct FiltersBody {
     #[serde(default)]
     level: Option<String>,
     #[serde(default)]
+    hiss_reducer: Option<String>,
+    #[serde(default)]
+    hum_filter: Option<bool>,
+    #[serde(default)]
     rumble_filter: Option<bool>,
     #[serde(default)]
     smooth_switching: Option<bool>,
@@ -260,6 +264,21 @@ pub(super) async fn set_filters(shared: &Shared, request: Request<Incoming>) -> 
                 )
             }
         }
+    }
+    if let Some(level) = body.hiss_reducer {
+        match HissLevel::parse(&level) {
+            Some(level) => commands.push(AppCommand::SetHissReducer(level)),
+            None => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "hiss_reducer must be off, light or strong",
+                )
+            }
+        }
+    }
+    if let Some(on) = body.hum_filter {
+        commands.push(AppCommand::SetHumFilter(on));
     }
     if let Some(on) = body.rumble_filter {
         commands.push(AppCommand::SetRumbleFilter(on));

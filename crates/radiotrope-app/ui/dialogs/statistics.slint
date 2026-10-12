@@ -82,6 +82,7 @@ export component StatisticsDialog inherits Rectangle {
     in property <string> stat-frames-played: "--";
     in property <string> stat-decode-errors: "--";
     in property <string> stat-underruns: "--";
+    in property <string> stat-hum: "--";
 
     if show-dialog: DialogShell {
         title: "Statistics";
@@ -122,6 +123,7 @@ export component StatisticsDialog inherits Rectangle {
                     InfoRow { label: "Frames"; value: root.stat-frames-played; }
                     InfoRow { label: "Errors"; value: root.stat-decode-errors; }
                     InfoRow { label: "Underruns"; value: root.stat-underruns; }
+                    InfoRow { label: "Hum removed"; value: root.stat-hum; }
                 }
             }
 

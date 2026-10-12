@@ -36,9 +36,12 @@ use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::dsp::output_stage::{OutputStage, SharedVolume};
 use super::dsp::sound::{
-    FilterSwitches, LevelReadout, LevelTarget, SharedSoundParams, SoundParams,
+    FilterSwitches, HissLevel, HumReadout, LevelReadout, LevelTarget, SharedSoundParams,
+    SoundParams,
 };
-use super::dsp::{CleanupSource, LevelSource, LimiterSource, ResampleSource};
+use super::dsp::{
+    CleanupSource, HissSource, HumSource, LevelSource, LimiterSource, ResampleSource,
+};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::output::{DefaultWatch, DeviceOutputs, Devices, Output, SilentOutput};
 use super::pcm::{decode_ahead, PcmFeed, PcmOutput};
@@ -301,6 +304,8 @@ struct SoundShared {
     /// The filters' switches, read without the lock
     switches: Arc<FilterSwitches>,
     readout: Arc<LevelReadout>,
+    /// The mains hum the Hum Filter is taking out
+    hum: Arc<HumReadout>,
     /// The next station's remembered loudness
     start_lufs: Arc<Mutex<Option<f32>>>,
 }
@@ -313,6 +318,7 @@ impl SoundShared {
             params,
             switches,
             readout: LevelReadout::new_shared(),
+            hum: HumReadout::new_shared(),
             start_lufs: Arc::new(Mutex::new(None)),
         }
     }
@@ -726,6 +732,11 @@ impl AudioEngine {
         self.sound.readout.clone()
     }
 
+    /// The mains hum the Hum Filter is taking out of the station playing now
+    pub fn hum_readout(&self) -> Arc<HumReadout> {
+        self.sound.hum.clone()
+    }
+
     fn with_sound(&self, change: impl FnOnce(&mut SoundParams)) {
         let mut p = self.sound.params.lock().unwrap_or_else(|e| e.into_inner());
         change(&mut p);
@@ -739,6 +750,16 @@ impl AudioEngine {
     /// How loud matched stations play
     pub fn set_level_target(&self, target: LevelTarget) {
         self.with_sound(|p| p.set_target(target));
+    }
+
+    /// The Hiss Reducer
+    pub fn set_hiss(&self, level: HissLevel) {
+        self.with_sound(|p| p.set_hiss(level));
+    }
+
+    /// The Hum Filter
+    pub fn set_hum_filter(&self, on: bool) {
+        self.with_sound(|p| p.set_hum_filter(on));
     }
 
     /// The Rumble Filter
@@ -931,6 +952,7 @@ impl AudioEngine {
                             flag.store(false, Ordering::SeqCst);
                         }
                         sound.readout.clear();
+                        sound.hum.clear();
                         // Playing: it fades out (while the next one starts)
                         match playing_source.take() {
                             Some(station)
@@ -1052,6 +1074,7 @@ impl AudioEngine {
                             flag.store(false, Ordering::SeqCst);
                         }
                         sound.readout.clear();
+                        sound.hum.clear();
                         // Playing: it fades out (while the next one starts)
                         match playing_source.take() {
                             Some(station)
@@ -1300,6 +1323,12 @@ impl AudioEngine {
                                     RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
                                 let source =
                                     CleanupSource::new(source).with_switch(sound.switches.clone());
+                                let source = HumSource::new(
+                                    source,
+                                    sound.switches.clone(),
+                                    sound.hum.clone(),
+                                );
+                                let source = HissSource::new(source, sound.switches.clone());
                                 let source = LevelSource::new(
                                     source,
                                     sound.params.clone(),
@@ -1433,6 +1462,7 @@ impl AudioEngine {
                         health_monitor = None;
                         playing_source = None;
                         sound.readout.clear();
+                        sound.hum.clear();
                         if let Ok(mut data) = analysis.lock() {
                             data.reset();
                         }
@@ -1649,6 +1679,7 @@ impl AudioEngine {
                                         sink.stop();
                                         playing_source = None;
                                         sound.readout.clear();
+                                        sound.hum.clear();
                                         if let Ok(mut data) = analysis.lock() {
                                             data.reset();
                                         }
