@@ -11,12 +11,21 @@
 //! silence at the pace of the clock, so a phone's player never runs dry.
 //!
 //! When the player fades a station out (Smooth Switching), the stream
-//! fades it out too, so a phone hears a switch as the speakers do.
+//! fades it out too. The next station starts on the speakers while the
+//! last one fades, but a stream can't play two things at once: the next
+//! station's audio waits until the fade is over, so the two don't take
+//! turns in the stream (which trembles).
+//!
+//! Packets go out at the pace they play, one every 20 ms. A station that
+//! starts hands over a burst (the audio decoded ahead for the speakers),
+//! and a burst makes a phone's jitter buffer speed the sound up to catch
+//! up, which warbles; paced, the phone hears an even stream.
 //!
 //! Like recording, listening never holds up playback: audio goes to the
 //! encoder with `try_send`, and a listener that falls too far behind is
 //! dropped (its stream ends, and the phone can connect again).
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::thread::{self, JoinHandle};
@@ -64,6 +73,18 @@ const SILENCE_AFTER: Duration = Duration::from_millis(500);
 /// How often the encoder looks at the clock while no audio comes
 const IDLE_TICK: Duration = Duration::from_millis(100);
 
+/// How long one Opus packet plays
+const PACKET_TIME: Duration = Duration::from_millis(20);
+
+/// Most packets held back for pacing (1 s); more go out at once, so the
+/// stream never lags far behind (the sound card's clock and the system's
+/// drift apart a little)
+const MOST_PACED: usize = 50;
+
+/// How long the next station's audio waits for the last one's fade at
+/// most, should the fading station stop sending
+const FADE_WAIT: Duration = Duration::from_millis(FADE_OUT_MS + 200);
+
 /// Pieces a listener may fall behind by before it is dropped (each piece is
 /// one batch of audio, about 46 ms, so about 12 s)
 const LISTENER_QUEUE: usize = 256;
@@ -86,14 +107,17 @@ impl std::fmt::Display for ListenError {
     }
 }
 
+/// A piece of audio from a tap
+struct Pcm {
+    /// The station it is from (see [`Listen::next_station`])
+    station: u64,
+    sample_rate: u32,
+    channels: u16,
+    samples: Vec<f32>,
+}
+
 enum EncoderMsg {
-    Pcm {
-        /// The station it is from (see [`Listen::next_station`])
-        station: u64,
-        sample_rate: u32,
-        channels: u16,
-        samples: Vec<f32>,
-    },
+    Pcm(Pcm),
     Finish,
 }
 
@@ -264,12 +288,12 @@ impl Listen {
         let Some(encoder) = encoder.as_ref().filter(|e| e.generation == generation) else {
             return;
         };
-        let msg = EncoderMsg::Pcm {
+        let msg = EncoderMsg::Pcm(Pcm {
             station,
             sample_rate,
             channels,
             samples,
-        };
+        });
         if encoder.tx.try_send(msg).is_err() {
             self.shared.dropped_batches.fetch_add(1, Ordering::Relaxed);
         }
@@ -387,6 +411,7 @@ impl Encoders {
     fn encode(
         &mut self,
         shared: &Weak<ListenShared>,
+        pacer: &mut Pacer,
         sample_rate: u32,
         channels: u16,
         samples: &[f32],
@@ -401,6 +426,7 @@ impl Encoders {
             .is_empty();
         if !listening {
             self.opus = None;
+            pacer.clear();
             return true;
         }
         let kbps =
@@ -419,8 +445,9 @@ impl Encoders {
                 encoder.set_bitrate(kbps);
                 self.kbps = kbps;
             }
+            let now = Instant::now();
             let sent = encoder.encode(sample_rate, channels, samples, |packet| {
-                broadcast(&shared, packet)
+                pacer.push(packet.into(), now)
             });
             if let Err(e) = sent {
                 self.opus = None;
@@ -445,50 +472,184 @@ fn fail(shared: &ListenShared, error: &str) {
 /// of `shared`
 fn encoder_loop(shared: Weak<ListenShared>, rx: Receiver<EncoderMsg>) {
     let mut encoders = Encoders::default();
-    let mut fade = Fade::default();
+    let mut switch = Switch::default();
+    let mut pacer = Pacer::default();
+    let mut ready = Vec::new();
     let mut last_audio = Instant::now();
     // How far silence has been filled in since the last audio
     let mut silence_until: Option<Instant> = None;
     loop {
-        match rx.recv_timeout(IDLE_TICK) {
-            Ok(EncoderMsg::Pcm {
-                station,
-                sample_rate,
-                channels,
-                samples,
-            }) => {
-                let mut clamped: Vec<f32> = samples.iter().map(|s| s.clamp(-1.0, 1.0)).collect();
-                let fading = shared
-                    .upgrade()
-                    .map_or(0, |s| s.fading.load(Ordering::SeqCst));
-                if fading != 0 && station == fading {
-                    fade.apply(station, sample_rate, channels, &mut clamped);
+        let wait = pacer
+            .wait(Instant::now())
+            .map_or(IDLE_TICK, |w| w.min(IDLE_TICK));
+        let fading = || {
+            shared
+                .upgrade()
+                .map_or(0, |s| s.fading.load(Ordering::SeqCst))
+        };
+        match rx.recv_timeout(wait) {
+            Ok(EncoderMsg::Pcm(mut pcm)) => {
+                for x in &mut pcm.samples {
+                    *x = x.clamp(-1.0, 1.0);
                 }
-                if !encoders.encode(&shared, sample_rate, channels, &clamped) {
-                    return;
-                }
-                last_audio = Instant::now();
-                silence_until = None;
+                switch.take(pcm, fading(), Instant::now(), &mut ready);
             }
             Ok(EncoderMsg::Finish) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {}
         }
+        switch.expire(fading(), Instant::now(), &mut ready);
+        for pcm in ready.drain(..) {
+            if !encoders.encode(
+                &shared,
+                &mut pacer,
+                pcm.sample_rate,
+                pcm.channels,
+                &pcm.samples,
+            ) {
+                return;
+            }
+            last_audio = Instant::now();
+            silence_until = None;
+        }
 
+        // Silence is due once the phone would run out: the audio has
+        // stopped coming, and what is paced has gone out
         let now = Instant::now();
-        if now.duration_since(last_audio) < SILENCE_AFTER {
-            continue;
+        let quiet_since = pacer.runs_out().map_or(last_audio, |t| t.max(last_audio));
+        if pacer.is_empty()
+            && now.saturating_duration_since(quiet_since) >= SILENCE_AFTER
+            && !switch.holding()
+        {
+            let from = silence_until.unwrap_or(quiet_since);
+            let frames = (now.duration_since(from).as_secs_f64() * f64::from(SILENCE_RATE)) as u64;
+            if frames > 0 {
+                let silence = vec![0.0f32; frames as usize * usize::from(LISTEN_CHANNELS)];
+                if !encoders.encode(&shared, &mut pacer, SILENCE_RATE, LISTEN_CHANNELS, &silence) {
+                    return;
+                }
+                silence_until =
+                    Some(from + Duration::from_secs_f64(frames as f64 / f64::from(SILENCE_RATE)));
+            }
         }
-        let from = silence_until.unwrap_or(last_audio);
-        let frames = (now.duration_since(from).as_secs_f64() * f64::from(SILENCE_RATE)) as u64;
-        if frames == 0 {
-            continue;
-        }
-        let silence = vec![0.0f32; frames as usize * usize::from(LISTEN_CHANNELS)];
-        if !encoders.encode(&shared, SILENCE_RATE, LISTEN_CHANNELS, &silence) {
+
+        let Some(listening) = shared.upgrade() else {
             return;
+        };
+        pacer.send_due(Instant::now(), |packet| broadcast(&listening, packet));
+    }
+}
+
+/// Puts a switch in order. While the last station fades out, the next
+/// one's audio waits; once the fade is over, what the fading station still
+/// sends is dropped (it is silent, and would hold the next one back).
+#[derive(Default)]
+struct Switch {
+    fade: Fade,
+    /// The next station's audio, waiting for the fade
+    waiting: VecDeque<Pcm>,
+    /// When the first of it came
+    waiting_since: Option<Instant>,
+}
+
+impl Switch {
+    /// Take a piece of audio while station `fading` fades out (0 for
+    /// none); what may be encoded now goes to `ready`, in order
+    fn take(&mut self, mut pcm: Pcm, fading: u64, now: Instant, ready: &mut Vec<Pcm>) {
+        if fading != 0 && pcm.station == fading {
+            if self.fade.finished(fading) {
+                return;
+            }
+            self.fade
+                .apply(fading, pcm.sample_rate, pcm.channels, &mut pcm.samples);
+            ready.push(pcm);
+            if self.fade.finished(fading) {
+                self.release(ready);
+            }
+        } else if fading != 0 && !self.fade.finished(fading) {
+            self.waiting_since.get_or_insert(now);
+            self.waiting.push_back(pcm);
+        } else {
+            self.release(ready);
+            ready.push(pcm);
         }
-        silence_until =
-            Some(from + Duration::from_secs_f64(frames as f64 / f64::from(SILENCE_RATE)));
+    }
+
+    /// Let the next station through if the fading one stopped sending
+    fn expire(&mut self, fading: u64, now: Instant, ready: &mut Vec<Pcm>) {
+        let stale = self
+            .waiting_since
+            .is_some_and(|since| now.duration_since(since) >= FADE_WAIT);
+        if stale || (fading != 0 && self.fade.finished(fading)) || fading == 0 {
+            if stale {
+                self.fade.finish(fading);
+            }
+            self.release(ready);
+        }
+    }
+
+    fn release(&mut self, ready: &mut Vec<Pcm>) {
+        ready.extend(self.waiting.drain(..));
+        self.waiting_since = None;
+    }
+
+    /// Whether audio is waiting (so no silence is due)
+    fn holding(&self) -> bool {
+        !self.waiting.is_empty()
+    }
+}
+
+/// Sends packets at the pace they play, so a burst of audio reaches a
+/// phone as an even stream
+#[derive(Default)]
+struct Pacer {
+    queue: VecDeque<Arc<[u8]>>,
+    /// When the next packet is due
+    next: Option<Instant>,
+}
+
+impl Pacer {
+    fn push(&mut self, packet: Arc<[u8]>, now: Instant) {
+        // Nothing waiting and the clock past due: start over from now,
+        // rather than catch up on the time nothing came
+        if self.queue.is_empty() && self.next.is_none_or(|next| next < now) {
+            self.next = Some(now);
+        }
+        self.queue.push_back(packet);
+    }
+
+    /// Send what is due by `now`, and what is over [`MOST_PACED`]
+    fn send_due(&mut self, now: Instant, mut send: impl FnMut(&[u8])) {
+        while let Some(packet) = self.queue.front() {
+            let due = self.next.unwrap_or(now);
+            if due > now && self.queue.len() <= MOST_PACED {
+                break;
+            }
+            send(packet);
+            self.queue.pop_front();
+            self.next = Some(due + PACKET_TIME);
+        }
+    }
+
+    /// How long until the next packet is due, if one waits
+    fn wait(&self, now: Instant) -> Option<Duration> {
+        (!self.queue.is_empty()).then(|| {
+            self.next
+                .map_or(Duration::ZERO, |n| n.saturating_duration_since(now))
+        })
+    }
+
+    fn clear(&mut self) {
+        self.queue.clear();
+        self.next = None;
+    }
+
+    fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// When what has been sent finishes playing
+    fn runs_out(&self) -> Option<Instant> {
+        self.next
     }
 }
 
@@ -496,8 +657,9 @@ fn encoder_loop(shared: Weak<ListenShared>, rx: Receiver<EncoderMsg>) {
 #[derive(Default)]
 struct Fade {
     station: u64,
-    /// Frames of it faded so far
+    /// Frames of it faded so far, of `total`
     frames: u64,
+    total: u64,
 }
 
 impl Fade {
@@ -508,6 +670,7 @@ impl Fade {
             self.frames = 0;
         }
         let total = (u64::from(sample_rate) * FADE_OUT_MS / 1000).max(1);
+        self.total = total;
         for frame in samples.chunks_mut(usize::from(channels.max(1))) {
             let t = 1.0 - (self.frames.min(total) as f32 / total as f32);
             // Smoothstep down: no corner at either end
@@ -517,6 +680,18 @@ impl Fade {
             }
             self.frames += 1;
         }
+    }
+
+    /// Whether `station` has faded all the way out
+    fn finished(&self, station: u64) -> bool {
+        self.station == station && self.total > 0 && self.frames >= self.total
+    }
+
+    /// Count `station` as faded out
+    fn finish(&mut self, station: u64) {
+        self.station = station;
+        self.total = 1;
+        self.frames = 1;
     }
 }
 
@@ -737,5 +912,118 @@ mod tests {
         assert_eq!(listen.shared.fading.load(Ordering::SeqCst), first);
         assert_ne!(first, second);
         assert_eq!(listen.station(), second);
+    }
+
+    fn pcm(station: u64, frames: usize, value: f32) -> Pcm {
+        Pcm {
+            station,
+            sample_rate: 1_000,
+            channels: 1,
+            samples: vec![value; frames],
+        }
+    }
+
+    /// The next station starts while the last fades (as on the speakers):
+    /// its audio waits, so the two don't take turns in the stream
+    #[test]
+    fn the_next_station_waits_for_the_fade() {
+        let mut switch = Switch::default();
+        let mut ready = Vec::new();
+        let now = Instant::now();
+        // Station 1 fades (400 frames at 1 kHz); station 2 comes in between
+        switch.take(pcm(1, 100, 1.0), 1, now, &mut ready);
+        switch.take(pcm(2, 100, 0.5), 1, now, &mut ready);
+        switch.take(pcm(1, 100, 1.0), 1, now, &mut ready);
+        switch.take(pcm(2, 100, 0.5), 1, now, &mut ready);
+        switch.expire(1, now, &mut ready);
+        assert_eq!(
+            ready.iter().map(|p| p.station).collect::<Vec<_>>(),
+            [1, 1],
+            "station 2 waits"
+        );
+        assert!(switch.holding());
+        // The fade ends: station 2 follows, in order
+        switch.take(pcm(1, 300, 1.0), 1, now, &mut ready);
+        assert_eq!(
+            ready.iter().map(|p| p.station).collect::<Vec<_>>(),
+            [1, 1, 1, 2, 2]
+        );
+        assert!(!switch.holding());
+        // What station 1 still sends is silent and dropped; 2 plays on
+        ready.clear();
+        switch.take(pcm(1, 100, 1.0), 1, now, &mut ready);
+        switch.take(pcm(2, 100, 0.5), 1, now, &mut ready);
+        assert_eq!(ready.iter().map(|p| p.station).collect::<Vec<_>>(), [2]);
+    }
+
+    #[test]
+    fn the_next_station_goes_on_if_the_fading_one_stops() {
+        let mut switch = Switch::default();
+        let mut ready = Vec::new();
+        let now = Instant::now();
+        switch.take(pcm(1, 100, 1.0), 1, now, &mut ready);
+        switch.take(pcm(2, 100, 0.5), 1, now, &mut ready);
+        switch.expire(1, now + FADE_WAIT / 2, &mut ready);
+        assert_eq!(ready.len(), 1);
+        switch.expire(1, now + FADE_WAIT, &mut ready);
+        assert_eq!(ready.iter().map(|p| p.station).collect::<Vec<_>>(), [1, 2]);
+        // And station 1 counts as gone
+        ready.clear();
+        switch.take(pcm(1, 100, 1.0), 1, now, &mut ready);
+        assert!(ready.is_empty());
+    }
+
+    #[test]
+    fn without_a_fade_audio_passes_straight_through() {
+        let mut switch = Switch::default();
+        let mut ready = Vec::new();
+        let now = Instant::now();
+        switch.take(pcm(1, 100, 1.0), 0, now, &mut ready);
+        switch.take(pcm(2, 100, 1.0), 0, now, &mut ready);
+        assert_eq!(ready.len(), 2);
+        assert!(ready.iter().all(|p| p.samples.iter().all(|&x| x == 1.0)));
+    }
+
+    #[test]
+    fn packets_go_out_at_the_pace_they_play() {
+        let mut pacer = Pacer::default();
+        let start = Instant::now();
+        // A burst of 10 packets
+        for i in 0..10u8 {
+            pacer.push(Arc::from(&[i][..]), start);
+        }
+        let mut sent = Vec::new();
+        pacer.send_due(start, |p| sent.push(p[0]));
+        assert_eq!(sent, [0], "one now");
+        pacer.send_due(start + Duration::from_millis(19), |p| sent.push(p[0]));
+        assert_eq!(sent.len(), 1, "none early");
+        assert_eq!(
+            pacer.wait(start + Duration::from_millis(19)),
+            Some(Duration::from_millis(1))
+        );
+        pacer.send_due(start + Duration::from_millis(60), |p| sent.push(p[0]));
+        assert_eq!(sent, [0, 1, 2, 3], "one per 20 ms, in order");
+        // After a pause it starts over, rather than rushing to catch up
+        pacer.send_due(start + Duration::from_secs(10), |p| sent.push(p[0]));
+        assert_eq!(sent.len(), 10);
+        let later = start + Duration::from_secs(20);
+        pacer.push(Arc::from(&[10u8][..]), later);
+        pacer.push(Arc::from(&[11u8][..]), later);
+        pacer.send_due(later, |p| sent.push(p[0]));
+        assert_eq!(sent.len(), 11);
+        assert_eq!(pacer.wait(later), Some(PACKET_TIME));
+    }
+
+    #[test]
+    fn the_pacer_never_holds_back_more_than_a_second() {
+        let mut pacer = Pacer::default();
+        let start = Instant::now();
+        for _ in 0..(MOST_PACED + 20) {
+            pacer.push(Arc::from(&[0u8][..]), start);
+        }
+        let mut count = 0;
+        pacer.send_due(start, |_| count += 1);
+        assert_eq!(count, 20);
+        assert_eq!(pacer.queue.len(), MOST_PACED);
     }
 }

@@ -983,16 +983,17 @@ mod tests {
         let status = recorder.stop().unwrap();
         assert_eq!(status.error, None);
         assert!(status.duration.abs_diff(Duration::from_secs(2)) < Duration::from_millis(50));
-        // Two seconds is 100 Opus packets; the phone got the audio, not
-        // just silence, which would take two seconds to come
+        // The phone gets the tone, not silence (whose packets are a few
+        // bytes); packets come at the pace they play
         let started = Instant::now();
-        let mut got = 0;
-        while got < 80 && started.elapsed() < Duration::from_secs(1) {
-            if phone.recv_timeout(Duration::from_millis(50)).is_ok() {
-                got += 1;
+        let mut sizes = Vec::new();
+        while sizes.len() < 20 && started.elapsed() < Duration::from_secs(2) {
+            if let Ok(packet) = phone.recv_timeout(Duration::from_millis(50)) {
+                sizes.push(packet.len());
             }
         }
-        assert!(got >= 80, "the phone got {got} packets");
+        assert_eq!(sizes.len(), 20);
+        assert!(sizes.iter().all(|&n| n > 30), "{sizes:?}");
     }
 
     #[test]
