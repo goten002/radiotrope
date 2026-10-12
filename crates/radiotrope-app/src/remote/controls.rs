@@ -5,14 +5,14 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use radiotrope::audio::PRESETS;
+use radiotrope::audio::{Channels, LevelTarget, PRESETS};
 use radiotrope::config::eq::{FREQ_LABELS, MAX_GAIN_DB, MIN_GAIN_DB};
 use radiotrope_app::data::schedule::{self, Action, End, Entry, MAX_MINUTES};
 use radiotrope_app::data::settings::{parse_hex_rgb, RecordingFormat};
 use radiotrope_app::data::types::url_to_id;
 
 use super::server::{control_error, done, error, json, no_content, read_json, Body, Shared};
-use super::state::{EqState, SleepState, State, ACCENT_SWATCHES, DEFAULT_ACCENT};
+use super::state::{EqState, SleepState, SoundState, State, ACCENT_SWATCHES, DEFAULT_ACCENT};
 use crate::app::state::{AppCommand, RecordingSettingsChange};
 use crate::control::{EntryRequest, RecordingStart, RecordingStop};
 
@@ -207,6 +207,66 @@ pub(super) async fn set_eq(shared: &Shared, request: Request<Incoming>) -> Respo
             return bad("preamp must be a number");
         }
         commands.push(AppCommand::SetEqPreamp(db.clamp(MIN_GAIN_DB, MAX_GAIN_DB)));
+    }
+    for command in commands {
+        if let Err(e) = shared.control.send(command) {
+            return control_error(e);
+        }
+    }
+    no_content()
+}
+
+// -- Sound -------------------------------------------------------------------
+
+/// `GET /v1/sound`: station volume matching, channels and balance
+pub(super) fn sound(shared: &Shared) -> Response<Body> {
+    json(
+        StatusCode::OK,
+        &SoundState::from_snapshot(&shared.control.snapshot()),
+    )
+}
+
+/// What to change; what is left out stays
+#[derive(Deserialize)]
+struct SoundBody {
+    #[serde(default)]
+    match_volume: Option<bool>,
+    #[serde(default)]
+    level: Option<String>,
+    #[serde(default)]
+    channels: Option<String>,
+    #[serde(default)]
+    balance: Option<f32>,
+}
+
+/// `PUT /v1/sound`
+pub(super) async fn set_sound(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
+    let body: SoundBody = match read_json(request).await {
+        Ok(body) => body,
+        Err(response) => return *response,
+    };
+    let bad = |text: &str| error(StatusCode::BAD_REQUEST, "bad_request", text);
+    let mut commands = Vec::new();
+    if let Some(on) = body.match_volume {
+        commands.push(AppCommand::SetMatchVolume(on));
+    }
+    if let Some(level) = body.level {
+        match LevelTarget::parse(&level) {
+            Some(target) => commands.push(AppCommand::SetLevelTarget(target)),
+            None => return bad("level must be quiet, normal or loud"),
+        }
+    }
+    if let Some(channels) = body.channels {
+        match Channels::parse(&channels) {
+            Some(channels) => commands.push(AppCommand::SetChannels(channels)),
+            None => return bad("channels must be stereo, mono or swap"),
+        }
+    }
+    if let Some(balance) = body.balance {
+        if !balance.is_finite() {
+            return bad("balance must be a number");
+        }
+        commands.push(AppCommand::SetBalance(balance.clamp(-1.0, 1.0)));
     }
     for command in commands {
         if let Err(e) = shared.control.send(command) {

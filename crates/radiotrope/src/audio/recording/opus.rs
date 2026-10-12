@@ -8,8 +8,8 @@ use std::ffi::c_int;
 
 use opusic_sys as ffi;
 
-use super::resample::Resampler;
 use super::{AudioEncoder, RecordingTags};
+use crate::audio::dsp::resample::Resampler;
 
 /// Opus always works at 48 kHz.
 const OPUS_RATE: u32 = 48_000;

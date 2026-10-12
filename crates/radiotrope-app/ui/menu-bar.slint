@@ -282,6 +282,7 @@ export component MenuBar inherits Rectangle {
     in property <bool> can-undo-import;
     callback open-statistics();
     callback open-equalizer();
+    callback open-sound();
     callback open-accent-color();
     in-out property <bool> show-station-stats: true;
     // The header visualizer tile (View > Visualizer)
@@ -860,6 +861,14 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/sliders.svg");
                     clicked => {
                         root.open-equalizer();
+                        tools-popup.close();
+                    }
+                }
+                MenuItem {
+                    label: "Sound";
+                    icon: @image-url("icons/volume-high.svg");
+                    clicked => {
+                        root.open-sound();
                         tools-popup.close();
                     }
                 }

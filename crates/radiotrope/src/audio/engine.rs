@@ -16,6 +16,7 @@ use crossbeam_channel::{
 };
 use rodio::Player;
 
+use crate::config::sound::FADE_OUT_MS;
 use crate::config::timeouts::{
     BUFFERING_STALL_THRESHOLD_SECS, BUFFERING_TIMEOUT_SECS, PROBE_TIMEOUT_SECS,
     STREAM_STALL_TIMEOUT_SECS,
@@ -33,9 +34,12 @@ fn volume_curve(linear: f32) -> f32 {
 use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
+use super::dsp::output_stage::{OutputStage, SharedVolume};
+use super::dsp::sound::{Channels, LevelReadout, LevelTarget, SharedSoundParams, SoundParams};
+use super::dsp::{ChannelSource, CleanupSource, LevelSource, LimiterSource, ResampleSource};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::output::{DefaultWatch, DeviceOutputs, Devices, Output, SilentOutput};
-use super::pcm::{decode_ahead, PcmFeed};
+use super::pcm::{decode_ahead, PcmFeed, PcmOutput};
 use super::recording::{Listen, Recorder, RecordingTap, TapPoint};
 use super::stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
 use super::types::{AudioAnalysis, AudioCommand, AudioEvent, EngineEvent, PlaybackState, StreamId};
@@ -216,24 +220,114 @@ fn new_player(output: Option<&Output>) -> Player {
     }
 }
 
-/// Play on `output` from now on: a new player, at the same volume and
-/// paused or not, carries on with the station where it was
+/// The station playing, kept here so it can move to another device
+struct Station {
+    feed: PcmFeed,
+    /// Set to fade it out (when another station starts)
+    fade: Arc<AtomicBool>,
+}
+
+impl Station {
+    fn new(feed: PcmFeed) -> Self {
+        Self {
+            feed,
+            fade: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Its audio for a player on `output`
+    fn output(
+        &self,
+        volume: &Arc<SharedVolume>,
+        output: Option<&Output>,
+    ) -> OutputStage<PcmOutput> {
+        OutputStage::new(
+            self.feed.output(),
+            volume.clone(),
+            self.fade.clone(),
+            output.is_some_and(Output::takes_16_bit),
+        )
+    }
+}
+
+/// A station fading out, after a Stop or while the next one starts.
+/// Dropping it stops it and its stream.
+struct Fading {
+    sink: Player,
+    _station: Station,
+    cancel: Option<StreamCancel>,
+    _producer_probing_flag: Option<Arc<AtomicBool>>,
+    _producer_handle: Option<JoinHandle<()>>,
+    until: Instant,
+}
+
+impl Fading {
+    /// Fade `station` out on its player, leaving `sink` a new one
+    fn start(
+        station: Station,
+        sink: &mut Player,
+        output: Option<&Output>,
+        cancel: Option<StreamCancel>,
+        producer_probing_flag: Option<Arc<AtomicBool>>,
+        producer_handle: Option<JoinHandle<()>>,
+    ) -> Self {
+        station.fade.store(true, Ordering::SeqCst);
+        Self {
+            sink: std::mem::replace(sink, new_player(output)),
+            _station: station,
+            cancel,
+            _producer_probing_flag: producer_probing_flag,
+            _producer_handle: producer_handle,
+            until: Instant::now() + Duration::from_millis(FADE_OUT_MS),
+        }
+    }
+}
+
+impl Drop for Fading {
+    fn drop(&mut self) {
+        self.sink.stop();
+        if let Some(ref cancel) = self.cancel {
+            cancel.cancel();
+        }
+    }
+}
+
+/// What the Sound filters share between the engine and its owner
+#[derive(Clone)]
+struct SoundShared {
+    params: SharedSoundParams,
+    readout: Arc<LevelReadout>,
+    /// The next station's remembered loudness
+    start_lufs: Arc<Mutex<Option<f32>>>,
+}
+
+impl SoundShared {
+    fn new() -> Self {
+        Self {
+            params: SoundParams::new_shared(),
+            readout: LevelReadout::new_shared(),
+            start_lufs: Arc::new(Mutex::new(None)),
+        }
+    }
+}
+
+/// Play on `output` from now on: a new player, paused or not, carries on
+/// with the station where it was
 fn play_on(
     output: Output,
     stream: &mut Option<Output>,
     sink: &mut Player,
-    playing: Option<&PcmFeed>,
-    volume: f32,
+    playing: Option<&Station>,
+    volume: &Arc<SharedVolume>,
     paused: bool,
 ) {
     let new_sink = new_player(Some(&output));
-    new_sink.set_volume(volume_curve(volume));
     if paused {
         new_sink.pause();
     }
-    if let Some(feed) = playing {
-        feed.set_ahead(decode_ahead(Some(&output)));
-        new_sink.append(feed.output());
+    if let Some(station) = playing {
+        station.feed.set_ahead(decode_ahead(Some(&output)));
+        new_sink.append(station.output(volume, Some(&output)));
     }
     // The old player goes before its device
     *sink = new_sink;
@@ -364,6 +458,7 @@ pub struct AudioEngine {
     /// The id the last play request got
     last_stream: AtomicU64,
     eq_params: SharedEqParams,
+    sound: SoundShared,
     recorder: Recorder,
     #[cfg(test)]
     output_lost: Arc<AtomicBool>,
@@ -425,6 +520,8 @@ impl AudioEngine {
         let shared_stats_thread = shared_stats.clone();
         let eq_params = EqParams::new_shared();
         let eq_params_thread = eq_params.clone();
+        let sound = SoundShared::new();
+        let sound_thread = sound.clone();
         let recorder = Recorder::new();
         let recorder_thread = recorder.clone();
         let output_lost = Arc::new(AtomicBool::new(false));
@@ -440,6 +537,7 @@ impl AudioEngine {
                     analysis_thread,
                     shared_stats_thread,
                     eq_params_thread,
+                    sound_thread,
                     recorder_thread,
                     output_lost_thread,
                     outputs,
@@ -468,6 +566,7 @@ impl AudioEngine {
             shared_stats,
             last_stream: AtomicU64::new(0),
             eq_params,
+            sound,
             recorder,
             #[cfg(test)]
             output_lost,
@@ -610,6 +709,52 @@ impl AudioEngine {
         self.eq_params.clone()
     }
 
+    /// The Sound settings: station volume matching, channels, balance
+    pub fn sound_params(&self) -> SharedSoundParams {
+        self.sound.params.clone()
+    }
+
+    /// What station volume matching is doing to the station playing now
+    pub fn level_readout(&self) -> Arc<LevelReadout> {
+        self.sound.readout.clone()
+    }
+
+    fn with_sound(&self, change: impl FnOnce(&mut SoundParams)) {
+        let mut p = self.sound.params.lock().unwrap_or_else(|e| e.into_inner());
+        change(&mut p);
+    }
+
+    /// Match station volume, or play stations at their own volume
+    pub fn set_match_volume(&self, on: bool) {
+        self.with_sound(|p| p.set_match_volume(on));
+    }
+
+    /// How loud matched stations play
+    pub fn set_level_target(&self, target: LevelTarget) {
+        self.with_sound(|p| p.set_target(target));
+    }
+
+    /// Stereo, mono or swapped
+    pub fn set_channels(&self, channels: Channels) {
+        self.with_sound(|p| p.set_channels(channels));
+    }
+
+    /// -1 (left only) to 1 (right only)
+    pub fn set_balance(&self, balance: f32) {
+        self.with_sound(|p| p.set_balance(balance));
+    }
+
+    /// The loudness (LUFS) remembered for the station about to be played,
+    /// or None for one never heard: volume matching starts from it. Set
+    /// before each play request.
+    pub fn set_start_loudness(&self, lufs: Option<f32>) {
+        *self
+            .sound
+            .start_lufs
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = lufs;
+    }
+
     /// Get a handle to the station recorder.
     ///
     /// Recordings take their audio from the playing station, before or after
@@ -672,6 +817,7 @@ impl AudioEngine {
         analysis: Arc<Mutex<AudioAnalysis>>,
         shared_stats: SharedStats,
         eq_params: SharedEqParams,
+        sound: SoundShared,
         recorder: Recorder,
         output_lost: Arc<AtomicBool>,
         mut outputs: Outputs,
@@ -691,6 +837,11 @@ impl AudioEngine {
 
         // `stream` must be declared before `sink` so Rust drops sink first
         let mut sink = new_player(stream.as_ref());
+        // The last station, fading out while the next starts (its player
+        // too goes before the device)
+        let mut fading: Option<Fading> = None;
+        // Every station plays at this
+        let volume = SharedVolume::new(volume_curve(1.0));
 
         let mut events = Events::new(event_tx);
         let _ = init_tx.send(Ok(()));
@@ -699,7 +850,6 @@ impl AudioEngine {
         }
 
         let mut state = PlaybackState::Stopped;
-        let mut current_volume: f32 = 1.0;
         let mut health_monitor: Option<StreamHealthMonitor> = None;
         let mut stream_error_slot: Option<Arc<Mutex<Option<String>>>> = None;
         let mut current_decoder_stats: Option<Arc<DecoderStats>> = None;
@@ -718,7 +868,7 @@ impl AudioEngine {
         let mut last_throughput_time = Instant::now();
         let mut pending_probe: Option<PendingProbe> = None;
         // What is playing, kept here so it can move to another device
-        let mut playing_source: Option<PcmFeed> = None;
+        let mut playing_source: Option<Station> = None;
         // The output device went away (or there was none at start) and no
         // other could be opened yet
         let mut waiting_for_output = stream.is_none();
@@ -744,7 +894,15 @@ impl AudioEngine {
 
         loop {
             let probe_rx = pending_probe.as_ref().map(|p| &p.probe_rx);
-            match next_wake(&cmd_rx, probe_rx, next_tick) {
+            let wake_by = fading
+                .as_ref()
+                .map_or(next_tick, |f| f.until.min(next_tick));
+            let wake = next_wake(&cmd_rx, probe_rx, wake_by);
+            // The last station has faded out
+            if fading.as_ref().is_some_and(|f| Instant::now() >= f.until) {
+                fading = None;
+            }
+            match wake {
                 Wake::Command(cmd) => match cmd {
                     AudioCommand::Play {
                         id,
@@ -765,11 +923,28 @@ impl AudioEngine {
                         if let Some(ref flag) = analysis_active {
                             flag.store(false, Ordering::SeqCst);
                         }
-                        if let Some(ref cancel) = stream_cancel {
-                            cancel.cancel();
+                        sound.readout.clear();
+                        // Playing: it fades out (while the next one starts)
+                        match playing_source.take() {
+                            Some(station)
+                                if state == PlaybackState::Playing && !waiting_for_output =>
+                            {
+                                fading = Some(Fading::start(
+                                    station,
+                                    &mut sink,
+                                    stream.as_ref(),
+                                    stream_cancel.take(),
+                                    _producer_probing_flag.take(),
+                                    _producer_handle.take(),
+                                ));
+                            }
+                            _ => {
+                                if let Some(ref cancel) = stream_cancel {
+                                    cancel.cancel();
+                                }
+                                sink.stop();
+                            }
                         }
-                        sink.stop();
-                        playing_source = None;
                         // The old station has stopped: forget it, and say so
                         health_monitor = None;
                         stream_error_slot = None;
@@ -865,11 +1040,28 @@ impl AudioEngine {
                         if let Some(ref flag) = analysis_active {
                             flag.store(false, Ordering::SeqCst);
                         }
-                        if let Some(ref cancel) = stream_cancel {
-                            cancel.cancel();
+                        sound.readout.clear();
+                        // Playing: it fades out (while the next one starts)
+                        match playing_source.take() {
+                            Some(station)
+                                if state == PlaybackState::Playing && !waiting_for_output =>
+                            {
+                                fading = Some(Fading::start(
+                                    station,
+                                    &mut sink,
+                                    stream.as_ref(),
+                                    stream_cancel.take(),
+                                    _producer_probing_flag.take(),
+                                    _producer_handle.take(),
+                                ));
+                            }
+                            _ => {
+                                if let Some(ref cancel) = stream_cancel {
+                                    cancel.cancel();
+                                }
+                                sink.stop();
+                            }
                         }
-                        sink.stop();
-                        playing_source = None;
                         if let Ok(mut data) = analysis.lock() {
                             data.reset();
                         }
@@ -922,8 +1114,7 @@ impl AudioEngine {
                     }
                     // NaN would survive the clamp and silence every later station
                     AudioCommand::SetVolume(vol) if vol.is_finite() => {
-                        current_volume = vol.clamp(0.0, 2.0);
-                        sink.set_volume(volume_curve(current_volume));
+                        volume.set(volume_curve(vol.clamp(0.0, 2.0)));
                     }
                     AudioCommand::SetVolume(_) => {}
                     AudioCommand::SetEqBand { band, gain_db } => {
@@ -957,6 +1148,7 @@ impl AudioEngine {
                             cancel.cancel();
                         }
                         sink.stop();
+                        drop(fading.take());
                         break;
                     }
                 },
@@ -990,12 +1182,14 @@ impl AudioEngine {
                                 } else {
                                     playing_source.as_ref()
                                 };
+                                // Its player belongs to the old device
+                                fading = None;
                                 play_on(
                                     new_stream,
                                     &mut stream,
                                     &mut sink,
                                     playing,
-                                    current_volume,
+                                    &volume,
                                     state == PlaybackState::Paused,
                                 );
                                 eprintln!("Audio output reopened");
@@ -1023,6 +1217,7 @@ impl AudioEngine {
                                     output_gone_at = Instant::now();
                                     // Let the dead device go: some backends
                                     // keep reporting its errors in a busy loop
+                                    fading = None;
                                     stream = None;
                                     events.send(AudioEvent::OutputLost);
                                 }
@@ -1042,12 +1237,13 @@ impl AudioEngine {
                     {
                         match outputs.open(&output_lost, Devices::DefaultOnly) {
                             Ok(new_stream) => {
+                                fading = None;
                                 play_on(
                                     new_stream,
                                     &mut stream,
                                     &mut sink,
                                     playing_source.as_ref(),
-                                    current_volume,
+                                    &volume,
                                     state == PlaybackState::Paused,
                                 );
                                 eprintln!("Audio output reopened: the default device changed");
@@ -1077,23 +1273,37 @@ impl AudioEngine {
                                 let error_slot = source.error_slot();
                                 let dec_stats = source.decoder_stats();
                                 let active_flag = Arc::new(AtomicBool::new(true));
+                                let start_lufs =
+                                    *sound.start_lufs.lock().unwrap_or_else(|e| e.into_inner());
+                                // "Record without EQ" takes the station as it
+                                // comes; "with EQ" and phones listening take
+                                // it with every filter but the speaker ones
                                 let source =
                                     RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
-                                let eq_source = EqSource::new(source, eq_params.clone());
-                                let eq_source = RecordingTap::new(
-                                    eq_source,
-                                    recorder.clone(),
-                                    TapPoint::AfterEq,
+                                let source = CleanupSource::new(source);
+                                let source = LevelSource::new(
+                                    source,
+                                    sound.params.clone(),
+                                    sound.readout.clone(),
+                                    start_lufs,
                                 );
+                                let source = EqSource::new(source, eq_params.clone());
+                                let source = LimiterSource::new(source);
+                                let source =
+                                    RecordingTap::new(source, recorder.clone(), TapPoint::AfterEq);
+                                let source = ChannelSource::new(source, sound.params.clone());
                                 let analyzing = AnalyzingSource::new(
-                                    eq_source,
+                                    source,
                                     analysis.clone(),
                                     active_flag.clone(),
                                 );
+                                // At the device's rate, converted well
+                                let device_rate = stream.as_ref().map(|o| o.buffer().1);
+                                let resampled = ResampleSource::new(analyzing, device_rate);
                                 // Decode on its own thread, ahead of the
                                 // output: the audio callback never waits
                                 let started = PcmFeed::start(
-                                    analyzing,
+                                    resampled,
                                     decode_ahead(stream.as_ref()),
                                     p.cancel.clone(),
                                 );
@@ -1112,15 +1322,13 @@ impl AudioEngine {
                                 // A new player for each station: appending to
                                 // a stopped player waits until its queue has
                                 // played out, which a dead device never does.
-                                // Its volume is set before it gets the audio,
-                                // so not a moment plays at full volume.
                                 sink = new_player(stream.as_ref());
-                                sink.set_volume(volume_curve(current_volume));
                                 if start_paused {
                                     sink.pause();
                                 }
-                                sink.append(feed.output());
-                                playing_source = Some(feed);
+                                let station = Station::new(feed);
+                                sink.append(station.output(&volume, stream.as_ref()));
+                                playing_source = Some(station);
                                 if !start_paused {
                                     sink.play();
                                 }
@@ -1206,6 +1414,7 @@ impl AudioEngine {
                         state = PlaybackState::Stopped;
                         health_monitor = None;
                         playing_source = None;
+                        sound.readout.clear();
                         if let Ok(mut data) = analysis.lock() {
                             data.reset();
                         }
@@ -1243,6 +1452,7 @@ impl AudioEngine {
                         let since = *idle_since.get_or_insert_with(Instant::now);
                         if since.elapsed() >= config.output_idle_timeout {
                             // The old player goes before its device
+                            fading = None;
                             sink = new_player(None);
                             stream = None;
                             idle_since = None;
@@ -1301,7 +1511,7 @@ impl AudioEngine {
                             // Analysis data (sample count) — read above, no nested lock
                             stats.sample_count = sample_count;
                             stats.output_underruns =
-                                playing_source.as_ref().map_or(0, PcmFeed::underruns);
+                                playing_source.as_ref().map_or(0, |s| s.feed.underruns());
                             // Health state
                             if prolonged_buffering_stall {
                                 stats.health_state = HealthState::Stalled;
@@ -1420,6 +1630,7 @@ impl AudioEngine {
                                         }
                                         sink.stop();
                                         playing_source = None;
+                                        sound.readout.clear();
                                         if let Ok(mut data) = analysis.lock() {
                                             data.reset();
                                         }
@@ -4335,6 +4546,80 @@ mod tests {
         expect_stopped(&engine);
         expect_playing(&engine);
         assert!(!new.is_cancelled());
+        engine.shutdown();
+    }
+
+    #[test]
+    fn the_old_station_fades_out_before_its_stream_stops() {
+        let engine = test_engine();
+        let old = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &old));
+        expect_playing(&engine);
+
+        let new = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &new));
+        thread::sleep(Duration::from_millis(50));
+        assert!(!old.is_cancelled(), "cut off instead of faded");
+        assert!(
+            gets_cancelled(&old),
+            "the old station must end after its fade"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn stopping_fades_out_too() {
+        let engine = test_engine();
+        let cancel = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &cancel));
+        expect_playing(&engine);
+        engine.stop();
+        expect_stopped(&engine);
+        assert!(!cancel.is_cancelled(), "cut off instead of faded");
+        assert!(gets_cancelled(&cancel));
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_fade_ends_with_the_engine() {
+        let engine = test_engine();
+        let cancel = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &cancel));
+        expect_playing(&engine);
+        engine.stop();
+        engine.shutdown();
+        assert!(cancel.is_cancelled());
+    }
+
+    #[test]
+    fn the_level_readout_follows_the_station() {
+        use crate::audio::dsp::LevelPhase;
+        let engine = test_engine();
+        let readout = engine.level_readout();
+        assert_eq!(readout.phase(), LevelPhase::None);
+
+        // Never heard before: learning, from turned down
+        engine.set_start_loudness(None);
+        engine.play_stream(resolved_stream(EndlessWav::new(), &StreamCancel::new()));
+        expect_playing(&engine);
+        assert_eq!(readout.phase(), LevelPhase::Learning);
+
+        // Heard before at -10 LUFS: 6 dB down to Normal's -16
+        engine.set_start_loudness(Some(-10.0));
+        engine.play_stream(resolved_stream(EndlessWav::new(), &StreamCancel::new()));
+        expect_stopped(&engine);
+        expect_playing(&engine);
+        assert_eq!(readout.phase(), LevelPhase::Settled);
+        assert_eq!(readout.loudness_lufs(), Some(-10.0));
+        assert!(
+            (readout.gain_db() - -6.0).abs() < 0.5,
+            "{}",
+            readout.gain_db()
+        );
+
+        engine.stop();
+        expect_stopped(&engine);
+        assert_eq!(readout.phase(), LevelPhase::None);
         engine.shutdown();
     }
 

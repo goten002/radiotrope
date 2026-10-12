@@ -29,7 +29,9 @@ use crossbeam_channel::bounded;
 use slint::{Model, ModelRc, SharedPixelBuffer, VecModel};
 
 use radiotrope::audio::health::HealthState;
-use radiotrope::audio::{AudioAnalysis, PlaybackState, SharedStats, StreamStats};
+use radiotrope::audio::{
+    AudioAnalysis, Channels, LevelPhase, LevelTarget, PlaybackState, SharedStats, StreamStats,
+};
 use radiotrope::stream::StreamType;
 
 use radiotrope_app::config::ui::{
@@ -171,6 +173,10 @@ fn main() {
         state.eq_preamp_moved = settings.eq_preamp_moved;
         state.eq_enabled = settings.eq_enabled;
         state.eq_preset_name = settings.eq_preset_name.clone();
+        state.match_volume = settings.match_volume;
+        state.level_target = LevelTarget::parse(&settings.match_level).unwrap_or_default();
+        state.sound_channels = Channels::parse(&settings.channels).unwrap_or_default();
+        state.balance = settings.balance.clamp(-1.0, 1.0);
         state.accent_color = settings.accent_color.clone();
         state.recording_setup = app::state::RecordingSetup::from_settings(&settings);
     }
@@ -238,6 +244,13 @@ fn main() {
     ui.set_eq_band7(settings.eq_gains[7]);
     ui.set_eq_band8(settings.eq_gains[8]);
     ui.set_eq_band9(settings.eq_gains[9]);
+    show_sound_settings(
+        &ui,
+        settings.match_volume,
+        LevelTarget::parse(&settings.match_level).unwrap_or_default(),
+        Channels::parse(&settings.channels).unwrap_or_default(),
+        settings.balance,
+    );
     show_eq_presets(&ui);
 
     // Apply saved accent color
@@ -412,6 +425,9 @@ fn main() {
 
     // Send initial EQ state to controller (which will forward to engine once started)
     for command in app::state::AppCommand::restore_eq(&settings) {
+        ui_tx.send(command);
+    }
+    for command in app::state::AppCommand::restore_sound(&settings) {
         ui_tx.send(command);
     }
 
@@ -821,6 +837,36 @@ fn main() {
         let tx = ui_tx.clone();
         ui.on_eq_enabled_toggled(move |val| {
             tx.send(app::state::AppCommand::SetEqEnabled(val));
+        });
+    }
+
+    // Sound callbacks
+    {
+        let tx = ui_tx.clone();
+        ui.on_match_volume_toggled(move |on| {
+            tx.send(app::state::AppCommand::SetMatchVolume(on));
+        });
+    }
+    {
+        let tx = ui_tx.clone();
+        ui.on_level_target_changed(move |id| {
+            if let Some(target) = LevelTarget::parse(&id) {
+                tx.send(app::state::AppCommand::SetLevelTarget(target));
+            }
+        });
+    }
+    {
+        let tx = ui_tx.clone();
+        ui.on_channels_changed(move |id| {
+            if let Some(channels) = Channels::parse(&id) {
+                tx.send(app::state::AppCommand::SetChannels(channels));
+            }
+        });
+    }
+    {
+        let tx = ui_tx.clone();
+        ui.on_balance_changed(move |percent| {
+            tx.send(app::state::AppCommand::SetBalance(percent / 100.0));
         });
     }
 
@@ -1638,6 +1684,8 @@ fn main() {
                 .as_deref()
                 .unwrap_or("")
                 .into();
+            let sound = (s.match_volume, s.level_target, s.sound_channels, s.balance);
+            let level = level_shown(&s);
             let recording = s.recording.clone();
             let recording_notice = s.recording_notice.clone();
             let listeners = s
@@ -1807,6 +1855,12 @@ fn main() {
             ui.set_eq_band7(eq_gains[7]);
             ui.set_eq_band8(eq_gains[8]);
             ui.set_eq_band9(eq_gains[9]);
+
+            // Sound, and what volume matching does now
+            show_sound_settings(&ui, sound.0, sound.1, sound.2, sound.3);
+            let (level_state, station_gain) = level;
+            ui.set_level_state(level_state.into());
+            ui.set_station_gain(station_gain);
         },
     );
 
@@ -3120,6 +3174,10 @@ struct WindowSettings {
     eq_preamp_moved: bool,
     eq_enabled: bool,
     eq_preset_name: Option<String>,
+    match_volume: bool,
+    match_level: LevelTarget,
+    channels: Channels,
+    balance: f32,
     accent_color: Option<String>,
     theme: ThemeSetting,
     viz_mode: String,
@@ -3173,6 +3231,10 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         eq_preamp_moved: s.eq_preamp_moved,
         eq_enabled: s.eq_enabled,
         eq_preset_name: s.eq_preset_name.clone(),
+        match_volume: s.match_volume,
+        match_level: s.level_target,
+        channels: s.sound_channels,
+        balance: s.balance,
         accent_color: s.accent_color.clone(),
         // The choice, not the colours it gives: an OS switch saves nothing
         theme: ThemeSetting::from_name(&ui.get_theme_mode()).unwrap_or_default(),
@@ -3206,6 +3268,10 @@ fn write_settings(w: &WindowSettings) {
     settings.eq_preamp_moved = w.eq_preamp_moved;
     settings.eq_enabled = w.eq_enabled;
     settings.eq_preset_name = w.eq_preset_name.clone();
+    settings.match_volume = w.match_volume;
+    settings.match_level = w.match_level.as_str().to_string();
+    settings.channels = w.channels.as_str().to_string();
+    settings.balance = w.balance;
     settings.accent_color = w.accent_color.clone();
     settings.theme = w.theme;
     settings.viz_mode = w.viz_mode.clone();
@@ -4424,6 +4490,46 @@ const STARTING_STATUS: &str = "Resolving...";
 /// The codec line of a station not playing yet
 const AWAITING_STREAM: &str = "Awaiting stream";
 
+/// The Sound settings into the window
+fn show_sound_settings(
+    ui: &App,
+    match_volume: bool,
+    target: LevelTarget,
+    channels: Channels,
+    balance: f32,
+) {
+    ui.set_match_volume(match_volume);
+    ui.set_level_target(target.as_str().into());
+    ui.set_sound_channels(channels.as_str().into());
+    ui.set_balance(balance * 100.0);
+}
+
+/// What volume matching does to the station: "none", "learning" or
+/// "settled", and its gain now in dB
+fn level_shown(s: &AppSnapshot) -> (&'static str, f32) {
+    let Some(readout) = s.level.as_ref() else {
+        return ("none", 0.0);
+    };
+    let state = match readout.phase() {
+        LevelPhase::None => "none",
+        LevelPhase::Learning => "learning",
+        LevelPhase::Settled => "settled",
+    };
+    (state, readout.gain_db())
+}
+
+/// "Level −6.5 dB": what volume matching does to the station, to half a dB
+fn level_text(gain_db: f32) -> String {
+    let rounded = (gain_db * 2.0).round() / 2.0;
+    if rounded.abs() < 0.25 {
+        "Level 0 dB".to_string()
+    } else if rounded < 0.0 {
+        format!("Level \u{2212}{:.1} dB", -rounded)
+    } else {
+        format!("Level +{:.1} dB", rounded)
+    }
+}
+
 fn format_codec_line(s: &AppSnapshot) -> String {
     if s.codec_name.is_empty() {
         return AWAITING_STREAM.to_string();
@@ -4447,12 +4553,26 @@ fn format_codec_line(s: &AppSnapshot) -> String {
             n => format!("{} ch", n),
         });
     }
+    // What volume matching does to it, while it plays
+    if s.match_volume && s.playback == PlaybackState::Playing {
+        if let Some(readout) = s.level.as_ref().filter(|r| r.phase() != LevelPhase::None) {
+            parts.push(level_text(readout.gain_db()));
+        }
+    }
     parts.join(" \u{2022} ")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_level_reads_to_half_a_db() {
+        assert_eq!(level_text(-6.4), "Level \u{2212}6.5 dB");
+        assert_eq!(level_text(3.1), "Level +3.0 dB");
+        assert_eq!(level_text(0.1), "Level 0 dB");
+        assert_eq!(level_text(-0.2), "Level 0 dB");
+    }
 
     #[test]
     fn explorer_gets_backslashes() {

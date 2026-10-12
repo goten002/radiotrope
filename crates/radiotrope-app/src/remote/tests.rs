@@ -404,6 +404,12 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 }
                 AppCommand::SetEqPreamp(db) => state.lock().unwrap().eq_preamp = db,
                 AppCommand::SetEqEnabled(on) => state.lock().unwrap().eq_enabled = on,
+                AppCommand::SetMatchVolume(on) => state.lock().unwrap().match_volume = on,
+                AppCommand::SetLevelTarget(target) => state.lock().unwrap().level_target = target,
+                AppCommand::SetChannels(channels) => {
+                    state.lock().unwrap().sound_channels = channels
+                }
+                AppCommand::SetBalance(balance) => state.lock().unwrap().balance = balance,
                 AppCommand::SaveScheduleEntry { mut entry, reply } => {
                     let mut st = state.lock().unwrap();
                     if entry.id == 0 {
@@ -1007,6 +1013,55 @@ async fn a_phone_sets_the_equalizer() {
         let (status, body) = player.request("PUT", "/v1/eq", t, Some(bad)).await;
         assert_eq!(status, 400, "{body}");
     }
+}
+
+#[tokio::test]
+async fn a_phone_sets_the_sound() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let t = Some(token.as_str());
+
+    let (status, sound) = player.request("GET", "/v1/sound", t, None).await;
+    assert_eq!(status, 200, "{sound}");
+    assert_eq!(sound["match_volume"], true);
+    assert_eq!(sound["level"], "normal");
+    assert_eq!(sound["channels"], "stereo");
+    assert_eq!(sound["balance"], 0.0);
+    // Nothing playing
+    assert_eq!(sound["station_gain_db"], Value::Null);
+    assert_eq!(sound["learning"], false);
+
+    let (status, _) = player
+        .request(
+            "PUT",
+            "/v1/sound",
+            t,
+            Some(
+                json!({"match_volume": false, "level": "loud", "channels": "mono", "balance": -3}),
+            ),
+        )
+        .await;
+    assert_eq!(status, 204);
+    // The state phones follow carries it too
+    let state = player
+        .eventually("/v1/state", t, |s| s["sound"]["balance"] == -1.0)
+        .await;
+    assert_eq!(state["sound"]["match_volume"], false);
+    assert_eq!(state["sound"]["level"], "loud");
+    assert_eq!(state["sound"]["channels"], "mono");
+
+    for bad in [
+        json!({"level": "LOUD"}),
+        json!({"channels": "left"}),
+        json!({"balance": "centre"}),
+    ] {
+        let (status, body) = player.request("PUT", "/v1/sound", t, Some(bad)).await;
+        assert_eq!(status, 400, "{body}");
+    }
+
+    // Not for unpaired phones
+    let (status, _) = player.request("GET", "/v1/sound", None, None).await;
+    assert_eq!(status, 401);
 }
 
 #[tokio::test]

@@ -6,8 +6,8 @@
 //! short by a crash reads to where it got) and set when the recording
 //! ends. WAV sizes are 32-bit, so a file stops growing just under 4 GiB.
 
-use super::resample::Resampler;
 use super::{AudioEncoder, RecordingTags};
+use crate::audio::dsp::resample::Resampler;
 
 /// Byte offset of the RIFF chunk size.
 const RIFF_SIZE_OFFSET: u64 = 4;

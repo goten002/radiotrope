@@ -122,6 +122,23 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq_preset_name: Option<String>,
 
+    // === Sound ===
+    /// Turn loud stations down and quiet ones up
+    #[serde(default = "default_true")]
+    pub match_volume: bool,
+
+    /// How loud matched stations play: "quiet", "normal" or "loud"
+    #[serde(default = "default_match_level")]
+    pub match_level: String,
+
+    /// "stereo", "mono" or "swap"
+    #[serde(default = "default_channels")]
+    pub channels: String,
+
+    /// Left/right balance, -1 (left only) to 1 (right only)
+    #[serde(default)]
+    pub balance: f32,
+
     // === Recording ===
     /// Folder for recordings; `None` means the default (`<Music>/Radiotrope`)
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -219,6 +236,16 @@ fn default_sleep_minutes() -> u32 {
     30
 }
 
+fn default_match_level() -> String {
+    radiotrope::audio::LevelTarget::default()
+        .as_str()
+        .to_string()
+}
+
+fn default_channels() -> String {
+    radiotrope::audio::Channels::default().as_str().to_string()
+}
+
 fn default_true() -> bool {
     true
 }
@@ -250,6 +277,10 @@ impl Default for Settings {
             eq_preamp_moved: false,
             eq_enabled: false,
             eq_preset_name: Some("Flat".to_string()),
+            match_volume: true,
+            match_level: default_match_level(),
+            channels: default_channels(),
+            balance: 0.0,
             recording_dir: None,
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,

@@ -335,43 +335,6 @@ pub fn peak_boost_db(gains: &[f32; NUM_BANDS], sample_rate: f32) -> f32 {
     peak
 }
 
-/// Turns down peaks that would clip. One gain for all channels, so the
-/// stereo image stays put: it drops at once on a peak and comes back over
-/// `LIMITER_RELEASE_MS`.
-struct Limiter {
-    gain: f32,
-    /// Share of the way back to full gain made each frame
-    release: f32,
-}
-
-impl Limiter {
-    fn new(sample_rate: u32) -> Self {
-        let release_frames = LIMITER_RELEASE_MS / 1000.0 * sample_rate as f32;
-        Self {
-            gain: 1.0,
-            release: 1.0 - (-1.0 / release_frames).exp(),
-        }
-    }
-
-    /// Once per frame: let go a little
-    fn release(&mut self) {
-        self.gain += (1.0 - self.gain) * self.release;
-        // Close enough: what doesn't clip passes untouched
-        if self.gain > 0.9999 {
-            self.gain = 1.0;
-        }
-    }
-
-    fn apply(&mut self, sample: f32) -> f32 {
-        let peak = sample.abs();
-        if peak * self.gain > LIMITER_CEILING {
-            self.gain = LIMITER_CEILING / peak;
-        }
-        // Rounding can land a hair past the ceiling
-        (sample * self.gain).clamp(-LIMITER_CEILING, LIMITER_CEILING)
-    }
-}
-
 /// A `Source` adapter that applies a 10-band parametric EQ to every sample.
 pub struct EqSource<S> {
     inner: S,
@@ -387,7 +350,6 @@ pub struct EqSource<S> {
     channels: u16,
     sample_rate: u32,
     channel_index: usize,
-    limiter: Limiter,
 }
 
 impl<S> EqSource<S>
@@ -421,7 +383,6 @@ where
             channels,
             sample_rate,
             channel_index: 0,
-            limiter: Limiter::new(sample_rate),
         };
         s.recompute_coefficients();
         s
@@ -435,7 +396,6 @@ where
         self.filters = (0..ch_count)
             .map(|_| Self::make_default_filters())
             .collect();
-        self.limiter = Limiter::new(sample_rate);
         self.recompute_coefficients();
     }
 
@@ -525,11 +485,6 @@ where
         if !sample.is_finite() {
             sample = 0.0;
         }
-
-        if ch == 0 {
-            self.limiter.release();
-        }
-        let sample = self.limiter.apply(sample);
 
         self.channel_index = (self.channel_index + 1) % self.channels as usize;
         Some(sample)
@@ -1335,19 +1290,18 @@ mod tests {
             p.set_enabled(true);
         }
         let input = sine(2, 0.9, 0.5);
-        let out: Vec<f32> =
-            EqSource::new(SamplesBuffer::new(nz16(2), nz32(44100), input), params).collect();
+        // The limiter that follows the equalizer in the engine
+        let eq = EqSource::new(SamplesBuffer::new(nz16(2), nz32(44100), input), params);
+        let out: Vec<f32> = crate::audio::dsp::LimiterSource::new(eq).collect();
+        let ceiling = 10f32.powf(crate::config::sound::LIMITER_CEILING_DB / 20.0);
         let loudest = peak(&out);
-        assert!(
-            loudest <= LIMITER_CEILING,
-            "peak {loudest} past the ceiling"
-        );
+        assert!(loudest <= ceiling, "peak {loudest} past the ceiling");
         // Turned down to the ceiling, not below it
-        assert!(peak(&out[22050..]) > LIMITER_CEILING * 0.95);
+        assert!(peak(&out[22050..]) > ceiling * 0.9);
     }
 
     #[test]
-    fn the_limiter_leaves_what_doesnt_clip_alone() {
+    fn a_flat_equalizer_leaves_the_sound_alone() {
         let params = EqParams::new_shared();
         params.lock().unwrap().set_enabled(true);
         // Close to full scale, as many stations are
@@ -1361,35 +1315,6 @@ mod tests {
             // The filters themselves round a little
             assert!((a - b).abs() < 1e-3, "sample {i}: {a} became {b}");
         }
-    }
-
-    #[test]
-    fn the_limiter_lets_go_after_a_peak_and_keeps_the_balance() {
-        let params = EqParams::new_shared();
-        params.lock().unwrap().set_enabled(true);
-        // Loud for half a second, then quiet: the left channel is always
-        // four times the right
-        let loud = sine(1, 2.0, 0.5);
-        let quiet = sine(1, 0.5, 1.0);
-        let input: Vec<f32> = loud
-            .iter()
-            .chain(&quiet)
-            .flat_map(|&v| [v, v / 4.0])
-            .collect();
-        let out: Vec<f32> =
-            EqSource::new(SamplesBuffer::new(nz16(2), nz32(44100), input), params).collect();
-
-        for frame in out.chunks(2).filter(|f| f[0].abs() > 0.1) {
-            let ratio = frame[1] / frame[0];
-            assert!((ratio - 0.25).abs() < 1e-3, "balance moved: {frame:?}");
-        }
-        // The last quarter second plays at full level again
-        let tail = &out[out.len() - 22050..];
-        let left_peak = peak(&tail.iter().step_by(2).copied().collect::<Vec<_>>());
-        assert!(
-            (left_peak - 0.5).abs() < 0.01,
-            "still turned down: {left_peak}"
-        );
     }
 
     #[test]
