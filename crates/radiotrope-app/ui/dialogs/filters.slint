@@ -1,0 +1,137 @@
+import { Theme } from "../defaults.slint";
+import { DialogShell, Toggle, Picker, InfoTip } from "../components.slint";
+
+// One filter: its name with an ⓘ that says what it does, and its switch on
+// the right. Extra controls (the leveler's level) go under the name.
+component FilterRow inherits HorizontalLayout {
+    in property <string> name;
+    in property <string> info;
+    // The first row's bubble opens below, so the dialog doesn't cut it off
+    in property <bool> info-below: false;
+    in-out property <bool> checked;
+    // Shown on and greyed out while another filter needs it
+    in property <bool> forced-on: false;
+    callback toggled(bool);
+
+    spacing: 16px;
+    padding-top: 12px;
+    padding-bottom: 12px;
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+
+            Text {
+                text: root.name;
+                color: root.forced-on ? Theme.text-secondary : Theme.text-primary;
+                font-size: Theme.font-base;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                InfoTip {
+                    text: root.info;
+                    open-right: true;
+                    open-below: root.info-below;
+                }
+            }
+        }
+
+        @children
+    }
+
+    VerticalLayout {
+        alignment: start;
+        Toggle {
+            label: root.name;
+            show-label: false;
+            checked <=> root.checked;
+            enabled: !root.forced-on;
+            forced-on: root.forced-on;
+            toggled(on) => { root.toggled(on); }
+        }
+    }
+}
+
+component Line inherits Rectangle {
+    height: 1px;
+    background: Theme.hairline;
+}
+
+// The filters, each with its own switch. What the Volume Leveler does to
+// the station playing shows after its channels in the header.
+export component FiltersDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    in-out property <bool> leveler-on: true;
+    // "quiet", "normal" or "loud"
+    in-out property <string> level-target: "normal";
+    // Clip Guard as switched: it is on anyway while the leveler is on
+    in-out property <bool> clip-guard: true;
+    in-out property <bool> rumble-filter: true;
+    in-out property <bool> smooth-switching: true;
+
+    callback leveler-toggled(bool);
+    callback level-target-changed(string);
+    callback clip-guard-toggled(bool);
+    callback rumble-filter-toggled(bool);
+    callback smooth-switching-toggled(bool);
+
+    if show-dialog: DialogShell {
+        title: "Filters";
+        subtitle: "Changes are saved as you make them";
+        card-width: 440px;
+        close-requested => { root.show-dialog = false; }
+
+        VerticalLayout {
+            FilterRow {
+                name: "Volume Leveler";
+                info: "Some stations are much louder than others. The leveler turns loud ones down and quiet ones up, so you don't have to reach for the volume when you switch. Quiet, Normal and Loud set how loud they all play.";
+                info-below: true;
+                checked <=> root.leveler-on;
+                toggled(on) => { root.leveler-toggled(on); }
+
+                Picker {
+                    choices: [
+                        { id: "quiet", label: "Quiet" },
+                        { id: "normal", label: "Normal" },
+                        { id: "loud", label: "Loud" },
+                    ];
+                    compact: true;
+                    option-width: 58px;
+                    selected <=> root.level-target;
+                    enabled: root.leveler-on;
+                    changed(id) => { root.level-target-changed(id); }
+                }
+            }
+            Line { }
+            FilterRow {
+                name: "Clip Guard";
+                info: root.leveler-on
+                    ? "Stops loud moments from crackling or distorting. It stays on while the Volume Leveler is on."
+                    : "Stops loud moments from crackling or distorting.";
+                checked <=> root.clip-guard;
+                forced-on: root.leveler-on;
+                toggled(on) => { root.clip-guard-toggled(on); }
+            }
+            Line { }
+            FilterRow {
+                name: "Rumble Filter";
+                info: "Removes deep rumble you can't hear, so your speakers play cleaner.";
+                checked <=> root.rumble-filter;
+                toggled(on) => { root.rumble-filter-toggled(on); }
+            }
+            Line { }
+            FilterRow {
+                name: "Smooth Switching";
+                info: "Fades the sound out when you change or stop a station, instead of cutting it off.";
+                checked <=> root.smooth-switching;
+                toggled(on) => { root.smooth-switching-toggled(on); }
+            }
+        }
+    }
+}

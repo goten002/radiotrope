@@ -406,10 +406,9 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 AppCommand::SetEqEnabled(on) => state.lock().unwrap().eq_enabled = on,
                 AppCommand::SetMatchVolume(on) => state.lock().unwrap().match_volume = on,
                 AppCommand::SetLevelTarget(target) => state.lock().unwrap().level_target = target,
-                AppCommand::SetChannels(channels) => {
-                    state.lock().unwrap().sound_channels = channels
-                }
-                AppCommand::SetBalance(balance) => state.lock().unwrap().balance = balance,
+                AppCommand::SetClipGuard(on) => state.lock().unwrap().clip_guard = on,
+                AppCommand::SetRumbleFilter(on) => state.lock().unwrap().rumble_filter = on,
+                AppCommand::SetSmoothSwitching(on) => state.lock().unwrap().smooth_switching = on,
                 AppCommand::SaveScheduleEntry { mut entry, reply } => {
                     let mut st = state.lock().unwrap();
                     if entry.id == 0 {
@@ -1016,51 +1015,56 @@ async fn a_phone_sets_the_equalizer() {
 }
 
 #[tokio::test]
-async fn a_phone_sets_the_sound() {
+async fn a_phone_sets_the_filters() {
     let player = Player::start();
     let token = player.pair("phone-1").await;
     let t = Some(token.as_str());
 
-    let (status, sound) = player.request("GET", "/v1/sound", t, None).await;
-    assert_eq!(status, 200, "{sound}");
-    assert_eq!(sound["match_volume"], true);
-    assert_eq!(sound["level"], "normal");
-    assert_eq!(sound["channels"], "stereo");
-    assert_eq!(sound["balance"], 0.0);
+    let (status, filters) = player.request("GET", "/v1/filters", t, None).await;
+    assert_eq!(status, 200, "{filters}");
+    assert_eq!(filters["leveler"], true);
+    assert_eq!(filters["level"], "normal");
+    assert_eq!(filters["clip_guard"], true);
+    assert_eq!(filters["rumble_filter"], true);
+    assert_eq!(filters["smooth_switching"], true);
     // Nothing playing
-    assert_eq!(sound["station_gain_db"], Value::Null);
-    assert_eq!(sound["learning"], false);
+    assert_eq!(filters["station_gain_db"], Value::Null);
+    assert_eq!(filters["learning"], false);
 
     let (status, _) = player
         .request(
             "PUT",
-            "/v1/sound",
+            "/v1/filters",
             t,
-            Some(
-                json!({"match_volume": false, "level": "loud", "channels": "mono", "balance": -3}),
-            ),
+            Some(json!({
+                "leveler": false,
+                "level": "loud",
+                "clip_guard": false,
+                "rumble_filter": false,
+                "smooth_switching": false
+            })),
         )
         .await;
     assert_eq!(status, 204);
     // The state phones follow carries it too
     let state = player
-        .eventually("/v1/state", t, |s| s["sound"]["balance"] == -1.0)
+        .eventually("/v1/state", t, |s| {
+            s["filters"]["smooth_switching"] == false
+        })
         .await;
-    assert_eq!(state["sound"]["match_volume"], false);
-    assert_eq!(state["sound"]["level"], "loud");
-    assert_eq!(state["sound"]["channels"], "mono");
+    let f = &state["filters"];
+    assert_eq!(f["leveler"], false);
+    assert_eq!(f["level"], "loud");
+    assert_eq!(f["clip_guard"], false);
+    assert_eq!(f["rumble_filter"], false);
 
-    for bad in [
-        json!({"level": "LOUD"}),
-        json!({"channels": "left"}),
-        json!({"balance": "centre"}),
-    ] {
-        let (status, body) = player.request("PUT", "/v1/sound", t, Some(bad)).await;
+    for bad in [json!({"level": "LOUD"}), json!({"clip_guard": "yes"})] {
+        let (status, body) = player.request("PUT", "/v1/filters", t, Some(bad)).await;
         assert_eq!(status, 400, "{body}");
     }
 
     // Not for unpaired phones
-    let (status, _) = player.request("GET", "/v1/sound", None, None).await;
+    let (status, _) = player.request("GET", "/v1/filters", None, None).await;
     assert_eq!(status, 401);
 }
 

@@ -9,9 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Local};
-use radiotrope::audio::{
-    Channels, LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat,
-};
+use radiotrope::audio::{LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat};
 use radiotrope_app::data::schedule::{Action, Entry};
 use radiotrope_app::data::settings::Settings;
 
@@ -51,12 +49,12 @@ pub enum AppCommand {
     SetEqPreamp(f32),
     SetEqEnabled(bool),
 
-    // Sound
+    // Filters
     SetMatchVolume(bool),
     SetLevelTarget(LevelTarget),
-    SetChannels(Channels),
-    /// -1 (left only) to 1 (right only)
-    SetBalance(f32),
+    SetClipGuard(bool),
+    SetRumbleFilter(bool),
+    SetSmoothSwitching(bool),
 
     // Recording
     /// Record the playing station to `<folder>/<Station> - <time>.<ext>`
@@ -126,7 +124,7 @@ impl AppCommand {
         commands
     }
 
-    /// The commands that set the Sound filters as `settings` keep them,
+    /// The commands that set the filters as `settings` keep them,
     /// sent at startup. Unknown names get the defaults.
     pub fn restore_sound(settings: &Settings) -> Vec<AppCommand> {
         vec![
@@ -134,8 +132,9 @@ impl AppCommand {
             AppCommand::SetLevelTarget(
                 LevelTarget::parse(&settings.match_level).unwrap_or_default(),
             ),
-            AppCommand::SetChannels(Channels::parse(&settings.channels).unwrap_or_default()),
-            AppCommand::SetBalance(settings.balance),
+            AppCommand::SetClipGuard(settings.clip_guard),
+            AppCommand::SetRumbleFilter(settings.rumble_filter),
+            AppCommand::SetSmoothSwitching(settings.smooth_switching),
         ]
     }
 }
@@ -193,12 +192,14 @@ pub struct AppSnapshot {
     pub eq_enabled: bool,
     pub eq_preset_name: Option<String>,
 
-    // Sound
+    // Filters
     pub match_volume: bool,
     pub level_target: LevelTarget,
-    pub sound_channels: Channels,
-    pub balance: f32,
-    /// What volume matching does to the station playing; `None` until the
+    /// Clip Guard as switched (it runs anyway while the leveler is on)
+    pub clip_guard: bool,
+    pub rumble_filter: bool,
+    pub smooth_switching: bool,
+    /// What the leveler does to the station playing; `None` until the
     /// audio engine runs
     pub level: Option<Arc<LevelReadout>>,
 
@@ -374,8 +375,9 @@ impl Default for AppSnapshot {
             eq_preset_name: Some("Flat".to_string()),
             match_volume: true,
             level_target: LevelTarget::default(),
-            sound_channels: Channels::default(),
-            balance: 0.0,
+            clip_guard: true,
+            rumble_filter: true,
+            smooth_switching: true,
             level: None,
             recording: None,
             recording_notice: None,

@@ -704,11 +704,17 @@ export component Toggle inherits Rectangle {
     in property <string> label;
     // Greyed out and not clickable; keeps showing its state
     in property <bool> enabled: true;
+    // Shown on (and greyed out) while something else keeps it on; `checked`
+    // keeps the choice for when that ends
+    in property <bool> forced-on: false;
+    // The label names the switch for screen readers without being shown
+    in property <bool> show-label: true;
     callback toggled(bool);
     // Dark knob in the dark theme (like the volume knob), white in the light
     // one. Off in the dark theme: an outlined track with a smaller grey knob,
     // so it doesn't vanish into the panel
-    property <bool> dark-off: Theme.dark-mode && !root.checked;
+    property <bool> on: root.checked || root.forced-on;
+    property <bool> dark-off: Theme.dark-mode && !root.on;
 
     width: row.preferred-width;
     height: 28px;
@@ -720,7 +726,7 @@ export component Toggle inherits Rectangle {
     accessible-label: root.label;
     accessible-enabled: root.enabled;
     accessible-checkable: true;
-    accessible-checked: root.checked;
+    accessible-checked: root.on;
     accessible-action-default => { root.flip(); }
 
     function flip() {
@@ -751,7 +757,7 @@ export component Toggle inherits Rectangle {
                 width: 36px;
                 height: 20px;
                 border-radius: 10px;
-                background: root.checked ? Theme.accent : Theme.dark-mode ? Theme.elevated : Theme.disabled-bg;
+                background: root.on ? Theme.accent : Theme.dark-mode ? Theme.elevated : Theme.disabled-bg;
                 border-width: root.dark-off ? 1.5px : 0;
                 border-color: Theme.text-tertiary;
                 animate background { duration: Theme.normal; }
@@ -763,13 +769,13 @@ export component Toggle inherits Rectangle {
                 Rectangle {
                     property <length> size: root.dark-off ? 10px : 14px;
                     animate size { duration: Theme.normal; easing: ease-out; }
-                    x: root.checked ? parent.width - self.width - 3px : (parent.height - self.height) / 2;
+                    x: root.on ? parent.width - self.width - 3px : (parent.height - self.height) / 2;
                     animate x { duration: Theme.normal; easing: ease-out; }
                     y: (parent.height - self.height) / 2;
                     width: self.size;
                     height: self.size;
                     border-radius: self.size / 2;
-                    background: !Theme.dark-mode ? #ffffff : root.checked ? Theme.panel : Theme.text-tertiary;
+                    background: !Theme.dark-mode ? #ffffff : root.on ? Theme.panel : Theme.text-tertiary;
                     animate background { duration: Theme.normal; }
                     drop-shadow-blur: Theme.dark-mode ? 0 : 3px;
                     drop-shadow-color: #00000040;
@@ -777,7 +783,7 @@ export component Toggle inherits Rectangle {
             }
         }
 
-        if root.label != "": Text {
+        if root.label != "" && root.show-label: Text {
             text: root.label;
             color: Theme.text-primary;
             font-size: Theme.font-base;
@@ -790,9 +796,15 @@ export component Toggle inherits Rectangle {
 
 // Small ⓘ that shows a line of help in a bubble above it: after a short
 // hover, or on tap (touch screens have no hover). Keeps help text out of
-// the layout. The bubble opens upward, over what comes before it.
+// the layout. The bubble opens upward, over what comes before it, unless
+// told otherwise.
 export component InfoTip inherits Rectangle {
     in property <string> text;
+    // Where the bubble opens: by default above, ending at the icon's right
+    // edge. Near the left or top of a dialog it can grow to the right of
+    // the icon, or open below it, so the dialog doesn't cut it off.
+    in property <bool> open-right: false;
+    in property <bool> open-below: false;
 
     property <bool> open: false;
     // The press came from a touch screen, which leaves hover as the finger
@@ -861,8 +873,8 @@ export component InfoTip inherits Rectangle {
         animate opacity { duration: Theme.fast; }
         width: Defaults.info-tip-width;
         height: tip-layout.preferred-height;
-        x: root.width - self.width;
-        y: -self.height - 6px;
+        x: root.open-right ? 0px : root.width - self.width;
+        y: root.open-below ? root.height + 6px : -self.height - 6px;
 
         tip-layout := VerticalLayout {
             padding-left: 12px;
@@ -1209,10 +1221,12 @@ export component PickerOption inherits Rectangle {
     // Optional icon before the label, red for a recording's dot
     in property <image> icon;
     in property <bool> red-icon: false;
+    // Lower, with smaller text, for a choice inside a list row
+    in property <bool> compact: false;
     callback clicked();
 
     min-width: root.option-width;
-    height: 30px;
+    height: root.compact ? 22px : 30px;
     border-radius: Theme.radius-sm;
     background: root.selected && root.enabled ? Theme.accent
         : root.selected ? Theme.disabled-bg
@@ -1254,7 +1268,7 @@ export component PickerOption inherits Rectangle {
             text: root.label;
             color: !root.enabled ? Theme.disabled-text
                 : root.selected ? Theme.on-accent : Theme.text-primary;
-            font-size: Theme.font-base;
+            font-size: root.compact ? Theme.font-md : Theme.font-base;
             font-weight: root.selected ? 600 : 400;
             horizontal-alignment: center;
             vertical-alignment: center;
@@ -1294,6 +1308,8 @@ export component Picker inherits HorizontalLayout {
     in-out property <string> selected;
     in property <bool> enabled: true;
     in property <length> option-width: 56px;
+    // Lower, with smaller text (see PickerOption)
+    in property <bool> compact: false;
     callback changed(string);
 
     alignment: start;
@@ -1307,8 +1323,8 @@ export component Picker inherits HorizontalLayout {
         height: row.preferred-height;
 
         row := HorizontalLayout {
-            padding: 3px;
-            spacing: 3px;
+            padding: root.compact ? 2px : 3px;
+            spacing: root.compact ? 2px : 3px;
 
             for choice in root.choices: PickerOption {
                 label: choice.label;
@@ -1317,6 +1333,7 @@ export component Picker inherits HorizontalLayout {
                 selected: root.selected == choice.id;
                 enabled: root.enabled && !choice.disabled;
                 option-width: root.option-width;
+                compact: root.compact;
                 clicked => {
                     if root.selected != choice.id {
                         root.selected = choice.id;

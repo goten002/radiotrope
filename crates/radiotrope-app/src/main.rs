@@ -30,7 +30,7 @@ use slint::{Model, ModelRc, SharedPixelBuffer, VecModel};
 
 use radiotrope::audio::health::HealthState;
 use radiotrope::audio::{
-    AudioAnalysis, Channels, LevelPhase, LevelTarget, PlaybackState, SharedStats, StreamStats,
+    AudioAnalysis, LevelPhase, LevelTarget, PlaybackState, SharedStats, StreamStats,
 };
 use radiotrope::stream::StreamType;
 
@@ -175,8 +175,9 @@ fn main() {
         state.eq_preset_name = settings.eq_preset_name.clone();
         state.match_volume = settings.match_volume;
         state.level_target = LevelTarget::parse(&settings.match_level).unwrap_or_default();
-        state.sound_channels = Channels::parse(&settings.channels).unwrap_or_default();
-        state.balance = settings.balance.clamp(-1.0, 1.0);
+        state.clip_guard = settings.clip_guard;
+        state.rumble_filter = settings.rumble_filter;
+        state.smooth_switching = settings.smooth_switching;
         state.accent_color = settings.accent_color.clone();
         state.recording_setup = app::state::RecordingSetup::from_settings(&settings);
     }
@@ -244,12 +245,15 @@ fn main() {
     ui.set_eq_band7(settings.eq_gains[7]);
     ui.set_eq_band8(settings.eq_gains[8]);
     ui.set_eq_band9(settings.eq_gains[9]);
-    show_sound_settings(
+    show_filters(
         &ui,
-        settings.match_volume,
-        LevelTarget::parse(&settings.match_level).unwrap_or_default(),
-        Channels::parse(&settings.channels).unwrap_or_default(),
-        settings.balance,
+        &FilterSettings {
+            match_volume: settings.match_volume,
+            target: LevelTarget::parse(&settings.match_level).unwrap_or_default(),
+            clip_guard: settings.clip_guard,
+            rumble_filter: settings.rumble_filter,
+            smooth_switching: settings.smooth_switching,
+        },
     );
     show_eq_presets(&ui);
 
@@ -840,7 +844,7 @@ fn main() {
         });
     }
 
-    // Sound callbacks
+    // Filters callbacks
     {
         let tx = ui_tx.clone();
         ui.on_match_volume_toggled(move |on| {
@@ -857,16 +861,20 @@ fn main() {
     }
     {
         let tx = ui_tx.clone();
-        ui.on_channels_changed(move |id| {
-            if let Some(channels) = Channels::parse(&id) {
-                tx.send(app::state::AppCommand::SetChannels(channels));
-            }
+        ui.on_clip_guard_toggled(move |on| {
+            tx.send(app::state::AppCommand::SetClipGuard(on));
         });
     }
     {
         let tx = ui_tx.clone();
-        ui.on_balance_changed(move |percent| {
-            tx.send(app::state::AppCommand::SetBalance(percent / 100.0));
+        ui.on_rumble_filter_toggled(move |on| {
+            tx.send(app::state::AppCommand::SetRumbleFilter(on));
+        });
+    }
+    {
+        let tx = ui_tx.clone();
+        ui.on_smooth_switching_toggled(move |on| {
+            tx.send(app::state::AppCommand::SetSmoothSwitching(on));
         });
     }
 
@@ -1684,8 +1692,7 @@ fn main() {
                 .as_deref()
                 .unwrap_or("")
                 .into();
-            let sound = (s.match_volume, s.level_target, s.sound_channels, s.balance);
-            let level = level_shown(&s);
+            let filters = FilterSettings::of(&s);
             let recording = s.recording.clone();
             let recording_notice = s.recording_notice.clone();
             let listeners = s
@@ -1856,11 +1863,7 @@ fn main() {
             ui.set_eq_band8(eq_gains[8]);
             ui.set_eq_band9(eq_gains[9]);
 
-            // Sound, and what volume matching does now
-            show_sound_settings(&ui, sound.0, sound.1, sound.2, sound.3);
-            let (level_state, station_gain) = level;
-            ui.set_level_state(level_state.into());
-            ui.set_station_gain(station_gain);
+            show_filters(&ui, &filters);
         },
     );
 
@@ -3176,8 +3179,9 @@ struct WindowSettings {
     eq_preset_name: Option<String>,
     match_volume: bool,
     match_level: LevelTarget,
-    channels: Channels,
-    balance: f32,
+    clip_guard: bool,
+    rumble_filter: bool,
+    smooth_switching: bool,
     accent_color: Option<String>,
     theme: ThemeSetting,
     viz_mode: String,
@@ -3233,8 +3237,9 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         eq_preset_name: s.eq_preset_name.clone(),
         match_volume: s.match_volume,
         match_level: s.level_target,
-        channels: s.sound_channels,
-        balance: s.balance,
+        clip_guard: s.clip_guard,
+        rumble_filter: s.rumble_filter,
+        smooth_switching: s.smooth_switching,
         accent_color: s.accent_color.clone(),
         // The choice, not the colours it gives: an OS switch saves nothing
         theme: ThemeSetting::from_name(&ui.get_theme_mode()).unwrap_or_default(),
@@ -3270,8 +3275,9 @@ fn write_settings(w: &WindowSettings) {
     settings.eq_preset_name = w.eq_preset_name.clone();
     settings.match_volume = w.match_volume;
     settings.match_level = w.match_level.as_str().to_string();
-    settings.channels = w.channels.as_str().to_string();
-    settings.balance = w.balance;
+    settings.clip_guard = w.clip_guard;
+    settings.rumble_filter = w.rumble_filter;
+    settings.smooth_switching = w.smooth_switching;
     settings.accent_color = w.accent_color.clone();
     settings.theme = w.theme;
     settings.viz_mode = w.viz_mode.clone();
@@ -4490,43 +4496,45 @@ const STARTING_STATUS: &str = "Resolving...";
 /// The codec line of a station not playing yet
 const AWAITING_STREAM: &str = "Awaiting stream";
 
-/// The Sound settings into the window
-fn show_sound_settings(
-    ui: &App,
+/// The filters as the Filters dialog shows them
+struct FilterSettings {
     match_volume: bool,
     target: LevelTarget,
-    channels: Channels,
-    balance: f32,
-) {
-    ui.set_match_volume(match_volume);
-    ui.set_level_target(target.as_str().into());
-    ui.set_sound_channels(channels.as_str().into());
-    ui.set_balance(balance * 100.0);
+    clip_guard: bool,
+    rumble_filter: bool,
+    smooth_switching: bool,
 }
 
-/// What volume matching does to the station: "none", "learning" or
-/// "settled", and its gain now in dB
-fn level_shown(s: &AppSnapshot) -> (&'static str, f32) {
-    let Some(readout) = s.level.as_ref() else {
-        return ("none", 0.0);
-    };
-    let state = match readout.phase() {
-        LevelPhase::None => "none",
-        LevelPhase::Learning => "learning",
-        LevelPhase::Settled => "settled",
-    };
-    (state, readout.gain_db())
+impl FilterSettings {
+    fn of(s: &AppSnapshot) -> Self {
+        Self {
+            match_volume: s.match_volume,
+            target: s.level_target,
+            clip_guard: s.clip_guard,
+            rumble_filter: s.rumble_filter,
+            smooth_switching: s.smooth_switching,
+        }
+    }
 }
 
-/// "Level −6.5 dB": what volume matching does to the station, to half a dB
+/// The filters into the window
+fn show_filters(ui: &App, f: &FilterSettings) {
+    ui.set_match_volume(f.match_volume);
+    ui.set_level_target(f.target.as_str().into());
+    ui.set_clip_guard(f.clip_guard);
+    ui.set_rumble_filter(f.rumble_filter);
+    ui.set_smooth_switching(f.smooth_switching);
+}
+
+/// "−6.5 dB": what the Volume Leveler does to the station, to half a dB
 fn level_text(gain_db: f32) -> String {
     let rounded = (gain_db * 2.0).round() / 2.0;
     if rounded.abs() < 0.25 {
-        "Level 0 dB".to_string()
+        "0 dB".to_string()
     } else if rounded < 0.0 {
-        format!("Level \u{2212}{:.1} dB", -rounded)
+        format!("\u{2212}{:.1} dB", -rounded)
     } else {
-        format!("Level +{:.1} dB", rounded)
+        format!("+{:.1} dB", rounded)
     }
 }
 
@@ -4553,7 +4561,7 @@ fn format_codec_line(s: &AppSnapshot) -> String {
             n => format!("{} ch", n),
         });
     }
-    // What volume matching does to it, while it plays
+    // What the Volume Leveler does to it, while it plays
     if s.match_volume && s.playback == PlaybackState::Playing {
         if let Some(readout) = s.level.as_ref().filter(|r| r.phase() != LevelPhase::None) {
             parts.push(level_text(readout.gain_db()));
@@ -4568,10 +4576,10 @@ mod tests {
 
     #[test]
     fn the_level_reads_to_half_a_db() {
-        assert_eq!(level_text(-6.4), "Level \u{2212}6.5 dB");
-        assert_eq!(level_text(3.1), "Level +3.0 dB");
-        assert_eq!(level_text(0.1), "Level 0 dB");
-        assert_eq!(level_text(-0.2), "Level 0 dB");
+        assert_eq!(level_text(-6.4), "\u{2212}6.5 dB");
+        assert_eq!(level_text(3.1), "+3.0 dB");
+        assert_eq!(level_text(0.1), "0 dB");
+        assert_eq!(level_text(-0.2), "0 dB");
     }
 
     #[test]

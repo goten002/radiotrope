@@ -122,22 +122,25 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eq_preset_name: Option<String>,
 
-    // === Sound ===
-    /// Turn loud stations down and quiet ones up
+    // === Filters ===
+    /// The Volume Leveler: turn loud stations down and quiet ones up
     #[serde(default = "default_true")]
     pub match_volume: bool,
 
-    /// How loud matched stations play: "quiet", "normal" or "loud"
+    /// How loud leveled stations play: "quiet", "normal" or "loud"
     #[serde(default = "default_match_level")]
     pub match_level: String,
 
-    /// "stereo", "mono" or "swap"
-    #[serde(default = "default_channels")]
-    pub channels: String,
+    /// Clip Guard (it runs anyway while the leveler is on)
+    #[serde(default = "default_true")]
+    pub clip_guard: bool,
 
-    /// Left/right balance, -1 (left only) to 1 (right only)
-    #[serde(default)]
-    pub balance: f32,
+    #[serde(default = "default_true")]
+    pub rumble_filter: bool,
+
+    /// Fade a station out when it is changed or stopped
+    #[serde(default = "default_true")]
+    pub smooth_switching: bool,
 
     // === Recording ===
     /// Folder for recordings; `None` means the default (`<Music>/Radiotrope`)
@@ -242,10 +245,6 @@ fn default_match_level() -> String {
         .to_string()
 }
 
-fn default_channels() -> String {
-    radiotrope::audio::Channels::default().as_str().to_string()
-}
-
 fn default_true() -> bool {
     true
 }
@@ -279,8 +278,9 @@ impl Default for Settings {
             eq_preset_name: Some("Flat".to_string()),
             match_volume: true,
             match_level: default_match_level(),
-            channels: default_channels(),
-            balance: 0.0,
+            clip_guard: true,
+            rumble_filter: true,
+            smooth_switching: true,
             recording_dir: None,
             record_with_eq: false,
             recording_format: RecordingFormat::Mp3,

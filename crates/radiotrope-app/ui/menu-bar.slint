@@ -282,7 +282,7 @@ export component MenuBar inherits Rectangle {
     in property <bool> can-undo-import;
     callback open-statistics();
     callback open-equalizer();
-    callback open-sound();
+    callback open-filters();
     callback open-accent-color();
     in-out property <bool> show-station-stats: true;
     // The header visualizer tile (View > Visualizer)
@@ -764,7 +764,7 @@ export component MenuBar inherits Rectangle {
                 MenuSeparator {}
                 CheckMenuItem {
                     label: "Visualizer";
-                    icon: @image-url("icons/wave-square.svg");
+                    icon: @image-url("icons/visualizer.svg");
                     checked: root.show-visualizer;
                     clicked => {
                         root.show-visualizer = !root.show-visualizer;
@@ -857,26 +857,26 @@ export component MenuBar inherits Rectangle {
                 padding: 4px;
 
                 MenuItem {
-                    label: "Equalizer";
-                    icon: @image-url("icons/sliders.svg");
-                    clicked => {
-                        root.open-equalizer();
-                        tools-popup.close();
-                    }
-                }
-                MenuItem {
-                    label: "Sound";
-                    icon: @image-url("icons/volume-high.svg");
-                    clicked => {
-                        root.open-sound();
-                        tools-popup.close();
-                    }
-                }
-                MenuItem {
                     label: "Statistics";
                     icon: @image-url("icons/chart-column.svg");
                     clicked => {
                         root.open-statistics();
+                        tools-popup.close();
+                    }
+                }
+                MenuItem {
+                    label: "Filters";
+                    icon: @image-url("icons/wave-square.svg");
+                    clicked => {
+                        root.open-filters();
+                        tools-popup.close();
+                    }
+                }
+                MenuItem {
+                    label: "Equalizer";
+                    icon: @image-url("icons/sliders.svg");
+                    clicked => {
+                        root.open-equalizer();
                         tools-popup.close();
                     }
                 }

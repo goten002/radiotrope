@@ -3,11 +3,13 @@
 //! the speakers can't play but which eats headroom and moves woofers.
 
 use std::num::NonZero;
+use std::sync::Arc;
 use std::time::Duration;
 
 use rodio::Source;
 
 use super::filter::Biquad64;
+use super::sound::FilterSwitches;
 use crate::config::sound::RUMBLE_HZ;
 
 /// Channels filtered; more pass through as they are
@@ -20,6 +22,10 @@ pub struct CleanupSource<S> {
     channels: u16,
     sample_rate: u32,
     channel_index: usize,
+    /// The Rumble Filter's switch; always on without one
+    switches: Option<Arc<FilterSwitches>>,
+    /// Whether it filtered the last frame
+    on: bool,
 }
 
 impl<S> CleanupSource<S>
@@ -35,7 +41,15 @@ where
             channels,
             sample_rate,
             channel_index: 0,
+            switches: None,
+            on: true,
         }
+    }
+
+    /// Filter only while the Rumble Filter is on
+    pub fn with_switch(mut self, switches: Arc<FilterSwitches>) -> Self {
+        self.switches = Some(switches);
+        self
     }
 
     fn filters(channels: u16, sample_rate: u32) -> Vec<Biquad64> {
@@ -61,10 +75,21 @@ where
                 self.sample_rate = sample_rate;
                 self.filters = Self::filters(channels, sample_rate);
             }
+            if let Some(switches) = &self.switches {
+                let on = switches.rumble_filter();
+                if on && !self.on {
+                    // Start clean, not from what it held when switched off
+                    self.filters.iter_mut().for_each(Biquad64::reset);
+                }
+                self.on = on;
+            }
         }
         let ch = self.channel_index;
         self.channel_index = (self.channel_index + 1) % usize::from(self.channels.max(1));
 
+        if !self.on {
+            return Some(x);
+        }
         let Some(filter) = self.filters.get_mut(ch) else {
             return Some(x);
         };
@@ -144,5 +169,19 @@ mod tests {
         input[100] = f32::NAN;
         let out = run(1, input);
         assert!(out.iter().all(|x| x.is_finite()));
+    }
+
+    #[test]
+    fn switched_off_it_leaves_the_sound_alone() {
+        let mut params = crate::audio::dsp::SoundParams::default();
+        params.set_rumble_filter(false);
+        let out: Vec<f32> = CleanupSource::new(SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(48_000).unwrap(),
+            vec![0.3; 96_000],
+        ))
+        .with_switch(params.switches())
+        .collect();
+        assert!(out.iter().all(|&x| x == 0.3));
     }
 }

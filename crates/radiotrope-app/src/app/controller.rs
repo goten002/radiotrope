@@ -386,29 +386,33 @@ impl AppController {
                     .unwrap_or_else(|e| e.into_inner())
                     .level_target = target;
             }
-            AppCommand::SetChannels(channels) => {
+            AppCommand::SetClipGuard(on) => {
                 if let Some(engine) = &self.engine {
-                    engine.set_channels(channels);
+                    engine.set_clip_guard(on);
                 }
                 self.shared_state
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .sound_channels = channels;
+                    .clip_guard = on;
             }
-            // NaN would make the balance meaningless: ignored, as the
-            // engine ignores it
-            AppCommand::SetBalance(balance) if balance.is_finite() => {
-                let balance = balance.clamp(-1.0, 1.0);
+            AppCommand::SetRumbleFilter(on) => {
                 if let Some(engine) = &self.engine {
-                    engine.set_balance(balance);
+                    engine.set_rumble_filter(on);
                 }
-                let snapped = engine_balance(balance);
                 self.shared_state
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .balance = snapped;
+                    .rumble_filter = on;
             }
-            AppCommand::SetBalance(_) => {}
+            AppCommand::SetSmoothSwitching(on) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_smooth_switching(on);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .smooth_switching = on;
+            }
             AppCommand::StartRecording {
                 folder,
                 format,
@@ -983,20 +987,13 @@ impl AppController {
 /// Bitrate used when Auto can't find the station's bitrate, in kbps.
 const AUTO_FALLBACK_KBPS: u32 = 256;
 
-/// The bitrate to record at: the chosen one, or for Auto the station's own
-/// (256 kbps when unknown), kept within 32–320 kbps.
 /// Seconds since 1970, for the station levels' dates
 fn unix_now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-/// The balance as the engine keeps it: close to the centre is the centre
-fn engine_balance(balance: f32) -> f32 {
-    let mut params = radiotrope::audio::SoundParams::default();
-    params.set_balance(balance);
-    params.balance()
-}
-
+/// The bitrate to record at: the chosen one, or for Auto the station's own
+/// (256 kbps when unknown), kept within 32–320 kbps.
 fn recording_kbps(chosen: Option<u32>, station: Option<u32>) -> u32 {
     chosen
         .or(station.filter(|k| *k > 0))
@@ -1211,13 +1208,14 @@ mod tests {
         }
 
         #[test]
-        fn the_sound_settings_are_restored() {
+        fn the_filter_settings_are_restored() {
             let (mut controller, state) = controller();
             let settings = Settings {
                 match_volume: false,
                 match_level: "loud".into(),
-                channels: "swap".into(),
-                balance: 0.4,
+                clip_guard: false,
+                rumble_filter: false,
+                smooth_switching: false,
                 ..Settings::default()
             };
             for command in AppCommand::restore_sound(&settings) {
@@ -1226,16 +1224,14 @@ mod tests {
             let s = state.lock().unwrap();
             assert!(!s.match_volume);
             assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Loud);
-            assert_eq!(s.sound_channels, radiotrope::audio::Channels::Swap);
-            assert_eq!(s.balance, 0.4);
+            assert!(!s.clip_guard && !s.rumble_filter && !s.smooth_switching);
         }
 
         #[test]
-        fn unknown_sound_names_get_the_defaults() {
+        fn an_unknown_level_gets_the_default() {
             let (mut controller, state) = controller();
             let settings = Settings {
                 match_level: "deafening".into(),
-                channels: "surround".into(),
                 ..Settings::default()
             };
             for command in AppCommand::restore_sound(&settings) {
@@ -1244,19 +1240,6 @@ mod tests {
             let s = state.lock().unwrap();
             assert!(s.match_volume);
             assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Normal);
-            assert_eq!(s.sound_channels, radiotrope::audio::Channels::Stereo);
-        }
-
-        #[test]
-        fn the_balance_snaps_to_the_centre_and_ignores_nan() {
-            let (mut controller, state) = controller();
-            controller.handle_command(AppCommand::SetBalance(-0.5));
-            controller.handle_command(AppCommand::SetBalance(f32::NAN));
-            assert_eq!(state.lock().unwrap().balance, -0.5);
-            controller.handle_command(AppCommand::SetBalance(0.02));
-            assert_eq!(state.lock().unwrap().balance, 0.0);
-            controller.handle_command(AppCommand::SetBalance(4.0));
-            assert_eq!(state.lock().unwrap().balance, 1.0);
         }
 
         #[test]

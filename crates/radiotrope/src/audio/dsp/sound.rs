@@ -1,8 +1,9 @@
-//! Settings for the Sound filters: station volume matching, channels and
-//! balance. What matching is doing to the station playing now is read
-//! back through [`LevelReadout`].
+//! Settings for the filters: the Volume Leveler (station volume matching)
+//! and the switches of Clip Guard, the Rumble Filter and Smooth Switching.
+//! What the leveler is doing to the station playing now is read back
+//! through [`LevelReadout`].
 
-use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::config::sound::*;
@@ -45,33 +46,37 @@ impl LevelTarget {
     }
 }
 
-/// How the two channels reach the speakers
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum Channels {
-    #[default]
-    Stereo,
-    /// Both channels mixed, on both speakers
-    Mono,
-    /// Left and right swapped
-    Swap,
+/// The filters' on/off switches, read without the lock by the sources and
+/// the engine
+#[derive(Debug)]
+pub struct FilterSwitches {
+    /// Clip Guard as it runs: on while it is switched on, and always while
+    /// the Volume Leveler is on (the leveler can raise a station 9 dB)
+    clip_guard: AtomicBool,
+    rumble_filter: AtomicBool,
+    smooth_switching: AtomicBool,
 }
 
-impl Channels {
-    /// "stereo", "mono" or "swap"
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Channels::Stereo => "stereo",
-            Channels::Mono => "mono",
-            Channels::Swap => "swap",
-        }
+impl FilterSwitches {
+    pub fn clip_guard(&self) -> bool {
+        self.clip_guard.load(Ordering::Relaxed)
     }
 
-    pub fn parse(s: &str) -> Option<Self> {
-        match s {
-            "stereo" => Some(Channels::Stereo),
-            "mono" => Some(Channels::Mono),
-            "swap" => Some(Channels::Swap),
-            _ => None,
+    pub fn rumble_filter(&self) -> bool {
+        self.rumble_filter.load(Ordering::Relaxed)
+    }
+
+    pub fn smooth_switching(&self) -> bool {
+        self.smooth_switching.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for FilterSwitches {
+    fn default() -> Self {
+        Self {
+            clip_guard: AtomicBool::new(true),
+            rumble_filter: AtomicBool::new(true),
+            smooth_switching: AtomicBool::new(true),
         }
     }
 }
@@ -85,9 +90,11 @@ pub type SharedSoundParams = Arc<Mutex<SoundParams>>;
 pub struct SoundParams {
     match_volume: bool,
     target: LevelTarget,
-    channels: Channels,
-    /// -1 (left only) to 1 (right only)
-    balance: f32,
+    /// Clip Guard as switched (see [`FilterSwitches`] for how it runs)
+    clip_guard: bool,
+    rumble_filter: bool,
+    smooth_switching: bool,
+    switches: Arc<FilterSwitches>,
     changes: Arc<AtomicU64>,
 }
 
@@ -96,8 +103,10 @@ impl Default for SoundParams {
         Self {
             match_volume: true,
             target: LevelTarget::Normal,
-            channels: Channels::Stereo,
-            balance: 0.0,
+            clip_guard: true,
+            rumble_filter: true,
+            smooth_switching: true,
+            switches: Arc::new(FilterSwitches::default()),
             changes: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -116,12 +125,22 @@ impl SoundParams {
         self.target
     }
 
-    pub fn channels(&self) -> Channels {
-        self.channels
+    /// Clip Guard as switched; it runs anyway while the leveler is on
+    pub fn clip_guard(&self) -> bool {
+        self.clip_guard
     }
 
-    pub fn balance(&self) -> f32 {
-        self.balance
+    pub fn rumble_filter(&self) -> bool {
+        self.rumble_filter
+    }
+
+    pub fn smooth_switching(&self) -> bool {
+        self.smooth_switching
+    }
+
+    /// The switches as the sources read them
+    pub fn switches(&self) -> Arc<FilterSwitches> {
+        self.switches.clone()
     }
 
     /// How many times the settings have changed
@@ -139,7 +158,14 @@ impl SoundParams {
 
     pub fn set_match_volume(&mut self, on: bool) {
         self.match_volume = on;
+        self.update_clip_guard();
         self.changed();
+    }
+
+    fn update_clip_guard(&self) {
+        self.switches
+            .clip_guard
+            .store(self.clip_guard || self.match_volume, Ordering::Relaxed);
     }
 
     pub fn set_target(&mut self, target: LevelTarget) {
@@ -147,19 +173,21 @@ impl SoundParams {
         self.changed();
     }
 
-    pub fn set_channels(&mut self, channels: Channels) {
-        self.channels = channels;
+    pub fn set_clip_guard(&mut self, on: bool) {
+        self.clip_guard = on;
+        self.update_clip_guard();
         self.changed();
     }
 
-    /// Clamped to -1..1; NaN and infinities are ignored. Close enough to
-    /// the centre snaps to it.
-    pub fn set_balance(&mut self, balance: f32) {
-        if !balance.is_finite() {
-            return;
-        }
-        let b = balance.clamp(-1.0, 1.0);
-        self.balance = if b.abs() < BALANCE_SNAP { 0.0 } else { b };
+    pub fn set_rumble_filter(&mut self, on: bool) {
+        self.rumble_filter = on;
+        self.switches.rumble_filter.store(on, Ordering::Relaxed);
+        self.changed();
+    }
+
+    pub fn set_smooth_switching(&mut self, on: bool) {
+        self.smooth_switching = on;
+        self.switches.smooth_switching.store(on, Ordering::Relaxed);
         self.changed();
     }
 }
@@ -258,12 +286,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_match_at_normal_in_stereo() {
+    fn everything_is_on_at_first() {
         let p = SoundParams::default();
         assert!(p.match_volume());
         assert_eq!(p.target(), LevelTarget::Normal);
-        assert_eq!(p.channels(), Channels::Stereo);
-        assert_eq!(p.balance(), 0.0);
+        assert!(p.clip_guard() && p.rumble_filter() && p.smooth_switching());
+        let s = p.switches();
+        assert!(s.clip_guard() && s.rumble_filter() && s.smooth_switching());
     }
 
     #[test]
@@ -271,23 +300,29 @@ mod tests {
         for t in [LevelTarget::Quiet, LevelTarget::Normal, LevelTarget::Loud] {
             assert_eq!(LevelTarget::parse(t.as_str()), Some(t));
         }
-        for c in [Channels::Stereo, Channels::Mono, Channels::Swap] {
-            assert_eq!(Channels::parse(c.as_str()), Some(c));
-        }
         assert_eq!(LevelTarget::parse("LOUD"), None);
     }
 
     #[test]
-    fn balance_clamps_snaps_and_ignores_nan() {
+    fn clip_guard_runs_while_the_leveler_is_on() {
         let mut p = SoundParams::default();
-        p.set_balance(3.0);
-        assert_eq!(p.balance(), 1.0);
-        p.set_balance(0.02);
-        assert_eq!(p.balance(), 0.0);
-        p.set_balance(-0.4);
-        assert_eq!(p.balance(), -0.4);
-        p.set_balance(f32::NAN);
-        assert_eq!(p.balance(), -0.4);
+        let s = p.switches();
+        p.set_clip_guard(false);
+        assert!(!p.clip_guard());
+        assert!(s.clip_guard(), "the leveler still needs it");
+        p.set_match_volume(false);
+        assert!(!s.clip_guard());
+        p.set_match_volume(true);
+        assert!(s.clip_guard());
+    }
+
+    #[test]
+    fn switches_follow_the_settings() {
+        let mut p = SoundParams::default();
+        let s = p.switches();
+        p.set_rumble_filter(false);
+        p.set_smooth_switching(false);
+        assert!(!s.rumble_filter() && !s.smooth_switching());
     }
 
     #[test]
@@ -296,9 +331,10 @@ mod tests {
         let g = p.generation();
         p.set_match_volume(false);
         p.set_target(LevelTarget::Loud);
-        p.set_channels(Channels::Mono);
-        p.set_balance(0.5);
-        assert_eq!(p.generation(), g + 4);
+        p.set_clip_guard(false);
+        p.set_rumble_filter(false);
+        p.set_smooth_switching(false);
+        assert_eq!(p.generation(), g + 5);
     }
 
     #[test]

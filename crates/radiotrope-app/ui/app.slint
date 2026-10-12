@@ -17,7 +17,7 @@ import { RemoteControlDialog, PairingCodeDialog, PairingQrDialog, RemoteDevice }
 import { SleepTimerDialog } from "dialogs/sleep-timer.slint";
 import { ScheduleDialog, ScheduleRow, ScheduleDraft } from "dialogs/schedule.slint";
 import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
-import { SoundDialog } from "dialogs/sound.slint";
+import { FiltersDialog } from "dialogs/filters.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
@@ -102,11 +102,12 @@ export component App inherits Window {
     callback eq-preamp-changed(float);
     callback eq-preset-selected(string);
     callback eq-enabled-toggled(bool);
-    // Sound
+    // Filters
     callback match-volume-toggled(bool);
     callback level-target-changed(string);
-    callback channels-changed(string);
-    callback balance-changed(float);
+    callback clip-guard-toggled(bool);
+    callback rumble-filter-toggled(bool);
+    callback smooth-switching-toggled(bool);
     callback accent-color-changed(color);
     callback apply-custom-hex(string);
     // Recording
@@ -337,15 +338,12 @@ export component App inherits Window {
     in property <[string]> eq-top-presets;
     in property <[EqPresetGroup]> eq-preset-groups;
 
-    // Sound proxy properties
-    in-out property <bool> match-volume <=> sound-dialog.level-on;
-    in-out property <string> level-target <=> sound-dialog.level-target;
-    in-out property <string> sound-channels <=> sound-dialog.channels;
-    // -100 (left only) to 100 (right only)
-    in-out property <float> balance <=> sound-dialog.balance;
-    // "none", "learning" or "settled"
-    in property <string> level-state;
-    in property <float> station-gain;
+    // Filters proxy properties
+    in-out property <bool> match-volume <=> filters-dialog.leveler-on;
+    in-out property <string> level-target <=> filters-dialog.level-target;
+    in-out property <bool> clip-guard <=> filters-dialog.clip-guard;
+    in-out property <bool> rumble-filter <=> filters-dialog.rumble-filter;
+    in-out property <bool> smooth-switching <=> filters-dialog.smooth-switching;
 
     // WiFi proxy properties (embedded only)
     in-out property <bool> show-wifi-settings: false;
@@ -496,8 +494,8 @@ export component App inherits Window {
                     open-equalizer => {
                         eq-dialog.show-dialog = true;
                     }
-                    open-sound => {
-                        sound-dialog.show-dialog = true;
+                    open-filters => {
+                        filters-dialog.show-dialog = true;
                     }
                     open-accent-color => {
                         accent-dialog.show-dialog = true;
@@ -655,13 +653,12 @@ export component App inherits Window {
             band-changed(band, gain) => { root.eq-band-changed(band, gain); }
         }
 
-        sound-dialog := SoundDialog {
-            level-state: root.level-state;
-            station-gain: root.station-gain;
-            level-on-toggled(on) => { root.match-volume-toggled(on); }
+        filters-dialog := FiltersDialog {
+            leveler-toggled(on) => { root.match-volume-toggled(on); }
             level-target-changed(id) => { root.level-target-changed(id); }
-            channels-changed(id) => { root.channels-changed(id); }
-            balance-changed(v) => { root.balance-changed(v); }
+            clip-guard-toggled(on) => { root.clip-guard-toggled(on); }
+            rumble-filter-toggled(on) => { root.rumble-filter-toggled(on); }
+            smooth-switching-toggled(on) => { root.smooth-switching-toggled(on); }
         }
 
         browser-dialog := StationBrowserDialog {
@@ -821,7 +818,7 @@ export component App inherits Window {
     // A dialog is open; when the last one closes, the main window takes
     // the keyboard back (its shortcuts work again)
     property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
-        || eq-dialog.show-dialog || sound-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
+        || eq-dialog.show-dialog || filters-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
