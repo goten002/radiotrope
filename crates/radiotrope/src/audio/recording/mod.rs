@@ -32,7 +32,6 @@ use crate::error::RadioError;
 mod listen;
 mod mp3;
 mod opus;
-mod resample;
 mod wav;
 
 pub use listen::{

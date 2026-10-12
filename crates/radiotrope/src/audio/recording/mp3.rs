@@ -8,8 +8,8 @@
 
 use mp3lame_encoder::{Bitrate, Builder, Encoder, FlushGap, InterleavedPcm, Mode, MonoPcm};
 
-use super::resample::Resampler;
 use super::{AudioEncoder, RecordingTags};
+use crate::audio::dsp::resample::Resampler;
 
 /// Bitrates LAME can write, in kbps.
 const BITRATES: [(u32, Bitrate); 16] = [

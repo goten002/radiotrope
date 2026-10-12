@@ -196,13 +196,62 @@ pub mod eq {
     /// The highest band's shelf moves down to this fraction of the sample
     /// rate when 12 kHz is past it, so it still works on 22.05 kHz streams
     pub const TOP_SHELF_MAX_FRACTION: f32 = 0.4;
+}
 
-    /// Loudest sample the EQ passes on (full scale): its limiter turns
-    /// louder peaks down instead of letting them clip
-    pub const LIMITER_CEILING: f32 = 1.0;
+/// The Sound filters: station volume matching, the limiter, the rumble
+/// filter, channels and fades
+pub mod sound {
+    /// Loudness each Level choice brings stations to (LUFS). Normal is
+    /// Apple Music's level and the AES recommendation for music streams.
+    pub const TARGET_QUIET_LUFS: f32 = -20.0;
+    pub const TARGET_NORMAL_LUFS: f32 = -16.0;
+    pub const TARGET_LOUD_LUFS: f32 = -12.0;
 
-    /// How long the limiter takes to let go after a peak (milliseconds)
-    pub const LIMITER_RELEASE_MS: f32 = 150.0;
+    /// Matching turns a station down at most this far, and up at most
+    /// `MAX_GAIN_DB` (dB)
+    pub const MIN_GAIN_DB: f32 = -12.0;
+    pub const MAX_GAIN_DB: f32 = 9.0;
+
+    /// How fast the gain moves toward its target (dB per second): down
+    /// quickly, so a loud station or ad doesn't blast, up slowly, so a
+    /// quiet intro isn't pumped up
+    pub const DOWN_DB_PER_SEC: f32 = 2.0;
+    pub const UP_DB_PER_SEC: f32 = 0.5;
+    /// Both ways while a new station is first being measured
+    pub const LEARNING_DB_PER_SEC: f32 = 3.0;
+    /// Down, when the last few seconds are far louder than the target
+    pub const PANIC_DB_PER_SEC: f32 = 6.0;
+    /// How far above the target the last 3 s must be for that (LU)
+    pub const PANIC_LU: f32 = 6.0;
+
+    /// A station measured for the first time starts this far down: it is
+    /// most likely loud, and a quiet start beats a blast (dB)
+    pub const UNKNOWN_START_DB: f32 = -7.0;
+    /// Seconds of sound before a new station's loudness counts as known
+    pub const SETTLE_SECS: f32 = 20.0;
+    /// Seconds of the stream the loudness is measured over
+    pub const WINDOW_SECS: f32 = 60.0;
+    /// Quieter than this (momentary LUFS) is silence or dead air: the gain
+    /// holds still and the window skips it
+    pub const SILENCE_LUFS: f32 = -45.0;
+
+    /// The limiter keeps true peaks under this (dBFS)
+    pub const LIMITER_CEILING_DB: f32 = -1.0;
+    /// How far ahead it looks, so the gain is down before a peak (ms)
+    pub const LIMITER_LOOKAHEAD_MS: f32 = 5.0;
+    /// How long it takes to let go after a peak (ms)
+    pub const LIMITER_RELEASE_MS: f32 = 100.0;
+
+    /// The rumble filter's corner (Hz): below the lowest note of a bass
+    pub const RUMBLE_HZ: f64 = 25.0;
+
+    /// A balance this close to the centre is the centre
+    pub const BALANCE_SNAP: f32 = 0.03;
+
+    /// A new station fades in over this long (ms)
+    pub const FADE_IN_MS: f32 = 800.0;
+    /// The old station fades out over this long when another starts (ms)
+    pub const FADE_OUT_MS: u64 = 400;
 }
 
 /// Stream buffer configuration (producer-consumer architecture)

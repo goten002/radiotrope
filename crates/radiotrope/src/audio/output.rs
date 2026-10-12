@@ -43,6 +43,17 @@ impl Output {
         }
     }
 
+    /// The device takes 16-bit samples, so what plays gets dither
+    pub(crate) fn takes_16_bit(&self) -> bool {
+        match self {
+            Output::Device(sink) => matches!(
+                sink.config().sample_format(),
+                rodio::cpal::SampleFormat::I16 | rodio::cpal::SampleFormat::U16
+            ),
+            Output::Silent(_) => false,
+        }
+    }
+
     /// How much the output takes at a time, and its sample rate
     pub(crate) fn buffer(&self) -> (BufferSize, NonZero<u32>) {
         match self {
