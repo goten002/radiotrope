@@ -111,7 +111,8 @@ struct ListenShared {
     generation: AtomicU64,
     next_generation: AtomicU64,
     next_listener: AtomicU64,
-    /// `TapPoint::id()` listeners hear; 0 is the default (before the EQ)
+    /// `TapPoint::id()` listeners hear; 0 is the default (after the EQ, so
+    /// phones hear what the speakers play, before volume)
     tap: AtomicU8,
     /// Pieces the taps couldn't hand to a busy encoder
     dropped_batches: AtomicU64,
@@ -177,7 +178,7 @@ impl Listen {
         self.lock_listeners().len()
     }
 
-    /// Where in the playback chain listeners take the audio from (before
+    /// Where in the playback chain listeners take the audio from (after
     /// the equalizer unless set)
     pub fn set_tap(&self, tap: TapPoint) {
         self.shared.tap.store(tap.id(), Ordering::SeqCst);
@@ -207,8 +208,8 @@ impl Listen {
 
     fn tap(&self) -> TapPoint {
         match self.shared.tap.load(Ordering::SeqCst) {
-            2 => TapPoint::AfterEq,
-            _ => TapPoint::BeforeEq,
+            1 => TapPoint::BeforeEq,
+            _ => TapPoint::AfterEq,
         }
     }
 
@@ -500,9 +501,9 @@ mod tests {
     fn audio_at_any_rate_comes_out_as_one_format() {
         let listen = Listen::new();
         let stream = listen.subscribe("Pixel").unwrap();
-        let generation = listen.generation_for(TapPoint::BeforeEq);
+        let generation = listen.generation_for(TapPoint::AfterEq);
         assert_ne!(generation, 0);
-        assert_eq!(listen.generation_for(TapPoint::AfterEq), 0);
+        assert_eq!(listen.generation_for(TapPoint::BeforeEq), 0);
         // A 48 kHz mono station, then a 44.1 kHz stereo one
         for _ in 0..10 {
             listen.submit(generation, 48_000, 1, sine(48_000, 1, 4800));
@@ -544,7 +545,7 @@ mod tests {
     fn a_station_change_changes_the_packet_size() {
         let listen = Listen::new();
         let stream = listen.subscribe("Pixel").unwrap();
-        let generation = listen.generation_for(TapPoint::BeforeEq);
+        let generation = listen.generation_for(TapPoint::AfterEq);
         let mut seed = 1;
         // Average bytes per packet of a second of noise from a station
         // of `kbps`, leaving out the first packets after the change
@@ -574,7 +575,7 @@ mod tests {
         let listen = Listen::new();
         let a = listen.subscribe("Pixel").unwrap();
         let b = listen.subscribe("Xiaomi").unwrap();
-        let generation = listen.generation_for(TapPoint::BeforeEq);
+        let generation = listen.generation_for(TapPoint::AfterEq);
         for _ in 0..10 {
             listen.submit(generation, 44_100, 2, sine(44_100, 2, 4410));
         }
@@ -592,10 +593,10 @@ mod tests {
         assert_eq!(listen.listener_names(), ["Pixel", "Xiaomi"]);
         drop(a);
         assert_eq!(listen.listeners(), 1);
-        assert_ne!(listen.generation_for(TapPoint::BeforeEq), 0);
+        assert_ne!(listen.generation_for(TapPoint::AfterEq), 0);
         drop(b);
         assert_eq!(listen.listeners(), 0);
-        assert_eq!(listen.generation_for(TapPoint::BeforeEq), 0);
+        assert_eq!(listen.generation_for(TapPoint::AfterEq), 0);
         // And starts again for the next one
         let c = listen.subscribe("Pixel").unwrap();
         assert!(!read(&c, 5, Duration::from_secs(5)).is_empty());
@@ -619,7 +620,7 @@ mod tests {
     fn a_listener_that_falls_behind_is_dropped() {
         let listen = Listen::new();
         let slow = listen.subscribe("Slow").unwrap();
-        let generation = listen.generation_for(TapPoint::BeforeEq);
+        let generation = listen.generation_for(TapPoint::AfterEq);
         // Far more audio than the listener's queue holds, never read
         for _ in 0..(LISTENER_QUEUE * 3) {
             listen.submit(generation, 44_100, 2, sine(44_100, 2, 2048));
