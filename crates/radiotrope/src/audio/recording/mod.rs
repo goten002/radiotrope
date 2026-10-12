@@ -967,13 +967,13 @@ mod tests {
         let recorder = Recorder::new();
         let listen = recorder.listen();
         let phone = listen.subscribe("Pixel").unwrap();
-        recorder.start(options(&path, TapPoint::BeforeEq)).unwrap();
+        recorder.start(options(&path, TapPoint::AfterEq)).unwrap();
         let source = SamplesBuffer::new(
             NonZero::new(2).unwrap(),
             NonZero::new(44_100).unwrap(),
             sine(44_100, 2, 2.0),
         );
-        play_through(source, &recorder, TapPoint::BeforeEq);
+        play_through(source, &recorder, TapPoint::AfterEq);
         let status = recorder.stop().unwrap();
         assert_eq!(status.error, None);
         assert!(status.duration.abs_diff(Duration::from_secs(2)) < Duration::from_millis(50));
