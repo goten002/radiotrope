@@ -5,14 +5,14 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use radiotrope::audio::{Channels, LevelTarget, PRESETS};
+use radiotrope::audio::{LevelTarget, PRESETS};
 use radiotrope::config::eq::{FREQ_LABELS, MAX_GAIN_DB, MIN_GAIN_DB};
 use radiotrope_app::data::schedule::{self, Action, End, Entry, MAX_MINUTES};
 use radiotrope_app::data::settings::{parse_hex_rgb, RecordingFormat};
 use radiotrope_app::data::types::url_to_id;
 
 use super::server::{control_error, done, error, json, no_content, read_json, Body, Shared};
-use super::state::{EqState, SleepState, SoundState, State, ACCENT_SWATCHES, DEFAULT_ACCENT};
+use super::state::{EqState, FiltersState, SleepState, State, ACCENT_SWATCHES, DEFAULT_ACCENT};
 use crate::app::state::{AppCommand, RecordingSettingsChange};
 use crate::control::{EntryRequest, RecordingStart, RecordingStop};
 
@@ -218,55 +218,59 @@ pub(super) async fn set_eq(shared: &Shared, request: Request<Incoming>) -> Respo
 
 // -- Sound -------------------------------------------------------------------
 
-/// `GET /v1/sound`: station volume matching, channels and balance
-pub(super) fn sound(shared: &Shared) -> Response<Body> {
+/// `GET /v1/filters`
+pub(super) fn filters(shared: &Shared) -> Response<Body> {
     json(
         StatusCode::OK,
-        &SoundState::from_snapshot(&shared.control.snapshot()),
+        &FiltersState::from_snapshot(&shared.control.snapshot()),
     )
 }
 
 /// What to change; what is left out stays
 #[derive(Deserialize)]
-struct SoundBody {
+struct FiltersBody {
     #[serde(default)]
-    match_volume: Option<bool>,
+    leveler: Option<bool>,
     #[serde(default)]
     level: Option<String>,
     #[serde(default)]
-    channels: Option<String>,
+    clip_guard: Option<bool>,
     #[serde(default)]
-    balance: Option<f32>,
+    rumble_filter: Option<bool>,
+    #[serde(default)]
+    smooth_switching: Option<bool>,
 }
 
-/// `PUT /v1/sound`
-pub(super) async fn set_sound(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
-    let body: SoundBody = match read_json(request).await {
+/// `PUT /v1/filters`
+pub(super) async fn set_filters(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
+    let body: FiltersBody = match read_json(request).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
-    let bad = |text: &str| error(StatusCode::BAD_REQUEST, "bad_request", text);
     let mut commands = Vec::new();
-    if let Some(on) = body.match_volume {
+    if let Some(on) = body.leveler {
         commands.push(AppCommand::SetMatchVolume(on));
     }
     if let Some(level) = body.level {
         match LevelTarget::parse(&level) {
             Some(target) => commands.push(AppCommand::SetLevelTarget(target)),
-            None => return bad("level must be quiet, normal or loud"),
+            None => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "level must be quiet, normal or loud",
+                )
+            }
         }
     }
-    if let Some(channels) = body.channels {
-        match Channels::parse(&channels) {
-            Some(channels) => commands.push(AppCommand::SetChannels(channels)),
-            None => return bad("channels must be stereo, mono or swap"),
-        }
+    if let Some(on) = body.clip_guard {
+        commands.push(AppCommand::SetClipGuard(on));
     }
-    if let Some(balance) = body.balance {
-        if !balance.is_finite() {
-            return bad("balance must be a number");
-        }
-        commands.push(AppCommand::SetBalance(balance.clamp(-1.0, 1.0)));
+    if let Some(on) = body.rumble_filter {
+        commands.push(AppCommand::SetRumbleFilter(on));
+    }
+    if let Some(on) = body.smooth_switching {
+        commands.push(AppCommand::SetSmoothSwitching(on));
     }
     for command in commands {
         if let Err(e) = shared.control.send(command) {

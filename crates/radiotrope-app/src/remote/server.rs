@@ -382,8 +382,8 @@ pub async fn handle(
         }
         (&Method::GET, ["v1", "eq"]) => controls::eq(shared),
         (&Method::PUT, ["v1", "eq"]) => controls::set_eq(shared, request).await,
-        (&Method::GET, ["v1", "sound"]) => controls::sound(shared),
-        (&Method::PUT, ["v1", "sound"]) => controls::set_sound(shared, request).await,
+        (&Method::GET, ["v1", "filters"]) => controls::filters(shared),
+        (&Method::PUT, ["v1", "filters"]) => controls::set_filters(shared, request).await,
         (&Method::PUT, ["v1", "sleep-timer"]) => controls::sleep_timer(shared, request).await,
         (&Method::GET, ["v1", "schedule"]) => controls::schedule(shared),
         (&Method::POST, ["v1", "schedule"]) => controls::add_entry(shared, request).await,

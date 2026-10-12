@@ -20,7 +20,7 @@ pub use dsp::equalizer::{
     find_preset, peak_boost_db, EqParams, EqPreset, EqSource, PresetGroup, SharedEqParams, PRESETS,
 };
 pub use dsp::sound::{
-    Channels, LevelPhase, LevelReadout, LevelTarget, SharedSoundParams, SoundParams,
+    FilterSwitches, LevelPhase, LevelReadout, LevelTarget, SharedSoundParams, SoundParams,
 };
 pub use engine::{AudioEngine, EngineConfig, EngineOutput};
 pub use recording::{

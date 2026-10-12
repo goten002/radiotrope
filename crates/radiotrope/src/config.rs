@@ -245,9 +245,6 @@ pub mod sound {
     /// The rumble filter's corner (Hz): below the lowest note of a bass
     pub const RUMBLE_HZ: f64 = 25.0;
 
-    /// A balance this close to the centre is the centre
-    pub const BALANCE_SNAP: f32 = 0.03;
-
     /// A new station fades in over this long (ms)
     pub const FADE_IN_MS: f32 = 800.0;
     /// The old station fades out over this long when another starts (ms)

@@ -35,8 +35,10 @@ use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::dsp::output_stage::{OutputStage, SharedVolume};
-use super::dsp::sound::{Channels, LevelReadout, LevelTarget, SharedSoundParams, SoundParams};
-use super::dsp::{ChannelSource, CleanupSource, LevelSource, LimiterSource, ResampleSource};
+use super::dsp::sound::{
+    FilterSwitches, LevelReadout, LevelTarget, SharedSoundParams, SoundParams,
+};
+use super::dsp::{CleanupSource, LevelSource, LimiterSource, ResampleSource};
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
 use super::output::{DefaultWatch, DeviceOutputs, Devices, Output, SilentOutput};
 use super::pcm::{decode_ahead, PcmFeed, PcmOutput};
@@ -296,6 +298,8 @@ impl Drop for Fading {
 #[derive(Clone)]
 struct SoundShared {
     params: SharedSoundParams,
+    /// The filters' switches, read without the lock
+    switches: Arc<FilterSwitches>,
     readout: Arc<LevelReadout>,
     /// The next station's remembered loudness
     start_lufs: Arc<Mutex<Option<f32>>>,
@@ -303,8 +307,11 @@ struct SoundShared {
 
 impl SoundShared {
     fn new() -> Self {
+        let params = SoundParams::new_shared();
+        let switches = params.lock().unwrap_or_else(|e| e.into_inner()).switches();
         Self {
-            params: SoundParams::new_shared(),
+            params,
+            switches,
             readout: LevelReadout::new_shared(),
             start_lufs: Arc::new(Mutex::new(None)),
         }
@@ -709,7 +716,7 @@ impl AudioEngine {
         self.eq_params.clone()
     }
 
-    /// The Sound settings: station volume matching, channels, balance
+    /// The filters' settings: the Volume Leveler and the filter switches
     pub fn sound_params(&self) -> SharedSoundParams {
         self.sound.params.clone()
     }
@@ -734,14 +741,19 @@ impl AudioEngine {
         self.with_sound(|p| p.set_target(target));
     }
 
-    /// Stereo, mono or swapped
-    pub fn set_channels(&self, channels: Channels) {
-        self.with_sound(|p| p.set_channels(channels));
+    /// Clip Guard; it stays on while the leveler is on
+    pub fn set_clip_guard(&self, on: bool) {
+        self.with_sound(|p| p.set_clip_guard(on));
     }
 
-    /// -1 (left only) to 1 (right only)
-    pub fn set_balance(&self, balance: f32) {
-        self.with_sound(|p| p.set_balance(balance));
+    /// The Rumble Filter
+    pub fn set_rumble_filter(&self, on: bool) {
+        self.with_sound(|p| p.set_rumble_filter(on));
+    }
+
+    /// Smooth Switching: fade a station out when it is changed or stopped
+    pub fn set_smooth_switching(&self, on: bool) {
+        self.with_sound(|p| p.set_smooth_switching(on));
     }
 
     /// The loudness (LUFS) remembered for the station about to be played,
@@ -927,7 +939,9 @@ impl AudioEngine {
                         // Playing: it fades out (while the next one starts)
                         match playing_source.take() {
                             Some(station)
-                                if state == PlaybackState::Playing && !waiting_for_output =>
+                                if state == PlaybackState::Playing
+                                    && !waiting_for_output
+                                    && sound.switches.smooth_switching() =>
                             {
                                 fading = Some(Fading::start(
                                     station,
@@ -1044,7 +1058,9 @@ impl AudioEngine {
                         // Playing: it fades out (while the next one starts)
                         match playing_source.take() {
                             Some(station)
-                                if state == PlaybackState::Playing && !waiting_for_output =>
+                                if state == PlaybackState::Playing
+                                    && !waiting_for_output
+                                    && sound.switches.smooth_switching() =>
                             {
                                 fading = Some(Fading::start(
                                     station,
@@ -1277,10 +1293,11 @@ impl AudioEngine {
                                     *sound.start_lufs.lock().unwrap_or_else(|e| e.into_inner());
                                 // "Record without EQ" takes the station as it
                                 // comes; "with EQ" and phones listening take
-                                // it with every filter but the speaker ones
+                                // it with every filter, before the volume
                                 let source =
                                     RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
-                                let source = CleanupSource::new(source);
+                                let source =
+                                    CleanupSource::new(source).with_switch(sound.switches.clone());
                                 let source = LevelSource::new(
                                     source,
                                     sound.params.clone(),
@@ -1288,10 +1305,10 @@ impl AudioEngine {
                                     start_lufs,
                                 );
                                 let source = EqSource::new(source, eq_params.clone());
-                                let source = LimiterSource::new(source);
+                                let source =
+                                    LimiterSource::new(source).with_switch(sound.switches.clone());
                                 let source =
                                     RecordingTap::new(source, recorder.clone(), TapPoint::AfterEq);
-                                let source = ChannelSource::new(source, sound.params.clone());
                                 let analyzing = AnalyzingSource::new(
                                     source,
                                     analysis.clone(),
@@ -4577,6 +4594,19 @@ mod tests {
         expect_stopped(&engine);
         assert!(!cancel.is_cancelled(), "cut off instead of faded");
         assert!(gets_cancelled(&cancel));
+        engine.shutdown();
+    }
+
+    #[test]
+    fn without_smooth_switching_a_stop_cuts_off() {
+        let engine = test_engine();
+        engine.set_smooth_switching(false);
+        let cancel = StreamCancel::new();
+        engine.play_stream(resolved_stream(EndlessWav::new(), &cancel));
+        expect_playing(&engine);
+        engine.stop();
+        expect_stopped(&engine);
+        assert!(cancel.is_cancelled(), "faded although switched off");
         engine.shutdown();
     }
 

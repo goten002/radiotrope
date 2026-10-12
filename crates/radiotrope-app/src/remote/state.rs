@@ -61,7 +61,7 @@ pub struct State {
     /// The next one, e.g. "Tomorrow 07:00: Play Jazz FM"
     pub next_scheduled: Option<String>,
     pub eq: EqState,
-    pub sound: SoundState,
+    pub filters: FiltersState,
     /// "#rrggbb"
     pub accent: String,
     /// Changes whenever the favorites change: list them again
@@ -135,30 +135,31 @@ pub struct EqState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct SoundState {
-    /// Turn loud stations down and quiet ones up
-    pub match_volume: bool,
+pub struct FiltersState {
+    /// The Volume Leveler: turn loud stations down and quiet ones up
+    pub leveler: bool,
     /// "quiet", "normal" or "loud"
     pub level: &'static str,
-    /// "stereo", "mono" or "swap"
-    pub channels: &'static str,
-    /// -1 (left only) to 1 (right only)
-    pub balance: f32,
-    /// What matching does to the station playing now, in dB to half a dB;
-    /// none while nothing plays
+    /// Clip Guard as switched; it runs anyway while the leveler is on
+    pub clip_guard: bool,
+    pub rumble_filter: bool,
+    pub smooth_switching: bool,
+    /// What the leveler does to the station playing now, in dB to half a
+    /// dB; none while nothing plays
     pub station_gain_db: Option<f32>,
-    /// Matching is still finding out how loud this station is
+    /// The leveler is still finding out how loud this station is
     pub learning: bool,
 }
 
-impl SoundState {
+impl FiltersState {
     pub fn from_snapshot(s: &AppSnapshot) -> Self {
         let readout = s.level.as_ref().filter(|r| r.phase() != LevelPhase::None);
         Self {
-            match_volume: s.match_volume,
+            leveler: s.match_volume,
             level: s.level_target.as_str(),
-            channels: s.sound_channels.as_str(),
-            balance: s.balance,
+            clip_guard: s.clip_guard,
+            rumble_filter: s.rumble_filter,
+            smooth_switching: s.smooth_switching,
             // To half a dB, so the gain gliding doesn't send an event for
             // every step (adding 0 turns a -0 into 0)
             station_gain_db: readout.map(|r| (r.gain_db() * 2.0).round() / 2.0 + 0.0),
@@ -240,7 +241,7 @@ impl State {
                 gains: s.eq_gains,
                 preamp: s.eq_preamp,
             },
-            sound: SoundState::from_snapshot(s),
+            filters: FiltersState::from_snapshot(s),
             accent: s
                 .accent_color
                 .clone()
