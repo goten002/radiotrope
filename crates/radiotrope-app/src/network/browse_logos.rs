@@ -54,6 +54,23 @@ impl BrowseLogos {
     /// A logo shrunk for a browser row: from the disk cache, else
     /// downloaded, shrunk and cached. `None` when it can't be had.
     pub fn row_logo(&self, service: &LogoService, logo_url: &str) -> Option<Rgba> {
+        let png = self.logo_png(service, logo_url)?;
+        let key = url_to_id(logo_url);
+        let logo = row_rgba(&png);
+        match logo {
+            Some(_) => self.failed.clear(logo_url),
+            None => {
+                // A cached one that fails to decode isn't kept
+                self.cache.delete(&key);
+                self.failed.record_unusable(logo_url);
+            }
+        }
+        logo
+    }
+
+    /// A logo as the cache keeps it (a PNG thumbnail): from the disk cache,
+    /// else downloaded, shrunk and cached. `None` when it can't be had.
+    pub fn logo_png(&self, service: &LogoService, logo_url: &str) -> Option<Vec<u8>> {
         if logo_url.is_empty() || self.failed.has_failed(logo_url) {
             return None;
         }
@@ -78,16 +95,7 @@ impl BrowseLogos {
                 }
             },
         };
-        let logo = row_rgba(&png);
-        match logo {
-            Some(_) => self.failed.clear(logo_url),
-            None => {
-                // A cached one that fails to decode isn't kept
-                self.cache.delete(&key);
-                self.failed.record_unusable(logo_url);
-            }
-        }
-        logo
+        Some(png)
     }
 
     #[cfg(test)]

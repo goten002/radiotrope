@@ -180,6 +180,7 @@ impl Player {
             pairing: Arc::new(Mutex::new(Pairing::default())),
             name: Arc::from("Test PC"),
             logos: None,
+            web_logos: None,
             changes: Arc::new(AtomicU64::new(0)),
             window: Arc::new(window),
             calls: Default::default(),
