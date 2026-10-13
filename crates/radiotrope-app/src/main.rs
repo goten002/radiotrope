@@ -305,8 +305,28 @@ fn main() {
     // The Pi build is full screen with no frame to replace
     if cfg!(not(feature = "embedded")) {
         ui.set_custom_frame(settings.custom_title_bar);
+        ui.set_rounded_corners(settings.rounded_corners);
+        // Windows 11 rounds the window itself
+        ui.set_draw_corners(cfg!(not(target_os = "windows")));
         #[cfg(feature = "desktop")]
         {
+            // Corners (and the focus note for the tray) once the system
+            // window exists, and again when the choice or the frame changes
+            let ui_weak = ui.as_weak();
+            let apply_corners = move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    let corners = window_frame::set_corners(
+                        ui.window(),
+                        ui.get_custom_frame(),
+                        ui.get_rounded_corners(),
+                    );
+                    ui.set_corners_available(corners.available);
+                    ui.set_draw_corners(corners.drawn);
+                    ui.set_corners_hint(corners.hint.into());
+                }
+            };
+            window_frame::watch_window(ui.window(), apply_corners.clone());
+            ui.on_rounded_corners_changed(apply_corners.clone());
             let ui_weak = ui.as_weak();
             ui.on_minimize_window(move || {
                 if let Some(ui) = ui_weak.upgrade() {
@@ -324,6 +344,7 @@ fn main() {
                 if let Some(ui) = ui_weak.upgrade() {
                     window_frame::set_system_frame(ui.window(), !custom);
                     ui.set_custom_frame(custom);
+                    apply_corners();
                 }
             });
             let ui_weak = ui.as_weak();
@@ -3194,8 +3215,8 @@ struct WindowSettings {
     show_station_stats: bool,
     show_visualizer: bool,
     panel_gradient: bool,
-    /// Custom title bar and always on top (not on the Pi)
-    frame: Option<(bool, bool)>,
+    /// Custom title bar, rounded corners and always on top (not on the Pi)
+    frame: Option<(bool, bool, bool)>,
     /// Tray icon, close to tray, start in tray, minimize to tray (desktop)
     tray: Option<(bool, bool, bool, bool)>,
     last_station: Option<Station>,
@@ -3254,8 +3275,13 @@ fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         show_station_stats: ui.get_show_station_stats(),
         show_visualizer: ui.get_show_visualizer(),
         panel_gradient: ui.get_panel_gradient(),
-        frame: cfg!(not(feature = "embedded"))
-            .then(|| (ui.get_custom_frame(), ui.get_keep_on_top())),
+        frame: cfg!(not(feature = "embedded")).then(|| {
+            (
+                ui.get_custom_frame(),
+                ui.get_rounded_corners(),
+                ui.get_keep_on_top(),
+            )
+        }),
         tray: cfg!(feature = "desktop").then(|| {
             (
                 ui.get_tray_icon(),
@@ -3292,8 +3318,9 @@ fn write_settings(w: &WindowSettings) {
     settings.show_station_stats = w.show_station_stats;
     settings.show_visualizer = w.show_visualizer;
     settings.panel_gradient = w.panel_gradient;
-    if let Some((custom_title_bar, always_on_top)) = w.frame {
+    if let Some((custom_title_bar, rounded_corners, always_on_top)) = w.frame {
         settings.custom_title_bar = custom_title_bar;
+        settings.rounded_corners = rounded_corners;
         settings.always_on_top = always_on_top;
     }
     if let Some((tray_icon, close_to_tray, start_in_tray, hide_on_minimize)) = w.tray {

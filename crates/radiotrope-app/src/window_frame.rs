@@ -23,14 +23,31 @@ thread_local! {
     /// When the window last lost the keyboard focus
     static FOCUS_LOST: std::cell::Cell<Option<std::time::Instant>> =
         const { std::cell::Cell::new(None) };
+    /// The winit window the events last came from
+    static WINDOW_SEEN: std::cell::Cell<Option<winit::window::WindowId>> =
+        const { std::cell::Cell::new(None) };
 }
 
-/// Start noting when the window loses the focus, for [`was_in_front`].
-/// Call once; the note survives Wayland making a new window on show.
-pub fn track_focus(window: &slint::Window) {
-    window.on_winit_window_event(|_, event| {
-        if let winit::event::WindowEvent::Focused(false) = event {
-            FOCUS_LOST.set(Some(std::time::Instant::now()));
+/// Start watching the window's events: note when it loses the focus, for
+/// [`was_in_front`], and call `new_window` once the system window exists
+/// (again after Wayland makes a new one on show), for settings that only
+/// a live window takes. Call once; it takes Slint's one event filter.
+pub fn watch_window(window: &slint::Window, new_window: impl Fn() + 'static) {
+    let new_window = std::rc::Rc::new(new_window);
+    window.on_winit_window_event(move |window, event| {
+        use winit::event::WindowEvent;
+        match event {
+            WindowEvent::Focused(false) => FOCUS_LOST.set(Some(std::time::Instant::now())),
+            WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
+                let id = window.with_winit_window(|w| w.id());
+                if id.is_some() && id != WINDOW_SEEN.get() {
+                    WINDOW_SEEN.set(id);
+                    // Outside the event, so the callback may use the window
+                    let new_window = new_window.clone();
+                    slint::Timer::single_shot(std::time::Duration::ZERO, move || new_window());
+                }
+            }
+            _ => {}
         }
         slint::winit_030::EventResult::Propagate
     });
@@ -236,6 +253,134 @@ pub fn set_system_frame(window: &slint::Window, framed: bool) {
     }
     #[cfg(not(target_os = "windows"))]
     let _ = (window, framed);
+}
+
+/// What rounded corners can do here, from [`set_corners`]
+pub struct Corners {
+    /// The desktop can show them
+    pub available: bool,
+    /// The app draws them itself (otherwise the system does)
+    pub drawn: bool,
+    /// Why they aren't available, for the greyed View item
+    pub hint: &'static str,
+}
+
+/// Round the window's corners (or not) for our title bar.
+///
+/// - Windows 11 rounds the window itself and gives it its shadow, which
+///   it also squares when maximized or snapped. Windows 10 has neither
+///   setting and refuses it, so the corners aren't available there.
+/// - Linux: the app draws them, leaving the corners of the window
+///   see-through. That needs a compositor: every Wayland desktop has one,
+///   on X11 one may be missing (the corners would show black), so it is
+///   asked again on every call.
+pub fn set_corners(window: &slint::Window, custom_frame: bool, rounded: bool) -> Corners {
+    #[cfg(target_os = "windows")]
+    {
+        use winit::platform::windows::WindowExtWindows;
+        let available = window
+            .with_winit_window(|w| {
+                // Without the system frame winit drops the shadow, and with
+                // it the rounding; this keeps both (no effect when framed)
+                w.set_undecorated_shadow(true);
+                // The system frame keeps the system's own choice
+                let preference = match (custom_frame, rounded) {
+                    (false, _) => DWMWCP_DEFAULT,
+                    (true, true) => DWMWCP_ROUND,
+                    (true, false) => DWMWCP_DONOTROUND,
+                };
+                dwm_corner_preference(w, preference)
+            })
+            .unwrap_or(true);
+        Corners {
+            available,
+            drawn: false,
+            hint: "Windows 11 only",
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (custom_frame, rounded);
+        let available = x11_window(window).is_none() || x11_composited();
+        Corners {
+            available,
+            drawn: true,
+            hint: "Needs a compositor",
+        }
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (window, custom_frame, rounded);
+        Corners {
+            available: true,
+            drawn: true,
+            hint: "",
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+const DWMWCP_DEFAULT: i32 = 0;
+#[cfg(target_os = "windows")]
+const DWMWCP_DONOTROUND: i32 = 1;
+#[cfg(target_os = "windows")]
+const DWMWCP_ROUND: i32 = 2;
+
+/// Set the window's DWM corner preference; false where Windows doesn't
+/// know it (before Windows 11, build 22000). winit's own setter hides
+/// the answer, which is how we tell.
+#[cfg(target_os = "windows")]
+fn dwm_corner_preference(w: &winit::window::Window, preference: i32) -> bool {
+    use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(
+            hwnd: isize,
+            attribute: u32,
+            value: *const core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    let Ok(handle) = w.window_handle() else {
+        return false;
+    };
+    let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+        return false;
+    };
+    // SAFETY: a live window handle, and the value is the i32 the
+    // attribute takes
+    let result = unsafe {
+        DwmSetWindowAttribute(
+            handle.hwnd.get(),
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            (&preference as *const i32).cast(),
+            std::mem::size_of::<i32>() as u32,
+        )
+    };
+    result >= 0
+}
+
+/// Whether an X11 compositor runs (it owns the `_NET_WM_CM_Sn` selection),
+/// so see-through pixels show what is behind the window
+#[cfg(target_os = "linux")]
+fn x11_composited() -> bool {
+    use x11rb::protocol::xproto::ConnectionExt;
+    let Ok((conn, screen)) = x11rb::connect(None) else {
+        return false;
+    };
+    let name = format!("_NET_WM_CM_S{screen}");
+    let Some(atom) = conn
+        .intern_atom(false, name.as_bytes())
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    else {
+        return false;
+    };
+    conn.get_selection_owner(atom.atom)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .is_some_and(|reply| reply.owner != x11rb::NONE)
 }
 
 /// Colour the system title bar for the View menu's theme (`"system"`,

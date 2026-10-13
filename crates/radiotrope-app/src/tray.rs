@@ -335,7 +335,6 @@ thread_local! {
 /// Start the tray: the icon while View > Show Tray Icon is on, and the
 /// clicks on it. Call once, on the UI thread.
 pub fn start(ui: &App) {
-    crate::window_frame::track_focus(ui.window());
     let ui_weak = ui.as_weak();
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
         let TrayIconEvent::Click {

@@ -335,6 +335,10 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> always-on-top;
     callback minimize();
     callback toggle-custom-frame();
+    in-out property <bool> rounded-corners;
+    in property <bool> corners-available;
+    in property <string> corners-hint;
+    callback rounded-corners-changed();
     // (x, y, pressed) -> whether the system shows its menu (on press or on
     // the release that follows)
     callback show-system-menu(length, length, bool) -> bool;
@@ -750,6 +754,18 @@ export component MenuBar inherits Rectangle {
                     clicked => {
                         root.toggle-custom-frame();
                         view-popup.close();
+                    }
+                }
+                if Platform.has-window-frame: CheckMenuItem {
+                    // The system title bar has its own corners
+                    label: "Rounded Corners";
+                    icon: @image-url("icons/rounded-corner.svg");
+                    enabled: root.custom-frame && root.corners-available;
+                    hint: root.corners-available ? "" : root.corners-hint;
+                    checked: root.rounded-corners;
+                    clicked => {
+                        root.rounded-corners = !root.rounded-corners;
+                        root.rounded-corners-changed();
                     }
                 }
                 if Platform.has-window-frame: MenuSeparator {}
