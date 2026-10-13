@@ -405,8 +405,7 @@ fn main() {
             if !logo_url.is_empty() {
                 let tmp = Station::new(&station.name, &station.url).with_logo(logo_url);
                 if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
-                    let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
-                    ui.set_current_logo(slint::Image::from_rgba8(pb));
+                    set_header_logo(&ui, rgba, w, h);
                 } else {
                     // Not cached (e.g. removed by an older cleanup): fetch it
                     let logo_svc = logo_service.clone();
@@ -419,8 +418,7 @@ fn main() {
                                 let _ = slint::invoke_from_event_loop(move || {
                                     let Some(ui) = ui_weak.upgrade() else { return };
                                     if is_current_station(shown, &station_url) {
-                                        let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
-                                        ui.set_current_logo(slint::Image::from_rgba8(pb));
+                                        set_header_logo(&ui, rgba, w, h);
                                     }
                                 });
                             }
@@ -799,14 +797,12 @@ fn main() {
             if let Some(ui) = ui_weak.upgrade() {
                 let model = ui.get_favorites_list();
                 let logos_model = ui.get_favorite_logos();
-                let fogs_model = ui.get_favorite_logo_fogs();
                 let mut items: Vec<FavoriteStation> = (0..model.row_count())
                     .filter_map(|i| model.row_data(i))
                     .collect();
                 let mut logos: Vec<slint::Image> = (0..logos_model.row_count())
                     .filter_map(|i| logos_model.row_data(i))
                     .collect();
-                let mut fogs: Vec<LogoFog> = fogs_model.iter().collect();
 
                 if from < items.len() && to < items.len() {
                     let item = items.remove(from);
@@ -815,15 +811,10 @@ fn main() {
                         let logo = logos.remove(from);
                         logos.insert(to, logo);
                     }
-                    if from < fogs.len() && to < fogs.len() {
-                        let fog = fogs.remove(from);
-                        fogs.insert(to, fog);
-                    }
                 }
 
                 ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
                 ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
-                ui.set_favorite_logo_fogs(ModelRc::from(std::rc::Rc::new(VecModel::from(fogs))));
             }
 
             // Save to disk in background
@@ -1265,7 +1256,6 @@ fn main() {
                         offset,
                         results: ui.get_search_results(),
                         logos: ui.get_browse_logos(),
-                        fogs: ui.get_browse_logo_fogs(),
                         has_more: ui.get_has_more(),
                         typed: ui.get_browse_typed(),
                         shown: ui.get_browse_shown(),
@@ -1296,7 +1286,6 @@ fn main() {
                 ui.set_browse_mode(mode);
                 ui.set_search_results(kept.results);
                 ui.set_browse_logos(kept.logos.clone());
-                ui.set_browse_logo_fogs(kept.fogs.clone());
                 ui.set_has_more(kept.has_more);
                 ui.set_search_error(Default::default());
                 ui.set_search_loading(false);
@@ -1733,11 +1722,7 @@ fn main() {
             let eq_gains = s.eq_gains;
             let eq_preamp = s.eq_preamp;
             let eq_enabled = s.eq_enabled;
-            let eq_preset: slint::SharedString = s
-                .eq_preset_name
-                .as_deref()
-                .unwrap_or("")
-                .into();
+            let eq_preset: slint::SharedString = s.eq_preset_name.as_deref().unwrap_or("").into();
             let filters = FilterSettings::of(&s);
             let recording = s.recording.clone();
             let recording_notice = s.recording_notice.clone();
@@ -1856,13 +1841,9 @@ fn main() {
                     ui.set_station_country(country.as_str().into());
 
                     // Try cached logo first (works even without logo_url on favorite)
-                    let tmp_station = Station::new(
-                        ui.get_station_name().as_str(),
-                        url.as_str(),
-                    );
+                    let tmp_station = Station::new(ui.get_station_name().as_str(), url.as_str());
                     if let Some((rgba, w, h)) = poll_logo_svc.get_cached_rgba(&tmp_station) {
-                        let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
-                        ui.set_current_logo(slint::Image::from_rgba8(pb));
+                        set_header_logo(&ui, rgba, w, h);
                     } else {
                         // Clear stale logo only when no cached replacement is available
                         ui.set_current_logo(Default::default());
@@ -1875,14 +1856,13 @@ fn main() {
                             std::thread::Builder::new()
                                 .name("poll-logo-fetch".into())
                                 .spawn(move || {
-                                    let tmp = Station::new(&station_name, &station_url)
-                                        .with_logo(&logo);
+                                    let tmp =
+                                        Station::new(&station_name, &station_url).with_logo(&logo);
                                     if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
                                         let _ = slint::invoke_from_event_loop(move || {
                                             let Some(ui) = ui_weak2.upgrade() else { return };
                                             if is_current_station(shown, &station_url) {
-                                                let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
-                                                ui.set_current_logo(slint::Image::from_rgba8(pb));
+                                                set_header_logo(&ui, rgba, w, h);
                                             }
                                         });
                                     }
@@ -2229,12 +2209,11 @@ fn set_levels(model: &VecModel<f32>, levels: &[f32]) {
     }
 }
 
-/// The header logo's visualizer colours on each theme (dark, light) and its
-/// fog, worked out once per logo: a theme switch only picks
+/// The header logo's visualizer colours on each theme (dark, light),
+/// worked out once per logo: a theme switch only picks
 struct HeaderLogo {
     image: slint::Image,
     colors: [Vec<slint::Color>; 2],
-    fog: LogoFog,
 }
 
 thread_local! {
@@ -2242,29 +2221,51 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Colour the visualizer with the main colours of the station logo, and
-/// give the header logo its colour fog if it would vanish on the tile
+/// A logo's visualizer colours on each theme (dark, light). `rgba` is the
+/// logo's pixels in RGBA order.
+fn logo_colors(rgba: &[u8]) -> [Vec<slint::Color>; 2] {
+    [true, false].map(|dark| {
+        logo_palette(rgba, dark)
+            .into_iter()
+            .map(|[r, g, b]| slint::Color::from_rgb_u8(r, g, b))
+            .collect()
+    })
+}
+
+/// A logo as the UI shows it: on its colour fog when it needs one (see
+/// [`visual::with_backdrop`])
+fn logo_image(rgba: Vec<u8>, width: u32, height: u32) -> slint::Image {
+    let (rgba, width, height) = visual::with_backdrop(rgba, width, height);
+    let pixels = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, width, height);
+    slint::Image::from_rgba8(pixels)
+}
+
+/// Show a station logo in the header. The visualizer takes its colours
+/// from the logo itself, not from the fog it is shown on.
+fn set_header_logo(ui: &App, rgba: Vec<u8>, width: u32, height: u32) {
+    let colors = logo_colors(&rgba);
+    let image = logo_image(rgba, width, height);
+    HEADER_LOGO.with(|header| {
+        *header.borrow_mut() = Some(HeaderLogo {
+            image: image.clone(),
+            colors,
+        });
+    });
+    ui.set_current_logo(image);
+}
+
+/// Colour the visualizer with the main colours of the station logo
 fn apply_logo_palette(ui: &App) {
     let dark = ui.get_dark_mode();
     let image = ui.get_current_logo();
     HEADER_LOGO.with(|header| {
         let mut header = header.borrow_mut();
+        // A logo not shown through set_header_logo (none at all, say)
         if header.as_ref().is_none_or(|h| h.image != image) {
-            let pixels = image.to_rgba8();
-            let colors = |dark| {
-                pixels
-                    .as_ref()
-                    .map(|buf| logo_palette(buf.as_bytes(), dark))
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|[r, g, b]| slint::Color::from_rgb_u8(r, g, b))
-                    .collect()
-            };
             *header = Some(HeaderLogo {
-                colors: [colors(true), colors(false)],
-                fog: pixels
-                    .as_ref()
-                    .map(|buf| logo_fog(buf.as_bytes(), buf.width()))
+                colors: image
+                    .to_rgba8()
+                    .map(|buf| logo_colors(buf.as_bytes()))
                     .unwrap_or_default(),
                 image,
             });
@@ -2273,31 +2274,7 @@ fn apply_logo_palette(ui: &App) {
         let colors = logo.colors[!dark as usize].clone();
         ui.global::<VizStyle>()
             .set_logo_colors(ModelRc::from(std::rc::Rc::new(VecModel::from(colors))));
-        ui.set_current_logo_fog(logo.fog.clone());
     });
-}
-
-/// The colour fog a logo gets behind it on each theme (off where it shows
-/// well as it is). `rgba` is the logo's pixels in RGBA order, `width` to a
-/// row.
-pub(crate) fn logo_fog(rgba: &[u8], width: u32) -> LogoFog {
-    let colors = |fog: Option<visual::Backdrop>| match fog {
-        Some(fog) => {
-            let color = |[r, g, b]: [u8; 3]| slint::Color::from_rgb_u8(r, g, b);
-            FogColors {
-                on: true,
-                first: color(fog.first),
-                second: color(fog.second),
-                ground: color(fog.ground),
-            }
-        }
-        None => FogColors::default(),
-    };
-    let (dark, light) = visual::logo_backdrops(rgba, width as usize);
-    LogoFog {
-        dark: colors(dark),
-        light: colors(light),
-    }
 }
 
 /// Text helpers the UI calls back into
@@ -3065,9 +3042,11 @@ fn save_recording_settings(
     }
 }
 
-/// The station's cached logo as PNG, for a recording's cover art.
+/// The station's cached logo as PNG, for a recording's cover art: as the
+/// player shows it, on its fog when it needs one
 fn station_cover_png(logo_service: &LogoService, station: &Station) -> Option<Vec<u8>> {
     let (rgba, w, h) = logo_service.get_cached_rgba(station)?;
+    let (rgba, w, h) = visual::with_backdrop(rgba, w, h);
     let img = image::RgbaImage::from_raw(w, h, rgba)?;
     let mut png = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
@@ -3436,8 +3415,7 @@ fn play_station_with_metadata(
     // change); otherwise replaying the same station would lose it.
     let cached = logo_service.get_cached_rgba(&Station::new(name.as_deref().unwrap_or(""), &url));
     let cache_hit = if let Some((rgba, w, h)) = cached {
-        let pb = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, w, h);
-        ui.set_current_logo(slint::Image::from_rgba8(pb));
+        set_header_logo(ui, rgba, w, h);
         true
     } else {
         false
@@ -3510,12 +3488,7 @@ fn play_station_with_metadata(
                                 if !is_current_station(shown, &play_url) {
                                     return;
                                 }
-                                let pixel_buf =
-                                    SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                        &rgba, width, height,
-                                    );
-                                let image = slint::Image::from_rgba8(pixel_buf);
-                                ui.set_current_logo(image);
+                                set_header_logo(&ui, rgba, width, height);
                             });
                         }
                     })
@@ -3605,8 +3578,6 @@ fn clear_stats_ui(ui: &App) {
     }
 }
 
-/// The Statistics dialog's "Hum removed": the mains frequency the Hum
-/// Filter is taking out, "None", or "Off"
 /// The Volume Leveler on the Statistics dialog: what it does to the
 /// station playing ("−6.5 dB"), "Learning" while it measures a station
 /// heard for the first time, "Off", or "--" before the station's audio
@@ -3630,11 +3601,13 @@ fn hiss_text(level: HissLevel) -> &'static str {
     }
 }
 
+/// The Statistics dialog's "Hum removed": the mains frequency the Hum
+/// Filter is taking out ("50 Hz", "60 Hz"), or "Off" when it is off or
+/// hears no hum
 fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
     match (filter_on, hz) {
-        (false, _) => "Off".into(),
         (true, Some(hz)) => format!("{hz} Hz"),
-        (true, None) => "None".into(),
+        _ => "Off".into(),
     }
 }
 
@@ -3737,7 +3710,6 @@ struct BrowseStash {
     offset: usize,
     results: ModelRc<BrowseStation>,
     logos: ModelRc<slint::Image>,
-    fogs: ModelRc<LogoFog>,
     has_more: bool,
     typed: slint::SharedString,
     shown: slint::SharedString,
@@ -3760,7 +3732,6 @@ fn start_browse(
     if let Some(ui) = ui_weak.upgrade() {
         ui.set_search_results(ModelRc::default());
         ui.set_browse_logos(ModelRc::default());
-        ui.set_browse_logo_fogs(ModelRc::default());
         ui.set_has_more(false);
         ui.set_search_error(Default::default());
         ui.set_search_loading(true);
@@ -3807,22 +3778,19 @@ fn show_browse_results(
             item.is_favorite = browse_is_favorite(&f, item);
         }
     }
-    let (mut items, mut logos, mut fogs) = if append {
+    let (mut items, mut logos) = if append {
         (
             ui.get_search_results().iter().collect::<Vec<_>>(),
             ui.get_browse_logos().iter().collect::<Vec<_>>(),
-            ui.get_browse_logo_fogs().iter().collect::<Vec<_>>(),
         )
     } else {
-        (Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new())
     };
     // No logos yet: rows get theirs as they come on screen
     logos.resize(items.len() + new_items.len(), slint::Image::default());
-    fogs.resize(logos.len(), LogoFog::default());
     items.extend(new_items);
     ui.set_search_results(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
     ui.set_browse_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
-    ui.set_browse_logo_fogs(ModelRc::from(std::rc::Rc::new(VecModel::from(fogs))));
     ui.set_has_more(results.has_more);
     ui.set_search_error(Default::default());
     BROWSE_FAILURES.set(0);
@@ -4137,7 +4105,7 @@ fn flag_image(country_code: Option<&str>, country: Option<&str>) -> slint::Image
 // All callers run on the Slint event-loop thread, so thread_local is safe and avoids
 // threading slint::Image (which is !Send) through closures.
 thread_local! {
-    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, (slint::Image, LogoFog)>> =
+    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -4227,11 +4195,7 @@ fn show_edited_favorite(
                         let Some(ui) = ui_weak.upgrade() else { return };
                         // Update playback logo if this is the current station
                         if is_current_station(shown, &url) {
-                            let pixel_buf =
-                                SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                                    &rgba, width, height,
-                                );
-                            ui.set_current_logo(slint::Image::from_rgba8(pixel_buf));
+                            set_header_logo(&ui, rgba, width, height);
                         }
                         // Refresh favorites list with the now-cached logo
                         refresh_favorites(&ui, &favs, &logo_svc);
@@ -4531,10 +4495,10 @@ fn refresh_favorites(
             .unzip()
     };
 
-    // Build parallel logo and fog models, using in-memory cache to avoid
+    // Build the parallel logo model, using in-memory cache to avoid
     // re-decoding
     let mut missing = Vec::new();
-    let (logos, fogs): (Vec<slint::Image>, Vec<LogoFog>) = LOGO_IMAGE_CACHE.with(|cache| {
+    let logos: Vec<slint::Image> = LOGO_IMAGE_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         sorted
             .iter()
@@ -4544,10 +4508,7 @@ fn refresh_favorites(
                     return logo.clone();
                 }
                 if let Some((rgba, width, height)) = logo_service.get_cached_rgba(f) {
-                    let pixel_buf = SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-                        &rgba, width, height,
-                    );
-                    let logo = (slint::Image::from_rgba8(pixel_buf), logo_fog(&rgba, width));
+                    let logo = logo_image(rgba, width, height);
                     cache.insert(key, logo.clone());
                     logo
                 } else {
@@ -4557,12 +4518,11 @@ fn refresh_favorites(
                     Default::default()
                 }
             })
-            .unzip()
+            .collect()
     });
 
     ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
     ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
-    ui.set_favorite_logo_fogs(ModelRc::from(std::rc::Rc::new(VecModel::from(fogs))));
 
     if !missing.is_empty() {
         let ui_weak = ui.as_weak();
@@ -4682,6 +4642,14 @@ mod tests {
         );
         assert_eq!(leveler_text(true, Some((LevelPhase::None, 0.0))), "--");
         assert_eq!(leveler_text(true, None), "--");
+    }
+
+    #[test]
+    fn hum_reads_off_or_the_mains_frequency() {
+        assert_eq!(hum_text(false, Some(50)), "Off");
+        assert_eq!(hum_text(true, None), "Off");
+        assert_eq!(hum_text(true, Some(50)), "50 Hz");
+        assert_eq!(hum_text(true, Some(60)), "60 Hz");
     }
 
     #[test]

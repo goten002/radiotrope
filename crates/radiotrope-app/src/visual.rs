@@ -392,6 +392,105 @@ fn backdrop(colors: &[[u8; 3]], dark: bool) -> Backdrop {
     }
 }
 
+/// A logo as it is shown everywhere (player, phone, recording covers): a
+/// see-through logo that would vanish on its tile is painted onto its
+/// colour fog, on a square so the fog fills the whole tile; any other logo
+/// is returned as it is. One fog serves both themes: the dark theme's when
+/// that one needs it, else the light theme's.
+///
+/// `rgba` is the image's pixels in RGBA order; the result likewise, with
+/// its width and height.
+pub fn with_backdrop(rgba: Vec<u8>, width: u32, height: u32) -> (Vec<u8>, u32, u32) {
+    let Some(fog) = shown_backdrop(&rgba, width, height) else {
+        return (rgba, width, height);
+    };
+    let (w, h) = (width as usize, height as usize);
+    let side = w.max(h);
+    let mut out = paint_backdrop(&fog, side);
+    // The logo over it, centred
+    let (left, top) = ((side - w) / 2, (side - h) / 2);
+    for y in 0..h {
+        for x in 0..w {
+            let src = &rgba[(y * w + x) * 4..][..4];
+            let dst = &mut out[((top + y) * side + left + x) * 4..][..4];
+            let a = src[3] as f32 / 255.0;
+            for c in 0..3 {
+                dst[c] = (src[c] as f32 * a + dst[c] as f32 * (1.0 - a)).round() as u8;
+            }
+        }
+    }
+    (out, side as u32, side as u32)
+}
+
+/// A PNG logo as it is shown everywhere (see [`with_backdrop`]), as a PNG.
+/// One that needs no fog, or can't be read, comes back as it is.
+pub fn png_with_backdrop(png: Vec<u8>) -> Vec<u8> {
+    let Ok(image) = image::load_from_memory(&png) else {
+        return png;
+    };
+    let image = image.to_rgba8();
+    let (width, height) = image.dimensions();
+    let rgba = image.into_raw();
+    if shown_backdrop(&rgba, width, height).is_none() {
+        return png;
+    }
+    let (rgba, width, height) = with_backdrop(rgba, width, height);
+    let mut out = Vec::new();
+    match image::RgbaImage::from_raw(width, height, rgba)
+        .map(|image| image.write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png))
+    {
+        Some(Ok(())) => out,
+        _ => png,
+    }
+}
+
+/// The one fog a logo is shown on (see [`with_backdrop`]), if any
+fn shown_backdrop(rgba: &[u8], width: u32, height: u32) -> Option<Backdrop> {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || rgba.len() < w * h * 4 {
+        return None;
+    }
+    match logo_backdrops(&rgba[..w * h * 4], w) {
+        (Some(dark), _) => Some(dark),
+        (None, light) => light,
+    }
+}
+
+/// A `side` x `side` opaque square of the fog: two soft glows over a flat
+/// ground, as the tile drew it before logos carried their fog
+fn paint_backdrop(fog: &Backdrop, side: usize) -> Vec<u8> {
+    // Each glow: its colour, centre (share of the side) and how far out it
+    // fades to nothing (share of the side)
+    let glows = [
+        (fog.first, 0.28, 0.22, GLOW_REACH * 0.70),
+        (fog.second, 0.78, 0.82, GLOW_REACH * 0.65),
+    ];
+    let mut out = Vec::with_capacity(side * side * 4);
+    for y in 0..side {
+        for x in 0..side {
+            let (px, py) = (
+                (x as f32 + 0.5) / side as f32,
+                (y as f32 + 0.5) / side as f32,
+            );
+            let mut rgb = fog.ground.map(f32::from);
+            for (color, cx, cy, reach) in glows {
+                let a = (1.0 - (px - cx).hypot(py - cy) / reach).max(0.0);
+                for c in 0..3 {
+                    rgb[c] = color[c] as f32 * a + rgb[c] * (1.0 - a);
+                }
+            }
+            out.extend(rgb.map(|c| c.round() as u8));
+            out.push(255);
+        }
+    }
+    out
+}
+
+/// A glow's full radius as a share of the tile's side: each glow was a
+/// radial gradient on a square 1.5 times the tile, whose radius is half
+/// that square's diagonal
+const GLOW_REACH: f32 = 1.5 * std::f32::consts::SQRT_2 / 2.0;
+
 /// Each sRGB channel value (0-255) as linear light (0-1), as WCAG defines
 /// it for contrast ratios
 static SRGB_TO_LINEAR: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
@@ -745,6 +844,74 @@ mod tests {
     fn a_large_opaque_logo_gets_no_fog() {
         let img = image(&[([17, 17, 17], 600 * 400)]);
         assert_eq!(logo_backdrops(&img, 600), (None, None));
+    }
+
+    #[test]
+    fn a_logo_that_shows_well_is_shown_as_it_is() {
+        let img = image(&[([17, 17, 17], 600 * 400)]);
+        assert_eq!(with_backdrop(img.clone(), 600, 400), (img, 600, 400));
+        // A green mark shows on both themes' tiles
+        let img = square_with(|_, _| false);
+        assert_eq!(with_backdrop(img.clone(), 60, 60).0, img);
+    }
+
+    #[test]
+    fn a_wide_logo_is_painted_onto_a_square_of_its_fog() {
+        // Black lettering, 60 wide and 20 high
+        let img: Vec<u8> = (0..60 * 20)
+            .flat_map(|i| {
+                let (x, y) = (i % 60, i / 60);
+                if (8..12).contains(&y) && x % 3 != 0 {
+                    [17, 17, 17, 255]
+                } else {
+                    [0, 0, 0, 0]
+                }
+            })
+            .collect();
+        let fog = logo_backdrop(&img, 60, true).expect("black text needs a fog on dark");
+        let (out, w, h) = with_backdrop(img, 60, 20);
+        assert_eq!((w, h), (60, 60));
+        assert_eq!(out.len(), 60 * 60 * 4);
+        // Opaque all over, the lettering kept in the middle row band
+        assert!(out.chunks(4).all(|px| px[3] == 255));
+        let at = |x: usize, y: usize| &out[(y * 60 + x) * 4..][..3];
+        assert_eq!(at(1, 20 + 9), [17, 17, 17]);
+        // The corners far from both glows show the ground, and near a
+        // glow's centre its colour shows
+        let close = |px: &[u8], rgb: [u8; 3]| px.iter().zip(rgb).all(|(&a, b)| a.abs_diff(b) <= 3);
+        assert!(close(at(59, 0), fog.ground));
+        assert!(close(at(0, 59), fog.ground));
+        assert!(close(at(17, 13), fog.first));
+    }
+
+    #[test]
+    fn white_lettering_gets_the_light_themes_fog() {
+        let img = see_through(60, &[([255, 255, 255], 25), ([255, 122, 26], 15)]);
+        let fog = logo_backdrop(&img, W, false).unwrap();
+        let (out, w, h) = with_backdrop(img, W as u32, 10);
+        assert_eq!((w, h), (10, 10));
+        // A transparent pixel shows the fog: deep, as on the light theme
+        let clear = out.chunks(4).next().unwrap();
+        assert!(clear[..3].iter().all(|&c| c < 120), "{clear:?} vs {fog:?}");
+    }
+
+    #[test]
+    fn a_png_gets_its_fog_or_comes_back_as_it_was() {
+        let png = |rgba: Vec<u8>, w: u32, h: u32| {
+            let mut out = Vec::new();
+            image::RgbaImage::from_raw(w, h, rgba)
+                .unwrap()
+                .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+                .unwrap();
+            out
+        };
+        let plain = png(image(&[([200, 30, 30], 40 * 40)]), 40, 40);
+        assert_eq!(png_with_backdrop(plain.clone()), plain);
+        assert_eq!(png_with_backdrop(b"<html>".to_vec()), b"<html>");
+        let dark_text = see_through(60, &[([20, 20, 20], 40)]);
+        let fogged = png_with_backdrop(png(dark_text, W as u32, 10));
+        let img = image::load_from_memory(&fogged).unwrap().to_rgba8();
+        assert!(img.pixels().all(|px| px[3] == 255));
     }
 
     #[test]

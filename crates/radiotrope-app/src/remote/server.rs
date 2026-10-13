@@ -33,6 +33,7 @@ use radiotrope_app::config::remote::{
 use radiotrope_app::data::remote::RemoteStore;
 use radiotrope_app::data::remote_cert::PlayerCert;
 use radiotrope_app::data::types::{url_to_id, Station};
+use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
@@ -61,6 +62,8 @@ pub struct Shared {
     /// The name phones see
     pub name: Arc<str>,
     pub logos: Option<Arc<LogoService>>,
+    /// Logos of directory stations, kept with the player's browser logos
+    pub web_logos: Option<Arc<BrowseLogos>>,
     /// Counts changes the Remote Control dialog shows: phones paired or
     /// removed, a pairing started
     pub changes: Arc<AtomicU64>,
@@ -358,6 +361,7 @@ pub async fn handle(
         (&Method::PUT, ["v1", "volume"]) => volume(shared, request).await,
         (&Method::PUT, ["v1", "mute"]) => mute(shared, request).await,
         (&Method::GET, ["v1", "logos", id]) => logo(shared, id).await,
+        (&Method::GET, ["v1", "logo"]) => web_logo(shared, &request).await,
         (&Method::GET, ["v1", "search"]) => library::search(shared, &request).await,
         (&Method::GET, ["v1", "categories", kind]) => {
             library::categories(shared, kind, &request).await
@@ -795,7 +799,7 @@ async fn logo(shared: &Shared, id: &str) -> Response<Body> {
     }
     let id = id.to_string();
     if let Some(bytes) = logos.cache().get(&id) {
-        return image(bytes);
+        return shown_logo(bytes).await;
     }
     // Where to get it: the station playing, or a favorite
     let s = shared.control.snapshot();
@@ -819,8 +823,43 @@ async fn logo(shared: &Shared, id: &str) -> Response<Body> {
     .ok()
     .flatten();
     match fetched {
-        Some(bytes) => image(bytes),
+        Some(bytes) => shown_logo(bytes).await,
         None => error(StatusCode::NOT_FOUND, "no_logo", "No logo"),
+    }
+}
+
+/// `GET /v1/logo?url=`: a directory station's logo by its URL, as the
+/// player's browser shows it (downloaded once and kept with the browser's
+/// logos), so search results look the same on the phone
+async fn web_logo(shared: &Shared, request: &Request<Incoming>) -> Response<Body> {
+    let url = library::query_params(request)
+        .remove("url")
+        .unwrap_or_default();
+    let web = url.starts_with("http://") || url.starts_with("https://");
+    let (Some(web_logos), Some(service), true) = (
+        shared.web_logos.clone(),
+        shared.logos.clone(),
+        web && url.chars().count() <= MAX_URL_CHARS,
+    ) else {
+        return error(StatusCode::NOT_FOUND, "no_logo", "No logo");
+    };
+    let png = tokio::task::spawn_blocking(move || web_logos.logo_png(&service, &url))
+        .await
+        .ok()
+        .flatten();
+    match png {
+        Some(png) => shown_logo(png).await,
+        None => error(StatusCode::NOT_FOUND, "no_logo", "No logo"),
+    }
+}
+
+/// A cached logo as the player shows it, on its colour fog when it needs
+/// one, so the phone shows the same
+async fn shown_logo(png: Vec<u8>) -> Response<Body> {
+    match tokio::task::spawn_blocking(move || radiotrope_app::visual::png_with_backdrop(png)).await
+    {
+        Ok(png) => image(png),
+        Err(_) => error(StatusCode::INTERNAL_SERVER_ERROR, "no_logo", "No logo"),
     }
 }
 

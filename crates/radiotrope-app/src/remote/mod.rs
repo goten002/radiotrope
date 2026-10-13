@@ -114,6 +114,9 @@ impl Remote {
                 store_path,
                 pairing: Arc::new(Mutex::new(Pairing::default())),
                 name: Arc::from(mdns::computer_name()),
+                web_logos: logos
+                    .is_some()
+                    .then(|| Arc::new(radiotrope_app::network::browse_logos::BrowseLogos::open())),
                 logos,
                 changes: Arc::new(AtomicU64::new(0)),
                 window: Arc::new(window),

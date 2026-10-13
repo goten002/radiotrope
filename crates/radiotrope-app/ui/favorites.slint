@@ -1,7 +1,6 @@
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
 import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator } from "components.slint";
-import { LogoFog, LogoFogLayer, Fog } from "logo-fog.slint";
 
 export struct FavoriteStation {
     id: string,
@@ -106,7 +105,6 @@ component FavoriteRow inherits Rectangle {
     in property <string> state;
     in property <image> logo-image;
     in property <bool> has-logo;
-    in property <LogoFog> logo-fog;
     in property <bool> is-drag-source;
     in property <bool> dragging;
     in property <int> row-index;
@@ -259,10 +257,6 @@ component FavoriteRow inherits Rectangle {
                 border-width: 1px;
                 border-color: Theme.hairline;
                 clip: true;
-
-                if root.has-logo && Fog.shown(root.logo-fog): LogoFogLayer {
-                    fog: root.logo-fog;
-                }
 
                 if root.has-logo: Image {
                     source: root.logo-image;
@@ -677,8 +671,6 @@ component FavoriteRow inherits Rectangle {
 export component Favorites inherits Rectangle {
     in-out property <[FavoriteStation]> favorites;
     in-out property <[image]> favorite-logos;
-    // Colour fog of each logo, same order as favorite-logos
-    in-out property <[LogoFog]> favorite-logo-fogs;
     in property <string> current-station-url;
     in property <bool> is-playing;
     in property <bool> play-loading;
@@ -830,7 +822,6 @@ export component Favorites inherits Rectangle {
                         has-logo: idx < root.favorite-logos.length
                             ? root.favorite-logos[idx].width > 0
                             : false;
-                        logo-fog: root.favorite-logo-fogs[idx];
                         is-drag-source: root.drag-from-index == idx;
                         dragging: root.drag-from-index >= 0;
                         row-index: idx;

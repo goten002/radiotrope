@@ -43,8 +43,11 @@ struct FoundStation {
     codec: Option<String>,
     bitrate_kbps: Option<u32>,
     homepage: Option<String>,
-    /// Where the directory has its logo (phones load it themselves)
+    /// Where the directory has its logo
     logo_url: Option<String>,
+    /// Where to get that logo from this player, as the player shows it,
+    /// e.g. "/v1/logo?url=https%3A%2F%2F..."
+    logo: Option<String>,
     /// Its favorite id, when it is one
     favorite_id: Option<String>,
 }
@@ -121,6 +124,11 @@ fn found_station(
         codec: station.codec,
         bitrate_kbps: station.bitrate.filter(|b| *b > 0),
         homepage: station.homepage,
+        logo: station
+            .logo_url
+            .as_deref()
+            .filter(|url| url.starts_with("http://") || url.starts_with("https://"))
+            .map(|url| format!("/v1/logo?url={}", encode(url))),
         logo_url: station.logo_url,
         favorite_id,
     }
@@ -645,6 +653,19 @@ fn parse_query(query: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// `text` as a query value: every byte but letters, digits and `-._~`
+/// written as `%xx`, which [`decode`] turns back
+fn encode(text: &str) -> String {
+    text.bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                (byte as char).to_string()
+            }
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
 fn decode(text: &str) -> String {
     fn hex(byte: u8) -> Option<u8> {
         (byte as char).to_digit(16).map(|d| d as u8)
@@ -685,5 +706,12 @@ mod tests {
         assert_eq!(q["x"], "");
         assert_eq!(q["bad"], "%zz");
         assert_eq!(q["end"], "%4");
+    }
+
+    #[test]
+    fn a_logo_url_survives_the_query_string() {
+        let url = "https://cdn.test/logos/a b+c.png?size=big&v=2#x";
+        let q = parse_query(&format!("url={}", encode(url)));
+        assert_eq!(q["url"], url);
     }
 }
