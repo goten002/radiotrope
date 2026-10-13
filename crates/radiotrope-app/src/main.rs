@@ -3601,13 +3601,14 @@ fn hiss_text(level: HissLevel) -> &'static str {
     }
 }
 
-/// The Statistics dialog's "Hum removed": the mains frequency the Hum
-/// Filter is taking out ("50 Hz", "60 Hz"), or "Off" when it is off or
-/// hears no hum
+/// The Statistics dialog's "Hum filter": the mains frequency the Hum
+/// Filter is taking out ("50 Hz", "60 Hz"), "Listening" while it is on
+/// and hears no hum, or "Off"
 fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
     match (filter_on, hz) {
+        (false, _) => "Off".into(),
         (true, Some(hz)) => format!("{hz} Hz"),
-        _ => "Off".into(),
+        (true, None) => "Listening".into(),
     }
 }
 
@@ -4645,9 +4646,9 @@ mod tests {
     }
 
     #[test]
-    fn hum_reads_off_or_the_mains_frequency() {
+    fn hum_reads_off_listening_or_the_mains_frequency() {
         assert_eq!(hum_text(false, Some(50)), "Off");
-        assert_eq!(hum_text(true, None), "Off");
+        assert_eq!(hum_text(true, None), "Listening");
         assert_eq!(hum_text(true, Some(50)), "50 Hz");
         assert_eq!(hum_text(true, Some(60)), "60 Hz");
     }
