@@ -392,6 +392,8 @@ export component App inherits Window {
     in-out property <string> stat-decode-errors;
     in-out property <string> stat-underruns;
     in-out property <string> stat-hum;
+    in-out property <string> stat-leveler;
+    in-out property <string> stat-hiss;
 
     // Shortcuts in the main window: Space plays or stops, Ctrl+F searches
     // stations, M mutes. Keys reach it only when the focused control
@@ -645,7 +647,9 @@ export component App inherits Window {
             stat-frames-played: root.stat-frames-played;
             stat-decode-errors: root.stat-decode-errors;
             stat-underruns: root.stat-underruns;
+            stat-leveler: root.stat-leveler;
             stat-hum: root.stat-hum;
+            stat-hiss: root.stat-hiss;
         }
 
         eq-dialog := EqualizerDialog {

@@ -12,6 +12,7 @@ pub mod pairing;
 pub mod recordings;
 pub mod server;
 pub mod state;
+mod stats;
 mod webrtc;
 
 #[cfg(test)]

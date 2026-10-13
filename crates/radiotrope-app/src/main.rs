@@ -1545,11 +1545,20 @@ fn main() {
             let stats_copy = s.clone();
             drop(s);
             update_stats_ui(&ui, &stats_copy);
-            let hum = {
+            let (leveler, hum, hiss) = {
                 let s = state.lock().unwrap_or_else(|e| e.into_inner());
-                hum_text(s.hum_filter, s.hum.as_ref().and_then(|h| h.hz()))
+                (
+                    leveler_text(
+                        s.match_volume,
+                        s.level.as_deref().map(|r| (r.phase(), r.gain_db())),
+                    ),
+                    hum_text(s.hum_filter, s.hum.as_ref().and_then(|h| h.hz())),
+                    hiss_text(s.hiss),
+                )
             };
+            ui.set_stat_leveler(leveler.into());
             ui.set_stat_hum(hum.into());
+            ui.set_stat_hiss(hiss.into());
         })
     };
     // Every 200 ms while the dialog is open; it stops itself once closed
@@ -3561,7 +3570,9 @@ fn clear_stats_ui(ui: &App) {
         App::set_stat_frames_played,
         App::set_stat_decode_errors,
         App::set_stat_underruns,
+        App::set_stat_leveler,
         App::set_stat_hum,
+        App::set_stat_hiss,
     ] {
         set(ui, "--".into());
     }
@@ -3569,6 +3580,29 @@ fn clear_stats_ui(ui: &App) {
 
 /// The Statistics dialog's "Hum removed": the mains frequency the Hum
 /// Filter is taking out, "None", or "Off"
+/// The Volume Leveler on the Statistics dialog: what it does to the
+/// station playing ("−6.5 dB"), "Learning" while it measures a station
+/// heard for the first time, "Off", or "--" before the station's audio
+fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
+    if !on {
+        return "Off".into();
+    }
+    match readout {
+        Some((LevelPhase::Learning, _)) => "Learning".into(),
+        Some((LevelPhase::Settled, gain_db)) => level_text(gain_db),
+        _ => "--".into(),
+    }
+}
+
+/// The Hiss Reducer's strength on the Statistics dialog
+fn hiss_text(level: HissLevel) -> &'static str {
+    match level {
+        HissLevel::Off => "Off",
+        HissLevel::Light => "Light",
+        HissLevel::Strong => "Strong",
+    }
+}
+
 fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
     match (filter_on, hz) {
         (false, _) => "Off".into(),
@@ -4594,12 +4628,6 @@ fn format_codec_line(s: &AppSnapshot) -> String {
             n => format!("{} ch", n),
         });
     }
-    // What the Volume Leveler does to it, while it plays
-    if s.match_volume && s.playback == PlaybackState::Playing {
-        if let Some(readout) = s.level.as_ref().filter(|r| r.phase() != LevelPhase::None) {
-            parts.push(level_text(readout.gain_db()));
-        }
-    }
     parts.join(" \u{2022} ")
 }
 
@@ -4613,6 +4641,20 @@ mod tests {
         assert_eq!(level_text(3.1), "+3.0 dB");
         assert_eq!(level_text(0.1), "0 dB");
         assert_eq!(level_text(-0.2), "0 dB");
+        assert_eq!(
+            leveler_text(false, Some((LevelPhase::Settled, -6.4))),
+            "Off"
+        );
+        assert_eq!(
+            leveler_text(true, Some((LevelPhase::Learning, 0.0))),
+            "Learning"
+        );
+        assert_eq!(
+            leveler_text(true, Some((LevelPhase::Settled, -6.4))),
+            "\u{2212}6.5 dB"
+        );
+        assert_eq!(leveler_text(true, Some((LevelPhase::None, 0.0))), "--");
+        assert_eq!(leveler_text(true, None), "--");
     }
 
     #[test]

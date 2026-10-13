@@ -148,13 +148,15 @@ impl AppController {
                 if let Some(tx) = self.stats_tx.take() {
                     let _ = tx.send(engine.shared_stats());
                 }
-                // Phones reach the listening through the shared state, and
-                // the window and phones what volume matching does
+                // Phones reach the listening and the stream statistics
+                // through the shared state, and the window and phones what
+                // volume matching does
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.listen = Some(engine.listen());
                     state.level = Some(engine.level_readout());
                     state.hum = Some(engine.hum_readout());
+                    state.stats = Some(engine.shared_stats());
                 }
                 self.engine = Some(engine);
                 self.levels = Levels::load(unix_now());
