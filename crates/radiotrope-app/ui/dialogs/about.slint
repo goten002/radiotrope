@@ -17,128 +17,21 @@ export global AboutInfo {
     in property <string> authors;
 }
 
-// Version in a soft pill, selectable so it can be copied into a bug report
-component VersionPill inherits Rectangle {
-    width: version-text.preferred-width + 20px;
-    height: 22px;
-    border-radius: Theme.radius-md;
-    background: Theme.accent-soft;
-
-    version-text := TextInput {
-        text: "Version \{AboutInfo.version}";
-        color: Theme.accent-text;
-        font-size: Theme.font-sm;
-        font-weight: 600;
-        horizontal-alignment: center;
-        vertical-alignment: center;
-        read-only: true;
-        single-line: true;
-        selection-background-color: Theme.selection-bg;
-        selection-foreground-color: Theme.selection-fg;
-    }
-}
-
-// License (a link to its text) and copyright
-component LicenseLine inherits HorizontalLayout {
-    callback open-url(string);
-
-    Rectangle {
-        width: license-link.preferred-width;
-        license-link := Text {
-            text: AboutInfo.license;
-            color: license-touch.has-hover ? Theme.accent-hover : Theme.accent-text;
-            font-size: Theme.font-xs;
-        }
-        // Underline on hover (Text can't underline)
-        Rectangle {
-            y: parent.height - 1px;
-            height: 1px;
-            background: license-link.color;
-            visible: license-touch.has-hover;
-        }
-        license-touch := TouchArea {
-            mouse-cursor: pointer;
-            clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
-        }
-    }
-    Text {
-        text: " · © \{AboutInfo.authors}";
-        color: Theme.text-secondary;
-        font-size: Theme.font-xs;
-    }
-}
-
 export component AboutDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
     callback open-url(string);
-
-    // A narrow window: the logo and buttons go in a row above the details,
-    // which then get the card's whole width
-    property <bool> narrow: root.width < Defaults.about-width;
 
     if show-dialog: DialogShell {
         // Wide and short, so it fits the Pi's 800 x 480 screen
         card-width: Defaults.about-width;
         close-requested => { root.show-dialog = false; }
 
-        if root.narrow: HorizontalLayout {
-            spacing: 14px;
-
-            Image {
-                source: @image-url("../../../../assets/icons/icon-128.png");
-                width: 56px;
-                height: 56px;
-                y: 0;
-            }
-
-            VerticalLayout {
-                horizontal-stretch: 1;
-                spacing: 2px;
-                alignment: start;
-
-                Text {
-                    text: "Radiotrope";
-                    color: Theme.text-primary;
-                    font-size: Theme.font-title;
-                    font-weight: 600;
-                }
-                Text {
-                    text: "Internet radio player";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-sm;
-                }
-                HorizontalLayout {
-                    alignment: start;
-                    padding-top: 4px;
-                    VersionPill {}
-                }
-            }
-
-            // Clear of the close button in the corner
-            VerticalLayout {
-                spacing: 6px;
-                alignment: start;
-                padding-right: 30px;
-
-                AccentButton {
-                    width: 136px;
-                    label: "Source code";
-                    clicked => { root.open-url(AboutInfo.repository); }
-                }
-                SecondaryButton {
-                    width: 136px;
-                    label: "Report an issue";
-                    clicked => { root.open-url(AboutInfo.repository + "/issues"); }
-                }
-            }
-        }
-
         HorizontalLayout {
             spacing: 24px;
 
             // Logo, name, version, links
-            if !root.narrow: VerticalLayout {
+            VerticalLayout {
                 width: 200px;
                 spacing: 6px;
                 alignment: start;
@@ -171,7 +64,27 @@ export component AboutDialog inherits Rectangle {
                     alignment: center;
                     padding-top: 4px;
                     padding-bottom: 10px;
-                    VersionPill {}
+
+                    Rectangle {
+                        width: version-text.preferred-width + 20px;
+                        height: 22px;
+                        border-radius: Theme.radius-md;
+                        background: Theme.accent-soft;
+
+                        // Selectable, so it can be copied into a bug report
+                        version-text := TextInput {
+                            text: "Version \{AboutInfo.version}";
+                            color: Theme.accent-text;
+                            font-size: Theme.font-sm;
+                            font-weight: 600;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            read-only: true;
+                            single-line: true;
+                            selection-background-color: Theme.selection-bg;
+                            selection-foreground-color: Theme.selection-fg;
+                        }
+                    }
                 }
 
                 AccentButton {
@@ -186,10 +99,34 @@ export component AboutDialog inherits Rectangle {
                     clicked => { root.open-url(AboutInfo.repository + "/issues"); }
                 }
 
-                LicenseLine {
+                // License (a link to its text) and copyright
+                HorizontalLayout {
                     alignment: center;
                     padding-top: 8px;
-                    open-url(url) => { root.open-url(url); }
+                    Rectangle {
+                        width: license-link.preferred-width;
+                        license-link := Text {
+                            text: AboutInfo.license;
+                            color: license-touch.has-hover ? Theme.accent-hover : Theme.accent-text;
+                            font-size: Theme.font-xs;
+                        }
+                        // Underline on hover (Text can't underline)
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: license-link.color;
+                            visible: license-touch.has-hover;
+                        }
+                        license-touch := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
+                        }
+                    }
+                    Text {
+                        text: " · © \{AboutInfo.authors}";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-xs;
+                    }
                 }
             }
 
@@ -255,7 +192,7 @@ export component AboutDialog inherits Rectangle {
 
                 // GPL v3 section 5(d) asks an interactive program to show a
                 // copyright, no-warranty and license notice; the license and
-                // copyright sit under the buttons on the left (narrow: under this)
+                // copyright sit under the buttons on the left
                 Rectangle { height: 10px; }
 
                 Text {
@@ -263,11 +200,6 @@ export component AboutDialog inherits Rectangle {
                     color: Theme.text-secondary;
                     font-size: Theme.font-xs;
                     wrap: word-wrap;
-                }
-
-                if root.narrow: LicenseLine {
-                    padding-top: 4px;
-                    open-url(url) => { root.open-url(url); }
                 }
             }
         }
