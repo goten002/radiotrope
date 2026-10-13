@@ -1696,3 +1696,19 @@ async fn a_phone_downloads_and_deletes_a_recording() {
     assert!(folder.join("notes.txt").exists());
     assert_eq!(player.request_raw("GET", &path, &auth).await.0, 404);
 }
+
+#[tokio::test]
+async fn stats_are_blank_with_nothing_playing() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    let t = Some(token.as_str());
+
+    let (status, stats) = player.request("GET", "/v1/stats", t, None).await;
+    assert_eq!(status, 200, "{stats}");
+    assert_eq!(stats["health"], "stopped");
+    assert_eq!(stats["codec"], Value::Null);
+    assert_eq!(stats["buffer_bytes"], Value::Null);
+
+    let (status, _) = player.request("GET", "/v1/stats", None, None).await;
+    assert_eq!(status, 401);
+}

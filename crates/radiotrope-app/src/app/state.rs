@@ -11,6 +11,7 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 use radiotrope::audio::{
     HissLevel, HumReadout, LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat,
+    SharedStats,
 };
 use radiotrope_app::data::schedule::{Action, Entry};
 use radiotrope_app::data::settings::Settings;
@@ -211,6 +212,9 @@ pub struct AppSnapshot {
     /// The hum the Hum Filter takes out of the station playing; `None`
     /// until the audio engine runs
     pub hum: Option<Arc<HumReadout>>,
+    /// The engine's stream statistics, for phones (the window gets them
+    /// its own way); `None` until the audio engine runs
+    pub stats: Option<SharedStats>,
 
     // Recording
     /// Progress of the running recording, `None` when not recording
@@ -390,6 +394,7 @@ impl Default for AppSnapshot {
             smooth_switching: true,
             level: None,
             hum: None,
+            stats: None,
             recording: None,
             recording_notice: None,
             recording_setup: RecordingSetup::default(),

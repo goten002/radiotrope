@@ -82,11 +82,13 @@ export component StatisticsDialog inherits Rectangle {
     in property <string> stat-frames-played: "--";
     in property <string> stat-decode-errors: "--";
     in property <string> stat-underruns: "--";
+    in property <string> stat-leveler: "--";
     in property <string> stat-hum: "--";
+    in property <string> stat-hiss: "--";
 
     if show-dialog: DialogShell {
         title: "Statistics";
-        subtitle: "Live stream, buffer and decoder details";
+        subtitle: "Live stream, sound and decoder details";
         card-width: Defaults.statistics-width;
         close-requested => { root.show-dialog = false; }
 
@@ -118,12 +120,12 @@ export component StatisticsDialog inherits Rectangle {
                     InfoRow { label: "Channels"; value: root.stat-channels; }
                 }
 
+                // What the filters do to the station playing
                 StatGroup {
-                    title: "DECODE";
-                    InfoRow { label: "Frames"; value: root.stat-frames-played; }
-                    InfoRow { label: "Errors"; value: root.stat-decode-errors; }
-                    InfoRow { label: "Underruns"; value: root.stat-underruns; }
+                    title: "SOUND";
+                    InfoRow { label: "Leveler"; value: root.stat-leveler; }
                     InfoRow { label: "Hum removed"; value: root.stat-hum; }
+                    InfoRow { label: "Hiss reducer"; value: root.stat-hiss; }
                 }
             }
 
@@ -132,12 +134,15 @@ export component StatisticsDialog inherits Rectangle {
                     title: "NETWORK";
                     InfoRow { label: "Received"; value: root.stat-received; }
                     InfoRow { label: "Segments"; value: root.stat-segments; }
+                    // The live level is on the BUFFER tile
+                    InfoRow { label: "Buffer size"; value: root.stat-buffer-capacity; }
                 }
 
                 StatGroup {
-                    title: "BUFFER";
-                    InfoRow { label: "Level"; value: root.stat-buffer-level; }
-                    InfoRow { label: "Capacity"; value: root.stat-buffer-capacity; }
+                    title: "DECODE";
+                    InfoRow { label: "Frames"; value: root.stat-frames-played; }
+                    InfoRow { label: "Errors"; value: root.stat-decode-errors; }
+                    InfoRow { label: "Underruns"; value: root.stat-underruns; }
                 }
             }
         }
