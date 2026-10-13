@@ -95,6 +95,10 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub custom_title_bar: bool,
 
+    /// Round the window's corners with our title bar (desktop)
+    #[serde(default = "default_true")]
+    pub rounded_corners: bool,
+
     /// Keep the window above other windows
     #[serde(default)]
     pub always_on_top: bool,
@@ -277,6 +281,7 @@ impl Default for Settings {
             show_station_stats: true,
             panel_gradient: true,
             custom_title_bar: true,
+            rounded_corners: true,
             always_on_top: false,
             accent_color: None,
             eq_gains: [0.0; 10],
@@ -793,6 +798,7 @@ mod tests {
         assert!(settings.show_station_stats);
         assert!(settings.panel_gradient);
         assert!(settings.custom_title_bar);
+        assert!(settings.rounded_corners);
         assert!(!settings.always_on_top);
 
         let _ = fs::remove_file(&path);
