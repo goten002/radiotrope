@@ -125,6 +125,9 @@ export global Theme {
     out property <length> radius-sm: 4px;
     out property <length> radius-md: 6px;
     out property <length> radius-lg: 8px;
+    // View > Rounded Corners: dialogs follow the window, square when it's off
+    in-out property <bool> rounded-corners: true;
+    out property <length> dialog-radius: rounded-corners ? radius-lg : 0px;
 
     // ── Motion ──
     out property <duration> fast: 120ms;
