@@ -77,6 +77,10 @@ pub mod network {
     /// Most stream addresses of one PLS or M3U playlist tried, in order,
     /// until one plays (a station's mirrors)
     pub const MAX_PLAYLIST_ENTRIES: usize = 5;
+
+    /// Wait before a station that failed to connect is tried once more,
+    /// when it is started (milliseconds; see `StreamResolver`)
+    pub const CONNECT_RETRY_MS: u64 = 1000;
 }
 
 /// HLS-related configuration
