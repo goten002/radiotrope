@@ -279,7 +279,7 @@ export component AccentColorDialog inherits Rectangle {
             ColorPicker {
                 current: Theme.accent-base;
                 // Keep the whole dialog on a 480 px tall screen
-                square-height: Math.clamp(root.height - 400px, 64px, Defaults.accent-picker-height);
+                square-height: Math.clamp(root.height - 380px, 64px, Defaults.accent-picker-height);
                 picked(c, final) => {
                     Theme.accent-base = c;
                     if final { root.color-changed(c); }
@@ -287,27 +287,29 @@ export component AccentColorDialog inherits Rectangle {
             }
         }
 
-        // Accent glow on the panels and dialogs
+        // Accent glow on the panels and dialogs, and Restore Default beside it
         VerticalLayout {
             spacing: 6px;
 
             SectionHeader { title: "STYLE"; }
 
-            Toggle {
-                label: "Gradient on panels and dialogs";
-                checked <=> Theme.panel-gradient;
-            }
-        }
+            HorizontalLayout {
+                spacing: 12px;
 
-        HorizontalLayout {
-            alignment: end;
+                Toggle {
+                    label: "Gradient on panels";
+                    checked <=> Theme.panel-gradient;
+                }
 
-            SecondaryButton {
-                label: "Restore Default";
-                clicked => {
-                    Theme.accent-base = Theme.accent-default;
-                    Theme.panel-gradient = true;
-                    root.color-changed(Theme.accent-default);
+                Rectangle { horizontal-stretch: 1; }
+
+                SecondaryButton {
+                    label: "Restore Default";
+                    clicked => {
+                        Theme.accent-base = Theme.accent-default;
+                        Theme.panel-gradient = true;
+                        root.color-changed(Theme.accent-default);
+                    }
                 }
             }
         }

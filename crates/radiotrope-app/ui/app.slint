@@ -48,7 +48,7 @@ export component App inherits Window {
     // settings). Rust sets corners-available: false where they can't be
     // shown (Windows 10, X11 without a compositor), and draw-corners:
     // false on Windows 11, where the system rounds the window itself.
-    in-out property <bool> rounded-corners: true;
+    in-out property <bool> rounded-corners <=> Theme.rounded-corners;
     in property <bool> corners-available: true;
     // Why they aren't ("Windows 11 only"), shown on the greyed View item
     in property <string> corners-hint;
