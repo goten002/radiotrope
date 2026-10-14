@@ -122,7 +122,6 @@ export component App inherits Window {
     callback rumble-filter-toggled(bool);
     callback smooth-switching-toggled(bool);
     callback accent-color-changed(color);
-    callback apply-custom-hex(string);
     // Recording
     callback toggle-recording();
     callback open-recordings-folder();
@@ -717,7 +716,6 @@ export component App inherits Window {
 
             accent-dialog := AccentColorDialog {
                 color-changed(color) => { root.accent-color-changed(color); }
-                custom-hex-requested(hex) => { root.apply-custom-hex(hex); }
             }
 
             picker-dialog := CountryPickerDialog {

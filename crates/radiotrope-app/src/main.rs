@@ -914,21 +914,6 @@ fn main() {
             s.accent_color = Some(hex);
         });
     }
-    {
-        let state = shared_state.clone();
-        let ui_weak = ui.as_weak();
-        ui.on_apply_custom_hex(move |hex_str| {
-            let Some((r, g, b)) = radiotrope_app::data::settings::parse_hex_rgb(&hex_str) else {
-                return;
-            };
-            if let Some(ui) = ui_weak.upgrade() {
-                ui.set_accent_color(slint::Color::from_rgb_u8(r, g, b));
-            }
-            let hex_with_hash = format!("#{:02x}{:02x}{:02x}", r, g, b);
-            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
-            s.accent_color = Some(hex_with_hash);
-        });
-    }
 
     // WiFi settings and Power Off / Restart (Raspberry Pi build only)
     #[cfg(feature = "embedded")]
