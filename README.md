@@ -256,7 +256,7 @@ library (`libasound2`) even though it plays nothing.
 - [x] Station search and browsing (Radio Browser API)
 - [x] Favorites management
 - [x] Equalizer and audio effects (DSP chain)
-- [x] User-selectable accent color (10 palette presets + custom hex)
+- [x] User-selectable accent color (10 palette presets + custom colour picker)
 - [x] Persistent settings (window state, theme, EQ, preferences)
 - [ ] Export/import favorites
 - [ ] System tray integration

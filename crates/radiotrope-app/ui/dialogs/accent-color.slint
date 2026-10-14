@@ -1,6 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, SectionHeader, Icon, Toggle, ButtonKeys, FocusRing } from "../components.slint";
 
 component ColorSwatch inherits Rectangle {
@@ -55,15 +54,194 @@ component ColorSwatch inherits Rectangle {
     }
 }
 
+// Custom colour: a saturation/brightness square over a hue bar. The accent
+// follows the pointer live; it is saved when the finger or button lets go.
+// Handles are touch sized (Pi screen). Drawn without clipping, since the
+// software renderer can't clip to rounded corners.
+component ColorPicker inherits VerticalLayout {
+    // The accent in use
+    in property <color> current;
+    // Height of the colour square: shorter on small screens (Pi)
+    in property <length> square-height: Defaults.accent-picker-height;
+    // A new colour picked; `final` is false while dragging, true on release
+    callback picked(color, bool);
+
+    property <float> hue: 0;
+    property <float> sat: 1;
+    property <float> val: 1;
+    // Dragging or using keys: the colour comes from here, not `current`
+    property <bool> editing: false;
+    property <color> chosen: hsv(root.hue, root.sat, root.val);
+
+    function sync() {
+        if !root.editing {
+            // Grey has no hue: keep the hue bar where it is
+            if current.to-hsv().saturation > 0.001 && current.to-hsv().value > 0.001 {
+                root.hue = current.to-hsv().hue;
+            }
+            // Black has no saturation: keep it too
+            if current.to-hsv().value > 0.001 {
+                root.sat = current.to-hsv().saturation;
+            }
+            root.val = current.to-hsv().value;
+        }
+    }
+
+    function set(h: float, s: float, v: float, final: bool) {
+        root.hue = Math.clamp(h, 0, 359.9);
+        root.sat = Math.clamp(s, 0, 1);
+        root.val = Math.clamp(v, 0, 1);
+        root.picked(root.chosen, final);
+    }
+
+    init => { root.sync(); }
+    changed current => { root.sync(); }
+
+    spacing: 10px;
+
+    // Saturation left to right, brightness bottom to top
+    sv := Rectangle {
+        height: root.square-height;
+        property <length> knob: 26px;
+        accessible-role: slider;
+        accessible-label: "Saturation and brightness";
+        accessible-value: Math.round(root.sat * 100) + "% saturation, " + Math.round(root.val * 100) + "% brightness";
+
+        Rectangle {
+            border-radius: Theme.radius-md;
+            background: hsv(root.hue, 1, 1);
+        }
+        Rectangle {
+            border-radius: Theme.radius-md;
+            background: @linear-gradient(90deg, #ffffff 0%, #ffffff00 100%);
+        }
+        Rectangle {
+            border-radius: Theme.radius-md;
+            background: @linear-gradient(0deg, #000000 0%, #00000000 100%);
+            border-width: 1px;
+            border-color: Theme.hairline;
+        }
+
+        sv-touch := TouchArea {
+            mouse-cursor: crosshair;
+            function pick(final: bool) {
+                root.set(root.hue, self.mouse-x / self.width, 1 - self.mouse-y / self.height, final);
+            }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.editing = true;
+                    sv-keys.focus();
+                    self.pick(false);
+                } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                    if root.editing { self.pick(true); }
+                    root.editing = false;
+                }
+            }
+            moved => {
+                if self.pressed { self.pick(false); }
+            }
+        }
+
+        // Its touch area takes the focus, so a first press both focuses and picks
+        sv-keys := FocusScope {
+            focus-on-click: false;
+            key-pressed(e) => {
+                if e.text == Key.LeftArrow { root.set(root.hue, root.sat - 0.05, root.val, true); return accept; }
+                if e.text == Key.RightArrow { root.set(root.hue, root.sat + 0.05, root.val, true); return accept; }
+                if e.text == Key.DownArrow { root.set(root.hue, root.sat, root.val - 0.05, true); return accept; }
+                if e.text == Key.UpArrow { root.set(root.hue, root.sat, root.val + 0.05, true); return accept; }
+                return reject;
+            }
+        }
+
+        if sv-keys.has-focus: FocusRing {
+            radius: Theme.radius-md;
+        }
+
+        // Ring showing the picked spot
+        Rectangle {
+            x: root.sat * parent.width - self.width / 2;
+            y: (1 - root.val) * parent.height - self.height / 2;
+            width: sv.knob;
+            height: sv.knob;
+            border-radius: self.width / 2;
+            background: root.chosen;
+            border-width: 3px;
+            border-color: #ffffff;
+            drop-shadow-blur: 4px;
+            drop-shadow-color: #00000080;
+        }
+    }
+
+    // Hue, red round to red
+    hue-bar := Rectangle {
+        height: 32px;
+        property <length> knob: 28px;
+        accessible-role: slider;
+        accessible-label: "Hue";
+        accessible-value: Math.round(root.hue) + " degrees";
+
+        Rectangle {
+            height: 16px;
+            border-radius: 8px;
+            background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.67%, #00ff00 33.33%, #00ffff 50%, #0000ff 66.67%, #ff00ff 83.33%, #ff0000 100%);
+            border-width: 1px;
+            border-color: Theme.hairline;
+        }
+
+        hue-touch := TouchArea {
+            mouse-cursor: pointer;
+            function pick(final: bool) {
+                root.set((self.mouse-x - hue-bar.knob / 2) / (self.width - hue-bar.knob) * 360, root.sat, root.val, final);
+            }
+            pointer-event(e) => {
+                if e.kind == PointerEventKind.down {
+                    root.editing = true;
+                    hue-keys.focus();
+                    self.pick(false);
+                } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                    if root.editing { self.pick(true); }
+                    root.editing = false;
+                }
+            }
+            moved => {
+                if self.pressed { self.pick(false); }
+            }
+        }
+
+        // Its touch area takes the focus, so a first press both focuses and picks
+        hue-keys := FocusScope {
+            focus-on-click: false;
+            key-pressed(e) => {
+                if e.text == Key.LeftArrow || e.text == Key.DownArrow { root.set(root.hue - (e.modifiers.shift ? 1 : 10), root.sat, root.val, true); return accept; }
+                if e.text == Key.RightArrow || e.text == Key.UpArrow { root.set(root.hue + (e.modifiers.shift ? 1 : 10), root.sat, root.val, true); return accept; }
+                return reject;
+            }
+        }
+
+        if hue-keys.has-focus: FocusRing {
+            height: 16px;
+            radius: 8px;
+        }
+
+        Rectangle {
+            x: root.hue / 360 * (parent.width - self.width);
+            width: hue-bar.knob;
+            height: hue-bar.knob;
+            border-radius: self.width / 2;
+            background: hsv(root.hue, 1, 1);
+            border-width: 3px;
+            border-color: #ffffff;
+            drop-shadow-blur: 4px;
+            drop-shadow-color: #00000080;
+        }
+    }
+}
+
 export component AccentColorDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
     callback color-changed(color);
-    callback custom-hex-requested(string);
-
-    property <string> hex-input;
-    // Rust callback validates actual hex digits; Slint gates on length only
-    property <bool> hex-valid: hex-input.character-count == 7;
     property <[color]> swatches: Theme.accent-swatches;
 
     if show-dialog: DialogShell {
@@ -98,23 +276,13 @@ export component AccentColorDialog inherits Rectangle {
 
             SectionHeader { title: "CUSTOM"; }
 
-            HorizontalLayout {
-                spacing: 8px;
-
-                hex-edit := StyledLineEdit {
-                    horizontal-stretch: 1;
-                    placeholder-text: "#rrggbb";
-                    text <=> root.hex-input;
-                    clearable: true;
-                    accepted(val) => {
-                        if root.hex-valid { root.custom-hex-requested(root.hex-input); }
-                    }
-                }
-
-                AccentButton {
-                    label: "Apply";
-                    enabled: root.hex-valid;
-                    clicked => { root.custom-hex-requested(root.hex-input); }
+            ColorPicker {
+                current: Theme.accent-base;
+                // Keep the whole dialog on a 480 px tall screen
+                square-height: Math.clamp(root.height - 400px, 64px, Defaults.accent-picker-height);
+                picked(c, final) => {
+                    Theme.accent-base = c;
+                    if final { root.color-changed(c); }
                 }
             }
         }
