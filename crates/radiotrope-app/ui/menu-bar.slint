@@ -1070,7 +1070,7 @@ export component MenuBar inherits Rectangle {
                     toggled => { tools-popup.group = tools-popup.group == "recordings" ? "" : "recordings"; }
                 }
                 if tools-popup.group == "recordings": MenuItem {
-                    label: "Recording Settings";
+                    label: "Settings";
                     icon: @image-url("icons/gear.svg");
                     indent: 16px;
                     clicked => {
@@ -1079,7 +1079,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 if Platform.has-file-manager && tools-popup.group == "recordings": MenuItem {
-                    label: "Open Recordings Folder";
+                    label: "Open Folder";
                     icon: @image-url("icons/folder-open.svg");
                     indent: 16px;
                     clicked => {
