@@ -1,5 +1,5 @@
-import { Theme } from "defaults.slint";
-import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator } from "components.slint";
+import { Theme, Defaults } from "defaults.slint";
+import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Picker } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 
@@ -8,9 +8,14 @@ component MenuItem inherits Rectangle {
     in property <image> icon;
     // Its keyboard shortcut, shown on the right ("Ctrl+Q")
     in property <string> shortcut;
+    // A small colour square on the right (Accent Color shows the accent)
+    in property <bool> has-swatch;
+    in property <color> swatch;
     // Greyed out and not clickable when false
     in property <bool> enabled: true;
     callback clicked();
+    // The pointer came onto the item (closes a submenu beside it)
+    callback hovered();
 
     // Hovered, or reached with Tab: highlighted the same way
     property <bool> lit: touch.has-hover || keys.has-focus;
@@ -33,6 +38,11 @@ component MenuItem inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.hovered();
+            }
+        }
     }
 
     keys := ButtonKeys {
@@ -44,7 +54,8 @@ component MenuItem inherits Rectangle {
         padding-left: 10px;
         padding-right: 12px;
         spacing: 10px;
-        alignment: start;
+        // Stretched when something sits at the right edge
+        alignment: root.shortcut != "" || root.has-swatch ? LayoutAlignment.stretch : LayoutAlignment.start;
 
         VerticalLayout {
             alignment: center;
@@ -66,9 +77,18 @@ component MenuItem inherits Rectangle {
             accessible-role: none;
         }
 
-        if root.shortcut != "": Rectangle {
+        if root.shortcut != "" || root.has-swatch: Rectangle {
             horizontal-stretch: 1;
             min-width: 16px;
+        }
+        if root.has-swatch: VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 12px;
+                height: 12px;
+                border-radius: 3px;
+                background: root.swatch;
+            }
         }
         if root.shortcut != "": Text {
             text: root.shortcut;
@@ -108,6 +128,8 @@ component CheckMenuItem inherits Rectangle {
     // Greyed out and not clickable when false
     in property <bool> enabled: true;
     callback clicked();
+    // The pointer came onto the item (closes a submenu beside it)
+    callback hovered();
 
     // Hovered, or reached with Tab: highlighted the same way
     property <bool> lit: touch.has-hover || keys.has-focus;
@@ -132,6 +154,11 @@ component CheckMenuItem inherits Rectangle {
     touch := TouchArea {
         enabled: root.enabled;
         clicked => { root.clicked(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.hovered();
+            }
+        }
     }
 
     keys := ButtonKeys {
@@ -184,6 +211,222 @@ component CheckMenuItem inherits Rectangle {
                 source: @image-url("icons/tick.svg");
                 colorize: root.enabled ? Theme.accent : Theme.disabled-text;
             }
+        }
+    }
+}
+
+// Opens a submenu beside it (see SubMenuState): on hover, on click, or on
+// Space, Enter or Right once reached with Tab. Stays lit while it is open.
+component SubMenuItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    // A faint note before the arrow ("On")
+    in property <string> hint;
+    in property <bool> open;
+    // Clicked, or Space, Enter or Right
+    callback activated();
+    // The pointer came onto the row
+    callback hovered();
+
+    property <bool> lit: root.open || touch.has-hover || keys.has-focus;
+
+    height: 28px;
+    min-width: 160px;
+    border-radius: Theme.radius-sm;
+    background: root.lit ? Theme.menu-hover : transparent;
+    animate background { duration: Theme.fast; }
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-expandable: true;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.activated(); }
+
+    touch := TouchArea {
+        clicked => { root.activated(); }
+        changed has-hover => {
+            if self.has-hover {
+                root.hovered();
+            }
+        }
+    }
+
+    keys := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return || event.text == Key.RightArrow {
+                root.activated();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 8px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 15px;
+                height: 15px;
+                source: root.icon;
+                colorize: root.lit ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.label;
+            color: root.lit ? Theme.text-primary : Theme.menu-text;
+            font-size: Theme.font-base;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+
+        if root.hint != "": Text {
+            text: root.hint;
+            color: Theme.disabled-text;
+            font-size: Theme.font-sm;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 10px;
+                height: 10px;
+                source: @image-url("icons/chevron-right.svg");
+                colorize: root.lit ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
+}
+
+// View > Theme: the three choices in the row itself, one click each
+component ThemeMenuRow inherits Rectangle {
+    callback hovered();
+
+    height: 34px;
+    min-width: 160px;
+
+    touch := TouchArea {
+        changed has-hover => {
+            if self.has-hover {
+                root.hovered();
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 4px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            Icon {
+                width: 15px;
+                height: 15px;
+                source: Theme.dark-mode ? @image-url("icons/moon.svg") : @image-url("icons/sun.svg");
+                colorize: Theme.text-secondary;
+            }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: "Theme";
+            color: Theme.menu-text;
+            font-size: Theme.font-base;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
+
+        VerticalLayout {
+            alignment: center;
+            // System follows the OS; greyed where the OS can't say
+            Picker {
+                compact: true;
+                option-width: 54px;
+                choices: [
+                    { id: "system", label: "System", disabled: !Platform.has-system-theme },
+                    { id: "dark", label: "Dark" },
+                    { id: "light", label: "Light" },
+                ];
+                selected: Theme.theme-mode;
+                changed(id) => { Theme.theme-mode = id; }
+            }
+        }
+    }
+}
+
+// Which submenu of a menu is open. Slint passes no pointer events past
+// the top popup, so submenus are drawn inside their menu's popup rather
+// than as popups of their own (the popup widens to hold them).
+component SubMenuState {
+    // The open submenu, "" for none
+    in-out property <string> open;
+    property <string> next;
+    property <bool> switching: false;
+
+    // The pointer came onto a row: a submenu row ("" for any other row).
+    // Opens at once when none is open; otherwise switches (or closes) after
+    // a short rest, so a slanted move into the open submenu keeps it.
+    public function hover(id: string) {
+        if root.open == "" || id == root.open {
+            root.open = id;
+            root.switching = false;
+        } else {
+            root.next = id;
+            root.switching = true;
+        }
+    }
+    // A click or a key on a submenu row: open it now
+    public function show(id: string) {
+        root.open = id;
+        root.switching = false;
+    }
+    // The pointer reached the open submenu: keep it
+    public function keep() {
+        root.switching = false;
+    }
+
+    Timer {
+        interval: Defaults.submenu-delay;
+        running: root.switching;
+        triggered => {
+            root.open = root.next;
+            root.switching = false;
+        }
+    }
+}
+
+// A submenu's card, beside the row that opens it
+component SubMenuCard inherits PopupCard {
+    // The pointer is over the card
+    callback entered();
+
+    width: sub-layout.preferred-width;
+    height: sub-layout.preferred-height;
+
+    // Around the items too: a touch area over them reports their hover
+    TouchArea {
+        changed has-hover => {
+            if self.has-hover {
+                root.entered();
+            }
+        }
+
+        sub-layout := VerticalLayout {
+            padding: 4px;
+            @children
         }
     }
 }
@@ -701,78 +944,57 @@ export component MenuBar inherits Rectangle {
     view-popup := PopupWindow {
         x: root.menu-start + open-menu.width + stations-menu.width;
         y: 32px;
-        width: view-popup-layout.preferred-width;
+        // Wider and taller while a submenu is open beside the menu
+        width: view-subs.open == "window" ? max(view-card.width, window-card.x + window-card.width)
+            : view-subs.open == "tray" ? max(view-card.width, tray-card.x + tray-card.width)
+            : view-card.width;
+        height: view-subs.open == "window" ? max(view-card.height, window-card.y + window-card.height)
+            : view-subs.open == "tray" ? max(view-card.height, tray-card.y + tray-card.height)
+            : view-card.height;
         close-policy: close-on-click-outside;
 
-        PopupCard {
+        // Beside a menu the popup is empty: a click there closes the menu,
+        // as one outside it does
+        TouchArea {
+            clicked => { view-popup.close(); }
+        }
+
+        view-subs := SubMenuState {}
+
+        // Beside the menu, or pulled left so it stays in the window
+        function sub-x(w: length) -> length {
+            max(0px, min(view-card.width - 4px, root.width - view-popup.x - w - 4px))
+        }
+
+        view-card := PopupCard {
+            x: 0;
+            y: 0;
+            width: view-popup-layout.preferred-width;
+            height: view-popup-layout.preferred-height;
+
             view-popup-layout := VerticalLayout {
                 padding: 4px;
 
-                // Follows the OS; the hint says what it reports right now
-                CheckMenuItem {
-                    label: "System Theme";
-                    icon: @image-url("icons/desktop.svg");
-                    hint: !Platform.has-system-theme ? "Not available"
-                        : Theme.system-dark ? "Dark" : "Light";
-                    enabled: Platform.has-system-theme;
-                    checked: Theme.theme-mode == "system";
-                    clicked => {
-                        Theme.theme-mode = "system";
-                    }
+                ThemeMenuRow {
+                    hovered => { view-subs.hover(""); }
                 }
-                CheckMenuItem {
-                    label: "Dark Theme";
-                    icon: @image-url("icons/moon.svg");
-                    checked: Theme.theme-mode == "dark";
-                    clicked => {
-                        Theme.theme-mode = "dark";
-                    }
-                }
-                CheckMenuItem {
-                    label: "Light Theme";
-                    icon: @image-url("icons/sun.svg");
-                    checked: Theme.theme-mode == "light";
-                    clicked => {
-                        Theme.theme-mode = "light";
-                    }
-                }
-                MenuSeparator {}
                 MenuItem {
                     label: "Accent Color";
                     icon: @image-url("icons/palette.svg");
+                    has-swatch: true;
+                    swatch: Theme.accent;
+                    hovered => { view-subs.hover(""); }
                     clicked => {
                         root.open-accent-color();
                         view-popup.close();
                     }
                 }
                 MenuSeparator {}
-                if Platform.has-window-frame: CheckMenuItem {
-                    // Chrome's wording: ticked means the system frame
-                    label: "Use System Title Bar";
-                    icon: @image-url("icons/window-maximize.svg");
-                    checked: !root.custom-frame;
-                    clicked => {
-                        root.toggle-custom-frame();
-                        view-popup.close();
-                    }
-                }
-                if Platform.has-window-frame: CheckMenuItem {
-                    // The system title bar has its own corners
-                    label: "Rounded Corners";
-                    icon: @image-url("icons/rounded-corner.svg");
-                    enabled: root.custom-frame && root.corners-available;
-                    hint: root.corners-available ? "" : root.corners-hint;
-                    checked: root.rounded-corners;
-                    clicked => {
-                        root.rounded-corners = !root.rounded-corners;
-                        root.rounded-corners-changed();
-                    }
-                }
-                if Platform.has-window-frame: MenuSeparator {}
                 CheckMenuItem {
                     label: "Show Station Stats";
                     icon: @image-url("icons/clock.svg");
                     checked: root.show-station-stats;
+                    hovered => { view-subs.hover(""); }
                     clicked => {
                         root.show-station-stats = !root.show-station-stats;
                     }
@@ -782,6 +1004,7 @@ export component MenuBar inherits Rectangle {
                     label: "Visualizer";
                     icon: @image-url("icons/visualizer.svg");
                     checked: root.show-visualizer;
+                    hovered => { view-subs.hover(""); }
                     clicked => {
                         root.show-visualizer = !root.show-visualizer;
                     }
@@ -792,50 +1015,111 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/fill-drip.svg");
                     enabled: root.show-visualizer;
                     checked: VizStyle.palette == "logo";
+                    hovered => { view-subs.hover(""); }
                     clicked => {
                         VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
                     }
                 }
-                if Platform.has-tray: MenuSeparator {}
-                if Platform.has-tray: CheckMenuItem {
-                    label: "Show Tray Icon";
+                // The set-once options, a level down (desktop only). Kept in
+                // the layout with no height elsewhere: the submenus are
+                // placed by these rows
+                if Platform.has-window-frame || Platform.has-tray: MenuSeparator {}
+                window-item := SubMenuItem {
+                    visible: Platform.has-window-frame;
+                    height: Platform.has-window-frame ? 28px : 0px;
+                    label: "Window";
+                    icon: @image-url("icons/window-maximize.svg");
+                    open: view-subs.open == "window";
+                    hovered => { view-subs.hover("window"); }
+                    activated => { view-subs.show("window"); }
+                }
+                tray-item := SubMenuItem {
+                    visible: Platform.has-tray;
+                    height: Platform.has-tray ? 28px : 0px;
+                    label: "System Tray";
                     icon: @image-url("icons/window-restore.svg");
-                    checked: root.tray-icon;
-                    clicked => {
-                        root.tray-icon = !root.tray-icon;
-                    }
+                    hint: root.tray-icon ? "On" : "Off";
+                    open: view-subs.open == "tray";
+                    hovered => { view-subs.hover("tray"); }
+                    activated => { view-subs.show("tray"); }
                 }
-                // Greyed with no tray to hide in; they keep their ticks
-                if Platform.has-tray: CheckMenuItem {
-                    label: "Close to Tray";
-                    icon: @image-url("icons/rectangle-xmark.svg");
-                    enabled: root.tray-icon && root.tray-available;
-                    checked: root.close-to-tray;
-                    clicked => {
-                        root.close-to-tray = !root.close-to-tray;
-                    }
+            }
+        }
+
+        window-card := SubMenuCard {
+            visible: view-subs.open == "window";
+            x: view-popup.sub-x(self.width);
+            y: window-item.y - 4px;
+            entered => { view-subs.keep(); }
+
+            CheckMenuItem {
+                // Chrome's wording: ticked means the system frame
+                label: "Use System Title Bar";
+                icon: @image-url("icons/window-maximize.svg");
+                checked: !root.custom-frame;
+                clicked => {
+                    root.toggle-custom-frame();
+                    view-popup.close();
                 }
-                if Platform.has-tray: CheckMenuItem {
-                    label: "Minimize to Tray";
-                    icon: @image-url("icons/square-minus.svg");
-                    enabled: root.tray-icon && root.tray-available;
-                    checked: root.hide-on-minimize;
-                    clicked => {
-                        root.hide-on-minimize = !root.hide-on-minimize;
-                    }
+            }
+            CheckMenuItem {
+                // The system title bar has its own corners
+                label: "Rounded Corners";
+                icon: @image-url("icons/rounded-corner.svg");
+                enabled: root.custom-frame && root.corners-available;
+                hint: root.corners-available ? "" : root.corners-hint;
+                checked: root.rounded-corners;
+                clicked => {
+                    root.rounded-corners = !root.rounded-corners;
+                    root.rounded-corners-changed();
                 }
-                if Platform.has-tray: CheckMenuItem {
-                    label: "Start Hidden in Tray";
-                    icon: @image-url("icons/eye-slash.svg");
-                    enabled: root.tray-icon && root.tray-available;
-                    checked: root.start-in-tray;
-                    clicked => {
-                        root.start-in-tray = !root.start-in-tray;
-                    }
+            }
+        }
+
+        tray-card := SubMenuCard {
+            visible: view-subs.open == "tray";
+            x: view-popup.sub-x(self.width);
+            y: tray-item.y - 4px;
+            entered => { view-subs.keep(); }
+
+            CheckMenuItem {
+                label: "Show Tray Icon";
+                icon: @image-url("icons/window-restore.svg");
+                checked: root.tray-icon;
+                clicked => {
+                    root.tray-icon = !root.tray-icon;
                 }
-                if Platform.has-tray && root.tray-icon && !root.tray-available: MenuNote {
-                    text: "This desktop shows no tray icons.\nOn GNOME, turn on the AppIndicator extension.";
+            }
+            // Greyed with no tray to hide in; they keep their ticks
+            CheckMenuItem {
+                label: "Close to Tray";
+                icon: @image-url("icons/rectangle-xmark.svg");
+                enabled: root.tray-icon && root.tray-available;
+                checked: root.close-to-tray;
+                clicked => {
+                    root.close-to-tray = !root.close-to-tray;
                 }
+            }
+            CheckMenuItem {
+                label: "Minimize to Tray";
+                icon: @image-url("icons/square-minus.svg");
+                enabled: root.tray-icon && root.tray-available;
+                checked: root.hide-on-minimize;
+                clicked => {
+                    root.hide-on-minimize = !root.hide-on-minimize;
+                }
+            }
+            CheckMenuItem {
+                label: "Start Hidden in Tray";
+                icon: @image-url("icons/eye-slash.svg");
+                enabled: root.tray-icon && root.tray-available;
+                checked: root.start-in-tray;
+                clicked => {
+                    root.start-in-tray = !root.start-in-tray;
+                }
+            }
+            if root.tray-icon && !root.tray-available: MenuNote {
+                text: "This desktop shows no tray icons.\nOn GNOME, turn on the AppIndicator extension.";
             }
         }
     }
@@ -865,16 +1149,40 @@ export component MenuBar inherits Rectangle {
     tools-popup := PopupWindow {
         x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width;
         y: 32px;
-        width: tools-popup-layout.preferred-width;
+        // Wider and taller while a submenu is open beside the menu
+        width: tools-subs.open == "recordings" ? max(tools-card.width, recordings-card.x + recordings-card.width)
+            : tools-subs.open == "connections" ? max(tools-card.width, connections-card.x + connections-card.width)
+            : tools-card.width;
+        height: tools-subs.open == "recordings" ? max(tools-card.height, recordings-card.y + recordings-card.height)
+            : tools-subs.open == "connections" ? max(tools-card.height, connections-card.y + connections-card.height)
+            : tools-card.height;
         close-policy: close-on-click-outside;
 
-        PopupCard {
+        // Beside a menu the popup is empty: a click there closes the menu
+        TouchArea {
+            clicked => { tools-popup.close(); }
+        }
+
+        tools-subs := SubMenuState {}
+
+        // Beside the menu, or pulled left so it stays in the window
+        function sub-x(w: length) -> length {
+            max(0px, min(tools-card.width - 4px, root.width - tools-popup.x - w - 4px))
+        }
+
+        tools-card := PopupCard {
+            x: 0;
+            y: 0;
+            width: tools-popup-layout.preferred-width;
+            height: tools-popup-layout.preferred-height;
+
             tools-popup-layout := VerticalLayout {
                 padding: 4px;
 
                 MenuItem {
                     label: "Statistics";
                     icon: @image-url("icons/chart-column.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.open-statistics();
                         tools-popup.close();
@@ -883,6 +1191,7 @@ export component MenuBar inherits Rectangle {
                 MenuItem {
                     label: "Filters";
                     icon: @image-url("icons/wave-square.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.open-filters();
                         tools-popup.close();
@@ -891,6 +1200,7 @@ export component MenuBar inherits Rectangle {
                 MenuItem {
                     label: "Equalizer";
                     icon: @image-url("icons/sliders.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.open-equalizer();
                         tools-popup.close();
@@ -902,31 +1212,24 @@ export component MenuBar inherits Rectangle {
                     // Greyed out until a station plays
                     enabled: root.is-recording || root.can-record;
                     icon: @image-url("icons/circle.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.toggle-recording();
                         tools-popup.close();
                     }
                 }
-                MenuItem {
-                    label: "Recording Settings";
-                    icon: @image-url("icons/gear.svg");
-                    clicked => {
-                        root.open-recording-settings();
-                        tools-popup.close();
-                    }
-                }
-                if Platform.has-file-manager: MenuItem {
-                    label: "Open Recordings Folder";
-                    icon: @image-url("icons/folder-open.svg");
-                    clicked => {
-                        root.open-recordings-folder();
-                        tools-popup.close();
-                    }
+                recordings-item := SubMenuItem {
+                    label: "Recordings";
+                    icon: @image-url("icons/folder.svg");
+                    open: tools-subs.open == "recordings";
+                    hovered => { tools-subs.hover("recordings"); }
+                    activated => { tools-subs.show("recordings"); }
                 }
                 MenuSeparator {}
                 MenuItem {
                     label: "Sleep Timer";
                     icon: @image-url("icons/moon.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.open-sleep-timer();
                         tools-popup.close();
@@ -935,36 +1238,77 @@ export component MenuBar inherits Rectangle {
                 MenuItem {
                     label: "Scheduler";
                     icon: @image-url("icons/calendar-days.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.open-schedule();
                         tools-popup.close();
                     }
                 }
                 MenuSeparator {}
-                MenuItem {
-                    label: "Agents (MCP)";
-                    icon: @image-url("icons/robot.svg");
-                    clicked => {
-                        root.open-agents();
-                        tools-popup.close();
-                    }
-                }
-                MenuItem {
-                    label: "Remote Control";
-                    icon: @image-url("icons/mobile-screen-button.svg");
-                    clicked => {
-                        root.open-remote-control();
-                        tools-popup.close();
-                    }
+                connections-item := SubMenuItem {
+                    label: "Connections";
+                    icon: @image-url("icons/network-wired.svg");
+                    open: tools-subs.open == "connections";
+                    hovered => { tools-subs.hover("connections"); }
+                    activated => { tools-subs.show("connections"); }
                 }
                 if Platform.has-wifi: MenuSeparator {}
                 if Platform.has-wifi: MenuItem {
                     label: "WiFi Settings";
                     icon: @image-url("icons/wifi.svg");
+                    hovered => { tools-subs.hover(""); }
                     clicked => {
                         root.open-wifi-settings();
                         tools-popup.close();
                     }
+                }
+            }
+        }
+
+        recordings-card := SubMenuCard {
+            visible: tools-subs.open == "recordings";
+            x: tools-popup.sub-x(self.width);
+            y: recordings-item.y - 4px;
+            entered => { tools-subs.keep(); }
+
+            MenuItem {
+                label: "Recording Settings";
+                icon: @image-url("icons/gear.svg");
+                clicked => {
+                    root.open-recording-settings();
+                    tools-popup.close();
+                }
+            }
+            if Platform.has-file-manager: MenuItem {
+                label: "Open Recordings Folder";
+                icon: @image-url("icons/folder-open.svg");
+                clicked => {
+                    root.open-recordings-folder();
+                    tools-popup.close();
+                }
+            }
+        }
+
+        connections-card := SubMenuCard {
+            visible: tools-subs.open == "connections";
+            x: tools-popup.sub-x(self.width);
+            y: connections-item.y - 4px;
+            entered => { tools-subs.keep(); }
+
+            MenuItem {
+                label: "Agents (MCP)";
+                icon: @image-url("icons/robot.svg");
+                clicked => {
+                    root.open-agents();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                label: "Remote Control";
+                icon: @image-url("icons/mobile-screen-button.svg");
+                clicked => {
+                    root.open-remote-control();
+                    tools-popup.close();
                 }
             }
         }
