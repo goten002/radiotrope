@@ -5,10 +5,11 @@
 
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 
-use crate::config::network::MAX_PLAYLIST_DEPTH;
+use crate::config::network::{CONNECT_RETRY_MS, MAX_PLAYLIST_DEPTH};
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
 use crate::stream::hls::{resolve_hls, HlsFound, HlsReader, HlsSegmentFormat};
@@ -49,8 +50,26 @@ impl StreamResolver {
         Self::resolve_by(url, cancel, Deadline::for_resolve())
     }
 
+    /// The first connection after the computer sat idle can fail at once:
+    /// the station's name lookup fails while the system's or the router's
+    /// DNS cache wakes up, and the same request works a moment later. A
+    /// station that fails to connect like that is tried once more, after
+    /// [`CONNECT_RETRY_MS`], if the deadline leaves time for it.
     fn resolve_by(url: &str, cancel: &StreamCancel, deadline: Deadline) -> Result<ResolvedStream> {
-        Self::open_address(url, url, None, MAX_PLAYLIST_DEPTH, cancel, deadline)
+        let open = || Self::open_address(url, url, None, MAX_PLAYLIST_DEPTH, cancel, deadline);
+        match open() {
+            Err(e) if is_connect_failure(&e) => {
+                eprintln!("Could not connect to {url} ({e}), trying once more");
+                if !cancel.sleep(Duration::from_millis(CONNECT_RETRY_MS)) {
+                    return Err(RadioError::Cancelled);
+                }
+                if deadline.check().is_err() {
+                    return Err(e);
+                }
+                open()
+            }
+            result => result,
+        }
     }
 
     /// Open `address`, which the station's `url` led to: an HLS stream, a
@@ -236,6 +255,13 @@ impl StreamResolver {
 
         None
     }
+}
+
+/// Whether `e` is a request that never reached the station: its name
+/// didn't look up, or the connection was refused. A timeout is
+/// not one: it already took its time, and the deadline has little left.
+fn is_connect_failure(e: &RadioError) -> bool {
+    matches!(e, RadioError::Network(e) if e.is_connect() && !e.is_timeout())
 }
 
 #[cfg(test)]
@@ -650,6 +676,96 @@ mod tests {
             // Dropping a stream nobody plays (a stale resolve) stops it
             drop(resolved);
             assert!(cancel.is_cancelled());
+        }
+    }
+
+    // --- A station that fails to connect is tried once more ---
+
+    mod connect_retry {
+        use super::*;
+        use crate::config::timeouts::RESOLVE_TIMEOUT_SECS;
+        use crate::stream::id3::test_util::frame;
+        use crate::stream::test_server::{Route, TestServer};
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        /// A local address nothing listens on (yet)
+        fn free_address() -> String {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().to_string()
+        }
+
+        #[test]
+        fn a_station_that_refuses_the_first_try_plays_on_the_second() {
+            let address = free_address();
+            // The station comes up after the first try was refused
+            let server = thread::spawn({
+                let address = address.clone();
+                move || {
+                    thread::sleep(Duration::from_millis(300));
+                    let server = TestServer::bind(&address).unwrap();
+                    server.route(
+                        "/live",
+                        Route::new(frame(4096))
+                            .header("Content-Type", "audio/mpeg")
+                            .without_length()
+                            .stall(),
+                    );
+                    server
+                }
+            });
+            let resolved = StreamResolver::resolve(&format!("http://{address}/live")).unwrap();
+            assert_eq!(server.join().unwrap().hits("/live"), 1);
+            assert_eq!(resolved.info.stream_type, StreamType::Direct);
+        }
+
+        #[test]
+        fn a_station_that_never_answers_fails_after_the_second_try() {
+            let url = format!("http://{}/live", free_address());
+            let started = Instant::now();
+            let result = StreamResolver::resolve(&url);
+            assert!(
+                matches!(&result, Err(e) if is_connect_failure(e)),
+                "{:?}",
+                result.err()
+            );
+            let took = started.elapsed();
+            assert!(
+                took >= Duration::from_millis(CONNECT_RETRY_MS),
+                "took {took:?}"
+            );
+            // Windows takes about 2 s to give up on a refused local port
+            assert!(
+                took < Duration::from_secs(RESOLVE_TIMEOUT_SECS),
+                "took {took:?}"
+            );
+        }
+
+        #[test]
+        fn cancelling_before_the_second_try_ends_the_resolve_at_once() {
+            let url = format!("http://{}/live", free_address());
+            let cancel = StreamCancel::new();
+            let resolve_cancel = cancel.clone();
+            let resolve =
+                thread::spawn(move || StreamResolver::resolve_cancellable(&url, &resolve_cancel));
+            thread::sleep(Duration::from_millis(300));
+            let cancelled_at = Instant::now();
+            cancel.cancel();
+            let result = resolve.join().unwrap();
+            assert!(matches!(result, Err(RadioError::Cancelled)));
+            // At once, or (Windows) once the refused first try returns
+            let took = cancelled_at.elapsed();
+            assert!(took < Duration::from_secs(3), "took {took:?}");
+        }
+
+        #[test]
+        fn a_station_that_answers_with_an_error_is_not_tried_again() {
+            let server = TestServer::start();
+            server.route("/live", Route::status(503));
+            let result = StreamResolver::resolve(&server.url("/live"));
+            assert!(result.is_err());
+            assert_eq!(server.hits("/live"), 1);
         }
     }
 
