@@ -460,7 +460,7 @@ impl Encoders {
 
 /// The encoder broke: end the listeners' streams (they may connect again)
 fn fail(shared: &ListenShared, error: &str) {
-    eprintln!("Listening: {error}");
+    log::warn!("Listening: {error}");
     shared
         .listeners
         .lock()

@@ -17,4 +17,13 @@ pub mod text;
 mod time;
 
 pub use check::{check, Options};
+pub use radiotrope::config::network::set_user_agent;
 pub use report::{Report, Status};
+
+/// The User-Agent the probe sends unless the program using it called
+/// [`set_user_agent`] before its first check
+pub const USER_AGENT: &str = concat!(
+    "RadiotropeProbe/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/goten002/radiotrope)"
+);

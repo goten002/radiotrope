@@ -24,6 +24,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 - Keyboard use and screen reader names for the controls, and touch support for the bubbles.
 - Windows: an exe icon and version info, no console window in release, and a log file.
 - A system tray icon on Windows and Linux: show or hide the window, Play/Stop, Mute, favorites, recording and Quit from its menu, middle click to play or stop. View has Show Tray Icon, Close to Tray, Minimize to Tray and Start Hidden in Tray; Quit (Ctrl+Q) is in the Open menu.
+- `radiotrope-probe` names itself to stations as `RadiotropeProbe/<version>`, and a program using it as a library can set its own User-Agent with `set_user_agent`.
 
 ### Changed
 - Licence: GPL-3.0-or-later (was MIT).
@@ -31,6 +32,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 - Two players open at once see each other's favorite changes.
 - The audio output closes while stopped, follows the default device, and reopens after a device is lost.
 - Lower idle cost: fewer redraws and timer wake-ups while playing and stopped.
+- Messages about the audio device and reconnects go through the standard `log` crate instead of straight to stderr. The player, the CLI and the probe print warnings and notices as before; set `RUST_LOG` (for example `RUST_LOG=radiotrope=debug`) to see more or fewer. The probe shows only warnings by default, and programs using the engine as a library choose for themselves.
 
 ### Fixed
 - Many streaming fixes: HLS segment timeouts, plain M3U versus HLS, SHOUTcast redirects, stale HLS playlists, and reconnects after network drops.

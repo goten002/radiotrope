@@ -17,7 +17,7 @@ use std::time::Duration;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, LOCATION};
 use reqwest::{StatusCode, Url};
 
-use crate::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use crate::config::network::{user_agent, CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 
 /// Longest status line plus headers we read
 const MAX_HEAD_BYTES: usize = 16 * 1024;
@@ -75,8 +75,9 @@ fn get_once(url: &Url) -> io::Result<Reply> {
         Some(port) => format!("{host}:{port}"),
         None => host.to_string(),
     };
+    let agent = user_agent();
     let request = format!(
-        "GET {target} HTTP/1.0\r\nHost: {host_header}\r\nUser-Agent: {USER_AGENT}\r\n\
+        "GET {target} HTTP/1.0\r\nHost: {host_header}\r\nUser-Agent: {agent}\r\n\
          Accept: */*\r\nIcy-MetaData: 1\r\nConnection: close\r\n\r\n"
     );
     (&stream).write_all(request.as_bytes())?;

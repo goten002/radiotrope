@@ -44,6 +44,9 @@ clap = { version = "4.5", features = ["derive"] }
 
 # Utilities
 thiserror = "2.0"
+# The engine reports through the log facade; each program picks a logger
+log = "0.4"
+env_logger = { version = "0.11", default-features = false }
 # Text that stations send in legacy encodings (ICY titles and names)
 chardetng = "1.0"
 encoding_rs = "0.8"

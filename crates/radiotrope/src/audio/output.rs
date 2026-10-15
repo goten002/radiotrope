@@ -188,7 +188,7 @@ impl OutputErrors {
                 .last_logged
                 .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
         {
-            eprintln!("Audio output error: {err}");
+            log::warn!("Audio output error: {err}");
             self.last_logged = Some(Instant::now());
         }
         if gone {

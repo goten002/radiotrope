@@ -59,7 +59,7 @@ impl StreamResolver {
         let open = || Self::open_address(url, url, None, MAX_PLAYLIST_DEPTH, cancel, deadline);
         match open() {
             Err(e) if is_connect_failure(&e) => {
-                eprintln!("Could not connect to {url} ({e}), trying once more");
+                log::debug!("Could not connect to {url} ({e}), trying once more");
                 if !cancel.sleep(Duration::from_millis(CONNECT_RETRY_MS)) {
                     return Err(RadioError::Cancelled);
                 }

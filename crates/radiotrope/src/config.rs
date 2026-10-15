@@ -57,8 +57,32 @@ pub mod audio {
 
 /// Network-related configuration
 pub mod network {
-    /// User agent for HTTP requests
+    use std::sync::OnceLock;
+
+    /// The User-Agent HTTP requests send, unless the program sets its own
+    /// with [`set_user_agent`]
     pub const USER_AGENT: &str = concat!("Radiotrope/", env!("CARGO_PKG_VERSION"));
+
+    static CUSTOM_USER_AGENT: OnceLock<String> = OnceLock::new();
+
+    /// Set the User-Agent every request sends, for a program that isn't the
+    /// player (a station checker should say so). Only the first call counts,
+    /// so call it at start, before any stream opens. Returns false if one was
+    /// already set or `agent` isn't a valid header value.
+    pub fn set_user_agent(agent: impl Into<String>) -> bool {
+        let agent = agent.into();
+        valid_user_agent(&agent) && CUSTOM_USER_AGENT.set(agent).is_ok()
+    }
+
+    /// Printable ASCII and spaces only: no line breaks to smuggle in headers
+    fn valid_user_agent(agent: &str) -> bool {
+        !agent.trim().is_empty() && agent.chars().all(|c| c == ' ' || c.is_ascii_graphic())
+    }
+
+    /// The User-Agent requests send now
+    pub fn user_agent() -> &'static str {
+        CUSTOM_USER_AGENT.get().map_or(USER_AGENT, String::as_str)
+    }
 
     /// Connection timeout in seconds
     pub const CONNECT_TIMEOUT_SECS: u64 = 10;
@@ -81,6 +105,22 @@ pub mod network {
     /// Wait before a station that failed to connect is tried once more,
     /// when it is started (milliseconds; see `StreamResolver`)
     pub const CONNECT_RETRY_MS: u64 = 1000;
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn user_agents_must_be_one_printable_line() {
+            assert!(valid_user_agent(USER_AGENT));
+            assert!(valid_user_agent(
+                "RadiotropeProbe/1.0 (+https://example.com)"
+            ));
+            for bad in ["", "  ", "A\r\nX-Evil: 1", "A\nB", "Caf\u{e9}/1", "A\tB"] {
+                assert!(!valid_user_agent(bad), "{bad:?}");
+            }
+        }
+    }
 }
 
 /// HLS-related configuration

@@ -89,6 +89,8 @@ struct Shared {
 
 /// Check the station at `url`
 pub fn check(url: &str, options: &Options) -> Report {
+    // Ignored when the program already chose its own User-Agent
+    let _ = crate::set_user_agent(crate::USER_AGENT);
     let started = Instant::now();
     let mut report = Report::new(url, rfc3339(SystemTime::now()));
     match valid_url(url) {
