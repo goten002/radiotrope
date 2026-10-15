@@ -8,7 +8,7 @@ use crate::data::cache::{decode_logo, CacheState, ImageCache};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
 use crate::network::failed_logos::FailedLogos;
-use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use radiotrope::config::network::{user_agent, CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
@@ -57,7 +57,7 @@ impl LogoService {
     /// Create a logo service with a custom cache directory (for testing)
     pub fn with_cache(cache: ImageCache) -> Result<Self> {
         let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent())
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()

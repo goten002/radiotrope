@@ -858,7 +858,7 @@ impl AudioEngine {
         let mut stream = match outputs.open(&output_lost, Devices::Any) {
             Ok(s) => Some(s),
             Err(e) => {
-                eprintln!("No audio output, waiting for a device: {e}");
+                log::warn!("No audio output, waiting for a device: {e}");
                 None
             }
         };
@@ -1049,7 +1049,9 @@ impl AudioEngine {
                                     match outputs.open(&output_lost, Devices::Reopen) {
                                         Ok(output) => stream = Some(output),
                                         Err(e) => {
-                                            eprintln!("No audio output, waiting for a device: {e}");
+                                            log::warn!(
+                                                "No audio output, waiting for a device: {e}"
+                                            );
                                             waiting_for_output = true;
                                             output_gone_at = Instant::now();
                                             next_output_try = Instant::now() + output_wait;
@@ -1230,7 +1232,7 @@ impl AudioEngine {
                                     &volume,
                                     state == PlaybackState::Paused,
                                 );
-                                eprintln!("Audio output reopened");
+                                log::info!("Audio output reopened");
                                 if waiting_for_output {
                                     waiting_for_output = false;
                                     // No samples flowed while waiting
@@ -1240,7 +1242,7 @@ impl AudioEngine {
                                     events.send(AudioEvent::OutputRestored);
                                 }
                                 if behind {
-                                    eprintln!("The station fell behind live, ending it");
+                                    log::info!("The station fell behind live, ending it");
                                     // Its player is empty: the check for an
                                     // ended station below stops it
                                     events.send(AudioEvent::FellBehind);
@@ -1250,7 +1252,7 @@ impl AudioEngine {
                                 next_output_try = Instant::now() + output_wait;
                                 output_wait = (output_wait * 2).min(config.output_retry_max);
                                 if !waiting_for_output {
-                                    eprintln!("Audio output lost, no device to play on: {e}");
+                                    log::warn!("Audio output lost, no device to play on: {e}");
                                     waiting_for_output = true;
                                     output_gone_at = Instant::now();
                                     // Let the dead device go: some backends
@@ -1284,12 +1286,12 @@ impl AudioEngine {
                                     &volume,
                                     state == PlaybackState::Paused,
                                 );
-                                eprintln!("Audio output reopened: the default device changed");
+                                log::info!("Audio output reopened: the default device changed");
                             }
                             // Stay where we are, and try it again later
                             Err(e) => {
                                 outputs.default_failed();
-                                eprintln!("The new default output device didn't open: {e}");
+                                log::warn!("The new default output device didn't open: {e}");
                             }
                         }
                     }
@@ -1504,7 +1506,7 @@ impl AudioEngine {
                             sink = new_player(None);
                             stream = None;
                             idle_since = None;
-                            eprintln!("Audio output closed while nothing plays");
+                            log::debug!("Audio output closed while nothing plays");
                         }
                     } else {
                         idle_since = None;

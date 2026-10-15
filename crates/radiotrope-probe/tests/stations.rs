@@ -2,7 +2,9 @@
 
 mod support;
 
+use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use radiotrope_probe::report::{ErrorCode, ProblemCode};
@@ -278,4 +280,33 @@ fn the_json_has_every_section() {
     assert!(json["error"].is_null());
     let at = json["checked_at"].as_str().unwrap();
     assert!(at.len() == 20 && at.ends_with('Z'), "{at}");
+}
+
+#[test]
+fn the_probe_names_itself_to_stations() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/live", listener.local_addr().unwrap());
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut agent = None;
+        for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+            let line = line.unwrap();
+            if line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("user-agent") {
+                    agent = Some(value.trim().to_string());
+                }
+            }
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        agent
+    });
+    let report = check(&url, &options(2, 6));
+    assert_eq!(report.status, Status::Down, "{report:#?}");
+    let agent = server.join().unwrap().expect("a User-Agent header");
+    assert_eq!(agent, radiotrope_probe::USER_AGENT);
+    assert!(agent.starts_with("RadiotropeProbe/"), "{agent}");
 }

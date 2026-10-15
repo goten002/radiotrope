@@ -18,7 +18,7 @@ use reqwest::header::HeaderMap;
 use reqwest::StatusCode;
 
 use crate::config::network::{
-    CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, SLEEP_JUMP_SECS, USER_AGENT,
+    user_agent, CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, SLEEP_JUMP_SECS,
 };
 use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
 use crate::error::{RadioError, Result};
@@ -152,7 +152,7 @@ impl IcyReader {
         // connecting can be cut short by the deadline
         deadline.check()?;
         let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent())
             .connect_timeout(deadline.cap(Duration::from_secs(CONNECT_TIMEOUT_SECS)))
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()?;
@@ -874,7 +874,7 @@ fn read_chunk_with_meta(
 /// `Err` says why this attempt failed.
 fn reconnect(url: &str) -> std::result::Result<Connection, String> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent())
         .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
         .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
         .build()

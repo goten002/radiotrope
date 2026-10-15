@@ -73,7 +73,19 @@ enum Output {
     Ndjson,
 }
 
+/// Warnings and errors only: the report says what happened
+const DEFAULT_LOG: &str = "error,radiotrope=warn";
+/// The engine's messages, one line each on stderr. `RUST_LOG` changes how
+/// much (for example `RUST_LOG=radiotrope=debug`).
+fn init_logging() {
+    use std::io::Write;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(DEFAULT_LOG))
+        .format(|out, record| writeln!(out, "{}", record.args()))
+        .init();
+}
+
 fn main() {
+    init_logging();
     let args = match Args::try_parse() {
         Ok(args) => args,
         Err(e) => {

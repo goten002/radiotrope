@@ -45,7 +45,19 @@ struct Cli {
     station: Option<String>,
 }
 
+/// Our crates' messages from info up; other libraries' only when they fail
+const DEFAULT_LOG: &str = "error,radiotrope=info";
+/// The engine's messages, one line each on stderr. `RUST_LOG` changes how
+/// much (for example `RUST_LOG=radiotrope=debug`).
+fn init_logging() {
+    use std::io::Write;
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(DEFAULT_LOG))
+        .format(|out, record| writeln!(out, "{}", record.args()))
+        .init();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    init_logging();
     let cli = Cli::parse();
 
     let favorites_path = library::favorites_path();

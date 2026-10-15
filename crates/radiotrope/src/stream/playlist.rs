@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::config::hls::MAX_PLAYLIST_BYTES;
 use crate::config::network::{
-    CONNECT_TIMEOUT_SECS, MAX_PLAYLIST_DEPTH, MAX_PLAYLIST_ENTRIES, USER_AGENT,
+    user_agent, CONNECT_TIMEOUT_SECS, MAX_PLAYLIST_DEPTH, MAX_PLAYLIST_ENTRIES,
 };
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::StreamCancel;
@@ -385,7 +385,7 @@ struct Playlist {
 fn fetch_playlist(url: &str, cancel: &StreamCancel, deadline: Deadline) -> Result<Playlist> {
     let wait = deadline.cap(Duration::from_secs(CONNECT_TIMEOUT_SECS));
     let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent())
         .timeout(wait)
         .build()?;
 

@@ -1,11 +1,11 @@
 //! Shared HTTP client wrapper
 //!
 //! Thin wrapper around `reqwest::blocking::Client` that centralizes
-//! USER_AGENT and timeout configuration.
+//! User-Agent and timeout configuration.
 
 use super::api_cache::ApiCache;
 use crate::error::{AppError, Result};
-use radiotrope::config::network::{CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS, USER_AGENT};
+use radiotrope::config::network::{user_agent, CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS};
 use serde::de::DeserializeOwned;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -20,7 +20,7 @@ impl HttpClient {
     /// Create a new client with default Radiotrope settings
     pub fn new() -> Result<Self> {
         let inner = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent())
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
             .build()?;

@@ -20,7 +20,7 @@ use crate::config::hls::{
     FIND_AGAIN_AFTER_FAILURES, FIRST_SEGMENT_TIMEOUT_SECS, MAX_DOWNLOAD_SECS, MAX_PLAYLIST_BYTES,
     MAX_SEGMENT_BYTES, SEGMENT_BUFFER_SIZE, SEGMENT_TIMEOUT_SECS,
 };
-use crate::config::network::{MAX_PLAYLIST_DEPTH, USER_AGENT};
+use crate::config::network::{user_agent, MAX_PLAYLIST_DEPTH};
 use crate::config::timeouts::{RECONNECT_GIVE_UP_SECS, STREAM_CONNECT_TIMEOUT_SECS};
 use crate::error::{RadioError, Result};
 use crate::stream::cancel::{StreamCancel, Waited};
@@ -809,7 +809,7 @@ pub(crate) fn resolve_hls(
     deadline: Deadline,
 ) -> Result<HlsFound> {
     let client = reqwest::blocking::Client::builder()
-        .user_agent(USER_AGENT)
+        .user_agent(user_agent())
         .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS))
         .build()?;
 
@@ -1044,7 +1044,7 @@ impl SegmentDownloader {
     /// stream can't be played at all.
     fn download(&self) -> std::result::Result<(), String> {
         let client = reqwest::blocking::Client::builder()
-            .user_agent(USER_AGENT)
+            .user_agent(user_agent())
             .connect_timeout(Duration::from_secs(STREAM_CONNECT_TIMEOUT_SECS))
             .timeout(Duration::from_secs(SEGMENT_TIMEOUT_SECS * 2))
             .build()
