@@ -104,7 +104,7 @@ pub struct Station {
     pub homepage: Option<String>,
 
     // === Provider Info ===
-    /// Provider name (e.g., "radio-browser", "manual")
+    /// Provider name (e.g., "radiotrope", "manual")
     #[serde(default = "default_provider")]
     pub provider: String,
     /// Provider-specific station ID

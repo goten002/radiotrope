@@ -41,7 +41,7 @@ pub struct PlayMetadata {
     pub name: Option<String>,
     pub logo_url: Option<String>,
     pub country: Option<String>,
-    /// Provider-specific station ID (e.g. radio-browser's stationuuid)
+    /// Provider-specific station ID (e.g. the Radiotrope directory's `st_…` ID)
     pub provider_id: Option<String>,
 }
 

@@ -70,10 +70,9 @@ pub(super) async fn search(shared: &Shared, request: &Request<Incoming>) -> Resp
     };
     let number = |key: &str| text(key).and_then(|v| v.parse::<usize>().ok());
     let order = match text("order").as_deref() {
-        None | Some("popular") => SearchOrder::Popular,
-        Some("votes") => SearchOrder::Votes,
-        Some("trending") => SearchOrder::Trending,
-        Some("bitrate") => SearchOrder::Bitrate,
+        // The directory has no votes, trends or bitrate order: apps that
+        // still offer them get the most played
+        None | Some("popular" | "votes" | "trending" | "bitrate") => SearchOrder::Popular,
         Some("name") => SearchOrder::Name,
         Some(_) => {
             return error(
@@ -209,7 +208,7 @@ pub(super) struct FavoriteItem {
     codec: Option<String>,
     bitrate_kbps: Option<u32>,
     homepage: Option<String>,
-    /// The directory it came from ("radio-browser", or "manual")
+    /// The directory it came from ("radiotrope", "radio-browser" for favorites saved before it, or "manual")
     provider: String,
     /// Its id in that directory
     provider_id: Option<String>,

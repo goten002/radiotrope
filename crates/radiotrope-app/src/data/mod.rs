@@ -6,6 +6,7 @@ pub mod agent_token;
 pub mod cache;
 pub mod favorites;
 pub mod flags;
+pub mod languages;
 pub mod levels;
 pub mod recordings;
 pub mod remote;

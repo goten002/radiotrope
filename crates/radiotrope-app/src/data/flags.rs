@@ -60,6 +60,45 @@ pub fn code_for_country(name: &str) -> Option<&'static str> {
         .map(|i| COUNTRY_NAMES[i].1)
 }
 
+/// English name of an ISO 3166-1 alpha-2 code ("GR" -> "Greece")
+pub fn country_name(code: &str) -> Option<String> {
+    let code = code.trim().to_ascii_lowercase();
+    COUNTRY_NAMES
+        .iter()
+        .find(|(_, c)| *c == code)
+        .map(|(name, _)| title_case(name))
+}
+
+/// "bosnia and herzegovina" -> "Bosnia and Herzegovina"
+fn title_case(name: &str) -> String {
+    const SMALL: [&str; 4] = ["and", "of", "the", "da"];
+    name.split(' ')
+        .enumerate()
+        .map(|(i, word)| {
+            if i > 0 && SMALL.contains(&word) {
+                return word.to_string();
+            }
+            // Each part of "guinea-bissau", and the name after "d'"
+            word.split('-')
+                .map(|part| match part.strip_prefix("d'") {
+                    Some(rest) => format!("d'{}", capitalize(rest)),
+                    None => capitalize(part),
+                })
+                .collect::<Vec<_>>()
+                .join("-")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// Pick the flag code for a station: its ISO code if a flag exists for it,
 /// otherwise a lookup by country name.
 pub fn flag_code(country_code: Option<&str>, country: Option<&str>) -> Option<String> {
@@ -85,6 +124,23 @@ fn normalize(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn country_names_for_codes() {
+        assert_eq!(country_name("GR").as_deref(), Some("Greece"));
+        assert_eq!(
+            country_name("us").as_deref(),
+            Some("United States of America")
+        );
+        assert_eq!(country_name("gw").as_deref(), Some("Guinea-Bissau"));
+        assert_eq!(country_name("ci").as_deref(), Some("Côte d'Ivoire"));
+        assert_eq!(country_name("zz"), None);
+        // Back to the code, with a region after it as stations carry it
+        assert_eq!(
+            code_for_country("United States of America, Texas"),
+            Some("us")
+        );
+    }
 
     #[test]
     fn tables_are_sorted_for_binary_search() {
