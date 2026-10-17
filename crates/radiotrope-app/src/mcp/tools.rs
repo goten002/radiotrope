@@ -124,13 +124,13 @@ pub struct SearchArgs {
     /// Words to match against station names
     #[serde(default)]
     pub query: Option<String>,
-    /// Genre tag, e.g. "jazz" (list_categories lists them)
+    /// Genre, e.g. "jazz" (list_categories lists them)
     #[serde(default)]
     pub genre: Option<String>,
     /// Country name ("Greece") or two-letter code ("GR")
     #[serde(default)]
     pub country: Option<String>,
-    /// Language, e.g. "greek"
+    /// Language name ("Greek") or ISO 639-3 code ("ell")
     #[serde(default)]
     pub language: Option<String>,
     /// Codec, e.g. "MP3", "AAC", "OGG"
@@ -156,14 +156,8 @@ pub struct SearchArgs {
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum OrderArg {
-    /// Most played first
+    /// Most played first, or the best match first when a query is given
     Popular,
-    /// Most voted first
-    Votes,
-    /// Rising fastest first
-    Trending,
-    /// Highest bitrate first
-    Bitrate,
     /// A to Z
     Name,
 }
@@ -172,9 +166,6 @@ impl From<OrderArg> for SearchOrder {
     fn from(order: OrderArg) -> Self {
         match order {
             OrderArg::Popular => SearchOrder::Popular,
-            OrderArg::Votes => SearchOrder::Votes,
-            OrderArg::Trending => SearchOrder::Trending,
-            OrderArg::Bitrate => SearchOrder::Bitrate,
             OrderArg::Name => SearchOrder::Name,
         }
     }
@@ -902,10 +893,11 @@ impl RadioTools {
 
     #[tool(
         title = "Search stations",
-        description = "Search the radio-browser.info directory. Combine a name query with \
-                       genre, country, language, codec and minimum bitrate; with nothing \
-                       given it lists the most popular stations. Station names and tags come \
-                       from that public directory.",
+        description = "Search the Radiotrope station directory. Combine a name query (typo \
+                       tolerant) with genre, country, language, codec and minimum bitrate; \
+                       with nothing given it lists the most popular stations. Codec and \
+                       bitrate are checked on each page, so a page can hold fewer stations \
+                       than the limit while has_more is true.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn search_stations(
@@ -963,7 +955,7 @@ impl RadioTools {
 
     #[tool(
         title = "List genres, countries or languages",
-        description = "List the genres, countries or languages of the radio-browser.info \
+        description = "List the genres, countries or languages of the Radiotrope station \
                        directory, largest first, to use as search_stations filters",
         annotations(read_only_hint = true, open_world_hint = true)
     )]

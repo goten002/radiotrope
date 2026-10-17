@@ -1,14 +1,13 @@
 //! Station directory providers
 //!
-//! Providers for discovering radio stations (Radio Browser, SHOUTcast, etc.)
+//! Providers for discovering radio stations (the Radiotrope directory)
 
-pub mod radio_browser;
-pub mod radio_browser_servers;
+pub mod radiotrope;
 pub mod traits;
 pub mod types;
 
 // Re-exports
-pub use radio_browser::RadioBrowserProvider;
+pub use radiotrope::RadiotropeProvider;
 pub use traits::StationProvider;
 pub use types::{Category, CategoryType, SearchOrder, SearchResults, StationFilter};
 
@@ -33,7 +32,7 @@ impl ProviderRegistry {
     /// Create a registry with the default providers
     pub fn with_defaults() -> Result<Self> {
         let mut registry = Self::new();
-        registry.register(Box::new(RadioBrowserProvider::new()?));
+        registry.register(Box::new(RadiotropeProvider::new()?));
         Ok(registry)
     }
 

@@ -47,7 +47,7 @@ use radiotrope_app::error::ServiceProblem;
 use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
-use radiotrope_app::providers::ProviderRegistry;
+use radiotrope_app::providers::{RadiotropeProvider, StationProvider};
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
 use app::controller::AppController;
@@ -1127,7 +1127,7 @@ fn main() {
                             Default::default(),
                         )
                         .with_provider(
-                            "radio-browser",
+                            radiotrope_app::providers::radiotrope::PROVIDER_ID,
                             Some(item.provider_id.to_string()).filter(|id| !id.is_empty()),
                         )
                         .with_audio_info(
@@ -1305,15 +1305,7 @@ fn main() {
             std::thread::Builder::new()
                 .name("load-countries".into())
                 .spawn(move || {
-                    let results = ProviderRegistry::with_defaults().and_then(|r| {
-                        r.get("radio-browser")
-                            .ok_or_else(|| {
-                                radiotrope_app::error::AppError::NotFound(
-                                    "radio-browser provider not found".into(),
-                                )
-                            })
-                            .and_then(|p| p.browse_categories())
-                    });
+                    let results = RadiotropeProvider::new().and_then(|p| p.browse_categories());
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
                         match results {
@@ -1390,6 +1382,7 @@ fn main() {
                             .filter(|id| !id.is_empty()),
                     },
                 );
+                report_browse_play(&station);
             }
         });
     }
@@ -3667,36 +3660,49 @@ enum BrowseQuery {
     Category { category: Category, query: String },
 }
 
-/// Fetch one page of browser results from radio-browser
+/// Fetch one page of browser results from the Radiotrope directory
 fn fetch_browse_page(
     query: &BrowseQuery,
     offset: usize,
 ) -> radiotrope_app::error::Result<SearchResults> {
-    let registry = ProviderRegistry::with_defaults()?;
-    let radio_browser = || {
-        registry.get("radio-browser").ok_or_else(|| {
-            radiotrope_app::error::AppError::NotFound("radio-browser provider not found".into())
-        })
-    };
-    let first_page = |stations: Vec<Station>| SearchResults {
-        total: None,
-        has_more: stations.len() >= SEARCH_PAGE_SIZE,
-        stations,
-    };
+    let directory = browse_directory()?;
     match query {
-        BrowseQuery::Top if offset == 0 => {
-            Ok(first_page(radio_browser()?.get_popular(SEARCH_PAGE_SIZE)?))
-        }
-        // Later pages of the top list: every station, most clicked first
-        BrowseQuery::Top => radio_browser()?.search("", SEARCH_PAGE_SIZE, offset),
-        BrowseQuery::Search(q) if offset == 0 => {
-            Ok(first_page(registry.search_all(q, SEARCH_PAGE_SIZE)?))
-        }
-        BrowseQuery::Search(q) => radio_browser()?.search(q, SEARCH_PAGE_SIZE, offset),
+        // Every station, most played first
+        BrowseQuery::Top => directory.search("", SEARCH_PAGE_SIZE, offset),
+        BrowseQuery::Search(q) => directory.search(q, SEARCH_PAGE_SIZE, offset),
         BrowseQuery::Category { category, query } => {
-            radio_browser()?.search_category(category, query, SEARCH_PAGE_SIZE, offset)
+            directory.search_category(category, query, SEARCH_PAGE_SIZE, offset)
         }
     }
+}
+
+/// The directory the station browser lists, made once: it remembers where
+/// each list's next page starts
+fn browse_directory() -> radiotrope_app::error::Result<Arc<RadiotropeProvider>> {
+    static DIRECTORY: std::sync::OnceLock<Arc<RadiotropeProvider>> = std::sync::OnceLock::new();
+    if let Some(directory) = DIRECTORY.get() {
+        return Ok(directory.clone());
+    }
+    let directory = Arc::new(RadiotropeProvider::new()?);
+    Ok(DIRECTORY.get_or_init(|| directory).clone())
+}
+
+/// Count a play of a station browser result in the directory, which
+/// orders its lists by plays. Nobody waits on it, and a failure costs
+/// only the count.
+fn report_browse_play(item: &BrowseStation) {
+    if item.provider_id.is_empty() {
+        return;
+    }
+    let station = Station::new(item.name.as_str(), item.url.as_str()).with_provider(
+        radiotrope_app::providers::radiotrope::PROVIDER_ID,
+        Some(item.provider_id.to_string()),
+    );
+    let _ = std::thread::Builder::new()
+        .name("report-play".into())
+        .spawn(move || {
+            let _ = browse_directory().and_then(|d| d.report_click(&station));
+        });
 }
 
 /// A station browser list put aside while the other mode is shown
@@ -3815,7 +3821,7 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         url: s.url.as_str().into(),
         logo_url: s.logo_url.as_deref().unwrap_or("").into(),
         country: s.country.as_deref().unwrap_or("").into(),
-        // radio-browser reports "UNKNOWN" when it has no codec; show no badge
+        // radio-browser said "UNKNOWN" when it had no codec; show no badge
         codec: s
             .codec
             .as_deref()

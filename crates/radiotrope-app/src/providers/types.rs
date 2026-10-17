@@ -51,15 +51,9 @@ pub struct StationFilter {
 /// How [`StationFilter`] results are ordered
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum SearchOrder {
-    /// Most played first
+    /// Most played first, or the best match first when a name is given
     #[default]
     Popular,
-    /// Most voted first
-    Votes,
-    /// Rising fastest first
-    Trending,
-    /// Highest bitrate first
-    Bitrate,
     /// A to Z
     Name,
 }
@@ -181,7 +175,7 @@ mod tests {
     #[test]
     fn a_filter_matches_every_field_it_sets() {
         let mut station = Station::new("Jazz FM", "http://jazz.test");
-        // As radio-browser names it
+        // As radio-browser named it (favorites saved before the Radiotrope directory)
         station.country =
             Some("The United Kingdom Of Great Britain And Northern Ireland, London".into());
         station.language = Some("english".into());

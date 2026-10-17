@@ -12,10 +12,10 @@ use super::types::{Category, SearchResults, StationFilter};
 /// Implementations provide search, browse, and lookup capabilities
 /// for a specific station directory service.
 pub trait StationProvider: Send + Sync {
-    /// Display name for the provider (e.g., "Radio Browser")
+    /// Display name for the provider (e.g., "Radiotrope")
     fn name(&self) -> &'static str;
 
-    /// Machine-readable identifier (e.g., "radio-browser")
+    /// Machine-readable identifier (e.g., "radiotrope")
     ///
     /// Stored in `Station.provider` to track origin.
     fn id(&self) -> &'static str;

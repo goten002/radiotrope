@@ -9,6 +9,7 @@ An AI agent-enabled internet radio player built with Rust and [Slint](https://sl
 
 ## Features
 
+- **Station search** - the Radiotrope station directory (api.radiotrope.app): typo-tolerant search by name, country, genre and language
 - **MCP server** - AI agents (Claude, etc.) can play stations, control volume, and query status through natural language
 - **10-band equalizer** - 14 presets, per-band gain control, preamp
 - **Recording** - record the playing station to MP3 (192 kbps), Opus (128 kbps) or WAV in `Music/Radiotrope` or a folder you choose, with or without the equalizer
@@ -65,7 +66,7 @@ The server speaks plain http, meant for your own network. With Authentication se
 | `set_volume` | Set volume 0-100 |
 | `set_muted` | Mute or unmute |
 | `get_status` | Playback state, station, song, volume, stream format, recording, the timer, the Scheduler entry playing and the next one, the last error and which agent changed the player last |
-| `search_stations` | Search radio-browser.info by name, genre, country, language, codec and minimum bitrate; with nothing given, the most popular stations |
+| `search_stations` | Search the Radiotrope station directory by name, genre, country, language, codec and minimum bitrate; with nothing given, the most popular stations |
 | `list_categories` | List the directory's genres, countries or languages |
 | `list_favorites` | List all saved favorite stations with IDs |
 | `add_favorite` | Add a station to favorites (with optional logo URL and country) |

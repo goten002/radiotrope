@@ -19,7 +19,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 - "AAC+" label for HE-AAC stations.
 - Wave and Dot Matrix visualizer modes, visualizers coloured from the station logo, and a View menu switch to turn the visualizer off.
 - System Theme in the View menu: the app follows the light or dark setting of Windows or the Linux desktop (GNOME, KDE and others, X11 or Wayland) and switches live when it changes. New installs start on it; a saved Dark or Light choice is kept.
-- Station browser: logos in the list, clear errors with retry, and switching to another radio-browser server when one fails.
+- Station browser: logos in the list and clear errors with retry.
 - A soft fog behind dark or light transparent logos that would otherwise vanish on the tile.
 - Keyboard use and screen reader names for the controls, and touch support for the bubbles.
 - Windows: an exe icon and version info, no console window in release, and a log file.
@@ -27,6 +27,7 @@ Everything below is on the `test/all-upgrades` branch and not yet on `main`.
 - `radiotrope-probe` names itself to stations as `RadiotropeProbe/<version>`, and a program using it as a library can set its own User-Agent with `set_user_agent`.
 
 ### Changed
+- Station search uses Radiotrope's own directory at api.radiotrope.app instead of radio-browser.info: typo-tolerant name search, countries, genres and languages, 256 px logos, and plays counted for its popular list. The Browse, phone Search and agent search all use it. Votes, trending and bitrate orders are gone (the phone's are treated as Most played); codec and bitrate filters for agents are checked on each page. Favorites saved from radio-browser keep playing as before.
 - Licence: GPL-3.0-or-later (was MIT).
 - Favorites, settings and the agent token are saved atomically with a backup, and one bad favorite no longer loses the whole file.
 - Two players open at once see each other's favorite changes.
