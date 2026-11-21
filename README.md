@@ -16,7 +16,7 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 - **Wakes you, sends you to sleep**: Scheduler for plays, recordings and stops, plus a sleep timer
 - **AI agents**: 19 MCP tools, shared by every agent on your computer or your network
 - **Phone remote**: pair the Radiotrope Remote app with a QR code
-- **Also**: a terminal player, a station checker for monitoring, and a Raspberry Pi kiosk image
+- **Also**: a terminal player, a station checker for monitoring, and an experimental Raspberry Pi kiosk image
 
 ## Contents
 
@@ -26,7 +26,7 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 - [Phone remote](#phone-remote)
 - [Terminal player](#terminal-player)
 - [Station checker](#station-checker)
-- [Raspberry Pi appliance](#raspberry-pi-appliance)
+- [Raspberry Pi appliance (experimental)](#raspberry-pi-appliance-experimental)
 - [Supported streams and formats](#supported-streams-and-formats)
 - [Project layout](#project-layout)
 - [Development](#development)
@@ -264,7 +264,11 @@ With several stations the worst one counts, which suits cron, systemd timers,
 Task Scheduler and Nagios-style monitors. On Linux it needs the ALSA runtime
 library (`libasound2`) even though it plays nothing.
 
-## Raspberry Pi appliance
+## Raspberry Pi appliance (experimental)
+
+> [!NOTE]
+> The Raspberry Pi image is experimental: it is built and tested on one
+> hardware setup only, and things may change or break between versions.
 
 The `yocto/` folder builds a minimal Linux image that runs Radiotrope as a
 touch-screen kiosk on a Raspberry Pi 3B+ with a 5" DSI display and an I2S

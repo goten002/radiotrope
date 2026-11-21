@@ -2,6 +2,10 @@
 
 Builds a minimal embedded Linux image for running Radiotrope as a kiosk appliance on Raspberry Pi 3B+.
 
+> [!NOTE]
+> This image is experimental: it is built and tested on the hardware below
+> only, and things may change or break between versions.
+
 ## Target Hardware
 
 - **Raspberry Pi 3B+** — quad-core Cortex-A53, 1GB RAM
