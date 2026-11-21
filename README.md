@@ -3,24 +3,143 @@
 [![CI](https://github.com/goten002/radiotrope/actions/workflows/ci.yml/badge.svg)](https://github.com/goten002/radiotrope/actions/workflows/ci.yml)
 [![License: GPL v3+](https://img.shields.io/badge/license-GPLv3%2B-blue.svg)](LICENSE)
 
-An AI agent-enabled internet radio player built with Rust and [Slint](https://slint.dev). Control playback from your AI assistant via the [Model Context Protocol (MCP)](https://modelcontextprotocol.io), or use the desktop GUI and terminal interfaces directly.
+An internet radio player for the desktop, written in Rust with [Slint](https://slint.dev).
+Play it yourself, from your phone, or let your AI assistant drive it over the
+[Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 
-![radiotrope](assets/radiotrope_app.png)
+![Radiotrope desktop app](assets/radiotrope_app.png)
 
-## Features
+- **Find stations**: typo-tolerant search by name, country, genre and language in the Radiotrope station directory, or play any stream address
+- **Plays almost anything**: MP3, AAC, HE-AAC, Vorbis, Opus and FLAC over Icecast/SHOUTcast, HLS and plain HTTP, with song titles from ICY and ID3
+- **Sounds right**: 10-band equalizer with 14 presets, volume leveler, hiss, hum and rumble filters
+- **Records**: MP3, Opus or WAV, by hand or on a schedule
+- **Wakes you, sends you to sleep**: Scheduler for plays, recordings and stops, plus a sleep timer
+- **AI agents**: 19 MCP tools, shared by every agent on your computer or your network
+- **Phone remote**: pair the Radiotrope Remote app with a QR code
+- **Also**: a terminal player, a station checker for monitoring, and a Raspberry Pi kiosk image
 
-- **Station search** - the Radiotrope station directory (api.radiotrope.app): typo-tolerant search by name, country, genre and language
-- **MCP server** - AI agents (Claude, etc.) can play stations, control volume, and query status through natural language
-- **10-band equalizer** - 14 presets, per-band gain control, preamp
-- **Recording** - record the playing station to MP3 (192 kbps), Opus (128 kbps) or WAV in `Music/Radiotrope` or a folder you choose, with or without the equalizer
-- **Desktop GUI** - built with Slint, dark/light themes, user-selectable accent color, real-time spectrum visualization, stream statistics
-- **Terminal player** - lightweight TUI with ratatui for headless/SSH use
-- **Resilient streaming** - automatic reconnection with exponential backoff, stall detection, health monitoring
-- **Wide format support** - MP3, AAC, HE-AAC, Vorbis, Opus, FLAC over ICY, HLS, and HTTP
+## Contents
 
-## MCP Integration
+- [Install](#install)
+- [Using the desktop app](#using-the-desktop-app)
+- [AI agents (MCP)](#ai-agents-mcp)
+- [Phone remote](#phone-remote)
+- [Terminal player](#terminal-player)
+- [Station checker](#station-checker)
+- [Raspberry Pi appliance](#raspberry-pi-appliance)
+- [Supported streams and formats](#supported-streams-and-formats)
+- [Project layout](#project-layout)
+- [Development](#development)
+- [License](#license)
 
-Radiotrope exposes an MCP server that lets AI agents control the player. Add it to your MCP client configuration:
+## Install
+
+There are no prebuilt packages yet; build from source with Rust 1.92 or newer
+([rustup](https://rustup.rs)).
+
+### Linux
+
+Install the build dependencies (ALSA for audio, fontconfig for the GUI, CMake
+and a C++ compiler for the bundled libopus and fdk-aac):
+
+```bash
+# Debian / Ubuntu
+sudo apt install libasound2-dev libfontconfig1-dev cmake g++ pkg-config
+# Arch / Manjaro
+sudo pacman -S alsa-lib fontconfig cmake gcc pkgconf
+# Fedora
+sudo dnf install alsa-lib-devel fontconfig-devel cmake gcc-c++ pkgconf-pkg-config
+```
+
+Then build:
+
+```bash
+git clone https://github.com/goten002/radiotrope.git
+cd radiotrope
+cargo build --release
+```
+
+This gives three programs in `target/release/`:
+
+| Program | What it is |
+|---------|------------|
+| `radiotrope` | The desktop app, and the MCP server for agents |
+| `radiotrope-cli` | The terminal player |
+| `radiotrope-probe` | The station checker |
+
+To have the dock or taskbar show the app's icon, install the desktop file
+under the name `radiotrope.desktop` (it matches the window's app id) and the
+icons:
+
+```bash
+sudo install -Dm644 packaging/linux/radiotrope.desktop /usr/share/applications/radiotrope.desktop
+for s in 16 32 48 64 128 256; do
+  sudo install -Dm644 assets/icons/icon-$s.png /usr/share/icons/hicolor/${s}x${s}/apps/radiotrope.png
+done
+```
+
+### Windows
+
+1. Install Rust with [rustup](https://rustup.rs) (the default MSVC toolchain).
+2. Install the Visual Studio 2022 Build Tools with the **Desktop development with C++** workload.
+3. Install [CMake](https://cmake.org/download/) and make sure it is on `PATH`.
+4. Optional: install Git, so **Help > About** shows the commit the build came from.
+
+```powershell
+git clone https://github.com/goten002/radiotrope.git
+cd radiotrope
+cargo build --release
+```
+
+The programs are in `target\release\` with an `.exe` ending. The release app
+opens without a console window. Started from a terminal it prints its log
+there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`.
+
+## Using the desktop app
+
+Run `radiotrope`. A second start brings the open window forward instead of
+opening another player.
+
+| To... | Go to |
+|-------|-------|
+| Search the station directory | **Stations > Search Stations** or **By Country** |
+| Play a stream by its address (stream, PLS, M3U or HLS) | **Open > Network Stream** |
+| Save, reorder and edit favorites | the star on the playing station; drag rows by their logo; right-click a row |
+| Move favorites between computers or phones | **Stations > Export / Import Favorites** (an import can be undone) |
+| Shape the sound | **Tools > Equalizer** and **Tools > Filters** (volume leveler, hiss reducer, hum and rumble filters, smooth switching) |
+| Record the station playing | **Tools > Start Recording**; **Tools > Recordings > Settings** for format, bitrate and folder |
+| Start, record or stop at set times | **Tools > Scheduler** (once or weekly, with fade-in and an alarm fallback) |
+| Stop after a while | **Tools > Sleep Timer** |
+| See stream and decoder details | **Tools > Statistics**, or **View > Show Station Stats** on the favorites |
+| Change the look | **View**: Dark, Light or System theme, accent color, visualizer (spectrum, mirror, bars, VU, wave, dot matrix) |
+| Keep it in the system tray | **View > System Tray** (show icon, close or minimize to tray, start hidden) |
+
+Scheduled entries and the sleep timer only work while the app is running; they
+do not wake the computer. Recordings go to `Music/Radiotrope` unless you pick
+another folder.
+
+On GNOME, the tray icon needs the AppIndicator extension.
+
+### Where things are saved
+
+Favorites, listening stats, settings, schedules and pairings are JSON files in
+the config folder: `~/.config/radiotrope/` on Linux and
+`%APPDATA%\radiotrope\` on Windows. They are written atomically with a backup,
+and two open players see each other's favorite changes.
+
+Logging goes through the standard `log` crate: set `RUST_LOG`, for example
+`RUST_LOG=radiotrope=debug`, to see more.
+
+## AI agents (MCP)
+
+Every agent talks to the one player running on your computer, so you hear the
+same music whichever agent asks. Closing an agent leaves the music playing.
+
+### Set it up
+
+The quickest way is **Tools > Connections > Agents (MCP)**: pick your agent (Claude Code,
+Claude Desktop, Codex CLI, Gemini CLI, VS Code or Cursor) and copy the line or
+JSON it shows. By hand, the configuration is:
 
 ```json
 {
@@ -33,237 +152,162 @@ Radiotrope exposes an MCP server that lets AI agents control the player. Add it 
 }
 ```
 
-Every agent shares the one player running on your computer. `radiotrope --mcp` connects the agent to it, and starts the player (with its window) if it isn't running yet. Closing an agent leaves the music playing; closing the player's window ends every agent's session. Starting `radiotrope` a second time brings the running window forward instead of opening another. For a separate player of its own, give an agent `--mcp --standalone`.
+| Command | What it does |
+|---------|--------------|
+| `radiotrope --mcp` | Connects the agent to the running player, starting it first if needed |
+| `radiotrope --mcp --standalone` | Gives the agent a separate player of its own |
 
-**Tools > Agents (MCP)** has a ready line that adds Radiotrope to your agent, with a Copy button. Pick the agent at the top: Claude Code, Claude Desktop, Codex CLI, Gemini CLI, VS Code or Cursor (the last two and Claude Desktop get the JSON for their settings file). While agents use the player, a small robot chip at the right of the menu bar shows how many; hover it to see which, from where, and whether each is connected. A network agent counts as connected while it keeps its connection to the player open; one without an open connection shows when it last called ("4 min ago") and drops off after 10 minutes without a request.
+Then ask things like *"play BBC Radio 1"*, *"find jazz stations from France"*,
+*"record this for an hour"* or *"wake me at 7 with my first favorite"*. A robot
+chip in the menu bar shows how many agents are using the player; hover it for
+details.
+
+### Tools
+
+| Area | Tools |
+|------|-------|
+| Playback | `play_url`, `play_station`, `play_favorite`, `stop`, `set_volume`, `set_muted`, `get_status` |
+| Stations | `search_stations`, `list_categories` |
+| Favorites | `list_favorites`, `add_favorite`, `remove_favorite` |
+| Recording | `start_recording`, `stop_recording` |
+| Timer and Scheduler | `set_sleep_timer`, `list_schedule`, `add_schedule_entry`, `remove_schedule_entry`, `set_schedule_entry_enabled` |
+
+The server is built on [rmcp](https://github.com/modelcontextprotocol/rust-sdk),
+the official Rust SDK, and speaks every MCP version from 2024-11-05 to
+2026-07-28. Data comes back as structured JSON with output schemas, and every
+tool carries hints (read-only, destructive, open-world) that clients use when
+asking for confirmation.
 
 ### Agents on other computers
 
-Radiotrope can also take agents over the network (MCP Streamable HTTP). It is off until you turn it on in **Tools > Agents (MCP)**, where you also find:
+Network access (MCP Streamable HTTP) is off until you turn it on in
+**Tools > Connections > Agents (MCP)**. There you choose:
 
-- **Listen on** and **Port**: This computer only (`127.0.0.1`) and port 8765 by default. To let other computers in, pick a network interface from the list (for example `eth0` or `Wi-Fi` with its address), or All networks. The list leaves out networks that only containers and virtual machines use (Docker, WSL, VirtualBox and the like) and self-assigned 169.254 addresses; VPNs such as Tailscale stay. A picked interface keeps working when the router gives it a new address: the player checks every 20 seconds, and also starts listening by itself once a network that was down comes up.
-- **Authentication**: **None** (the default) lets in anyone who can reach the address. **Token** makes every request carry the token as `Authorization: Bearer <token>`; the token then shows beside the choice. It is made the first time Token is picked with network agents on and kept in `mcp-token` in the config folder (on Windows, in the local app data folder), readable by you only. **New token** replaces it; agents with the old one stop working. With None on anything but This computer only, the dialog warns that anyone on that network can control the player.
-- **A ready line for the picked agent** with a Copy button, for example for Claude Code:
+- **Listen on**: this computer only (`127.0.0.1`, the default), one network
+  interface, or all networks. Port 8765 by default. A chosen interface keeps
+  working when its address changes.
+- **Authentication**: None, or a **Token** that every request must send as
+  `Authorization: Bearer <token>`. The dialog shows a ready line for the agent
+  you picked, for example:
 
   ```bash
-  claude mcp add --transport http radiotrope http://192.168.1.20:8765/mcp --header "Authorization: Bearer <token>"
+  claude mcp add --transport http radiotrope http://192.168.1.20:8765/mcp \
+    --header "Authorization: Bearer <token>"
   ```
 
-  With Authentication set to None, the line has no header. Codex CLI takes the token from the `RADIOTROPE_TOKEN` environment variable instead. Claude Desktop only takes agents on this computer.
+> [!IMPORTANT]
+> The server speaks plain HTTP, meant for your own network. With
+> Authentication set to None, anyone who can reach the address controls the
+> player, and even a token travels unencrypted. To reach the player from
+> outside your home, use a private network such as
+> [Tailscale](https://tailscale.com) and pick its interface under Listen on.
+> Requests from web pages (with an `Origin` header) are always refused.
 
-Requests from web pages (with an `Origin` header) are refused. While the server listens on this computer only, other host names are refused too (DNS rebinding).
+The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's
+cloud, so they cannot reach a player on your home network. Use Claude Code, or
+`radiotrope --mcp` on the same computer.
 
-The server speaks plain http, meant for your own network. With Authentication set to None, anyone who can reach the address can use the player; the token keeps other people out, but it travels unencrypted. To reach the radio from anywhere without opening ports, run it over a private network such as [Tailscale](https://tailscale.com): pick the Tailscale interface (100.x.y.z) under Listen on. The traffic is then encrypted end to end. The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's cloud, so they can't reach a radio on your home network; use Claude Code, or `radiotrope --mcp` on the same computer.
+## Phone remote
 
-### Available Tools
+Turn on **Tools > Connections > Remote Control**, press **Pair a Phone**, and
+scan the QR code with the Radiotrope Remote app, or type the code it shows.
+The player announces itself on the local network, so the phone finds it.
 
-| Tool | Description |
-|------|-------------|
-| `play_url` | Play a station by stream URL and wait until it plays or fails |
-| `play_station` | Play a station from search results by its id |
-| `play_favorite` | Play a favorite station by ID |
-| `stop` | Stop playback |
-| `set_volume` | Set volume 0-100 |
-| `set_muted` | Mute or unmute |
-| `get_status` | Playback state, station, song, volume, stream format, recording, the timer, the Scheduler entry playing and the next one, the last error and which agent changed the player last |
-| `search_stations` | Search the Radiotrope station directory by name, genre, country, language, codec and minimum bitrate; with nothing given, the most popular stations |
-| `list_categories` | List the directory's genres, countries or languages |
-| `list_favorites` | List all saved favorite stations with IDs |
-| `add_favorite` | Add a station to favorites (with optional logo URL and country) |
-| `remove_favorite` | Remove a station from favorites by ID or URL |
-| `start_recording` | Record the station playing, with the player's recording settings |
-| `stop_recording` | Stop and save the recording |
-| `set_sleep_timer` | Stop playback after some minutes, fading out over the last one (0 turns it off) |
-| `list_schedule` | The Scheduler entries (plays, recordings and stops), with when each comes round next |
-| `add_schedule_entry` | Add a play, a recording (record, with an end) or a stop to the Scheduler at a local time, once or on chosen days; plays can turn off the fallback sound |
-| `remove_schedule_entry` | Remove a Scheduler entry |
-| `set_schedule_entry_enabled` | Switch a Scheduler entry on or off |
+A paired phone can search and play stations, manage favorites, listen to the
+station on the phone itself, change the equalizer, filters, sleep timer and
+Scheduler, start recordings, and list, download or delete them.
 
-The server speaks every MCP version from 2024-11-05 to 2026-07-28 (it is built on [rmcp](https://github.com/modelcontextprotocol/rust-sdk), the official Rust SDK). Tools that return data return structured JSON with an output schema, and every tool carries a title and behaviour hints (read-only, destructive, open-world) that clients use when asking for confirmation.
-
-Once configured, you can ask your AI assistant things like *"play BBC Radio 1"*, *"search for jazz stations"*, *"set volume to 50"*, or *"what's currently playing?"*.
-
-## Supported Formats
-
-### Stream Protocols
-
-| Protocol | Description |
-|----------|-------------|
-| ICY | Icecast/Shoutcast with metadata extraction |
-| HLS | MPEG-TS segment demuxing |
-| Direct HTTP | Plain HTTP/HTTPS audio streams |
-| PLS / M3U | Playlist resolution with recursive following |
-
-### Audio Codecs
-
-| Codec | Provider |
-|-------|----------|
-| MP3 | symphonia |
-| AAC-LC | fdk-aac |
-| HE-AAC (SBR) | fdk-aac |
-| OGG Vorbis | symphonia |
-| FLAC | symphonia |
-| WAV/PCM | symphonia |
-| Opus | libopus (bundled) |
-
-### Metadata
-
-| Format | Status | Description |
-|--------|--------|-------------|
-| ICY (Icecast/Shoutcast) | Supported | Artist/title extraction from in-band ICY metadata blocks |
-| ID3v1/ID3v2 | Supported | Tags inside MP3 and AAC streams and HLS segments; used when ICY gives no title |
-
-## Architecture
-
-The project is a Cargo workspace with four crates:
-
-| Crate | Type | Description |
-|-------|------|-------------|
-| `radiotrope` | Library | Streaming engine: stream resolution, audio decoding, buffering, health monitoring |
-| `radiotrope-app` | Binary | Desktop GUI with MCP server, built with [Slint](https://slint.dev) |
-| `radiotrope-cli` | Binary | Terminal player built with [ratatui](https://github.com/ratatui/ratatui) |
-| `radiotrope-probe` | Binary + library | Station checker: on air or not, format, level, song info; text or JSON for schedulers |
-
-The engine is designed to be embedded in any Rust application. Both the GUI and CLI are consumers of the library API.
-
-### Engine Highlights
-
-| Feature | Description |
-|---------|-------------|
-| Stream resolution | Automatic protocol detection, playlist unwinding, format probing |
-| Decoupled buffering | Producer-consumer architecture isolating network I/O from audio decoding |
-| Health monitoring | Stall detection, no-audio timeout, stream failure reporting |
-| Error recovery | Automatic reconnection with exponential backoff (ICY and HLS) |
-| Spectrum analyzer | Real-time FFT-based frequency analysis |
-| 10-band equalizer | Biquad IIR filters (LowShelf/PeakingEQ/HighShelf), 14 presets, live parameter updates |
-| Event system | Channel-based events for playback state, metadata, and health changes |
-
-## Installation
-
-### From source
-
-```bash
-git clone https://github.com/goten002/radiotrope.git
-cd radiotrope
-cargo build --release
-```
-
-Binaries will be at:
-- `target/release/radiotrope` - Desktop GUI + MCP server
-- `target/release/radiotrope-cli` - Terminal player
-- `target/release/radiotrope-probe` - Station checker
-
-### Dependencies (Linux)
-
-Audio output needs ALSA, the GUI needs fontconfig, and the bundled libopus
-and fdk-aac are built with CMake and a C/C++ compiler:
-
-```bash
-# Debian/Ubuntu
-sudo apt install libasound2-dev libfontconfig1-dev cmake g++ pkg-config
-
-# Arch/Manjaro
-sudo pacman -S alsa-lib fontconfig cmake gcc pkgconf
-
-# Fedora
-sudo dnf install alsa-lib-devel fontconfig-devel cmake gcc-c++ pkgconf-pkg-config
-```
-
-### Building on Windows
-
-1. Install Rust with [rustup](https://rustup.rs) (the default MSVC toolchain, Rust 1.92 or newer).
-2. Install the Visual Studio 2022 Build Tools with the "Desktop development with C++" workload (the MSVC compiler and the Windows SDK).
-3. Install [CMake](https://cmake.org/download/) and make sure it is on `PATH` (the bundled libopus is built with it).
-4. Optionally install Git, so About shows the commit the build came from.
-
-Then, in a Developer PowerShell or a normal terminal:
-
-```powershell
-git clone https://github.com/goten002/radiotrope.git
-cd radiotrope
-cargo build --release
-```
-
-The binaries are `target\release\radiotrope.exe`, `target\release\radiotrope-cli.exe` and `target\release\radiotrope-probe.exe`.
-The release GUI opens without a console window. Started from a terminal it prints `--help` and its log there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`.
-
-### Desktop integration (Linux)
-
-The window's app id (Wayland) and WM_CLASS (X11) are `radiotrope`, so the
-desktop file must be installed as `radiotrope.desktop` for the dock/taskbar
-to show the icon:
-
-```bash
-install -Dm644 packaging/linux/radiotrope.desktop /usr/share/applications/radiotrope.desktop
-for s in 16 32 48 64 128 256; do
-  install -Dm644 assets/icons/icon-$s.png /usr/share/icons/hicolor/${s}x${s}/apps/radiotrope.png
-done
-```
-
-## Usage
-
-### Desktop GUI
-
-```bash
-radiotrope
-```
-
-### MCP mode (for AI agents)
-
-```bash
-radiotrope --mcp               # connect to the running player, start it if needed
-radiotrope --mcp --standalone  # a separate player for this agent alone
-```
-
-### Terminal player
+## Terminal player
 
 ```bash
 radiotrope-cli            # your favorites from the app
 radiotrope-cli 3          # play favorite number 3
 radiotrope-cli capital    # play the first favorite whose name contains "capital"
-radiotrope-cli <URL>      # play a stream URL
+radiotrope-cli <URL>      # play a stream address
 ```
 
-It shows the station, its format and the song, a spectrum, and your favorites
-from the app. Keys: `↑`/`↓` pick, `Enter` play, `Space` stop or play again,
-`n`/`p` next and previous favorite, `+`/`-` volume, `m` mute, `r` start or stop
-a recording (with the folder, format and bitrate set in the app), `q` quit.
+| Key | Action |
+|-----|--------|
+| `↑` `↓` (or `k` `j`) | Pick a favorite |
+| `Enter` | Play it |
+| `Space` | Stop, or play again |
+| `n` `p` | Next and previous favorite |
+| `+` `-` | Volume |
+| `m` | Mute |
+| `r` | Start or stop recording (with the app's recording settings) |
+| `q` | Quit |
+
 It reads the app's favorites and settings and never changes them.
 
-![radiotrope cli](assets/radiotrope_cli.png)
+![Radiotrope terminal player](assets/radiotrope_cli.png)
 
-### Station checker
+## Station checker
 
-`radiotrope-probe` connects to a station the way the player does, listens to
-its audio for a few seconds (no sound card needed), and reports whether it is
-on air, its format, its level and what is playing:
+`radiotrope-probe` connects to a station the way the player does, listens for
+a few seconds (no sound card needed) and reports whether it is on air, its
+format, its sound level and what is playing.
 
 ```bash
-radiotrope-probe http://example.com/radio.pls          # readable report
-radiotrope-probe --json <URL>...                       # JSON for scripts
-radiotrope-probe --ndjson --input stations.txt         # one JSON line per station
-radiotrope-probe --quiet --listen 5 <URL>...           # one line per station
+radiotrope-probe http://example.com/radio.pls       # readable report
+radiotrope-probe --json <URL>...                    # JSON for scripts
+radiotrope-probe --ndjson --input stations.txt      # one JSON line per station
+radiotrope-probe --quiet --listen 5 <URL>...        # one line per station
 ```
 
-The exit status suits cron, systemd timers, Task Scheduler and Nagios-style
-monitors: 0 up, 1 degraded (silent, slower than real time, stalling, many
-decode errors, ended), 2 down (with an error code such as `dns`, `connect`,
-`http_status`, `web_page`, `timeout`), 3 the check could not run. With several
-stations the worst one counts. On Linux the binary needs the ALSA runtime
+Run `radiotrope-probe --help` for the timeout, parallel jobs and silence level.
+
+| Exit status | Meaning |
+|-------------|---------|
+| 0 | Up |
+| 1 | Degraded: silent, slower than real time, stalling, many decode errors, or ended |
+| 2 | Down, with an error code such as `dns`, `connect`, `http_status`, `web_page` or `timeout` |
+| 3 | The check could not run |
+
+With several stations the worst one counts, which suits cron, systemd timers,
+Task Scheduler and Nagios-style monitors. On Linux it needs the ALSA runtime
 library (`libasound2`) even though it plays nothing.
 
-## Roadmap
+## Raspberry Pi appliance
 
-- [x] Station search and browsing (Radio Browser API)
-- [x] Favorites management
-- [x] Equalizer and audio effects (DSP chain)
-- [x] User-selectable accent color (10 palette presets + custom colour picker)
-- [x] Persistent settings (window state, theme, EQ, preferences)
-- [ ] Export/import favorites
-- [ ] System tray integration
-- [x] ID3 tag metadata extraction (MP3 and AAC streams, HLS)
-- [x] Audio recording to file (MP3, Opus, WAV)
+The `yocto/` folder builds a minimal Linux image that runs Radiotrope as a
+touch-screen kiosk on a Raspberry Pi 3B+ with a 5" DSI display and an I2S
+amplifier, including WiFi settings and an on-screen keyboard. See
+[yocto/README.md](yocto/README.md) for the hardware and build steps.
 
+## Supported streams and formats
+
+| | Supported |
+|-|-----------|
+| **Protocols** | Icecast/SHOUTcast (ICY), HLS (MPEG-TS, packed audio), plain HTTP/HTTPS, PLS and M3U playlists |
+| **Codecs** | MP3, AAC-LC, HE-AAC (shown as AAC+), Vorbis, Opus, FLAC, WAV/PCM |
+| **Song titles** | ICY metadata; ID3v1/ID3v2 tags in MP3, AAC and HLS streams when ICY gives none; legacy text encodings |
+
+Streams reconnect with backoff after network drops, and a stalled or silent
+stream is detected and reported.
+
+## Project layout
+
+A Cargo workspace with four crates:
+
+| Crate | Kind | Description |
+|-------|------|-------------|
+| [`radiotrope`](crates/radiotrope) | Library | The streaming engine: resolving, decoding, buffering, DSP, recording, health monitoring. Usable in any Rust program |
+| [`radiotrope-app`](crates/radiotrope-app) | Binary | The desktop app, MCP server and phone remote server |
+| [`radiotrope-cli`](crates/radiotrope-cli) | Binary | The terminal player, built with [ratatui](https://github.com/ratatui/ratatui) |
+| [`radiotrope-probe`](crates/radiotrope-probe) | Binary and library | The station checker |
+
+## Development
+
+```bash
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --check
+```
+
+CI runs these on Linux and Windows for every pull request to `main`, and also
+checks the Raspberry Pi build
+(`cargo check -p radiotrope-app --no-default-features --features embedded`).
+Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
