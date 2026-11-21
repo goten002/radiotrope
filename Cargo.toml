@@ -10,7 +10,7 @@ exclude = ["build", "yocto"]
 
 [workspace.dependencies]
 # Audio
-rodio = { version = "0.22", default-features = false, features = ["playback"] }
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
 symphonia = { version = "0.6", default-features = false, features = [
     "ogg", "pcm", "mp3", "aac", "isomp4", "flac", "vorbis", "wav", "id3v1", "id3v2"
 ] }
