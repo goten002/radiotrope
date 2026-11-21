@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - Lower idle cost: fewer redraws and timer wake-ups while playing and stopped.
 - Messages about the audio device and reconnects go through the standard `log` crate instead of straight to stderr. The player, the CLI and the probe print warnings and notices as before; set `RUST_LOG` (for example `RUST_LOG=radiotrope=debug`) to see more or fewer. The probe shows only warnings by default, and programs using the engine as a library choose for themselves.
 
+### Removed
+- Stations > Undo Favorites Import. The import dialog already shows what an import will do before it changes anything. Phones can still undo an import they sent.
+
 ### Fixed
 - Many streaming fixes: HLS segment timeouts, plain M3U versus HLS, SHOUTcast redirects, stale HLS playlists, and reconnects after network drops.
 - Logos landing on the wrong station, logo cache wipes after the id change, and caps on logo downloads.

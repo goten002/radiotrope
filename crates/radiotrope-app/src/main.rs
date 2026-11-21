@@ -1152,7 +1152,7 @@ fn main() {
         });
     }
 
-    // Favorites to and from a file, and undoing a list taken in
+    // Favorites to and from a file
     {
         // The list read from the file picked, until Add Missing or Replace
         let pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>> =
@@ -1189,9 +1189,9 @@ fn main() {
                 drop(f);
                 match done {
                     Ok(outcome) => {
-                        let (text, detail) = import_done_text(mode, &outcome, list.len());
+                        let text = import_done_text(mode, &outcome, list.len());
                         ui.set_import_message(text.into());
-                        ui.set_import_message_detail(detail.into());
+                        ui.set_import_message_detail(Default::default());
                         ui.set_import_message_error(false);
                     }
                     Err(e) => {
@@ -1199,27 +1199,6 @@ fn main() {
                         ui.set_import_message_detail(Default::default());
                         ui.set_import_message_error(true);
                     }
-                }
-                refresh_favorites(&ui, &favs, &logo_svc);
-            });
-        }
-        {
-            let ui_weak = ui.as_weak();
-            let favs = favorites.clone();
-            let logo_svc = logo_service.clone();
-            ui.on_undo_favorites_import(move || {
-                let Some(ui) = ui_weak.upgrade() else { return };
-                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
-                let undone = f.undo_import().and_then(|_| f.save());
-                drop(f);
-                if let Err(e) = undone {
-                    show_favorites_file_message(
-                        &ui,
-                        "Undo Favorites Import",
-                        &e.to_string(),
-                        "",
-                        true,
-                    );
                 }
                 refresh_favorites(&ui, &favs, &logo_svc);
             });
@@ -4328,13 +4307,10 @@ fn import_preview_text(mode: ImportMode, o: &ImportOutcome) -> String {
     text + "."
 }
 
-/// What Import Favorites did, and a line on undoing it
-fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usize) -> (String, String) {
+/// What Import Favorites did
+fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usize) -> String {
     if !o.changes() {
-        return (
-            "Nothing changed: your favorites already match.".into(),
-            String::new(),
-        );
+        return "Nothing changed: your favorites already match.".into();
     }
     match mode {
         ImportMode::Add => {
@@ -4345,15 +4321,9 @@ fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usize) -> (Stri
             if o.over_cap > 0 {
                 text += &format!(" {} didn't fit.", o.over_cap);
             }
-            (
-                text,
-                "Stations > Undo Favorites Import takes them out.".into(),
-            )
+            text
         }
-        ImportMode::Replace => (
-            format!("Your favorites are now the file's {listed} stations."),
-            "Stations > Undo Favorites Import puts yours back.".into(),
-        ),
+        ImportMode::Replace => format!("Your favorites are now the file's {listed} stations."),
     }
 }
 
@@ -4492,7 +4462,6 @@ fn refresh_favorites(
         let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
         mark_browse_favorites(ui, &favs);
         note_favorites_shown(&favs);
-        ui.set_can_undo_import(favs.can_undo_import());
         favs.sorted(FavoriteSort::Manual)
             .into_iter()
             .map(|f| (f.clone(), favorite_to_slint(f, favs.stats(&f.id()))))
