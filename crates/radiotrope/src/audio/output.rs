@@ -21,9 +21,11 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use rodio::cpal::traits::HostTrait;
-use rodio::cpal::{BufferSize, DeviceId, StreamError};
+use rodio::cpal::{BufferSize, DeviceId};
 use rodio::mixer::{self, Mixer};
-use rodio::{DeviceSinkBuilder, DeviceSinkError, DeviceTrait, MixerDeviceSink};
+use rodio::{
+    CpalError, CpalErrorKind, DeviceSinkBuilder, DeviceSinkError, DeviceTrait, MixerDeviceSink,
+};
 
 /// How often a [`SilentOutput`] takes its next buffer of audio
 const SILENT_PULL_INTERVAL: Duration = Duration::from_millis(10);
@@ -129,8 +131,8 @@ impl Drop for SilentOutput {
 }
 
 /// Errors that aren't a loss on their own, within one second, that mean the
-/// device is gone: ALSA reports an unplugged device as a stream of
-/// backend errors rather than `DeviceNotAvailable`
+/// device is gone: a backend can report a device that went away as a stream
+/// of errors it has no better kind for rather than `DeviceNotAvailable`
 const BACKEND_ERROR_BURST: u32 = 20;
 
 /// Tells from an output stream's errors whether its device is gone, and
@@ -181,9 +183,9 @@ impl OutputErrors {
     }
 
     /// Called by cpal on the audio thread
-    pub(crate) fn report(&mut self, err: StreamError) {
+    pub(crate) fn report(&mut self, err: CpalError) {
         let gone = self.is_gone(&err, Instant::now());
-        if !matches!(err, StreamError::BufferUnderrun)
+        if err.kind() != CpalErrorKind::Xrun
             && self
                 .last_logged
                 .is_none_or(|t| t.elapsed() >= Duration::from_secs(1))
@@ -202,11 +204,17 @@ impl OutputErrors {
         }
     }
 
-    fn is_gone(&mut self, err: &StreamError, now: Instant) -> bool {
-        match err {
-            StreamError::DeviceNotAvailable | StreamError::StreamInvalidated => true,
-            StreamError::BufferUnderrun => false,
-            StreamError::BackendSpecific { .. } => {
+    fn is_gone(&mut self, err: &CpalError, now: Instant) -> bool {
+        match err.kind() {
+            CpalErrorKind::DeviceNotAvailable | CpalErrorKind::StreamInvalidated => true,
+            // A glitch; or the stream carries on, rerouted to the new default
+            // (macOS) or without real-time priority
+            CpalErrorKind::Xrun | CpalErrorKind::DeviceChanged | CpalErrorKind::RealtimeDenied => {
+                false
+            }
+            // What cpal 0.17 reported as `BackendSpecific`, now split into
+            // kinds (`BackendError`, `DeviceBusy`, `Other`, ...)
+            _ => {
                 if now.duration_since(self.burst_start) > Duration::from_secs(1) {
                     self.burst_start = now;
                     self.burst = 0;
@@ -242,7 +250,7 @@ fn worth_trying(devices: Devices, device: &DeviceId, last: Option<&DeviceId>) ->
     match devices {
         Devices::Any => true,
         Devices::Reopen if cfg!(target_os = "linux") => {
-            SOUND_SERVER_PCMS.contains(&device.1.as_str()) || last == Some(device)
+            SOUND_SERVER_PCMS.contains(&device.id()) || last == Some(device)
         }
         Devices::Reopen => true,
         Devices::DefaultOnly => false,
@@ -456,25 +464,45 @@ mod tests {
         )
     }
 
-    fn backend(msg: &str) -> StreamError {
-        StreamError::BackendSpecific {
-            err: rodio::cpal::BackendSpecificError {
-                description: msg.to_string(),
-            },
-        }
+    fn backend(msg: &str) -> CpalError {
+        CpalError::with_message(CpalErrorKind::BackendError, msg.to_string())
+    }
+
+    fn error(kind: CpalErrorKind) -> CpalError {
+        CpalError::new(kind)
     }
 
     #[test]
     fn an_unplugged_device_is_lost() {
         let (mut errors, lost, _) = new_errors();
-        errors.report(StreamError::BufferUnderrun);
+        errors.report(error(CpalErrorKind::Xrun));
         errors.report(backend("glitch"));
         assert!(
             !lost.load(Ordering::SeqCst),
             "one-off errors are not a loss"
         );
-        errors.report(StreamError::DeviceNotAvailable);
+        errors.report(error(CpalErrorKind::DeviceNotAvailable));
         assert!(lost.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn errors_the_stream_plays_on_after_are_never_a_loss() {
+        let (mut errors, _, _) = new_errors();
+        let start = Instant::now();
+        for kind in [
+            CpalErrorKind::Xrun,
+            CpalErrorKind::DeviceChanged,
+            CpalErrorKind::RealtimeDenied,
+        ] {
+            let gone = (0..BACKEND_ERROR_BURST * 2).any(|_| errors.is_gone(&error(kind), start));
+            assert!(!gone, "{kind:?} counted as a loss");
+        }
+        // Kinds cpal 0.17 reported as backend-specific still count towards
+        // a burst
+        let gone: Vec<bool> = (0..BACKEND_ERROR_BURST)
+            .map(|_| errors.is_gone(&error(CpalErrorKind::DeviceBusy), start))
+            .collect();
+        assert!(gone[gone.len() - 1]);
     }
 
     #[test]
@@ -504,7 +532,7 @@ mod tests {
         let errors = OutputErrors::new(lost.clone(), generation.clone(), 2).for_stream();
         let mut reporter = errors.clone();
         // The new stream reports its device gone before the open returns
-        reporter.report(StreamError::DeviceNotAvailable);
+        reporter.report(error(CpalErrorKind::DeviceNotAvailable));
         assert_eq!(generation.load(Ordering::SeqCst), 1);
         errors.opened();
         assert_eq!(generation.load(Ordering::SeqCst), 2);
@@ -516,7 +544,7 @@ mod tests {
         let mut old = OutputErrors::new(lost.clone(), generation.clone(), 2).for_stream();
         errors.opened();
         assert!(!lost.load(Ordering::SeqCst));
-        old.report(StreamError::DeviceNotAvailable);
+        old.report(error(CpalErrorKind::DeviceNotAvailable));
         assert!(!lost.load(Ordering::SeqCst));
     }
 
@@ -682,7 +710,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_reopens_only_shared_devices_or_the_one_it_was_on() {
-        let alsa = |pcm: &str| DeviceId(rodio::cpal::HostId::Alsa, pcm.to_string());
+        let alsa = |pcm: &str| DeviceId::new(rodio::cpal::HostId::Alsa, pcm);
         let hw = alsa("hw:CARD=0,DEV=0");
         let usb = alsa("front:CARD=USB,DEV=0");
         for pcm in SOUND_SERVER_PCMS {
@@ -701,7 +729,7 @@ mod tests {
     fn a_replaced_device_can_no_longer_raise_the_flag() {
         let (mut errors, lost, generation) = new_errors();
         generation.store(2, Ordering::SeqCst);
-        errors.report(StreamError::DeviceNotAvailable);
+        errors.report(error(CpalErrorKind::DeviceNotAvailable));
         assert!(!lost.load(Ordering::SeqCst));
     }
 }
