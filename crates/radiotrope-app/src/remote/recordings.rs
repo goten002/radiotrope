@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
@@ -134,8 +134,8 @@ impl Recordings {
 
     /// The id phones use for the file `name`
     fn id(&self, name: &str) -> String {
-        let mut mac =
-            <Hmac<Sha256> as Mac>::new_from_slice(&self.key).expect("HMAC takes any key length");
+        let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key)
+            .expect("HMAC takes any key length");
         mac.update(name.as_bytes());
         hex(&mac.finalize().into_bytes()[..16])
     }
