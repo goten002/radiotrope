@@ -18,7 +18,7 @@ symphonia-adapter-libopus = { version = "0.3", features = ["bundled"] }
 symphonia-adapter-fdk-aac = "0.2"
 rustfft = "6.4"
 biquad = "0.6"
-mp3lame-encoder = "0.2"
+mp3lame-encoder = "0.3"
 opusic-sys = { version = "0.7", default-features = false }
 rubato = "5"
 
