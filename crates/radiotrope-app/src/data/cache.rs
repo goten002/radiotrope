@@ -21,13 +21,17 @@ use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use image::imageops::FilterType;
 use image::{DynamicImage, ImageFormat, ImageReader};
 
 /// Supported image extensions (in order of preference for lookup)
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "svg", "ico"];
+
+/// Extension of the note saying which URL a logo came from (see
+/// [`ImageCache::set_source`])
+const SOURCE_EXTENSION: &str = "src";
 
 /// Largest width or height of a cached logo, in pixels.
 ///
@@ -266,6 +270,38 @@ impl ImageCache {
         if let Some(path) = self.find_cached_path(id) {
             let _ = fs::remove_file(path);
         }
+        let _ = fs::remove_file(self.source_path(id));
+    }
+
+    // =========================================================================
+    // Where a cached logo came from
+    // =========================================================================
+
+    /// The note beside `<id>.png` saying which URL it was downloaded from.
+    /// Its modified time is when that download happened.
+    fn source_path(&self, id: &str) -> PathBuf {
+        self.cache_dir.join(format!("{id}.{SOURCE_EXTENSION}"))
+    }
+
+    /// Note that `id`'s logo was just downloaded from `url`
+    pub fn set_source(&self, id: &str, url: &str) {
+        let _ = fs::write(self.source_path(id), url);
+    }
+
+    /// The URL `id`'s logo was downloaded from, and when. `None` for a
+    /// logo cached before this was noted, or with no logo cached.
+    pub fn source(&self, id: &str) -> Option<(String, SystemTime)> {
+        let path = self.source_path(id);
+        let modified = fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+        let url = fs::read_to_string(&path).ok()?;
+        Some((url, modified))
+    }
+
+    /// When `id`'s cached logo file was last written, to tell a decoded
+    /// copy kept in memory from a newer one on disk
+    pub fn modified(&self, id: &str) -> Option<SystemTime> {
+        let path = self.find_cached_path(id)?;
+        fs::metadata(path).and_then(|m| m.modified()).ok()
     }
 
     // =========================================================================
@@ -322,6 +358,16 @@ impl ImageCache {
                 continue;
             }
 
+            // Source notes go with their logo, and aren't counted
+            if path.extension().is_some_and(|e| e == SOURCE_EXTENSION) {
+                if let Some(filename) = path.file_stem().and_then(|s| s.to_str()) {
+                    if !valid_ids.contains(filename) && is_older_than(&entry, min_age) {
+                        let _ = fs::remove_file(&path);
+                    }
+                }
+                continue;
+            }
+
             // Only process image files
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if IMAGE_EXTENSIONS.contains(&ext.to_lowercase().as_str()) {
@@ -354,7 +400,11 @@ impl ImageCache {
             return false;
         };
         let target = self.cache_dir.join(to).with_extension(ext);
-        fs::rename(&path, target).is_ok()
+        if fs::rename(&path, target).is_err() {
+            return false;
+        }
+        let _ = fs::rename(self.source_path(from), self.source_path(to));
+        true
     }
 
     /// Get all cached image IDs
@@ -1574,6 +1624,48 @@ mod tests {
         assert!(cache.get("empty").is_none());
         assert!(cache.convert("empty").is_none());
         assert_eq!(cache.state("empty"), CacheState::Absent);
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn a_logos_source_goes_with_it() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        assert!(cache.put_thumbnail("a", &png(8)).is_some());
+        assert!(cache.source("a").is_none(), "nothing noted yet");
+
+        cache.set_source("a", "http://x/logo.png?v=1");
+        let (url, _) = cache.source("a").unwrap();
+        assert_eq!(url, "http://x/logo.png?v=1");
+
+        // Moved with its logo
+        assert!(cache.rename_id("a", "b"));
+        assert!(cache.source("a").is_none());
+        assert_eq!(cache.source("b").unwrap().0, "http://x/logo.png?v=1");
+
+        // Deleted with its logo
+        cache.delete("b");
+        assert!(cache.source("b").is_none());
+        assert!(cache.list_ids().is_empty());
+
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn an_orphans_source_is_cleaned_up_with_it() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        for id in ["kept", "orphan"] {
+            assert!(cache.put_thumbnail(id, &png(8)).is_some());
+            cache.set_source(id, "http://x/logo.png");
+        }
+        let valid: HashSet<String> = ["kept".to_string()].into();
+        // Only the logo is counted
+        assert_eq!(cache.cleanup_orphaned(&valid, Duration::ZERO), 1);
+        assert!(cache.source("kept").is_some());
+        assert!(cache.source("orphan").is_none());
+        assert!(!dir.join("orphan.src").exists());
 
         cleanup_dir(&dir);
     }

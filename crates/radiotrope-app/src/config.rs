@@ -67,6 +67,11 @@ pub mod logos {
     /// refused, or that isn't a usable image, isn't tried again this
     /// session.
     pub const RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+    /// A favorite's cached logo is downloaded again once it is this old,
+    /// in case the station changed it at the same address (a new address
+    /// is downloaded at once). The old one stays if the download fails.
+    pub const REFRESH_AFTER: Duration = Duration::from_secs(30 * 24 * 3600);
 }
 
 /// UI-related configuration. Sizes, colours and delays the UI draws with

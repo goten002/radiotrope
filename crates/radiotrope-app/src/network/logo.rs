@@ -3,7 +3,7 @@
 //! Provides a unified interface for retrieving station logos,
 //! handling both cache lookups and network fetching.
 
-use crate::config::logos::MAX_BYTES;
+use crate::config::logos::{MAX_BYTES, REFRESH_AFTER};
 use crate::data::cache::{decode_logo, CacheState, ImageCache};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
@@ -13,7 +13,7 @@ use std::collections::HashSet;
 use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Service for fetching and caching station logos
 ///
@@ -115,7 +115,12 @@ impl LogoService {
         // Cache it, as the thumbnail every later look gets (a cache that
         // can't be written still leaves us the thumbnail)
         match self.cache.store_thumbnail(&key, &data) {
-            Some(thumb) => Some(thumb.png),
+            Some(thumb) => {
+                if thumb.saved.is_ok() {
+                    self.cache.set_source(&key, url);
+                }
+                Some(thumb.png)
+            }
             None => {
                 self.unusable(url);
                 None
@@ -138,22 +143,25 @@ impl LogoService {
         self.cache.has_logo(item)
     }
 
-    /// Ensure a logo is cached, downloading if necessary
+    /// Ensure a logo is cached and up to date (see
+    /// [`is_stale`](Self::is_stale)), downloading if necessary
     ///
     /// Returns:
     /// - `Ok(true)` if the logo was downloaded (or converted) and cached,
     ///   here or by another fetch this one waited for
     /// - `Ok(false)` if the logo was already cached
-    /// - `Err` if there's no logo URL or the download failed
+    /// - `Err` if there's no logo URL or the download failed. An out of
+    ///   date logo stays cached then.
     pub fn ensure_cached<T: HasLogo>(&self, item: &T) -> Result<bool> {
         let key = item.logo_cache_key();
-        if self.cache.state(&key) == CacheState::Ready {
+        if self.cache.state(&key) == CacheState::Ready && !self.is_stale(item) {
             return Ok(false);
         }
         let _claim = self.claim(&key);
         match self.cache.state(&key) {
-            // Another fetch brought it meanwhile
-            CacheState::Ready => return Ok(true),
+            // Another fetch brought it, or refreshed it, meanwhile
+            CacheState::Ready if !self.is_stale(item) => return Ok(true),
+            CacheState::Ready => {}
             // Cached by an older build: shrunk here, off the UI thread
             CacheState::NeedsConversion => {
                 if let Some(thumb) = self.cache.convert(&key) {
@@ -178,6 +186,7 @@ impl LogoService {
         // A cache that can't be written would have it downloaded on every
         // look
         thumb.saved.inspect_err(|e| self.failed.record(url, e))?;
+        self.cache.set_source(&key, url);
 
         Ok(true)
     }
@@ -213,14 +222,45 @@ impl LogoService {
     /// Whether `item` has a logo to fetch: it has a URL, isn't cached, and
     /// hasn't failed lately. A logo cached by an older build, still to be
     /// converted, counts too: [`prefetch`](Self::prefetch) converts it.
+    /// A cached logo that is out of date (see [`is_stale`](Self::is_stale))
+    /// counts too: [`prefetch`](Self::prefetch) downloads it again.
     pub fn is_missing<T: HasLogo>(&self, item: &T) -> bool {
         match self.cache.state(&item.logo_cache_key()) {
-            CacheState::Ready => false,
+            CacheState::Ready => self.is_stale(item),
             CacheState::NeedsConversion => true,
             CacheState::Absent => item
                 .logo_url()
                 .is_some_and(|url| !url.is_empty() && !self.failed.has_failed(url)),
         }
+    }
+
+    /// Whether `item`'s cached logo should be downloaded again: it came
+    /// from another URL than the item's logo URL now, it is older than
+    /// [`REFRESH_AFTER`], or it was cached before its URL was noted. Not
+    /// while its URL failed lately (the cached one is kept meanwhile).
+    pub fn is_stale<T: HasLogo>(&self, item: &T) -> bool {
+        self.is_stale_at(item, SystemTime::now())
+    }
+
+    fn is_stale_at<T: HasLogo>(&self, item: &T, now: SystemTime) -> bool {
+        let Some(url) = item.logo_url().filter(|url| !url.is_empty()) else {
+            return false;
+        };
+        if self.failed.has_failed(url) {
+            return false;
+        }
+        match self.cache.source(&item.logo_cache_key()) {
+            Some((from, at)) => {
+                from != url || now.duration_since(at).is_ok_and(|age| age >= REFRESH_AFTER)
+            }
+            None => true,
+        }
+    }
+
+    /// When `item`'s cached logo file was last written (see
+    /// [`ImageCache::modified`])
+    pub fn cached_modified<T: HasLogo>(&self, item: &T) -> Option<SystemTime> {
+        self.cache.modified(&item.logo_cache_key())
     }
 
     /// [`prefetch`](Self::prefetch) `items` on a thread of its own, then
@@ -661,6 +701,9 @@ mod tests {
         // Pre-cache
         let data = vec![1, 2, 3, 4];
         service.cache().put_logo(&station, &data).unwrap();
+        service
+            .cache()
+            .set_source(&station.logo_cache_key(), "http://test.com/logo.png");
 
         // ensure_cached should return Ok(false) - already cached
         let result = service.ensure_cached(&station);
@@ -870,5 +913,49 @@ mod tests {
 
         assert!(service.is_cached(&favorite));
         assert_eq!(service.get_cached(&favorite).unwrap(), data);
+    }
+
+    #[test]
+    fn a_logo_is_stale_when_its_url_changes_or_it_ages() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let station = Station::new("Test", "http://test.com/stream")
+            .with_logo("http://test.com/logo.png?v=1");
+        let key = station.logo_cache_key();
+        let cache = service.cache();
+        assert!(cache.put_thumbnail(&key, &png(8, 8)).is_some());
+
+        // Cached before its URL was noted: downloaded again once
+        assert!(service.is_stale(&station));
+
+        cache.set_source(&key, "http://test.com/logo.png?v=1");
+        assert!(!service.is_stale(&station));
+        let now = SystemTime::now();
+        assert!(!service.is_stale_at(&station, now + REFRESH_AFTER / 2));
+        assert!(service.is_stale_at(&station, now + REFRESH_AFTER + Duration::from_secs(60)));
+
+        // The station's logo moved to a new address
+        let moved = station.clone().with_logo("http://test.com/logo.png?v=2");
+        assert!(service.is_stale(&moved));
+        assert!(service.is_missing(&moved), "prefetch picks it up");
+
+        // No logo URL: nothing to download
+        let bare = Station::new("Test", "http://test.com/stream");
+        assert!(!service.is_stale(&bare));
+    }
+
+    #[test]
+    fn a_logo_whose_url_failed_is_not_stale_meanwhile() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/new.png");
+        let key = station.logo_cache_key();
+        assert!(service.cache().put_thumbnail(&key, &png(8, 8)).is_some());
+        service.cache().set_source(&key, "http://test.com/old.png");
+        assert!(service.is_stale(&station));
+
+        // The new one couldn't be fetched: the old one is kept for now
+        service.unusable("http://test.com/new.png");
+        assert!(!service.is_stale(&station));
+        assert!(service.get_cached(&station).is_some());
     }
 }

@@ -952,12 +952,26 @@ fn main() {
     // The caches are trimmed now (the logos the favorites lack are being
     // fetched already, and the restored station is in the shared state)
     // and then once a day
+    // Favorite logos downloaded again by the daily check show at once
+    let logos_refreshed = {
+        let ui_weak = ui.as_weak();
+        let favorites = favorites.clone();
+        let logo_service = logo_service.clone();
+        move || {
+            let favorites = favorites.clone();
+            let logo_service = logo_service.clone();
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                refresh_favorites(&ui, &favorites, &logo_service);
+            });
+        }
+    };
     prune_caches_daily(
         favorites.clone(),
         favorites_loaded,
         shared_state.clone(),
         logo_service.clone(),
         browse_logos.clone(),
+        logos_refreshed,
     );
     let row_logos = row_logos::RowLogos::start(
         ui.as_weak(),
@@ -2053,6 +2067,7 @@ fn prune_caches_daily(
     shared_state: Arc<Mutex<AppSnapshot>>,
     logo_service: Arc<LogoService>,
     browse_logos: Arc<BrowseLogos>,
+    logos_refreshed: impl Fn() + Send + 'static,
 ) {
     use radiotrope_app::config::caches::{ORPHAN_LOGO_MIN_AGE, PRUNE_EVERY};
     let prune = move || {
@@ -2063,13 +2078,24 @@ fn prune_caches_daily(
         if !favorites_loaded {
             return;
         }
-        let mut valid: std::collections::HashSet<String> = favorites
+        let favs: Vec<radiotrope_app::data::types::Favorite> = favorites
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .all()
             .into_iter()
-            .map(|f| f.id())
+            .cloned()
             .collect();
+        // Download again the favorite logos that are out of date (a
+        // month old, or from another URL); a failed one keeps the old
+        let stale: Vec<_> = favs
+            .iter()
+            .filter(|f| logo_service.is_stale(*f))
+            .cloned()
+            .collect();
+        if logo_service.prefetch(&stale) > 0 {
+            logos_refreshed();
+        }
+        let mut valid: std::collections::HashSet<String> = favs.iter().map(|f| f.id()).collect();
         // The station in the player keeps its logo even when it isn't a
         // favorite
         let playing = shared_state
@@ -4105,11 +4131,15 @@ fn flag_image(country_code: Option<&str>, country: Option<&str>) -> slint::Image
     })
 }
 
+/// A favorite's decoded logo, and when the file it was decoded from was
+/// written: a newer file (a logo downloaded again) is decoded again
+type DecodedLogo = (slint::Image, Option<std::time::SystemTime>);
+
 // In-memory cache of decoded slint::Image keyed by favorite ID.
 // All callers run on the Slint event-loop thread, so thread_local is safe and avoids
 // threading slint::Image (which is !Send) through closures.
 thread_local! {
-    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, DecodedLogo>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
@@ -4508,18 +4538,31 @@ fn refresh_favorites(
             .iter()
             .map(|f| {
                 let key = f.id();
-                if let Some(logo) = cache.get(&key) {
-                    return logo.clone();
-                }
-                if let Some((rgba, width, height)) = logo_service.get_cached_rgba(f) {
-                    let logo = logo_image(rgba, width, height);
-                    cache.insert(key, logo.clone());
-                    logo
-                } else {
-                    if logo_service.is_missing(f) {
-                        missing.push(f.clone());
+                let written = logo_service.cached_modified(f);
+                let logo = match cache.get(&key) {
+                    Some((logo, at)) if *at == written => Some(logo.clone()),
+                    _ => logo_service
+                        .get_cached_rgba(f)
+                        .map(|(rgba, width, height)| {
+                            let logo = logo_image(rgba, width, height);
+                            cache.insert(key, (logo.clone(), written));
+                            logo
+                        }),
+                };
+                match logo {
+                    // An out of date logo shows until its new one arrives
+                    Some(logo) => {
+                        if logo_service.is_stale(f) {
+                            missing.push(f.clone());
+                        }
+                        logo
                     }
-                    Default::default()
+                    None => {
+                        if logo_service.is_missing(f) {
+                            missing.push(f.clone());
+                        }
+                        Default::default()
+                    }
                 }
             })
             .collect()
