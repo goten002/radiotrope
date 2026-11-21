@@ -259,7 +259,7 @@ where
             }
         }
         let channel = self.channel_index;
-        self.channel_index = (channel + 1) % self.channels.get();
+        self.channel_index = (channel + 1) % self.channels;
 
         // Only accumulate analysis data while active. Samples still pass through
         // so rodio can drain the source, but we skip the expensive FFT and

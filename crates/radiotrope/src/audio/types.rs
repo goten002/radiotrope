@@ -492,13 +492,13 @@ mod tests {
     #[test]
     fn audio_analysis_individual_spectrum_bands() {
         let mut analysis = AudioAnalysis::default();
-        for i in 0..SPECTRUM_BANDS {
-            analysis.spectrum[i] = i as f32 / SPECTRUM_BANDS as f32;
+        for (i, band) in analysis.spectrum.iter_mut().enumerate() {
+            *band = i as f32 / SPECTRUM_BANDS as f32;
         }
-        for i in 0..SPECTRUM_BANDS {
+        for (i, band) in analysis.spectrum.iter().enumerate() {
             let expected = i as f32 / SPECTRUM_BANDS as f32;
             assert!(
-                (analysis.spectrum[i] - expected).abs() < f32::EPSILON,
+                (band - expected).abs() < f32::EPSILON,
                 "Band {} mismatch",
                 i
             );
