@@ -198,10 +198,7 @@ Network access (MCP Streamable HTTP) is off until you turn it on in
 > [!IMPORTANT]
 > The server speaks plain HTTP, meant for your own network. With
 > Authentication set to None, anyone who can reach the address controls the
-> player, and even a token travels unencrypted. To reach the player from
-> outside your home, use a private network such as
-> [Tailscale](https://tailscale.com) and pick its interface under Listen on.
-> Requests from web pages (with an `Origin` header) are always refused.
+> player, and even a token travels unencrypted. Requests from web pages (with an `Origin` header) are always refused.
 
 The claude.ai and Claude Desktop "custom connectors" connect from Anthropic's
 cloud, so they cannot reach a player on your home network. Use Claude Code, or
