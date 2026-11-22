@@ -676,6 +676,18 @@ const SHOTS: &[Shot] = &[
         "status-error",
         "Network access on, but the server can't listen.",
     ),
+    Shot::new(
+        "agents-new-token",
+        "agents",
+        "new-token",
+        "New Token pressed once: the second press replaces the token.",
+    ),
+    Shot::new(
+        "agents-token-error",
+        "agents",
+        "token-error",
+        "A new token couldn't be made.",
+    ),
     Shot::new("remote-off", "remote", "off", "Remote Control disabled."),
     Shot::new(
         "remote-on",
@@ -754,6 +766,12 @@ const SHOTS: &[Shot] = &[
         "accent",
         "",
         "Accent Color presets and custom color controls.",
+    ),
+    Shot::new(
+        "accent-color-low-contrast",
+        "accent",
+        "low-contrast",
+        "A custom white accent: the low-contrast note under the picker.",
     ),
     Shot::new(
         "keyboard-shortcuts",
@@ -955,7 +973,12 @@ fn after_open(ui: &App, shot: &Shot) {
     if shot.screen == "bubble" {
         ui.set_snapshot_bubble(shot.state.into());
     }
+    if shot.screen == "accent" && shot.state == "low-contrast" {
+        ui.set_accent_color(Color::from_rgb_u8(0xff, 0xff, 0xff));
+    }
     if shot.state == "presets" {
+        // A preset in use, so the list shows its tick
+        ui.set_eq_preset_name("Rock".into());
         ui.set_snapshot_preset_menu(true);
     }
     ui.set_snapshot_overlay(shot.state.into());
@@ -1175,6 +1198,7 @@ fn seed_connections(ui: &App) {
         "All networks",
     ]));
     ui.set_agents_listen(1);
+    ui.set_agents_listen_local(false);
     let port = radiotrope_app::config::mcp::DEFAULT_ADDRESS
         .rsplit_once(':')
         .map_or("8765", |(_, port)| port);
@@ -1406,6 +1430,17 @@ fn configure(ui: &App, shot: &Shot) {
                 "local-info" => show_agent_lines(ui, AgentApp::ClaudeDesktop),
                 "network-info" => show_agent_lines(ui, AgentApp::Codex),
                 _ => {}
+            }
+            ui.set_agents_connected(
+                if shot.state == "on" {
+                    "Connected: Claude Code"
+                } else {
+                    "No agent connected yet"
+                }
+                .into(),
+            );
+            if shot.state == "token-error" {
+                ui.set_agents_token_error("Can't make a new token: permission denied".into());
             }
             if !matches!(shot.state, "off" | "agent" | "local-info") {
                 ui.set_agents_network(true);

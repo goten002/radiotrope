@@ -3,7 +3,8 @@
 //!
 //! Every change is saved at once and the server set up again to match.
 //! A timer shows what the server changed on its own: phones pairing,
-//! paired or seen.
+//! paired or seen. It runs only while the server is on or the dialog is
+//! open: with both off, nothing can change.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -11,7 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use slint::{ComponentHandle, VecModel};
 
-use radiotrope_app::config::remote::PORT;
+use radiotrope_app::config::remote::{PORT, WEBRTC_PORTS};
 use radiotrope_app::data::remote::Device;
 use radiotrope_app::data::settings::Settings;
 
@@ -21,10 +22,15 @@ use crate::{App, RemoteDevice};
 /// How often the window looks for a pairing phone or a change in the list
 const REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// Where to get the Radiotrope Remote app. The app is not released yet:
+/// set this when it is, and the dialog shows a "Get the app" link.
+const REMOTE_APP_URL: Option<&str> = None;
+
 /// Wire the dialog and start the server if it is on. The timer must be
 /// kept for as long as the window is.
-pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slint::Timer {
-    let timer = slint::Timer::default();
+pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> Rc<slint::Timer> {
+    let timer = Rc::new(slint::Timer::default());
+    ui.set_remote_app_url(REMOTE_APP_URL.unwrap_or_default().into());
     ui.set_remote_on(settings.remote_control);
     ui.set_remote_share_recordings(settings.remote_share_recordings);
     ui.set_remote_name(settings.remote_name.clone().unwrap_or_default().into());
@@ -34,9 +40,22 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
     show_devices(ui, &remote.devices());
     remote.apply_later(settings, show_status_later(ui));
 
+    // Wakes the stopped timer: the server was turned on, or the dialog opened
+    let wake = {
+        let timer = Rc::downgrade(&timer);
+        move || {
+            if let Some(timer) = timer.upgrade() {
+                if !timer.running() {
+                    timer.restart();
+                }
+            }
+        }
+    };
+
     let apply = {
         let ui_weak = ui.as_weak();
         let remote = remote.clone();
+        let wake = wake.clone();
         move |change: &dyn Fn(&mut Settings)| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let settings = crate::window_settings::update_settings(change);
@@ -44,6 +63,9 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
             ui.set_remote_share_recordings(settings.remote_share_recordings);
             ui.set_remote_name(settings.remote_name.clone().unwrap_or_default().into());
             remote.apply_later(&settings, show_status_later(&ui));
+            if settings.remote_control {
+                wake();
+            }
         }
     };
     let apply = Rc::new(apply);
@@ -77,6 +99,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
         let remote = remote.clone();
         let ui_weak = ui.as_weak();
         move || {
+            wake();
             remote.unlock_pairing();
             if let Some(ui) = ui_weak.upgrade() {
                 show_devices(&ui, &remote.devices());
@@ -122,6 +145,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
     });
 
     let ui_weak = ui.as_weak();
+    let this_timer = Rc::downgrade(&timer);
     // What the QR code drawn holds, so it is drawn again only when that
     // changes (a new code, or the computer's addresses)
     let mut drawn_qr = String::new();
@@ -137,6 +161,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
                     crate::bring_to_front(ui.window());
                 }
                 ui.set_pairing_device(shown.device_name.into());
+                ui.set_pairing_code_spoken(spoken_code(&shown.code).into());
                 ui.set_pairing_code(shown.code.into());
                 ui.set_pairing_seconds(left.as_secs_f32().ceil() as i32);
                 ui.set_pairing_shown(true);
@@ -167,8 +192,32 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
             ui.set_remote_devices(Rc::new(VecModel::from(rows.clone())).into());
             shown_devices = rows;
         }
+        // Off and out of sight: sleep until the server or the dialog wakes it
+        let pairing = ui.get_pairing_shown() || ui.get_pairing_qr_shown();
+        if !keeps_running(ui.get_remote_on(), ui.get_dialog_open(), pairing) {
+            if let Some(timer) = this_timer.upgrade() {
+                timer.stop();
+            }
+        }
     });
     timer
+}
+
+/// The refresh timer is needed while the server runs, while a dialog (this
+/// one, or the pairing overlay over it) may show what it finds, or while a
+/// pairing overlay is still up
+fn keeps_running(server_on: bool, dialog_open: bool, pairing_shown: bool) -> bool {
+    server_on || dialog_open || pairing_shown
+}
+
+/// The pairing code digit by digit, so a screen reader says "4 8 3 6 2 1"
+/// rather than "four hundred eighty-three thousand…"
+fn spoken_code(code: &str) -> String {
+    code.chars()
+        .filter(|c| !c.is_whitespace())
+        .map(String::from)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Empty modules around the code; the tile adds a little more
@@ -255,14 +304,27 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-/// The address bubble: what to do when a phone doesn't find the player
+/// The address bubble: what to do when a phone doesn't find the player,
+/// and the ports it needs (control, then listening on the phone)
 pub(crate) fn address_note() -> String {
-    let firewall = if cfg!(windows) {
-        " If Windows asks, allow private networks.".to_string()
+    let windows = if cfg!(windows) {
+        " If Windows asks, allow private networks."
     } else {
-        format!(" Your firewall must allow port {PORT}.")
+        ""
     };
-    format!("If a phone doesn't find the player, type this address in the app.{firewall}")
+    format!(
+        "If a phone doesn't find the player, type this address in the app.{windows} {}",
+        firewall_hint()
+    )
+}
+
+/// "Your firewall must allow TCP 8766 and UDP 8767–8770."
+fn firewall_hint() -> String {
+    format!(
+        "Your firewall must allow TCP {PORT} and UDP {}\u{2013}{}.",
+        WEBRTC_PORTS.start(),
+        WEBRTC_PORTS.end()
+    )
 }
 
 #[cfg(test)]
@@ -278,6 +340,35 @@ mod tests {
         assert_eq!(seen_label(0, 3 * 86_400), "Used 3 days ago");
         // A clock set back
         assert_eq!(seen_label(500, 100), "Used just now");
+    }
+
+    #[test]
+    fn pairing_code_is_spoken_digit_by_digit() {
+        assert_eq!(spoken_code("483 621"), "4 8 3 6 2 1");
+        assert_eq!(spoken_code("482913"), "4 8 2 9 1 3");
+    }
+
+    #[test]
+    fn address_note_names_every_port() {
+        let note = address_note();
+        assert!(note.contains("TCP 8766"), "{note}");
+        assert!(note.contains("UDP 8767\u{2013}8770"), "{note}");
+    }
+
+    #[test]
+    fn refresh_sleeps_only_when_nothing_can_change() {
+        assert!(!keeps_running(false, false, false));
+        assert!(keeps_running(true, false, false));
+        assert!(keeps_running(false, true, false));
+        assert!(keeps_running(false, false, true));
+    }
+
+    #[test]
+    fn app_link_waits_for_a_release() {
+        // Hidden until the app is out; then it must be a web link
+        if let Some(url) = REMOTE_APP_URL {
+            assert!(url.starts_with("https://"), "{url}");
+        }
     }
 
     #[test]
