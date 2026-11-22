@@ -20,10 +20,7 @@ use crate::context::{lock, AppContext};
 use crate::favorites_list::{
     invalidate_logo_image, note_favorites_shown, refresh_favorites, update_favorite_stats,
 };
-use crate::player_ui::is_current_station;
-use crate::player_ui::play_station_with_metadata;
-use crate::player_ui::set_header_logo;
-use crate::player_ui::SHOWN_STATION;
+use crate::player_ui::{fetch_station_logo, play_station_with_metadata, SHOWN_STATION};
 use crate::{shortcuts, App, FavoriteStation};
 
 /// Wire what the favorites list and the header's star do: play, step,
@@ -530,28 +527,14 @@ pub(crate) fn show_edited_favorite(
 
     // Fetch the new logo on a background thread, then refresh UI
     if !logo_url.is_empty() {
-        let logo_svc = logo_svc.clone();
         let favs = favs.clone();
-        let ui_weak = ui.as_weak();
-        let tmp_station = Station::new(name, url).with_logo(logo_url);
-        let url = url.to_string();
+        let logos = logo_svc.clone();
         // Shown in the player only if it is the station there now
         let shown = SHOWN_STATION.with(|s| s.borrow().seq());
-        std::thread::Builder::new()
-            .name("edit-logo-fetch".into())
-            .spawn(move || {
-                if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
-                    let _ = slint::invoke_from_event_loop(move || {
-                        let Some(ui) = ui_weak.upgrade() else { return };
-                        // Update playback logo if this is the current station
-                        if is_current_station(shown, &url) {
-                            set_header_logo(&ui, rgba, width, height);
-                        }
-                        // Refresh favorites list with the now-cached logo
-                        refresh_favorites(&ui, &favs, &logo_svc);
-                    });
-                }
-            })
-            .ok();
+        let station = Station::new(name, url).with_logo(logo_url);
+        fetch_station_logo(ui, logo_svc, station, shown, move |ui| {
+            // Refresh favorites list with the now-cached logo
+            refresh_favorites(ui, &favs, &logos);
+        });
     }
 }

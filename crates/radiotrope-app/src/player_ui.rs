@@ -60,32 +60,17 @@ pub(crate) fn setup_header(ui: &App, ctx: &AppContext, last_station: Option<&Sta
             let favs = lock(favorites);
             ui.set_is_station_favorited(favs.is_favorite(&station.url));
         }
-        // Try to load cached logo
-        if let Some(ref logo_url) = station.logo_url {
-            if !logo_url.is_empty() {
-                let tmp = Station::new(&station.name, &station.url).with_logo(logo_url);
-                if let Some((rgba, w, h)) = logo_service.get_cached_rgba(&tmp) {
-                    set_header_logo(ui, rgba, w, h);
-                } else {
-                    // Not cached (e.g. removed by an older cleanup): fetch it
-                    let logo_svc = logo_service.clone();
-                    let ui_weak = ui.as_weak();
-                    let station_url = station.url.clone();
-                    std::thread::Builder::new()
-                        .name("last-logo-fetch".into())
-                        .spawn(move || {
-                            if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
-                                let _ = slint::invoke_from_event_loop(move || {
-                                    let Some(ui) = ui_weak.upgrade() else { return };
-                                    if is_current_station(shown, &station_url) {
-                                        set_header_logo(&ui, rgba, w, h);
-                                    }
-                                });
-                            }
-                        })
-                        .ok();
-                }
-            }
+        // Its logo: the cached one, or fetched (e.g. removed by an older
+        // cleanup)
+        if let Some(logo_url) = station.logo_url.as_deref().filter(|l| !l.is_empty()) {
+            show_station_logo(
+                ui,
+                logo_service,
+                &station.name,
+                &station.url,
+                Some(logo_url),
+                shown,
+            );
         }
         if let Some(ref country) = station.country {
             ui.set_station_country(country.as_str().into());
@@ -446,35 +431,14 @@ impl Poll {
         ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
         ui.set_station_country(country.as_str().into());
 
-        // Try cached logo first (works even without logo_url on favorite)
-        let tmp_station = Station::new(ui.get_station_name().as_str(), url);
-        if let Some((rgba, w, h)) = poll_logo_svc.get_cached_rgba(&tmp_station) {
-            set_header_logo(ui, rgba, w, h);
-        } else {
-            // Clear stale logo only when no cached replacement is available
-            ui.set_current_logo(Default::default());
-            // Not cached: fetch it
-            if let Some(logo) = logo_url {
-                let logo_svc = poll_logo_svc.clone();
-                let ui_weak2 = ui.as_weak();
-                let station_name = ui.get_station_name().to_string();
-                let station_url = url.to_string();
-                std::thread::Builder::new()
-                    .name("poll-logo-fetch".into())
-                    .spawn(move || {
-                        let tmp = Station::new(&station_name, &station_url).with_logo(&logo);
-                        if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
-                            let _ = slint::invoke_from_event_loop(move || {
-                                let Some(ui) = ui_weak2.upgrade() else { return };
-                                if is_current_station(shown, &station_url) {
-                                    set_header_logo(&ui, rgba, w, h);
-                                }
-                            });
-                        }
-                    })
-                    .ok();
-            }
-        }
+        show_station_logo(
+            ui,
+            poll_logo_svc,
+            ui.get_station_name().as_str(),
+            url,
+            logo_url.as_deref(),
+            shown,
+        );
     }
 }
 
@@ -557,6 +521,61 @@ pub(crate) fn set_header_logo(ui: &App, rgba: Vec<u8>, width: u32, height: u32) 
         });
     });
     ui.set_current_logo(image);
+}
+
+/// Show the logo of the station at `url` in the header: the cached one at
+/// once; else the header is cleared and the logo at `logo_url`, if any, is
+/// fetched. `shown` is the station's number (see [`show_station`]).
+pub(crate) fn show_station_logo(
+    ui: &App,
+    logos: &Arc<LogoService>,
+    name: &str,
+    url: &str,
+    logo_url: Option<&str>,
+    shown: u64,
+) {
+    // The cache is keyed by the stream URL, so a logo cached earlier shows
+    // even when the station has no logo URL now; otherwise replaying the
+    // same station would lose it
+    let station = Station::new(name, url);
+    if let Some((rgba, width, height)) = logos.get_cached_rgba(&station) {
+        set_header_logo(ui, rgba, width, height);
+        return;
+    }
+    // Clear the stale logo only when no cached replacement is available
+    ui.set_current_logo(Default::default());
+    if let Some(logo_url) = logo_url.filter(|logo| !logo.is_empty()) {
+        fetch_station_logo(ui, logos, station.with_logo(logo_url), shown, |_| {});
+    }
+}
+
+/// Fetch the logo of `station` on a thread of its own. Back on the UI
+/// thread it is shown in the header if station number `shown` is still the
+/// one in the player (another may have been picked while it downloaded),
+/// and then `fetched` runs.
+pub(crate) fn fetch_station_logo(
+    ui: &App,
+    logos: &Arc<LogoService>,
+    station: Station,
+    shown: u64,
+    fetched: impl FnOnce(&App) + Send + 'static,
+) {
+    let ui_weak = ui.as_weak();
+    let logos = logos.clone();
+    std::thread::Builder::new()
+        .name("logo-fetch".into())
+        .spawn(move || {
+            if let Some((rgba, width, height)) = logos.get_rgba(&station) {
+                let _ = slint::invoke_from_event_loop(move || {
+                    let Some(ui) = ui_weak.upgrade() else { return };
+                    if is_current_station(shown, &station.url) {
+                        set_header_logo(&ui, rgba, width, height);
+                    }
+                    fetched(&ui);
+                });
+            }
+        })
+        .ok();
 }
 
 /// Colour the visualizer with the main colours of the station logo
@@ -652,20 +671,16 @@ pub(crate) fn play_station_with_metadata(
     ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
     ui.set_station_country(country.as_deref().unwrap_or("").into());
 
-    // Try cached logo first to avoid placeholder flash. The cache is keyed
-    // by the stream URL, so a logo cached earlier shows even when the
-    // station has no logo URL now (as the poll timer does on a station
-    // change); otherwise replaying the same station would lose it.
-    let cached = logo_service.get_cached_rgba(&Station::new(name.as_deref().unwrap_or(""), &url));
-    let cache_hit = if let Some((rgba, w, h)) = cached {
-        set_header_logo(ui, rgba, w, h);
-        true
-    } else {
-        false
-    };
-    if !cache_hit {
-        ui.set_current_logo(Default::default());
-    }
+    // The cached logo at once, to avoid a placeholder flash; else it is
+    // fetched
+    show_station_logo(
+        ui,
+        logo_service,
+        name.as_deref().unwrap_or(""),
+        &url,
+        logo_url.as_deref(),
+        shown,
+    );
 
     // The controller takes up the Play only after stopping the old
     // station; the poll shows this one as starting until then. Its number
@@ -705,36 +720,6 @@ pub(crate) fn play_station_with_metadata(
         s.station_country = country;
         drop(s);
         save_settings(shared_state, ui);
-    }
-
-    // Fetch logo on background thread (only if not already cached)
-    if !cache_hit {
-        if let Some(ref logo) = logo_url {
-            if !logo.is_empty() {
-                let ui_weak = ui.as_weak();
-                let logo_svc = logo_service.clone();
-                let play_name = name.unwrap_or_default();
-                let play_url = url;
-                let play_logo = logo.clone();
-                std::thread::Builder::new()
-                    .name("logo-fetch".into())
-                    .spawn(move || {
-                        let tmp_station = Station::new(&play_name, &play_url).with_logo(&play_logo);
-                        if let Some((rgba, width, height)) = logo_svc.get_rgba(&tmp_station) {
-                            let _ = slint::invoke_from_event_loop(move || {
-                                let Some(ui) = ui_weak.upgrade() else { return };
-                                // Another station may have been picked while
-                                // this one's logo was downloading
-                                if !is_current_station(shown, &play_url) {
-                                    return;
-                                }
-                                set_header_logo(&ui, rgba, width, height);
-                            });
-                        }
-                    })
-                    .ok();
-            }
-        }
     }
 }
 
