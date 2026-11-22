@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, InfoRow, LinkRow, SectionHeader, ButtonKeys, FocusRing } from "../components.slint";
 
 // Build and environment details, filled in from Rust at startup
@@ -83,11 +83,20 @@ export component AboutDialog inherits Rectangle {
                             single-line: true;
                             selection-background-color: Theme.selection-bg;
                             selection-foreground-color: Theme.selection-fg;
+                            // A Tab stop: read as text that can't be changed
+                            accessible-label: "Version";
+                            accessible-read-only: true;
+                        }
+
+                        if version-text.has-focus: FocusRing {
+                            offset: 1px;
+                            radius: parent.border-radius;
                         }
                     }
                 }
 
-                AccentButton {
+                // Links, not tasks: both quiet buttons
+                SecondaryButton {
                     width: 200px;
                     label: "Source Code";
                     clicked => { root.open-url(AboutInfo.repository); }
@@ -139,7 +148,7 @@ export component AboutDialog inherits Rectangle {
                         }
                     }
                     Text {
-                        text: " · © \{AboutInfo.authors}";
+                        text: " · © 2026 \{AboutInfo.authors}";
                         color: Theme.text-secondary;
                         font-size: Theme.font-xs;
                     }
@@ -196,13 +205,19 @@ export component AboutDialog inherits Rectangle {
                 LinkRow {
                     label: "Icons";
                     links: [{ name: "Font Awesome Free", url: "https://fontawesome.com" }];
-                    note: "(CC BY 4.0)";
+                    note: "(CC BY 4.0) and Radiotrope";
                     open-url(url) => { root.open-url(url); }
                 }
                 LinkRow {
                     label: "Font";
                     links: [{ name: "Inter", url: "https://rsms.me/inter/" }];
                     note: "(SIL Open Font License)";
+                    open-url(url) => { root.open-url(url); }
+                }
+                // Everything above and the rest, with each one's license
+                LinkRow {
+                    label: "Licenses";
+                    links: [{ name: "Third-party licenses", url: AboutInfo.repository + "/blob/main/THIRD-PARTY-LICENSES" }];
                     open-url(url) => { root.open-url(url); }
                 }
 

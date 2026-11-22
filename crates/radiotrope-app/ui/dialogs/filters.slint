@@ -112,6 +112,7 @@ export component FiltersDialog inherits Rectangle {
                 has-switch: false;
 
                 Picker {
+                    label: "Volume Leveler";
                     choices: [
                         { id: "off", label: "Off" },
                         { id: "quiet", label: "Quiet" },
@@ -145,6 +146,7 @@ export component FiltersDialog inherits Rectangle {
                 has-switch: false;
 
                 Picker {
+                    label: "Hiss Reducer";
                     choices: [
                         { id: "off", label: "Off" },
                         { id: "light", label: "Light" },
@@ -174,6 +176,8 @@ export component FiltersDialog inherits Rectangle {
             FilterRow {
                 popup-bounds: shell.popup-bounds;
                 name: "Smooth Switching";
+                // No line under the last row: the card's padding ends it
+                padding-bottom: 0;
                 info: "Fades out when you change or stop a station, instead of cutting off.";
                 checked <=> root.smooth-switching;
                 toggled(on) => { root.smooth-switching-toggled(on); }

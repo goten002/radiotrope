@@ -734,7 +734,8 @@ component InfoTipBubble inherits PopupCard {
 
 // Modal dialog: dimmed backdrop and a rounded card with an accent glow,
 // a title and a close button. Use it as `if show-dialog: DialogShell { ... }`
-// and put the content inside; Esc or a backdrop click raise close-requested.
+// and put the content inside; Esc or a backdrop click raise close-requested,
+// once the dialog has faded out.
 export component DialogShell inherits Rectangle {
     in property <string> title;
     in property <string> subtitle;
@@ -757,7 +758,7 @@ export component DialogShell inherits Rectangle {
     callback primary-requested();
     callback cancel-requested();
     callback destructive-requested();
-    cancel-requested => { root.close-requested(); }
+    cancel-requested => { root.leave(); }
 
     property <int> dialog-id;
     out property <PopupBounds> popup-bounds: {
@@ -775,7 +776,13 @@ export component DialogShell inherits Rectangle {
     in property <bool> auto-focus: true;
     // Show a back arrow at the start of the title row
     in property <bool> show-back: false;
+    // Raised by Esc, the close button, a backdrop click and Cancel, after
+    // the fade-out. The handler normally drops the dialog.
     callback close-requested();
+    // Set while close-requested only leaves an inner page (an editor back
+    // to its list) and the dialog stays: it is then raised at once, with
+    // no fade-out.
+    in property <bool> close-goes-back: false;
     callback back-requested();
     callback capture-key(KeyEvent) -> EventResult;
     capture-key(event) => { return reject; }
@@ -786,8 +793,39 @@ export component DialogShell inherits Rectangle {
         keys.focus();
     }
 
-    // Drives the fade and slide-in when the dialog appears
+    // Drives the fade and slide-in when the dialog appears, and the fade-out
+    // before it goes
     property <bool> shown: false;
+    // Fading out: close-requested follows after Theme.fast. Keys and clicks
+    // are ignored meanwhile.
+    property <bool> closing: false;
+
+    // Every close from inside the shell comes through here. The owner drops
+    // the dialog in close-requested (`if show-dialog`), so the fade-out has
+    // to come first.
+    function leave() {
+        if root.closing {
+            return;
+        }
+        if root.close-goes-back || Theme.fast <= 0ms {
+            root.close-requested();
+            return;
+        }
+        root.closing = true;
+        root.shown = false;
+    }
+
+    Timer {
+        interval: Theme.fast;
+        running: root.closing;
+        triggered => {
+            root.close-requested();
+            // Still here: the owner kept the dialog open, show it again
+            root.shown = true;
+            root.closing = false;
+        }
+    }
+
     init => {
         self.dialog-id = DialogPopupBounds.next-id + 1;
         DialogPopupBounds.next-id = self.dialog-id;
@@ -803,7 +841,7 @@ export component DialogShell inherits Rectangle {
     width: 100%;
     height: 100%;
     opacity: root.shown ? 1 : 0;
-    animate opacity { duration: Theme.normal; }
+    animate opacity { duration: root.closing ? Theme.fast : Theme.normal; }
 
     Rectangle {
         background: Theme.scrim;
@@ -812,7 +850,7 @@ export component DialogShell inherits Rectangle {
     TouchArea {
         clicked => {
             if root.close-on-backdrop {
-                root.close-requested();
+                root.leave();
             }
         }
     }
@@ -826,13 +864,23 @@ export component DialogShell inherits Rectangle {
         // A backdrop click closes the dialog at once, rather than first
         // taking the focus from a text field
         focus-on-click: false;
+        // Slint has no dialog role. The dialog takes the focus on open, so
+        // a screen reader then reads the group's name: the title, and the
+        // subtitle as its description. With the focus in a field instead
+        // (auto-focus off), the group is announced as the field's context.
+        accessible-role: groupbox;
+        accessible-label: root.title;
+        accessible-description: root.subtitle;
         capture-key-pressed(event) => {
+            if root.closing {
+                return accept;
+            }
             DialogPopupBounds.current = root.popup-bounds;
             return root.capture-key(event);
         }
         key-pressed(event) => {
             if event.text == Key.Escape {
-                root.close-requested();
+                root.leave();
                 return accept;
             }
             if body.content-height > body.height {
@@ -892,7 +940,8 @@ export component DialogShell inherits Rectangle {
         }
 
         card := Rectangle {
-            property <length> slide: root.shown ? 0px : 14px;
+            // Slides in on open only; closing is a plain fade
+            property <length> slide: root.shown || root.closing ? 0px : 14px;
             animate slide { duration: Theme.normal; easing: ease-out; }
 
             width: min(root.card-width, root.width - 2 * Theme.viewport-inset);
@@ -947,6 +996,8 @@ export component DialogShell inherits Rectangle {
                             width: 26px;
                             height: 20px;
                             image-fit: contain;
+                            // Decoration: the title names the dialog
+                            accessible-role: none;
                         }
                     }
 
@@ -1011,7 +1062,7 @@ export component DialogShell inherits Rectangle {
                     primary-clicked => { root.primary-requested(); }
                     cancel-clicked => { root.cancel-requested(); }
                     destructive-clicked => { root.destructive-requested(); }
-                    close-clicked => { root.close-requested(); }
+                    close-clicked => { root.leave(); }
                 }
             }
 
@@ -1031,10 +1082,13 @@ export component DialogShell inherits Rectangle {
                 icon: @image-url("icons/xmark.svg");
                 label: "Close";
                 icon-size: Theme.icon-sm;
-                clicked => { root.close-requested(); }
+                clicked => { root.leave(); }
             }
         }
     }
+
+    // Nothing is clickable while the dialog fades out
+    if root.closing: TouchArea { }
 }
 
 // On/off switch
@@ -1050,12 +1104,27 @@ export component Toggle inherits Rectangle {
     in property <bool> show-label: true;
     callback toggled(bool);
     // On: a filled track in the accent (kept at 3:1 on the panel) with a
-    // black or white knob, whichever shows better. Off: an outlined track
+    // white knob in both themes; black only on an accent so light that
+    // white would not show. Off: an outlined track
     // with a smaller grey knob, so it doesn't vanish into the panel.
     // Disabled: the same shapes, fainter.
     property <bool> on: root.checked || root.forced-on;
     property <color> on-fill: touch.pressed ? Theme.accent-graphic.darker(0.25)
         : touch.has-hover ? Theme.accent-graphic.darker(0.15) : Theme.accent-graphic;
+    // By the resting fill, so the knob doesn't flip under the pointer
+    property <color> on-knob: root.luminance(Theme.accent-graphic) > 0.6 ? #000000 : #ffffff;
+
+    // An sRGB channel (0-255) in linear light (0-1)
+    pure function linear(channel: int) -> float {
+        let v = channel / 255;
+        return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    }
+
+    // Relative luminance (WCAG 2): 0 for black, 1 for white. White on 0.6
+    // is 1.6:1, about the least a white knob can do.
+    pure function luminance(c: color) -> float {
+        return 0.2126 * root.linear(c.red) + 0.7152 * root.linear(c.green) + 0.0722 * root.linear(c.blue);
+    }
 
     width: row.preferred-width;
     height: 28px;
@@ -1119,7 +1188,7 @@ export component Toggle inherits Rectangle {
                     border-radius: self.size / 2;
                     background: !root.enabled ? Theme.disabled-text
                         : !root.on ? Theme.text-tertiary
-                        : Theme.text-on(root.on-fill);
+                        : root.on-knob;
                     animate background { duration: Theme.normal; }
                 }
             }
