@@ -5,3 +5,13 @@
 dialogs/schedule.slint EntryRow touch   # the row's click is a shortcut for its Edit button, which has the role
 menu-bar.slint MenuBar touch            # the empty part of the title bar: drag to move, double-click to maximize; the window buttons do the same
 scroll-bar.slint ScrollBar touch        # pointer-only by design: the keyboard scrolls with the arrows and Page keys
+
+# Open findings in files other round 3 packages own. Fix the control or image
+# there, then delete the line (the lint says when it has nothing left to allow).
+dialogs/about.slint AboutDialog image            # the app icon: decoration next to the name, wants accessible-role: none
+dialogs/filter-picker.slint FilterRow image      # the flag: decoration, the row's label has the country
+dialogs/station-browser.slint StationRow image   # the station logo: decoration, the row's label has the name
+dialogs/station-browser.slint FilterChip image   # the flag: decoration, the chip's label has the country
+favorites.slint FavoriteRow image                # the station logo: decoration, the row's label has the name
+playback.slint Playback image                    # the station logo: decoration, the name is read next to it
+visualization.slint Visualization touch          # the style switch is mouse-only (B9, M7)
