@@ -306,6 +306,35 @@ export global TextUtil {
 
 export enum ChipVariant { neutral, accent, danger, success, warning }
 
+// A text of a chip. Its width comes from the text itself, so what is drawn
+// is what was measured. `floor` is room kept beyond that (wider digits);
+// `whole` never shortens the text.
+component ChipText inherits VerticalLayout {
+    in property <string> text;
+    in property <color> color;
+    in property <bool> whole: false;
+    in property <length> floor: 0px;
+    out property <length> text-width: label.preferred-width;
+
+    label := Text {
+        text: root.text;
+        accessible-role: none;
+        color: root.color;
+        font-size: Theme.font-sm;
+        font-weight: Theme.weight-semibold;
+        vertical-alignment: center;
+        // A whole text can't be given less than its width, so it never
+        // ends in "…"
+        overflow: root.whole ? TextOverflow.clip : TextOverflow.elide;
+    }
+
+    Rectangle {
+        height: 0px;
+        preferred-width: root.floor;
+        min-width: root.whole ? root.floor : 0px;
+    }
+}
+
 // Pill with short text; `variant` colors the text and a soft background
 export component Chip inherits Rectangle {
     in property <string> text;
@@ -335,21 +364,24 @@ export component Chip inherits Rectangle {
     in property <bool> clickable: false;
     // Shows a small x after the text: a click closes it
     in property <bool> closable: false;
-    // Keep the full text while other chips in the row still have room to
-    // give: those elide first (e.g. Playing and REC stay whole while a
-    // Scheduler label shortens)
+    // Always show the whole text: the chip never gets narrower than it,
+    // and the other chips in the row give way and elide (e.g. Playing and
+    // REC stay whole while a Scheduler label shortens)
     in property <bool> keep: false;
     // The owner says the text to screen readers itself (a live region):
     // the chip's own text is then not read a second time
     in property <bool> silent: false;
     // The chip has the keyboard focus (only one that is a button can)
     out property <bool> has-focus: keys.has-focus;
+    // The text doesn't fit and ends in "…" (never with `keep`)
+    out property <bool> cut: !root.keep && root.width + 0.5px < root.preferred-width;
     callback clicked();
 
-    // Grows with its text but gives way (eliding) when space runs out
+    // As wide as its text. It gives way (eliding) when space runs out,
+    // unless it is one to `keep`.
     preferred-width: row.preferred-width + 16px;
     max-width: self.preferred-width;
-    min-width: 40px;
+    min-width: root.keep ? self.preferred-width : 40px;
     horizontal-stretch: root.keep ? 0 : 1;
     height: 22px;
     border-radius: Theme.radius-sm;
@@ -429,20 +461,14 @@ export component Chip inherits Rectangle {
             spacing: 3px;
             horizontal-stretch: 1;
 
-            Text {
+            // With a detail, the text takes its real width and the room kept
+            // for wider digits goes around the separator instead
+            label := ChipText {
                 text: root.text;
-                accessible-role: none;
                 color: root.foreground;
-                font-size: Theme.font-sm;
-                font-weight: Theme.weight-semibold;
-                vertical-alignment: center;
-                overflow: elide;
+                whole: root.keep;
                 horizontal-stretch: 1;
-                // Sized from the measuring copies below, so it can still shrink
-                // and elide when space runs out. With a detail, the text takes
-                // its real width and the room kept for wider digits goes around
-                // the separator instead.
-                preferred-width: root.detail != "" ? plain-measure.preferred-width : measure.preferred-width;
+                floor: root.steady && root.detail == "" ? measure.preferred-width : 0px;
             }
 
             // Separator between the text and the detail. Its box also holds the
@@ -463,15 +489,11 @@ export component Chip inherits Rectangle {
                 }
             }
 
-            if root.detail != "": Text {
+            if root.detail != "": ChipText {
                 text: root.detail;
-                accessible-role: none;
                 color: root.foreground;
-                font-size: Theme.font-sm;
-                font-weight: Theme.weight-semibold;
-                vertical-alignment: center;
-                overflow: elide;
-                preferred-width: detail-measure.preferred-width;
+                whole: root.keep;
+                floor: root.steady ? detail-measure.preferred-width : 0px;
             }
         }
 
@@ -486,27 +508,21 @@ export component Chip inherits Rectangle {
         }
     }
 
-    // Measures the text, with its widest digits when steady (not shown)
+    // The widths with the widest digits, for a steady chip (not shown).
+    // They only add room: the text's own width never comes from them.
     measure := Text {
         visible: false;
-        text: root.steady ? TextUtil.steady-digits(root.text) : root.text;
-        font-size: Theme.font-sm;
-        font-weight: Theme.weight-semibold;
-    }
-
-    plain-measure := Text {
-        visible: false;
-        text: root.text;
+        text: TextUtil.steady-digits(root.text);
         font-size: Theme.font-sm;
         font-weight: Theme.weight-semibold;
     }
 
     // Room the text keeps for wider digits than it shows now
-    property <length> digit-room: max(0px, measure.preferred-width - plain-measure.preferred-width);
+    property <length> digit-room: root.steady ? max(0px, measure.preferred-width - label.text-width) : 0px;
 
     detail-measure := Text {
         visible: false;
-        text: root.steady ? TextUtil.steady-digits(root.detail) : root.detail;
+        text: TextUtil.steady-digits(root.detail);
         font-size: Theme.font-sm;
         font-weight: Theme.weight-semibold;
     }

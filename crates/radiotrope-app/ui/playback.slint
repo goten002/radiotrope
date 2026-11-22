@@ -2,11 +2,14 @@ import { Theme, Defaults } from "defaults.slint";
 import { Visualization } from "visualization.slint";
 import { Chip, ChipVariant, IconButton, Icon, PopupCard } from "components.slint";
 
-// A chip of the status row that can show its whole text in a bubble: it
-// says when the pointer is on it and whether its text is cut. It takes the
-// chip's place in the row (same widths, same giving way).
+// A chip of the status row. The primary ones (`keep`: the status, REC)
+// always show their whole text; the others share the width that is left and
+// end in "…" only when it runs out. With the pointer or the keyboard focus
+// on it, a chip asks for a bubble: its `bubble` text (the details), or its
+// own text while that is cut. It takes the chip's place in the row.
 component RowChip inherits TouchArea {
     in property <string> text;
+    in property <string> detail;
     in property <ChipVariant> variant: ChipVariant.neutral;
     in property <image> icon;
     in property <bool> dot: false;
@@ -21,22 +24,46 @@ component RowChip inherits TouchArea {
     in property <string> spoken;
     // Said at once, over what is being read (an error)
     in property <bool> urgent: false;
+    // How readily it gives way among the chips that may shorten: a layout
+    // takes width in proportion to this, so one with a small share keeps
+    // its text until the others can't shorten any more. A long text gives
+    // more than a short one.
+    in property <float> give: chip.preferred-width / 100px;
+    // More than the chip says, for its bubble ("" for none)
+    in property <string> bubble;
     // The text doesn't fit and ends in "…"
-    out property <bool> cut: chip.width + 0.5px < chip.preferred-width;
+    out property <bool> cut: chip.cut;
     // The chip has the keyboard focus (one that is a button)
     out property <bool> focused: chip.has-focus;
+    // What the bubble says now ("" for no bubble)
+    out property <string> bubble-text: root.bubble != "" ? root.bubble : root.cut ? root.text : "";
+    // The pointer or the focus is on the chip and there is something to show
+    property <bool> wants-bubble: (root.has-hover || root.focused) && root.bubble-text != "";
+    // The bubble is wanted (with its text, and the chip's place in the
+    // window) or no longer
+    callback show-bubble(bool, string, length, length);
     // A click on a chip that is a button
     callback pressed-chip();
 
+    changed wants-bubble => {
+        root.show-bubble(root.wants-bubble, root.bubble-text, root.absolute-position.x, root.absolute-position.y);
+    }
+    changed bubble-text => {
+        if root.wants-bubble {
+            root.show-bubble(true, root.bubble-text, root.absolute-position.x, root.absolute-position.y);
+        }
+    }
+
     preferred-width: chip.preferred-width;
     max-width: chip.preferred-width;
-    min-width: 40px;
-    horizontal-stretch: root.keep ? 0 : 1;
+    min-width: root.keep ? chip.preferred-width : 40px;
+    horizontal-stretch: root.keep ? 0 : root.give;
     height: chip.height;
 
     chip := Chip {
         width: 100%;
         text: root.text;
+        detail: root.detail;
         variant: root.variant;
         icon: root.icon;
         dot: root.dot;
@@ -86,6 +113,9 @@ export component Playback inherits Rectangle {
     in property <string> recording-notice-kind;
     // The notice stays until it is clicked away (errors and missed entries)
     in property <bool> recording-notice-stays;
+    // More about the notice, for its bubble: a saved recording's full path,
+    // what a missed entry was ("" for none)
+    in property <string> recording-notice-detail;
     callback recording-notice-dismiss();
     // A "Saved ..." notice opens the recordings folder when clicked
     in property <bool> can-open-recordings;
@@ -96,12 +126,16 @@ export component Playback inherits Rectangle {
     callback stop-recording();
     // Time left on the Sleep Timer, "23:12" ("" when none runs)
     in property <string> sleep-left;
+    // What the Sleep Timer will do and when, for the chip's bubble
+    in property <string> sleep-detail;
     // The Scheduler's label around an entry's start ("" when none), and
     // whether it is for the fallback sound
     in property <string> schedule-label;
     in property <bool> schedule-label-bell;
     // The label tells what just happened, and a click closes it
     in property <bool> schedule-label-closable;
+    // What the entry does and when, for the label's bubble
+    in property <string> schedule-detail;
     callback schedule-label-dismiss();
     callback open-sleep-timer();
     callback open-schedule();
@@ -114,8 +148,8 @@ export component Playback inherits Rectangle {
     in property <bool> enabled: true;
 
     // Headless capture: "recording-confirm" arms the REC chip, "viz-name"
-    // shows the visualizer style's name, "chip-bubble" shows the full text
-    // of the chip under the pointer without the wait
+    // shows the visualizer style's name, "chip-bubble" shows the bubble of
+    // the chip under the pointer without the wait
     in property <string> snapshot-overlay;
 
     property <image> empty-image;
@@ -125,25 +159,26 @@ export component Playback inherits Rectangle {
     property <bool> stop-armed: root.is-recording
         && (root.confirm-stop-recording || root.snapshot-overlay == "recording-confirm");
 
-    // The full text of a cut chip shows in a bubble above it, like the
-    // title's in the bottom bar: after the pointer rests on the chip, or on
-    // a tap where there is no pointer (a chip that isn't a button).
-    // The chip: 0 none, 1 the status, 2 the notice, 3 the save error.
+    // A chip's bubble shows above it, styled like the title's in the bottom
+    // bar: after the pointer rests on the chip, when Tab reaches it, or on a
+    // tap where there is no pointer (a chip that isn't a button).
+    // The chip: 0 none, 1 the status, 2 the notice, 3 the save error, 4 the
+    // Sleep Timer, 5 the Scheduler's label.
     property <int> hovered-chip: 0;
     property <int> pinned-chip: 0;
     property <bool> hover-ready: false;
     property <length> bubble-x;
     property <length> bubble-bottom;
+    property <string> bubble-text;
     property <int> bubble-chip: root.pinned-chip != 0 ? root.pinned-chip
-        : root.hover-ready || root.snapshot-overlay == "chip-bubble" ? root.hovered-chip : 0;
-    property <string> bubble-text: root.bubble-chip == 1 ? root.status-text
-        : root.bubble-chip == 2 ? root.recording-notice
-        : root.bubble-chip == 3 ? root.save-error : "";
-    // A text that changes takes its bubble down. The notice and the save
-    // error can go away under the pointer, without telling that it left.
+        : root.hover-ready || root.snapshot-overlay == "chip-bubble"
+            || root.snapshot-overlay == "schedule-bubble" ? root.hovered-chip : 0;
+    // A chip can go away under the pointer, without telling that it left
     changed status-text => { if root.pinned-chip == 1 { root.pinned-chip = 0; } }
-    changed recording-notice => { root.chip-gone(2); }
-    changed save-error => { root.chip-gone(3); }
+    changed recording-notice => { if root.recording-notice == "" { root.chip-gone(2); } }
+    changed save-error => { if root.save-error == "" { root.chip-gone(3); } }
+    changed sleep-left => { if root.sleep-left == "" { root.chip-gone(4); } }
+    changed schedule-label => { if root.schedule-label == "" { root.chip-gone(5); } }
 
     function chip-gone(chip: int) {
         if root.pinned-chip == chip {
@@ -155,24 +190,33 @@ export component Playback inherits Rectangle {
         }
     }
 
-    // The pointer came onto a cut chip (at `x`, `y` in the window) or left it
-    function chip-hovered(chip: int, on: bool, x: length, y: length) {
+    // A chip wants its bubble (`text`, with the chip at `x`, `y` in the
+    // window) or no longer
+    function bubble-wanted(chip: int, on: bool, text: string, x: length, y: length) {
         if on {
             root.hovered-chip = chip;
+            root.bubble-text = text;
             root.bubble-x = x - root.absolute-position.x;
             root.bubble-bottom = y - root.absolute-position.y;
-        } else if root.hovered-chip == chip {
-            root.hovered-chip = 0;
-            root.hover-ready = false;
+        } else {
+            if root.hovered-chip == chip {
+                root.hovered-chip = 0;
+                root.hover-ready = false;
+            }
+            // Nothing more to show (the chip fits again)
+            if root.pinned-chip == chip && text == "" {
+                root.pinned-chip = 0;
+            }
         }
     }
 
-    // A tap on a cut chip that isn't a button shows its text until the next
-    function chip-tapped(chip: int, cut: bool, x: length, y: length) {
-        if root.pinned-chip == chip || !cut {
+    // A tap on a chip that isn't a button shows its bubble until the next
+    function chip-tapped(chip: int, text: string, x: length, y: length) {
+        if root.pinned-chip == chip || text == "" {
             root.pinned-chip = 0;
         } else {
             root.pinned-chip = chip;
+            root.bubble-text = text;
             root.bubble-x = x - root.absolute-position.x;
             root.bubble-bottom = y - root.absolute-position.y;
         }
@@ -266,136 +310,165 @@ export component Playback inherits Rectangle {
                 overflow: elide;
             }
 
-            HorizontalLayout {
-                spacing: Theme.space-6;
+            // The row never asks the header for more width than it has. More
+            // chips than can fit even shortened (rare: a long recording with
+            // three notices in the smallest window) are cut at its end,
+            // instead of pushing the star and the visualizer out.
+            Rectangle {
+                min-width: 0px;
+                height: 22px;
 
-                // Grey for Ready and Stopped, accent and pulsing while connecting
-                // or playing, red for errors. The state comes from the player's
-                // flags, never from the wording of the status text.
-                status-chip := RowChip {
-                    text: root.is-playing && root.playtime != "—" && root.playtime != ""
-                        ? root.status-text + " " + root.playtime : root.status-text;
-                    variant: root.is-error ? ChipVariant.danger
-                        : self.pulse ? ChipVariant.accent : ChipVariant.neutral;
-                    dot: true;
-                    pulse: !root.is-error && (root.is-playing || root.is-loading);
-                    steady: true;
-                    // A long error may shorten like the others
-                    keep: !root.is-error;
-                    // Without the time on the station
-                    spoken: root.status-text;
-                    changed has-hover => {
-                        root.chip-hovered(1, self.has-hover && self.cut, self.absolute-position.x, self.absolute-position.y);
-                    }
-                    clicked => {
-                        root.chip-tapped(1, self.cut, self.absolute-position.x, self.absolute-position.y);
-                    }
-                }
+                Rectangle {
+                    // Room for the focus rings and the taller click areas
+                    x: -4px;
+                    y: -6px;
+                    width: parent.width + 4px;
+                    height: parent.height + 12px;
+                    clip: true;
 
-                // Recording progress. A press asks to confirm, the second stops it.
-                if root.is-recording: Chip {
-                    text: root.stop-armed ? "Press Again to Stop" : "REC " + root.recording-text;
-                    detail: !root.stop-armed ? root.recording-size : "";
-                    variant: ChipVariant.danger;
-                    dot: true;
-                    pulse: true;
-                    steady: true;
-                    keep: true;
-                    clickable: true;
-                    clicked => {
-                        if root.confirm-stop-recording {
-                            root.confirm-stop-recording = false;
-                            root.stop-recording();
-                        } else {
-                            root.confirm-stop-recording = true;
+                    HorizontalLayout {
+                        x: 4px;
+                        y: 6px;
+                        width: max(parent.width - 4px, self.min-width);
+                        height: 22px;
+                        spacing: Theme.space-6;
+
+                        // Grey for Ready and Stopped, accent and pulsing while connecting
+                        // or playing, red for errors. The state comes from the player's
+                        // flags, never from the wording of the status text.
+                        // It is the row's first word, so it is always whole: only an
+                        // error too long for the row is cut (its bubble has the rest).
+                        status-chip := RowChip {
+                            text: root.is-playing && root.playtime != "—" && root.playtime != ""
+                                ? root.status-text + " " + root.playtime : root.status-text;
+                            variant: root.is-error ? ChipVariant.danger
+                                : self.pulse ? ChipVariant.accent : ChipVariant.neutral;
+                            dot: true;
+                            pulse: !root.is-error && (root.is-playing || root.is-loading);
+                            // Only the play time has digits that change
+                            steady: root.is-playing;
+                            // An error may be longer than the row. It is the last to
+                            // give way: the chips after it shorten first.
+                            keep: !root.is-error;
+                            give: 0.0001;
+                            // Without the time on the station
+                            spoken: root.status-text;
+                            show-bubble(on, text, x, y) => { root.bubble-wanted(1, on, text, x, y); }
+                            clicked => {
+                                root.chip-tapped(1, self.bubble-text, self.absolute-position.x, self.absolute-position.y);
+                            }
                         }
-                    }
-                }
 
-                // A save that failed: it stays until a save works again
-                if root.save-error != "": RowChip {
-                    text: root.save-error;
-                    variant: ChipVariant.danger;
-                    icon: @image-url("icons/circle-alert.svg");
-                    spoken: root.save-error;
-                    urgent: true;
-                    changed has-hover => {
-                        root.chip-hovered(3, self.has-hover && self.cut, self.absolute-position.x, self.absolute-position.y);
-                    }
-                    clicked => {
-                        root.chip-tapped(3, self.cut, self.absolute-position.x, self.absolute-position.y);
-                    }
-                }
-
-                // What happened to a recording or a scheduled entry. Only a
-                // saved recording has the record icon and opens the folder;
-                // the Scheduler's and the Sleep Timer's news open those. One
-                // that stays has an x, and the click closes it.
-                if root.recording-notice != "": RowChip {
-                    property <bool> is-error: root.recording-notice-kind == "error";
-                    text: root.recording-notice;
-                    variant: self.is-error ? ChipVariant.danger : ChipVariant.neutral;
-                    icon: self.is-error ? @image-url("icons/circle-alert.svg")
-                        : root.recording-notice-kind == "scheduler" ? @image-url("icons/calendar.svg")
-                        : root.recording-notice-kind == "sleep" ? @image-url("icons/moon.svg")
-                        : @image-url("icons/record.svg");
-                    closable: root.recording-notice-stays;
-                    clickable: root.recording-notice-stays
-                        || root.recording-notice-kind == "scheduler"
-                        || root.recording-notice-kind == "sleep"
-                        || (root.recording-notice-kind == "saved" && root.can-open-recordings);
-                    spoken: root.recording-notice;
-                    urgent: self.is-error;
-                    changed has-hover => {
-                        root.chip-hovered(2, (self.has-hover || self.focused) && self.cut, self.absolute-position.x, self.absolute-position.y);
-                    }
-                    // Reached with Tab: the whole text shows as on hover
-                    changed focused => {
-                        root.chip-hovered(2, (self.focused || self.has-hover) && self.cut, self.absolute-position.x, self.absolute-position.y);
-                    }
-                    pressed-chip => {
-                        if root.recording-notice-kind == "saved" {
-                            root.open-recordings-folder();
-                        } else if root.recording-notice-kind == "sleep" {
-                            root.open-sleep-timer();
-                        } else if root.recording-notice-kind == "scheduler" {
-                            // Its row there says how the entry's last run went
-                            root.open-schedule();
+                        // Recording progress. A press asks to confirm, the second stops it.
+                        if root.is-recording: RowChip {
+                            text: root.stop-armed ? "Press Again to Stop" : "REC " + root.recording-text;
+                            detail: !root.stop-armed ? root.recording-size : "";
+                            variant: ChipVariant.danger;
+                            dot: true;
+                            pulse: true;
+                            steady: true;
+                            keep: true;
+                            clickable: true;
+                            pressed-chip => {
+                                if root.confirm-stop-recording {
+                                    root.confirm-stop-recording = false;
+                                    root.stop-recording();
+                                } else {
+                                    root.confirm-stop-recording = true;
+                                }
+                            }
                         }
-                        if root.recording-notice-stays {
-                            root.recording-notice-dismiss();
+
+                        // A save that failed: it stays until a save works again
+                        if root.save-error != "": RowChip {
+                            text: root.save-error;
+                            variant: ChipVariant.danger;
+                            icon: @image-url("icons/circle-alert.svg");
+                            spoken: root.save-error;
+                            urgent: true;
+                            show-bubble(on, text, x, y) => { root.bubble-wanted(3, on, text, x, y); }
+                            clicked => {
+                                root.chip-tapped(3, self.bubble-text, self.absolute-position.x, self.absolute-position.y);
+                            }
                         }
+
+                        // What happened to a recording or a scheduled entry. Only a
+                        // saved recording has the record icon and opens the folder;
+                        // the Scheduler's and the Sleep Timer's news open those. One
+                        // that stays has an x, and the click closes it.
+                        if root.recording-notice != "": RowChip {
+                            property <bool> is-error: root.recording-notice-kind == "error";
+                            text: root.recording-notice;
+                            variant: self.is-error ? ChipVariant.danger : ChipVariant.neutral;
+                            icon: self.is-error ? @image-url("icons/circle-alert.svg")
+                                : root.recording-notice-kind == "scheduler" ? @image-url("icons/calendar.svg")
+                                : root.recording-notice-kind == "sleep" ? @image-url("icons/moon.svg")
+                                : @image-url("icons/record.svg");
+                            closable: root.recording-notice-stays;
+                            clickable: root.recording-notice-stays
+                                || root.recording-notice-kind == "scheduler"
+                                || root.recording-notice-kind == "sleep"
+                                || (root.recording-notice-kind == "saved" && root.can-open-recordings);
+                            spoken: root.recording-notice;
+                            urgent: self.is-error;
+                            bubble: root.recording-notice-detail;
+                            show-bubble(on, text, x, y) => { root.bubble-wanted(2, on, text, x, y); }
+                            clicked => {
+                                if !self.clickable {
+                                    root.chip-tapped(2, self.bubble-text, self.absolute-position.x, self.absolute-position.y);
+                                }
+                            }
+                            pressed-chip => {
+                                if root.recording-notice-kind == "saved" {
+                                    root.open-recordings-folder();
+                                } else if root.recording-notice-kind == "sleep" {
+                                    root.open-sleep-timer();
+                                } else if root.recording-notice-kind == "scheduler" {
+                                    // Its row there says how the entry's last run went
+                                    root.open-schedule();
+                                }
+                                if root.recording-notice-stays {
+                                    root.recording-notice-dismiss();
+                                }
+                            }
+                        }
+
+                        if root.sleep-left != "": RowChip {
+                            text: "Sleep " + root.sleep-left;
+                            icon: @image-url("icons/moon.svg");
+                            steady: true;
+                            clickable: true;
+                            // Short and counting: a notice's long text shortens first
+                            give: 0.01;
+                            bubble: root.sleep-detail;
+                            show-bubble(on, text, x, y) => { root.bubble-wanted(4, on, text, x, y); }
+                            pressed-chip => { root.open-sleep-timer(); }
+                        }
+
+                        if root.schedule-label != "": RowChip {
+                            text: root.schedule-label;
+                            icon: root.schedule-label-bell ? @image-url("icons/bell.svg") : @image-url("icons/calendar.svg");
+                            steady: true;
+                            clickable: true;
+                            // After an entry started it is only news: a click closes it
+                            closable: root.schedule-label-closable;
+                            give: 0.01;
+                            bubble: root.schedule-detail;
+                            show-bubble(on, text, x, y) => { root.bubble-wanted(5, on, text, x, y); }
+                            pressed-chip => {
+                                if root.schedule-label-closable {
+                                    root.schedule-label-dismiss();
+                                } else {
+                                    root.open-schedule();
+                                }
+                            }
+                        }
+
+                        // Takes the spare width, so the chips stay as wide as their
+                        // texts
+                        Rectangle { horizontal-stretch: 1; }
                     }
                 }
-
-                if root.sleep-left != "": Chip {
-                    text: "Sleep " + root.sleep-left;
-                    icon: @image-url("icons/moon.svg");
-                    steady: true;
-                    keep: true;
-                    clickable: true;
-                    clicked => { root.open-sleep-timer(); }
-                }
-
-                if root.schedule-label != "": Chip {
-                    text: root.schedule-label;
-                    icon: root.schedule-label-bell ? @image-url("icons/bell.svg") : @image-url("icons/calendar.svg");
-                    steady: true;
-                    clickable: true;
-                    // After an entry started it is only news: a click closes it
-                    closable: root.schedule-label-closable;
-                    clicked => {
-                        if root.schedule-label-closable {
-                            root.schedule-label-dismiss();
-                        } else {
-                            root.open-schedule();
-                        }
-                    }
-                }
-
-                // Takes the spare width, so a long status elides in the chip
-                // instead of capping the whole column
-                Rectangle { horizontal-stretch: 1; }
             }
         }
 
@@ -429,13 +502,14 @@ export component Playback inherits Rectangle {
         }
     }
 
-    // Full text above a cut-off chip, styled like the title's bubble
+    // A chip's details (or its whole text) above it, styled like the title's
+    // bubble: short, two lines at most
     chip-bubble := PopupCard {
         property <bool> shown: root.bubble-chip != 0 && root.bubble-text != "";
         visible: self.opacity > 0;
         opacity: self.shown ? 1 : 0;
         animate opacity { duration: Theme.fast; }
-        width: min(bubble-layout.preferred-width, root.width - 2 * Theme.space-12);
+        width: min(bubble-layout.preferred-width, root.width - 2 * Theme.space-12, 420px);
         height: bubble-layout.preferred-height;
         x: max(Theme.space-12, min(root.bubble-x, root.width - self.width - Theme.space-12));
         y: root.bubble-bottom - self.height - Theme.space-6;
@@ -451,6 +525,8 @@ export component Playback inherits Rectangle {
                 font-size: Theme.font-md;
                 color: Theme.text-primary;
                 wrap: word-wrap;
+                max-lines: 2;
+                overflow: elide;
                 // The chip says it already
                 accessible-role: none;
             }
