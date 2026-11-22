@@ -1,0 +1,18 @@
+export enum ShortcutAction {
+    unhandled, play-stop, mute, volume-up, volume-down, record,
+    next-favorite, previous-favorite, toggle-favorite, search, network-stream,
+    close-window, quit, help,
+}
+
+export struct ShortcutRow {
+    heading: string,
+    description: string,
+    keys: string,
+}
+
+export global DesktopShortcuts {
+    in property <bool> enabled;
+    in property <[ShortcutRow]> rows;
+    pure callback label(ShortcutAction) -> string;
+    callback match-key(KeyEvent) -> ShortcutAction;
+}

@@ -363,8 +363,11 @@ component FavoriteRow inherits Rectangle {
     keys := FocusScope {
         focus-on-click: false;
         key-pressed(event) => {
-            if event.text == Key.Space || event.text == Key.Return {
-                root.clicked();
+            if (event.text == Key.Space || event.text == Key.Return)
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                if !event.repeat {
+                    root.clicked();
+                }
                 return accept;
             }
             if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {

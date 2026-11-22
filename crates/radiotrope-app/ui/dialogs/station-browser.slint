@@ -1,3 +1,4 @@
+import { DesktopShortcuts, ShortcutAction } from "../shortcuts.slint";
 import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
@@ -412,6 +413,7 @@ component ResetFiltersButton inherits Rectangle {
 }
 
 export component StationBrowserDialog inherits Rectangle {
+    in property <bool> search-shortcut-enabled;
     in-out property <bool> show-dialog: false;
     in-out property <bool> search-loading: false;
     in-out property <bool> search-loading-more: false;
@@ -494,6 +496,14 @@ export component StationBrowserDialog inherits Rectangle {
         card-height: Defaults.station-browser-height;
         auto-focus: false;
         close-requested => { root.show-dialog = false; }
+        capture-key(event) => {
+            if DesktopShortcuts.enabled && root.search-shortcut-enabled
+                && DesktopShortcuts.match-key(event) == ShortcutAction.search {
+                search-input.focus-input();
+                return accept;
+            }
+            return reject;
+        }
 
         // Search input
         HorizontalLayout {

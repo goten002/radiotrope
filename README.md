@@ -120,6 +120,26 @@ another folder.
 
 On GNOME, the tray icon needs the AppIndicator extension.
 
+### Keyboard shortcuts
+
+These shortcuts work in the desktop window. Use **Help > Keyboard Shortcuts**
+for the full list, including keys for focused controls.
+
+| Key | Action |
+|-----|--------|
+| Space | Play or stop. A focused button or row keeps its own Space action. |
+| M | Mute or unmute |
+| `+` or `=` / `-` | Raise or lower the volume by five percentage points |
+| N / P | Play the next or previous favorite, wrapping at the ends |
+| R | Start or stop recording when available |
+| F | Add or remove the loaded station as a favorite |
+| Ctrl+F | Open Search Stations or focus its search field |
+| Ctrl+O | Open Network Stream |
+| Ctrl+W | Request to close the window, respecting Close to Tray |
+| Ctrl+Q | Quit Radiotrope |
+| F1 | Show Keyboard Shortcuts |
+| Esc | Close the current dialog or popup |
+
 ### Where things are saved
 
 Favorites, listening stats, settings, schedules and pairings are JSON files in
