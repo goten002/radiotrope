@@ -196,6 +196,9 @@ export global Theme {
     out property <duration> spin-period: 900ms;
     // The visualizer's tuning needle crossing the dial once
     out property <duration> tune-period: 1600ms;
+    // The record button's dot, grey to red and back while recording:
+    // slow enough not to be a blink
+    out property <duration> record-pulse: 2s;
 
     // ── Contrast (WCAG 2) ──
     // Relative luminance: 0 for black, 1 for white
