@@ -1,0 +1,327 @@
+# The Linux release files, for x86_64 and aarch64, and the checks that they
+# install and start on the distributions they are for.
+#
+# Called by release.yml with the version it expects; run it by hand (Actions >
+# Package Linux > Run workflow) to get the files as workflow artefacts from
+# any branch. It never publishes anything.
+#
+# Artefacts: dist-linux-<arch> (tarball, .deb, .rpm, AppImage and its .zsync)
+# and dist-linux-flatpak-<arch> (the .flatpak bundle).
+name: Package Linux
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "The version the files must have (from the tag); empty takes Cargo.toml's"
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  version:
+    name: Version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version from Cargo.toml
+        env:
+          EXPECTED: ${{ inputs.version }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          echo "Cargo.toml: $version"
+          if [ -n "$EXPECTED" ] && [ "$EXPECTED" != "$version" ]; then
+            echo "::error::Expected version $EXPECTED, Cargo.toml has $version"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  # Built natively on each architecture, in Ubuntu 22.04 (glibc 2.35), so the
+  # programs run there and on anything newer
+  build:
+    name: Build (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:22.04
+    steps:
+      - name: Git, for the checkout
+        run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - name: Build dependencies
+        run: packaging/linux/build-deps.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: package-linux-${{ matrix.arch }}
+      - name: cargo-deb and cargo-generate-rpm
+        run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
+      - name: Build the files
+        run: packaging/linux/dist.sh dist
+      - name: Check them
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          for f in "radiotrope-$VERSION-linux-$ARCH.tar.gz" "radiotrope_*.deb" "radiotrope-*.rpm" \
+                   "Radiotrope-$VERSION-$ARCH.AppImage" "Radiotrope-$VERSION-$ARCH.AppImage.zsync"; do
+            # shellcheck disable=SC2206 # the glob in $f is meant
+            matches=(dist/$f)
+            if [ "${#matches[@]}" != 1 ] || [ ! -s "${matches[0]}" ]; then
+              echo "::error::dist/$f is missing"; ls -l dist; exit 1
+            fi
+          done
+          echo "--- tarball"; tar -tzf dist/*.tar.gz
+          echo "--- deb"; dpkg-deb --info dist/*.deb; dpkg-deb --contents dist/*.deb
+          echo "--- AppImage update information"
+          "dist/Radiotrope-$VERSION-$ARCH.AppImage" --appimage-updateinformation
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+
+  flatpak:
+    name: Flatpak (${{ matrix.arch }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-26.08
+      options: --privileged
+    env:
+      BUNDLE: Radiotrope-${{ needs.version.outputs.version }}-${{ matrix.arch }}.flatpak
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the bundle
+        run: packaging/flatpak/build.sh .
+      - name: Install the bundle and start the programs
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          flatpak install --user --noninteractive --assumeyes "$BUNDLE"
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            out=$(flatpak run --command="$p" app.radiotrope.Radiotrope --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-linux-flatpak-${{ matrix.arch }}
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error
+
+  # The .deb (and the tarball) on the Debian and Ubuntu releases they are for
+  smoke-deb:
+    name: Smoke deb (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: [version, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "debian:13", "ubuntu:22.04", "ubuntu:24.04"]
+        arch: [x86_64]
+        runner: [ubuntu-24.04]
+        include:
+          - { image: "debian:12", arch: aarch64, runner: ubuntu-24.04-arm }
+          - { image: "ubuntu:24.04", arch: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist
+      - name: Install the .deb
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./dist/radiotrope_*.deb
+      - name: Programs start
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            out=$("$p" --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done
+          man -w radiotrope-cli 2>/dev/null || test -f /usr/share/man/man1/radiotrope-cli.1.gz
+          test -f /usr/share/applications/app.radiotrope.Radiotrope.desktop
+      - name: The tarball's programs start
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          mkdir tarball
+          tar -xzf dist/radiotrope-*.tar.gz -C tarball --strip-components=1
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            test "$(tarball/bin/$p --version)" = "$p $VERSION"
+          done
+
+  # The .rpm on Fedora and openSUSE
+  smoke-rpm:
+    name: Smoke rpm (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: [version, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "fedora:latest", arch: x86_64, runner: ubuntu-24.04, install: "dnf install -y" }
+          - { image: "fedora:latest", arch: aarch64, runner: ubuntu-24.04-arm, install: "dnf install -y" }
+          - { image: "opensuse/tumbleweed", arch: x86_64, runner: ubuntu-24.04, install: "zypper --non-interactive install --allow-unsigned-rpm" }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      # download-artifact needs tar and gzip; minimal images may lack them
+      - name: Tools
+        run: |
+          if command -v dnf >/dev/null; then dnf install -y tar gzip; else zypper --non-interactive install tar gzip; fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist
+      - name: Install the .rpm
+        run: ${{ matrix.install }} ./dist/radiotrope-*.rpm
+      - name: Programs start
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -eu
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            out=$("$p" --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done
+          rpm -q --requires radiotrope
+          rpm -q --recommends radiotrope
+
+  # The AppImage, unpacked and run (containers have no FUSE). ALSA and
+  # fontconfig come from the system, as on any desktop.
+  smoke-appimage:
+    name: Smoke AppImage (${{ matrix.image }}, ${{ matrix.arch }})
+    needs: [version, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "ubuntu:22.04", arch: x86_64, runner: ubuntu-24.04, deps: "apt-get update && apt-get install -y libasound2 libfontconfig1" }
+          - { image: "ubuntu:22.04", arch: aarch64, runner: ubuntu-24.04-arm, deps: "apt-get update && apt-get install -y libasound2 libfontconfig1" }
+          - { image: "fedora:latest", arch: x86_64, runner: ubuntu-24.04, deps: "dnf install -y alsa-lib fontconfig" }
+          - { image: "archlinux:latest", arch: x86_64, runner: ubuntu-24.04, deps: "pacman -Syu --noconfirm alsa-lib fontconfig" }
+          - { image: "opensuse/tumbleweed", arch: x86_64, runner: ubuntu-24.04, deps: "zypper --non-interactive install libasound2 fontconfig tar gzip" }
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      - name: System libraries
+        run: ${{ matrix.deps }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-${{ matrix.arch }}
+          path: dist
+      - name: Programs start
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          set -eu
+          app=$(ls dist/*.AppImage)
+          chmod +x "$app"
+          out=$("$app" --version)
+          echo "$out"
+          test "$out" = "radiotrope $VERSION"
+          for p in radiotrope-cli radiotrope-probe; do
+            out=$("$app" "$p" --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done
+
+  # The AUR packages: `radiotrope` built from this commit's source with
+  # makepkg, `radiotrope-bin` from the tarball above; both checked with namcap
+  # and installed
+  smoke-arch:
+    name: Smoke AUR PKGBUILDs (archlinux)
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Tools and build dependencies
+        run: pacman -Syu --noconfirm --needed git namcap cargo cmake alsa-lib fontconfig hicolor-icon-theme libxkbcommon
+      - uses: actions/checkout@v4
+      - name: A builder user (makepkg refuses root)
+        run: |
+          useradd -m builder
+          chown -R builder: packaging/arch
+      - name: PKGBUILD with this commit as the release tarball
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git archive --format=tar.gz --prefix="radiotrope-$VERSION/" -o "packaging/arch/radiotrope-$VERSION.tar.gz" HEAD
+          chown builder: packaging/arch/*.tar.gz
+          cd packaging/arch
+          sed -i "s/^pkgver=.*/pkgver=$VERSION/" PKGBUILD PKGBUILD-bin
+          su builder -c "makepkg --skipchecksums --noconfirm"
+      - name: namcap (radiotrope)
+        run: |
+          cd packaging/arch
+          namcap PKGBUILD
+          namcap radiotrope-"$VERSION"-*.pkg.tar.zst
+      - name: Install radiotrope and start the programs
+        run: |
+          set -eu
+          pacman -U --noconfirm packaging/arch/radiotrope-"$VERSION"-*.pkg.tar.zst
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            out=$("$p" --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done
+          pacman -R --noconfirm radiotrope
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-linux-x86_64
+          path: dist
+      - name: PKGBUILD-bin with the tarball above
+        run: |
+          cp dist/radiotrope-"$VERSION"-linux-x86_64.tar.gz packaging/arch/
+          chown -R builder: packaging/arch
+          cd packaging/arch
+          su builder -c "makepkg -C -p PKGBUILD-bin --skipchecksums --noconfirm"
+          namcap PKGBUILD-bin
+          namcap radiotrope-bin-"$VERSION"-*.pkg.tar.zst
+      - name: Install radiotrope-bin and start the programs
+        run: |
+          set -eu
+          pacman -U --noconfirm packaging/arch/radiotrope-bin-"$VERSION"-*.pkg.tar.zst
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            out=$("$p" --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done

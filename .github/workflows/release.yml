@@ -1,0 +1,184 @@
+# Release: build every platform's files, write SHA256SUMS, attest them, and
+# put them on a DRAFT GitHub release. Nothing here publishes a release or
+# creates a tag: the owner reviews the draft and publishes it (RELEASING.md).
+#
+# - Pushing a tag v<version> runs it and makes or updates that tag's draft.
+# - Run it by hand (Actions > Release > Run workflow) to choose:
+#     dry-run  build and check everything, keep the files as a workflow
+#              artefact `release-files`; no release, no attestations
+#     draft    as for a tag: the draft release v<version> from Cargo.toml,
+#              pointing at the chosen branch's commit
+#     aur      push PKGBUILDs to the AUR for v<version>, after that release
+#              is published (needs the AUR_SSH_KEY secret)
+#
+# Platforms are reusable workflows with a `version` input, each uploading
+# artefacts named dist-<os>-...: package-linux.yml and package-windows.yml.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "What to do"
+        type: choice
+        options: [dry-run, draft, aur]
+        default: dry-run
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare
+    if: github.event_name == 'push' || inputs.task != 'aur'
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        name: Version and tag agree
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          case "$version" in
+            *-dev*) echo "::error::Cargo.toml says $version: not a release version"; exit 1 ;;
+          esac
+          if [ "$REF_TYPE" = tag ] && [ "$REF_NAME" != "v$version" ]; then
+            echo "::error::Tag $REF_NAME does not match Cargo.toml's version $version (expected v$version)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Release notes from CHANGELOG.md
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # The section "## [<version>] ..." up to the next "## "
+          awk -v v="$VERSION" '
+            /^## / { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::warning::CHANGELOG.md has no section for $VERSION; the draft gets a placeholder"
+            echo "Radiotrope $VERSION" > notes.md
+          fi
+          cat notes.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: notes.md
+
+  linux:
+    name: Linux
+    needs: prepare
+    uses: ./.github/workflows/package-linux.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  # Owned by the Windows packaging (zip, installer); same interface
+  windows:
+    name: Windows
+    needs: prepare
+    uses: ./.github/workflows/package-windows.yml
+    with:
+      version: ${{ needs.prepare.outputs.version }}
+
+  publish:
+    name: Draft release
+    needs: [prepare, linux, windows]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      MAKE_RELEASE: ${{ github.event_name == 'push' || inputs.task == 'draft' }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: files
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+      - name: SHA256SUMS
+        working-directory: files
+        run: |
+          ls -l
+          sha256sum -- * > ../SHA256SUMS
+          mv ../SHA256SUMS .
+          cat SHA256SUMS
+      - name: Keep the files (dry run)
+        if: env.MAKE_RELEASE != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: files/*
+      # Sigstore-signed build provenance for every file, checked with
+      # `gh attestation verify <file> -R goten002/radiotrope`
+      - name: Build provenance
+        if: env.MAKE_RELEASE == 'true'
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: files/*
+      - name: Create or update the draft release
+        if: env.MAKE_RELEASE == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ github.sha }}
+        run: |
+          set -eu
+          # Never touch a release that is already published
+          if state=$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$state" != true ]; then
+              echo "::error::Release $TAG is already published; not changing it"
+              exit 1
+            fi
+            echo "Updating the draft $TAG"
+            gh release edit "$TAG" --draft=true --notes-file notes.md
+          else
+            echo "Creating the draft $TAG at $TARGET"
+            prerelease=""
+            case "$VERSION" in *-*) prerelease="--prerelease" ;; esac
+            gh release create "$TAG" --draft $prerelease --target "$TARGET" \
+              --title "Radiotrope $VERSION" --notes-file notes.md
+          fi
+          gh release upload "$TAG" files/* --clobber
+          echo "Draft: $(gh release view "$TAG" --json url --jq .url)"
+
+  # Push the two AUR packages for a published release: `radiotrope` (source)
+  # and `radiotrope-bin` (the release tarballs). Only when run by hand with
+  # task `aur`, and only with the AUR_SSH_KEY secret. Run it from the tag.
+  aur:
+    name: AUR
+    if: github.event_name == 'workflow_dispatch' && inputs.task == 'aur'
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    env:
+      AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+    steps:
+      - name: Tools
+        run: pacman -Syu --noconfirm --needed git openssh pacman-contrib
+      - uses: actions/checkout@v4
+      - name: Push to the AUR
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::error::The AUR_SSH_KEY secret is not set (see RELEASING.md)"
+            exit 1
+          fi
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          packaging/arch/aur-publish.sh

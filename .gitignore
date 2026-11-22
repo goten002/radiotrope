@@ -20,7 +20,8 @@ target/
 # MCP server config (contains absolute paths)
 .mcp.json
 
-PKGBUILD
+# A local PKGBUILD at the top; the AUR ones are in packaging/arch/
+/PKGBUILD
 
 docs/
 pkg/

@@ -1,0 +1,57 @@
+# Maintainer: George Alexiou <goten002 at users dot noreply dot github dot com>
+#
+# The AUR package `radiotrope`: builds the release tag from source.
+# The release workflow's `aur` job sets pkgver and the checksum and pushes
+# this file with its .SRCINFO (see RELEASING.md). To try it from a checkout:
+#   cd packaging/arch && makepkg -si
+
+pkgname=radiotrope
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Internet radio player, with a terminal player and a station checker'
+arch=('x86_64' 'aarch64')
+url='https://github.com/goten002/radiotrope'
+license=('GPL-3.0-or-later')
+# libxkbcommon is loaded at run time (by winit), not linked
+depends=('alsa-lib' 'ca-certificates' 'fontconfig' 'libgcc' 'glibc' 'hicolor-icon-theme' 'libxkbcommon')
+makedepends=('cargo' 'cmake')
+optdepends=(
+  'libfdk-aac: full AAC+ (HE-AAC) playback'
+  'libglvnd: hardware-accelerated drawing'
+  'wayland: Wayland sessions'
+  'libx11: X11 sessions'
+  'libxcursor: X11 sessions'
+  'libxi: X11 sessions'
+  'libxrandr: X11 sessions'
+  'libxkbcommon-x11: X11 sessions'
+)
+# The release profile already uses LTO for the Rust code; makepkg's -flto on
+# the bundled C and C++ libraries (libopus, LAME, aws-lc) is a known source of
+# link failures. The programs are stripped by the profile, so no -debug package.
+options=('!lto' '!debug')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# Filled in by `updpkgsums` once the tag exists
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc --print host-tuple)"
+}
+
+build() {
+  cd "$pkgname-$pkgver"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  # .cargo/config.toml names a cross linker for aarch64; build natively
+  export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=cc
+  # The three programs, man pages and completions
+  make all CARGO_FLAGS=--frozen
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  make install DESTDIR="$pkgdir" PREFIX=/usr
+  install -Dm644 LICENSE THIRD-PARTY-LICENSES -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}

@@ -1,0 +1,44 @@
+# Maintainer: George Alexiou <goten002 at users dot noreply dot github dot com>
+#
+# The AUR package `radiotrope-bin`: the release tarball, as built by the
+# release workflow (ubuntu:22.04, so it runs on any current Arch). The
+# workflow's `aur` job sets pkgver and the checksums and pushes this file as
+# the package's PKGBUILD (see RELEASING.md). To try it from a checkout, with a
+# release tarball next to it:
+#   cd packaging/arch && makepkg -si -p PKGBUILD-bin
+
+pkgname=radiotrope-bin
+_pkgname=radiotrope
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Internet radio player, with a terminal player and a station checker (prebuilt)'
+arch=('x86_64' 'aarch64')
+url='https://github.com/goten002/radiotrope'
+license=('GPL-3.0-or-later')
+depends=('alsa-lib' 'ca-certificates' 'fontconfig' 'libgcc' 'glibc' 'hicolor-icon-theme' 'libxkbcommon')
+optdepends=(
+  'libfdk-aac: full AAC+ (HE-AAC) playback'
+  'libglvnd: hardware-accelerated drawing'
+  'wayland: Wayland sessions'
+  'libx11: X11 sessions'
+  'libxcursor: X11 sessions'
+  'libxi: X11 sessions'
+  'libxrandr: X11 sessions'
+  'libxkbcommon-x11: X11 sessions'
+)
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+options=('!strip' '!debug')
+source_x86_64=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-linux-x86_64.tar.gz")
+source_aarch64=("$url/releases/download/v$pkgver/$_pkgname-$pkgver-linux-aarch64.tar.gz")
+# Filled in by `updpkgsums PKGBUILD-bin` from the published release
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+  cd "$_pkgname-$pkgver-linux-$CARCH"
+  install -d "$pkgdir/usr"
+  cp -dr --no-preserve=ownership bin share "$pkgdir/usr/"
+  install -Dm644 LICENSE THIRD-PARTY-LICENSES -t "$pkgdir/usr/share/licenses/$pkgname/"
+  install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}
