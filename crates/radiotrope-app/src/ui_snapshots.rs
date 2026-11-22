@@ -331,6 +331,30 @@ const SHOTS: &[Shot] = &[
         "Playing with a custom white accent.",
     ),
     Shot::new(
+        "main-accent-black",
+        "main",
+        "accent-black",
+        "Playing with a custom near-black accent.",
+    ),
+    Shot::new(
+        "main-no-logo",
+        "main",
+        "no-logo",
+        "A station without a logo: the same radio tile in the header and its row.",
+    ),
+    Shot::new(
+        "main-no-logo-white",
+        "main",
+        "no-logo-white",
+        "Stations without a logo with a custom white accent.",
+    ),
+    Shot::new(
+        "main-no-logo-black",
+        "main",
+        "no-logo-black",
+        "Stations without a logo with a custom near-black accent.",
+    ),
+    Shot::new(
         "main-system-title-bar",
         "main",
         "system-frame",
@@ -483,6 +507,12 @@ const SHOTS: &[Shot] = &[
         "search",
         "results",
         "Station results; the filters are hidden behind the button beside the search field.",
+    ),
+    Shot::new(
+        "search-no-logos",
+        "search",
+        "no-logos",
+        "Results without logos: the radio tile of the favorites list.",
     ),
     Shot::new(
         "search-filters",
@@ -1627,6 +1657,23 @@ fn configure(ui: &App, shot: &Shot) {
             "long-names" => configure_long_names(ui),
             "accent-purple" => ui.set_accent_color(Color::from_rgb_u8(0x91, 0x41, 0xac)),
             "accent-white" => ui.set_accent_color(Color::from_rgb_u8(0xff, 0xff, 0xff)),
+            "accent-black" => ui.set_accent_color(Color::from_rgb_u8(0x0a, 0x0a, 0x0a)),
+            "no-logo" | "no-logo-white" | "no-logo-black" => {
+                // The current station and the third one have no logo
+                ui.set_current_logo(Image::default());
+                ui.set_favorite_logos(model((0..STATIONS.len()).map(|index| {
+                    if index % 2 == 0 {
+                        Image::default()
+                    } else {
+                        logo(index)
+                    }
+                })));
+                match shot.state {
+                    "no-logo-white" => ui.set_accent_color(Color::from_rgb_u8(0xff, 0xff, 0xff)),
+                    "no-logo-black" => ui.set_accent_color(Color::from_rgb_u8(0x0a, 0x0a, 0x0a)),
+                    _ => {}
+                }
+            }
             "system-frame" => ui.set_custom_frame(false),
             "title-bubble" => ui.set_now_playing_title("The Cedar Quartet and the North Coast Orchestra — Blue Hour: Live at Harbour Hall, second set (late-night encore and extended improvisation)".into()),
             "no-stats" => ui.set_show_station_stats(false),
@@ -1642,11 +1689,20 @@ fn configure(ui: &App, shot: &Shot) {
             }
             if matches!(
                 shot.state,
-                "results" | "filters" | "filtered-shown" | "next-loading" | "next-error" | "keyboard"
+                "results"
+                    | "no-logos"
+                    | "filters"
+                    | "filtered-shown"
+                    | "next-loading"
+                    | "next-error"
+                    | "keyboard"
             ) || shot.name == "search-filtered-hidden"
                 || shot.state.starts_with("filter-")
             {
                 set_results(ui);
+            }
+            if shot.state == "no-logos" {
+                ui.set_browse_logos(ModelRc::default());
             }
             install_filter_lists(ui);
             if shot.name == "search-undo" {
