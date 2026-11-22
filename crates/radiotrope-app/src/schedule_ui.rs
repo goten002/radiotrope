@@ -12,7 +12,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Datelike, Local, NaiveDate, TimeDelta, Timelike};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
+use radiotrope_app::data::schedule::{
+    self, Action, ClockTime, Days, End, Entry, LastRun, ScheduledStation,
+};
 
 use crate::app::controller::clash_message;
 use crate::app::state::{AppCommand, AppSnapshot, NextRun, ScheduledNow, SleepTimerInfo};
@@ -454,12 +456,15 @@ pub struct View {
     /// The list's version, and the entries when it is not the one shown
     seq: u64,
     entries: Option<Vec<Entry>>,
+    /// How each entry's last run went, with `entries`
+    results: Vec<LastRun>,
 }
 
 impl View {
     pub fn of(s: &AppSnapshot) -> Self {
         let running_id = s.scheduled.as_ref().map(|r| r.id);
         let seq = s.schedule_seq ^ running_id.unwrap_or(0).rotate_left(32);
+        let changed = SHOWN_SEQ.get() != seq;
         View {
             sleep: s.sleep.clone(),
             alarm_beep: s.alarm_beep,
@@ -467,7 +472,12 @@ impl View {
             scheduled: s.scheduled.clone(),
             next_run: s.next_run.clone(),
             seq,
-            entries: (SHOWN_SEQ.get() != seq).then(|| s.schedule.clone()),
+            entries: changed.then(|| s.schedule.clone()),
+            results: if changed {
+                s.schedule_results.clone()
+            } else {
+                Vec::new()
+            },
         }
     }
 }
@@ -522,7 +532,10 @@ pub fn show_state(ui: &App, view: View) {
         SHOWN_SEQ.set(view.seq);
         let running_id = view.scheduled.as_ref().map(|r| r.id);
         ui.set_schedule_rows(ModelRc::from(Rc::new(VecModel::from(rows(
-            &entries, running_id,
+            &entries,
+            &view.results,
+            running_id,
+            &now,
         )))));
     }
 }
@@ -604,20 +617,30 @@ fn row_title(entry: &Entry) -> String {
     }
 }
 
-/// The list's rows, by start time
-fn rows(entries: &[Entry], running: Option<u64>) -> Vec<ScheduleRow> {
+/// The list's rows, by start time, each with how its last run went
+fn rows(
+    entries: &[Entry],
+    results: &[LastRun],
+    running: Option<u64>,
+    now: &DateTime<Local>,
+) -> Vec<ScheduleRow> {
     let mut entries: Vec<&Entry> = entries.iter().collect();
     entries.sort_by_key(|e| (e.start, e.id));
     entries
         .into_iter()
-        .map(|e| ScheduleRow {
-            id: e.id as i32,
-            enabled: e.enabled,
-            time: e.start.to_string().into(),
-            action: e.action.id().into(),
-            title: row_title(e).into(),
-            details: e.details().into(),
-            running: running == Some(e.id),
+        .map(|e| {
+            let last = results.iter().find(|r| r.id == e.id);
+            ScheduleRow {
+                id: e.id as i32,
+                enabled: e.enabled,
+                time: e.start.to_string().into(),
+                action: e.action.id().into(),
+                title: row_title(e).into(),
+                details: e.details().into(),
+                running: running == Some(e.id),
+                last: last.map(|r| r.label(now)).unwrap_or_default().into(),
+                last_bad: last.is_some_and(LastRun::went_wrong),
+            }
         })
         .collect()
 }
@@ -698,6 +721,7 @@ mod tests {
             next_run: next,
             seq: 0,
             entries: None,
+            results: Vec::new(),
         };
         COUNTED_DOWN.with(|c| *c.borrow_mut() = None);
         let label = |v: &View, secs: i64| schedule_label(v, &(at + TimeDelta::seconds(secs))).text;

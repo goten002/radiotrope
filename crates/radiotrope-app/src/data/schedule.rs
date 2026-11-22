@@ -574,8 +574,90 @@ pub enum Decision<Tz: TimeZone> {
     },
     /// Stop whatever plays
     Stop { entry: Box<Entry> },
-    /// Tell the user this
-    Notice(String),
+    /// The entry came round and didn't run. Kept as its last result;
+    /// `notice` is what to tell the user, when it is still news.
+    NotRun {
+        last: LastRun,
+        notice: Option<String>,
+    },
+}
+
+/// How an entry's last run went
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Outcome {
+    /// An alarm's station played
+    Played,
+    /// A recording was saved, this many minutes long
+    Recorded { minutes: u32 },
+    /// A bedtime stop stopped playback
+    Stopped,
+    /// Radiotrope wasn't running, or the computer slept
+    Missed,
+    /// A scheduled recording was running
+    Skipped,
+    /// It ran and went wrong: "no space left on device"
+    Failed { reason: String },
+}
+
+/// An entry's last run: what came of it, and when it was due. Kept in
+/// the file beside the entries, so "did it run?" has an answer after a
+/// restart too.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastRun {
+    /// The entry it is about
+    pub id: u64,
+    /// When the run was due (Unix seconds)
+    pub at: i64,
+    #[serde(flatten)]
+    pub outcome: Outcome,
+}
+
+impl LastRun {
+    /// It didn't do what it was set to
+    pub fn went_wrong(&self) -> bool {
+        matches!(
+            self.outcome,
+            Outcome::Missed | Outcome::Skipped | Outcome::Failed { .. }
+        )
+    }
+
+    /// "Last: recorded 45 min · Fri 19:30", for the entry's row
+    pub fn label<Tz: TimeZone>(&self, now: &DateTime<Tz>) -> String
+    where
+        Tz::Offset: fmt::Display,
+    {
+        let what = match &self.outcome {
+            Outcome::Played => "played".to_string(),
+            Outcome::Recorded { minutes } => format!("recorded {}", duration_label(*minutes)),
+            Outcome::Stopped => "stopped playback".to_string(),
+            Outcome::Missed => "missed".to_string(),
+            Outcome::Skipped => "skipped, a recording was running".to_string(),
+            Outcome::Failed { reason } => format!("failed, {reason}"),
+        };
+        match now.timezone().timestamp_opt(self.at, 0).single() {
+            Some(at) => format!("Last: {what} · {}", past_label(&at, now)),
+            None => format!("Last: {what}"),
+        }
+    }
+}
+
+/// Put `run` in `results` as its entry's last one. A recording made in
+/// several files (its station failed and came back) counts as one run:
+/// the minutes add up.
+pub fn keep_result(results: &mut Vec<LastRun>, mut run: LastRun) {
+    let before = results.iter().position(|r| r.id == run.id);
+    if let Some(i) = before {
+        let old = results.remove(i);
+        if old.at == run.at {
+            if let (Outcome::Recorded { minutes: more }, Outcome::Recorded { minutes }) =
+                (&old.outcome, &mut run.outcome)
+            {
+                *minutes += more;
+            }
+        }
+    }
+    results.push(run);
 }
 
 /// What runs now, as [`run_due`] needs to know
@@ -622,18 +704,32 @@ pub fn run_due<Tz: TimeZone>(
             entry.enabled = false;
         }
         let late = (now.clone() - start.clone()).num_seconds();
-        let missed = late <= MISSED_NOTICE_SECS;
         let at = entry.start;
         let title = entry.title();
+        let not_run = |outcome: Outcome, notice: Option<String>| Decision::NotRun {
+            last: LastRun {
+                id: entry.id,
+                at: start.timestamp(),
+                outcome,
+            },
+            notice,
+        };
+        // A run missed long ago is kept as the last result, without a word
+        let missed = || {
+            not_run(
+                Outcome::Missed,
+                (late <= MISSED_NOTICE_SECS).then(|| format!("Missed {at}: {title}")),
+            )
+        };
+        let skipped = || {
+            not_run(
+                Outcome::Skipped,
+                Some(format!("Skipped {at}: {title}, a recording is running")),
+            )
+        };
         match entry.action {
-            Action::Play if late > ALARM_GRACE_SECS => {
-                if missed {
-                    decisions.push(Decision::Notice(format!("Missed {at}: {title}")));
-                }
-            }
-            Action::Play if recording => decisions.push(Decision::Notice(format!(
-                "Skipped {at}: {title}, a recording is running"
-            ))),
+            Action::Play if late > ALARM_GRACE_SECS => decisions.push(missed()),
+            Action::Play if recording => decisions.push(skipped()),
             Action::Play => decisions.push(Decision::Start {
                 until: entry.end_after(&start),
                 entry: Box::new(entry.clone()),
@@ -641,13 +737,9 @@ pub fn run_due<Tz: TimeZone>(
             Action::Record => {
                 let until = entry.end_after(&start);
                 if until.as_ref().is_none_or(|end| end <= now) {
-                    if missed {
-                        decisions.push(Decision::Notice(format!("Missed {at}: {title}")));
-                    }
+                    decisions.push(missed());
                 } else if recording {
-                    decisions.push(Decision::Notice(format!(
-                        "Skipped {at}: {title}, a recording is running"
-                    )));
+                    decisions.push(skipped());
                 } else {
                     recording = true;
                     decisions.push(Decision::Start {
@@ -656,10 +748,11 @@ pub fn run_due<Tz: TimeZone>(
                     });
                 }
             }
-            Action::Stop if late > STOP_GRACE_SECS => {}
-            Action::Stop if recording => decisions.push(Decision::Notice(format!(
-                "Skipped {at}: {title}, a recording is running"
-            ))),
+            // Too late to stop anything: said only in the entry's row
+            Action::Stop if late > STOP_GRACE_SECS => {
+                decisions.push(not_run(Outcome::Missed, None))
+            }
+            Action::Stop if recording => decisions.push(skipped()),
             Action::Stop => decisions.push(Decision::Stop {
                 entry: Box::new(entry.clone()),
             }),
@@ -685,6 +778,9 @@ pub struct ScheduleFile {
     pub version: u32,
     #[serde(default)]
     pub entries: Vec<Entry>,
+    /// How each entry's last run went (none for one that never came round)
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub results: Vec<LastRun>,
 }
 
 /// A wall-clock "when" for a label: "07:00", "Tomorrow 07:00", "Sat 20:00"
@@ -698,6 +794,21 @@ where
         0 => time.to_string(),
         1 => format!("Tomorrow {time}"),
         2..=6 => format!("{} {time}", at.format("%a")),
+        _ => format!("{} {time}", at.format("%a %-d %b")),
+    }
+}
+
+/// A wall-clock "when" for something past: "Fri 19:30", or "Fri 13 Nov
+/// 19:30" from a week back. Always with its day, so a label drawn once
+/// stays right after midnight.
+pub fn past_label<Tz: TimeZone>(at: &DateTime<Tz>, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: fmt::Display,
+{
+    let time = at.format("%H:%M");
+    let days = (now.date_naive() - at.date_naive()).num_days();
+    match days {
+        0..=6 => format!("{} {time}", at.format("%a")),
         _ => format!("{} {time}", at.format("%a %-d %b")),
     }
 }
@@ -832,7 +943,21 @@ mod tests {
                     None => format!("start {}", entry.title()),
                 },
                 Decision::Stop { .. } => "stop".into(),
-                Decision::Notice(text) => format!("notice {text}"),
+                Decision::NotRun {
+                    notice: Some(text), ..
+                } => format!("notice {text}"),
+                Decision::NotRun { last, .. } => format!("quiet {:?}", last.outcome),
+            })
+            .collect()
+    }
+
+    /// The last results the decisions leave, as the rows say them
+    fn results(decisions: &[Decision<Athens>], now: &DateTime<Athens>) -> Vec<String> {
+        decisions
+            .iter()
+            .filter_map(|d| match d {
+                Decision::NotRun { last, .. } => Some(last.label(now)),
+                _ => None,
             })
             .collect()
     }
@@ -873,6 +998,11 @@ mod tests {
                     ..bedtime("01:00")
                 },
             ],
+            results: vec![LastRun {
+                id: 1,
+                at: 1_790_000_000,
+                outcome: Outcome::Recorded { minutes: 45 },
+            }],
         };
         let json = serde_json::to_string(&file).unwrap();
         assert!(json.contains(r#""start":"20:00""#), "{json}");
@@ -882,6 +1012,10 @@ mod tests {
             "{json}"
         );
         assert!(json.contains(r#""date":"2026-10-03""#), "{json}");
+        assert!(
+            json.contains(r#"{"id":1,"at":1790000000,"kind":"recorded","minutes":45}"#),
+            "{json}"
+        );
         let back: ScheduleFile = serde_json::from_str(&json).unwrap();
         assert_eq!(back, file);
     }
@@ -952,7 +1086,8 @@ mod tests {
         entries[0].armed_from = at(2026, 9, 1, 0, 0).timestamp();
         let now = at(2026, 10, 2, 23, 0);
         let (decisions, changed) = run_due(&mut entries, &now, Running::default());
-        assert!(decisions.is_empty());
+        assert_eq!(started(&decisions), ["quiet Missed"]);
+        assert_eq!(results(&decisions, &now), ["Last: missed · Fri 07:00"]);
         assert!(changed);
     }
 
@@ -1025,6 +1160,118 @@ mod tests {
     }
 
     #[test]
+    fn a_file_without_results_still_loads() {
+        let file: ScheduleFile = serde_json::from_str(r#"{"version":1,"entries":[]}"#).unwrap();
+        assert!(file.results.is_empty());
+        // And one with none is written as before
+        let json = serde_json::to_string(&file).unwrap();
+        assert!(!json.contains("results"), "{json}");
+    }
+
+    #[test]
+    fn last_results_read_like_the_rows() {
+        let now = at(2026, 10, 3, 9, 0);
+        let run = |at: DateTime<Athens>, outcome| LastRun {
+            id: 1,
+            at: at.timestamp(),
+            outcome,
+        };
+        let friday = at(2026, 10, 2, 19, 30);
+        assert_eq!(
+            run(friday, Outcome::Recorded { minutes: 45 }).label(&now),
+            "Last: recorded 45 min · Fri 19:30"
+        );
+        assert_eq!(
+            run(at(2026, 10, 2, 7, 0), Outcome::Missed).label(&now),
+            "Last: missed · Fri 07:00"
+        );
+        assert_eq!(
+            run(
+                friday,
+                Outcome::Failed {
+                    reason: "no space left on device".into()
+                }
+            )
+            .label(&now),
+            "Last: failed, no space left on device · Fri 19:30"
+        );
+        assert_eq!(
+            run(at(2026, 10, 3, 7, 0), Outcome::Played).label(&now),
+            "Last: played · Sat 07:00"
+        );
+        // From a week back the date is said too
+        assert_eq!(
+            run(at(2026, 9, 26, 23, 0), Outcome::Stopped).label(&now),
+            "Last: stopped playback · Sat 26 Sep 23:00"
+        );
+        assert!(run(friday, Outcome::Missed).went_wrong());
+        assert!(run(friday, Outcome::Skipped).went_wrong());
+        assert!(!run(friday, Outcome::Played).went_wrong());
+    }
+
+    #[test]
+    fn what_is_missed_or_skipped_is_kept_as_the_last_result() {
+        // An alarm missed while the computer slept
+        let mut entries = vec![alarm("07:00", Days::EVERY_DAY)];
+        entries[0].id = 7;
+        entries[0].armed_from = at(2026, 10, 1, 0, 0).timestamp();
+        let now = at(2026, 10, 2, 11, 40);
+        let (decisions, _) = run_due(&mut entries, &now, Running::default());
+        let [Decision::NotRun { last, notice }] = decisions.as_slice() else {
+            panic!("{decisions:?}");
+        };
+        assert_eq!(notice.as_deref(), Some("Missed 07:00: Play Jazz FM"));
+        assert_eq!(
+            *last,
+            LastRun {
+                id: 7,
+                at: at(2026, 10, 2, 7, 0).timestamp(),
+                outcome: Outcome::Missed
+            }
+        );
+
+        // One skipped for a recording
+        let mut entries = vec![alarm("07:00", Days::EVERY_DAY)];
+        entries[0].armed_from = at(2026, 10, 1, 0, 0).timestamp();
+        let running = Running {
+            scheduled_recording: true,
+        };
+        let now = at(2026, 10, 2, 7, 0);
+        let (decisions, _) = run_due(&mut entries, &now, running);
+        assert_eq!(
+            results(&decisions, &now),
+            ["Last: skipped, a recording was running · Fri 07:00"]
+        );
+    }
+
+    #[test]
+    fn an_entry_keeps_one_result_and_a_split_recording_adds_up() {
+        let run = |id, at, outcome| LastRun { id, at, outcome };
+        let mut kept = Vec::new();
+        keep_result(&mut kept, run(1, 100, Outcome::Recorded { minutes: 20 }));
+        keep_result(&mut kept, run(2, 100, Outcome::Played));
+        // The same run's second file
+        keep_result(&mut kept, run(1, 100, Outcome::Recorded { minutes: 25 }));
+        assert_eq!(
+            kept,
+            [
+                run(2, 100, Outcome::Played),
+                run(1, 100, Outcome::Recorded { minutes: 45 })
+            ]
+        );
+        // The next run starts again
+        keep_result(&mut kept, run(1, 200, Outcome::Recorded { minutes: 5 }));
+        keep_result(&mut kept, run(2, 200, Outcome::Missed));
+        assert_eq!(
+            kept,
+            [
+                run(1, 200, Outcome::Recorded { minutes: 5 }),
+                run(2, 200, Outcome::Missed)
+            ]
+        );
+    }
+
+    #[test]
     fn a_late_bedtime_stop_is_dropped() {
         let mut entries = vec![bedtime("01:00")];
         let (decisions, _) = run_due(&mut entries, &at(2026, 10, 2, 1, 1), Running::default());
@@ -1033,7 +1280,8 @@ mod tests {
         let mut entries = vec![bedtime("01:00")];
         let (decisions, changed) =
             run_due(&mut entries, &at(2026, 10, 2, 1, 5), Running::default());
-        assert!(decisions.is_empty() && changed);
+        assert_eq!(started(&decisions), ["quiet Missed"]);
+        assert!(changed);
     }
 
     #[test]

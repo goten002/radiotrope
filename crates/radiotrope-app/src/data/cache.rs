@@ -17,11 +17,12 @@ pub use crate::data::storage::{cache_dir, ensure_cache_dir};
 use crate::data::svg_logo;
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
 use image::imageops::FilterType;
@@ -59,9 +60,33 @@ pub struct Thumbnail {
     pub saved: Result<()>,
 }
 
+/// What the cache holds for an id, as [`ImageCache::info`] read it from
+/// the disk
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogoInfo {
+    pub state: CacheState,
+    /// When the image file was last written (see [`ImageCache::modified`])
+    pub modified: Option<SystemTime>,
+    /// The URL it was downloaded from, and when (see [`ImageCache::source`])
+    pub source: Option<(String, SystemTime)>,
+}
+
+/// What [`ImageCache::info`] has read so far
+#[derive(Default)]
+struct Index {
+    known: HashMap<String, LogoInfo>,
+    /// Counts the changes to the cache, so that what was read from the
+    /// disk while one happened isn't kept
+    changes: u64,
+}
+
 /// Image cache manager for station logos
 pub struct ImageCache {
     cache_dir: PathBuf,
+    /// What is known of the ids asked about with [`info`](Self::info),
+    /// so that asking again touches no files. Every change made through
+    /// this cache forgets the id it changes.
+    index: Mutex<Index>,
 }
 
 impl ImageCache {
@@ -74,7 +99,14 @@ impl ImageCache {
                 cache_dir, e
             ))
         })?;
-        Ok(Self { cache_dir })
+        Ok(Self::at(cache_dir))
+    }
+
+    fn at(cache_dir: PathBuf) -> Self {
+        Self {
+            cache_dir,
+            index: Mutex::default(),
+        }
     }
 
     /// The cache in the `name` folder under the app's cache folder. When
@@ -86,11 +118,7 @@ impl ImageCache {
         let preferred = cache_dir().map(|dir| dir.join(name));
         let problem = match &preferred {
             Ok(dir) => match fs::create_dir_all(dir) {
-                Ok(()) => {
-                    return Self {
-                        cache_dir: dir.clone(),
-                    }
-                }
+                Ok(()) => return Self::at(dir.clone()),
                 Err(e) => format!("Can't create {}: {e}", dir.display()),
             },
             Err(e) => e.to_string(),
@@ -107,12 +135,10 @@ impl ImageCache {
                     .as_nanos();
                 std::env::temp_dir().join(format!("{NAME}-{}-{nanos}", std::process::id()))
             });
-            return Self { cache_dir: missing };
+            return Self::at(missing);
         }
         eprintln!("{problem}; caching in {}", fallback.display());
-        Self {
-            cache_dir: fallback,
-        }
+        Self::at(fallback)
     }
 
     /// Create a new image cache with a custom directory (for testing)
@@ -123,7 +149,7 @@ impl ImageCache {
                 cache_dir, e
             ))
         })?;
-        Ok(Self { cache_dir })
+        Ok(Self::at(cache_dir))
     }
 
     /// Get the cache directory path
@@ -158,18 +184,76 @@ impl ImageCache {
     /// Whether a logo is cached for `id`, and whether it is ready or still
     /// to be converted. Only reads the file's header.
     pub fn state(&self, id: &str) -> CacheState {
-        let Some(path) = self.find_cached_path(id) else {
-            return CacheState::Absent;
+        match self.find_cached_path(id) {
+            Some(path) => state_of(&path),
+            None => CacheState::Absent,
+        }
+    }
+
+    // =========================================================================
+    // What is cached, kept in memory
+    // =========================================================================
+
+    /// What the cache holds for `id`: from memory when it was asked
+    /// before and nothing changed it since through this cache, else read
+    /// from the disk (about ten file-system calls: not for the UI thread)
+    /// and remembered. A change made by another program shows after
+    /// [`reindex`](Self::reindex).
+    pub fn info(&self, id: &str) -> LogoInfo {
+        let changes = {
+            let index = self.index();
+            if let Some(info) = index.known.get(id) {
+                return info.clone();
+            }
+            index.changes
         };
-        // Older builds kept SVGs as they came
-        if path.extension().is_some_and(|ext| ext == "svg") {
-            return CacheState::NeedsConversion;
+        let info = self.read_info(id);
+        let mut index = self.index();
+        // Read while something was written: it may be out of date already
+        if index.changes == changes {
+            index.known.insert(id.to_string(), info.clone());
         }
-        match ImageReader::open(&path).map(needs_thumbnail) {
-            Ok(true) => CacheState::NeedsConversion,
-            Ok(false) => CacheState::Ready,
-            Err(_) => CacheState::Absent,
+        info
+    }
+
+    /// [`info`](Self::info), only if it is in memory: touches no files
+    pub fn known(&self, id: &str) -> Option<LogoInfo> {
+        self.index().known.get(id).cloned()
+    }
+
+    /// Read again from the disk what is remembered of the ids in `keep`,
+    /// and forget the others
+    pub fn reindex(&self, keep: &HashSet<String>) {
+        self.forget_all();
+        for id in keep {
+            self.info(id);
         }
+    }
+
+    fn read_info(&self, id: &str) -> LogoInfo {
+        let path = self.find_cached_path(id);
+        LogoInfo {
+            state: path.as_deref().map_or(CacheState::Absent, state_of),
+            modified: path.and_then(|path| fs::metadata(path).and_then(|m| m.modified()).ok()),
+            source: self.source(id),
+        }
+    }
+
+    fn index(&self) -> MutexGuard<'_, Index> {
+        self.index.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `id` was changed on the disk: what was known of it no longer holds
+    fn forget(&self, id: &str) {
+        let mut index = self.index();
+        index.known.remove(id);
+        index.changes += 1;
+    }
+
+    fn forget_all(&self) {
+        let mut index = self.index();
+        index.known.clear();
+        index.changes += 1;
     }
 
     /// Shrink an entry cached before logos were stored as thumbnails to a
@@ -184,6 +268,7 @@ impl ImageCache {
         let Some(png) = make_thumbnail(&data) else {
             // Only its header was fine: it is fetched again
             let _ = fs::remove_file(&path);
+            self.forget(id);
             return None;
         };
         let saved = self.write_png(id, &png).map(|_| ());
@@ -206,8 +291,10 @@ impl ImageCache {
         // Remove any existing cached image with different extension
         self.delete(id);
 
-        fs::write(&path, data)
-            .map_err(|e| AppError::Config(format!("Can't write cached image {:?}: {}", path, e)))?;
+        let written = fs::write(&path, data)
+            .map_err(|e| AppError::Config(format!("Can't write cached image {:?}: {}", path, e)));
+        self.forget(id);
+        written?;
 
         Ok(path)
     }
@@ -230,10 +317,12 @@ impl ImageCache {
             let _ = fs::remove_file(self.cache_dir.join(format!("{}.{}", id, ext)));
         }
 
-        fs::rename(&tmp, &path).map_err(|e| {
+        let renamed = fs::rename(&tmp, &path).map_err(|e| {
             let _ = fs::remove_file(&tmp);
             AppError::Config(format!("Can't write cached image {:?}: {}", path, e))
-        })?;
+        });
+        self.forget(id);
+        renamed?;
 
         Ok(path)
     }
@@ -246,6 +335,7 @@ impl ImageCache {
             let _ = fs::remove_file(path);
         }
         let _ = fs::remove_file(self.source_path(id));
+        self.forget(id);
     }
 
     // =========================================================================
@@ -261,6 +351,7 @@ impl ImageCache {
     /// Note that `id`'s logo was just downloaded from `url`
     pub fn set_source(&self, id: &str, url: &str) {
         let _ = fs::write(self.source_path(id), url);
+        self.forget(id);
     }
 
     /// The URL `id`'s logo was downloaded from, and when. `None` for a
@@ -359,6 +450,9 @@ impl ImageCache {
             }
         }
 
+        if removed > 0 {
+            self.forget_all();
+        }
         removed
     }
 
@@ -379,6 +473,8 @@ impl ImageCache {
             return false;
         }
         let _ = fs::rename(self.source_path(from), self.source_path(to));
+        self.forget(from);
+        self.forget(to);
         true
     }
 
@@ -425,6 +521,7 @@ impl ImageCache {
             if let Ok(file) = fs::File::options().write(true).open(path) {
                 let _ = file.set_modified(std::time::SystemTime::now());
             }
+            self.forget(id);
         }
     }
 
@@ -439,7 +536,7 @@ impl ImageCache {
         let Some(cutoff) = std::time::SystemTime::now().checked_sub(age) else {
             return 0;
         };
-        entries
+        let removed = entries
             .flatten()
             .filter(|entry| {
                 if remove_if_stale_temp(entry) {
@@ -456,7 +553,21 @@ impl ImageCache {
                     .is_ok_and(|modified| modified < cutoff);
                 is_image && old && fs::remove_file(&path).is_ok()
             })
-            .count()
+            .count();
+        if removed > 0 {
+            self.forget_all();
+        }
+        removed
+    }
+
+    /// Delete the images written or touched longest ago until the cache
+    /// holds no more than `max_bytes`. Returns how many files were removed.
+    pub fn trim_to_size(&self, max_bytes: u64) -> usize {
+        let removed = trim_dir_to_size(&self.cache_dir, max_bytes);
+        if removed > 0 {
+            self.forget_all();
+        }
+        removed
     }
 
     /// Get total cache size in bytes
@@ -485,6 +596,7 @@ impl ImageCache {
                 removed += 1;
             }
         }
+        self.forget_all();
 
         Ok(removed)
     }
@@ -579,6 +691,52 @@ impl ImageCache {
             _ => None,
         }
     }
+}
+
+/// Whether the cached file at `path` is ready to show. Only reads its
+/// header.
+fn state_of(path: &Path) -> CacheState {
+    // Older builds kept SVGs as they came
+    if path.extension().is_some_and(|ext| ext == "svg") {
+        return CacheState::NeedsConversion;
+    }
+    match ImageReader::open(path).map(needs_thumbnail) {
+        Ok(true) => CacheState::NeedsConversion,
+        Ok(false) => CacheState::Ready,
+        Err(_) => CacheState::Absent,
+    }
+}
+
+/// Delete the files in `dir` written or touched longest ago until those
+/// left take no more than `max_bytes`. Returns how many were removed.
+/// Folders inside it are left alone.
+pub fn trim_dir_to_size(dir: &Path, max_bytes: u64) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut files: Vec<(SystemTime, u64, PathBuf)> = entries
+        .flatten()
+        .filter_map(|entry| {
+            let meta = entry.metadata().ok().filter(|m| m.is_file())?;
+            Some((meta.modified().ok()?, meta.len(), entry.path()))
+        })
+        .collect();
+    let mut total: u64 = files.iter().map(|(_, len, _)| len).sum();
+    if total <= max_bytes {
+        return 0;
+    }
+    files.sort();
+    let mut removed = 0;
+    for (_, len, path) in files {
+        if total <= max_bytes {
+            break;
+        }
+        if fs::remove_file(&path).is_ok() {
+            total -= len;
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Whether cached data is an SVG or a decodable image not yet stored as a
@@ -726,7 +884,12 @@ mod tests {
 
     fn temp_cache_dir() -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        temp_dir().join(format!("radiotrope_cache_test_{}", id))
+        // The process id too: test runs in other checkouts share temp_dir()
+        temp_dir().join(format!(
+            "radiotrope_cache_test_{}_{}",
+            std::process::id(),
+            id
+        ))
     }
 
     fn cleanup_dir(dir: &Path) {
@@ -1642,6 +1805,83 @@ mod tests {
         assert!(cache.source("orphan").is_none());
         assert!(!dir.join("orphan.src").exists());
 
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn info_is_remembered_until_the_cache_changes_the_id() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        assert_eq!(cache.known("a"), None);
+        assert_eq!(cache.info("a").state, CacheState::Absent);
+        assert!(cache.known("a").is_some());
+
+        cache.put_thumbnail("a", &png(8)).unwrap();
+        assert_eq!(cache.known("a"), None, "a write forgets the id");
+        let info = cache.info("a");
+        assert_eq!(info.state, CacheState::Ready);
+        assert!(info.modified.is_some());
+        assert_eq!(info.source, None);
+        assert_eq!(cache.known("a"), Some(info));
+
+        cache.set_source("a", "http://test.com/a.png");
+        assert_eq!(cache.known("a"), None);
+        let source = cache.info("a").source.unwrap();
+        assert_eq!(source.0, "http://test.com/a.png");
+
+        // Another id's changes leave it known
+        cache.put_thumbnail("b", &png(8)).unwrap();
+        assert!(cache.known("a").is_some());
+
+        cache.delete("a");
+        assert_eq!(cache.known("a"), None);
+        assert_eq!(cache.info("a").state, CacheState::Absent);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn reindex_reads_again_what_another_program_changed() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        cache.put_thumbnail("a", &png(8)).unwrap();
+        cache.put_thumbnail("gone", &png(8)).unwrap();
+        assert_eq!(cache.info("a").state, CacheState::Ready);
+        assert_eq!(cache.info("gone").state, CacheState::Ready);
+
+        // Behind the cache's back
+        fs::remove_file(dir.join("a.png")).unwrap();
+        assert_eq!(cache.info("a").state, CacheState::Ready);
+
+        cache.reindex(&HashSet::from(["a".to_string()]));
+        assert_eq!(cache.known("a").unwrap().state, CacheState::Absent);
+        assert_eq!(cache.known("gone"), None);
+        cleanup_dir(&dir);
+    }
+
+    #[test]
+    fn trimming_to_size_removes_the_oldest_first() {
+        let dir = temp_cache_dir();
+        let cache = ImageCache::with_dir(dir.clone()).unwrap();
+        let now = SystemTime::now();
+        for (i, id) in ["old", "mid", "new"].iter().enumerate() {
+            let path = cache
+                .put_thumbnail(id, &png(16))
+                .map(|_| dir.join(format!("{id}.png")));
+            fs::File::options()
+                .write(true)
+                .open(path.unwrap())
+                .unwrap()
+                .set_modified(now - Duration::from_secs(3000 - 1000 * i as u64))
+                .unwrap();
+        }
+        let each = fs::metadata(dir.join("old.png")).unwrap().len();
+        assert_eq!(cache.total_size(), 3 * each);
+
+        assert_eq!(cache.trim_to_size(3 * each), 0);
+        assert_eq!(cache.trim_to_size(2 * each + 1), 1);
+        assert!(!cache.has("old") && cache.has("mid") && cache.has("new"));
+        assert_eq!(cache.trim_to_size(0), 2);
+        assert_eq!(cache.total_size(), 0);
         cleanup_dir(&dir);
     }
 }

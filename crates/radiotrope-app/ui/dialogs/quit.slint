@@ -1,0 +1,69 @@
+import { Theme, Defaults } from "../defaults.slint";
+import { SecondaryButton, AccentButton } from "../buttons.slint";
+import { DialogShell } from "../components.slint";
+
+// Asked once on close or Quit while closing would cancel something: a
+// recording running now, or a Scheduler entry due within a day. Rust
+// fills the lines and opens it; it is never asked on logout or SIGTERM.
+export component QuitDialog inherits Rectangle {
+    in-out property <bool> show-dialog: false;
+    // "Recording Harbour Jazz will stop.", or empty
+    in property <string> recording-line;
+    // "2 scheduled entries won't run while Radiotrope is closed. Next:
+    // tomorrow at 07:00.", or empty
+    in property <string> schedule-line;
+    // The tray shows our icon: the window can go there instead
+    in property <bool> can-keep-running: false;
+
+    callback quit();
+    callback keep-running();
+
+    if show-dialog: DialogShell {
+        title: "Quit Radiotrope?";
+        card-width: Defaults.dialog-width;
+        close-requested => { root.show-dialog = false; }
+
+        if root.recording-line != "": Text {
+            text: root.recording-line;
+            color: Theme.text-primary;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
+        }
+
+        if root.schedule-line != "": Text {
+            text: root.schedule-line;
+            color: Theme.text-primary;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
+        }
+
+        // The footer's order (Cancel, then the action at the right), with
+        // the tray choice at the left where a dialog's extra action goes
+        HorizontalLayout {
+            spacing: Theme.space-8;
+
+            if root.can-keep-running: SecondaryButton {
+                label: "Keep Running in Tray";
+                clicked => {
+                    root.show-dialog = false;
+                    root.keep-running();
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            SecondaryButton {
+                label: "Cancel";
+                clicked => { root.show-dialog = false; }
+            }
+
+            AccentButton {
+                label: "Quit";
+                clicked => {
+                    root.show-dialog = false;
+                    root.quit();
+                }
+            }
+        }
+    }
+}

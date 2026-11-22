@@ -91,6 +91,11 @@ Source: "{#SourceX64}\THIRD-PARTY-LICENSES.txt"; DestDir: "{app}"; Flags: ignore
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
+[Registry]
+; View > System Tray > Start at Login writes this value (src/autostart.rs);
+; the installer never creates it, but the uninstaller removes it
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "Radiotrope"; Flags: uninsdeletevalue dontcreatekey
+
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
 

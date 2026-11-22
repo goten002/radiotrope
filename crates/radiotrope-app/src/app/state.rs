@@ -13,7 +13,7 @@ use radiotrope::audio::{
     HissLevel, HumReadout, LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat,
     SharedStats,
 };
-use radiotrope_app::data::schedule::{Action, Entry};
+use radiotrope_app::data::schedule::{Action, Entry, LastRun};
 use radiotrope_app::data::settings::Settings;
 
 /// Told whether a schedule change was made, or why not
@@ -219,8 +219,8 @@ pub struct AppSnapshot {
     // Recording
     /// Progress of the running recording, `None` when not recording
     pub recording: Option<RecordingProgress>,
-    /// Last message for the window to show briefly: a recording saved or
-    /// failed, or a scheduled entry missed or skipped
+    /// Last message for the window to show under the station: a recording
+    /// saved or failed, or a scheduled entry missed or skipped
     pub recording_notice: Option<RecordingNotice>,
     /// The recording settings as the window has them, for an agent's
     /// start_recording
@@ -232,6 +232,9 @@ pub struct AppSnapshot {
     /// Counts the changes to `schedule`, so the window redraws its list
     /// only when it changed
     pub schedule_seq: u64,
+    /// How each entry's last run went, for its row. A change counts in
+    /// `schedule_seq` too.
+    pub schedule_results: Vec<LastRun>,
     /// The running sleep timer
     pub sleep: Option<SleepTimerInfo>,
     /// The entry playing or recording now
@@ -424,13 +427,61 @@ pub struct RecordingProgress {
     pub bytes: u64,
 }
 
-/// A message about a recording for the UI to show briefly
+/// What a notice is about. It decides the notice's icon, what a click
+/// on it does, and whether it stays until it is closed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// A recording was saved: a click opens the recordings folder
+    Saved,
+    /// The Scheduler's news (an entry missed or skipped): a click opens
+    /// the Scheduler
+    Scheduler,
+    /// The Sleep Timer's news: a click opens the Sleep Timer
+    SleepTimer,
+    /// Something went wrong
+    Error,
+}
+
+impl NoticeKind {
+    /// Stays on screen until closed. What fails or is missed mostly
+    /// happens with nobody watching; "Saved" answers a press and passes.
+    pub fn stays(self) -> bool {
+        matches!(self, NoticeKind::Scheduler | NoticeKind::Error)
+    }
+
+    /// The kind as the window's `recording-notice-kind` takes it
+    pub fn id(self) -> &'static str {
+        match self {
+            NoticeKind::Saved => "saved",
+            NoticeKind::Scheduler => "scheduler",
+            NoticeKind::SleepTimer => "sleep",
+            NoticeKind::Error => "error",
+        }
+    }
+}
+
+/// A message for the UI to show under the station: about a recording,
+/// or from the Scheduler or the Sleep Timer
 #[derive(Clone, Debug, PartialEq)]
 pub struct RecordingNotice {
     /// Increases with every notice, so the UI can tell a new one apart
     pub seq: u64,
     pub text: String,
+    pub kind: NoticeKind,
+    /// `kind` is [`NoticeKind::Error`], for those who only ask that
+    /// (agents and phones)
     pub is_error: bool,
+}
+
+impl RecordingNotice {
+    pub fn new(seq: u64, text: impl Into<String>, kind: NoticeKind) -> Self {
+        Self {
+            seq,
+            text: text.into(),
+            kind,
+            is_error: kind == NoticeKind::Error,
+        }
+    }
 }
 
 impl Default for AppSnapshot {
@@ -478,6 +529,7 @@ impl Default for AppSnapshot {
             recording_setup: RecordingSetup::default(),
             schedule: Vec::new(),
             schedule_seq: 0,
+            schedule_results: Vec::new(),
             sleep: None,
             scheduled: None,
             next_run: None,

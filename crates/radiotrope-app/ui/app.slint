@@ -24,6 +24,7 @@ import { FiltersDialog } from "dialogs/filters.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
+import { QuitDialog } from "dialogs/quit.slint";
 import { TextUtil, AgentsBubble, AgentRow, ListenersBubble, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 export { FavoritesFind }
@@ -106,6 +107,7 @@ export component App inherits Window {
         if screen == "about" { about-dialog.show-dialog = true; }
         if screen == "accent" { accent-dialog.show-dialog = true; }
         if screen == "shortcuts" { shortcuts-dialog.show-dialog = true; }
+        if screen == "quit" { root.quit-shown = true; }
     }
     // Taskbar / Alt+Tab icon on X11 and Windows (Wayland uses the app_id)
     icon: @image-url("../../../assets/icons/icon-256.png");
@@ -151,6 +153,18 @@ export component App inherits Window {
     in property <bool> tray-available: true;
     // End the app (Quit in the Open menu, Ctrl+Q); closing may only hide
     callback quit-app();
+    // "Quit Radiotrope?", asked by Rust when closing would stop a
+    // recording or skip a Scheduler entry: what will stop, one line each
+    in-out property <bool> quit-shown;
+    in property <string> quit-recording-line;
+    in property <string> quit-schedule-line;
+    in property <bool> quit-can-keep-running;
+    callback quit-confirmed();
+    callback quit-keep-running();
+    // View > System Tray > Start at Login (desktop). Rust reads it from
+    // the autostart file or the Run key, not from the settings.
+    in-out property <bool> start-at-login;
+    callback start-at-login-changed(bool);
     // Power Off and Restart in the Open menu (the Pi): true means restart
     callback power-requested(bool);
     // The play button, for the tray icon's menu and middle click
@@ -231,10 +245,16 @@ export component App inherits Window {
     in-out property <string> recording-text;
     in-out property <string> recording-size;
     in-out property <string> recording-notice;
+    // What the notice is about ("saved", "scheduler", "sleep" or "error")
+    // and whether it stays until it is clicked away
+    in-out property <string> recording-notice-kind: "saved";
+    in-out property <bool> recording-notice-stays;
+    callback dismiss-recording-notice();
+    // The Recording Settings dialog is open (it shows its folder's errors)
+    out property <bool> recording-dialog-open: recording-dialog.show-dialog;
     // A save of the favorites or settings that failed ("Can't save
     // favorites: permission denied"); empty once a save works
     in property <string> save-error;
-    in-out property <bool> recording-notice-error;
     in-out property <string> recording-folder <=> recording-dialog.folder;
     in-out property <string> recording-default-folder <=> recording-dialog.default-folder;
     in-out property <string> recording-folder-error <=> recording-dialog.error;
@@ -609,6 +629,8 @@ export component App inherits Window {
                         tray-icon <=> root.tray-icon;
                         close-to-tray <=> root.close-to-tray;
                         start-in-tray <=> root.start-in-tray;
+                        start-at-login <=> root.start-at-login;
+                        start-at-login-changed(on) => { root.start-at-login-changed(on); }
                         hide-on-minimize <=> root.hide-on-minimize;
                         tray-available: root.tray-available;
                         quit-app => { root.quit-app(); }
@@ -688,7 +710,10 @@ export component App inherits Window {
                         recording-text: root.recording-text;
                         recording-size: root.recording-size;
                         recording-notice: root.recording-notice;
-                        recording-notice-error: root.recording-notice-error;
+                        recording-notice-kind: root.recording-notice-kind;
+                        recording-notice-stays: root.recording-notice-stays;
+                        recording-notice-dismiss => { root.dismiss-recording-notice(); }
+                        save-error: root.save-error;
                         can-open-recordings: Platform.has-file-manager;
                         open-recordings-folder => { root.open-recordings-folder(); }
                         stop-recording => {
@@ -940,6 +965,15 @@ export component App inherits Window {
                 touch-scroll: root.touch-scroll;
             }
 
+            quit-dialog := QuitDialog {
+                show-dialog <=> root.quit-shown;
+                recording-line: root.quit-recording-line;
+                schedule-line: root.quit-schedule-line;
+                can-keep-running: root.quit-can-keep-running;
+                quit => { root.quit-confirmed(); }
+                keep-running => { root.quit-keep-running(); }
+            }
+
             // Over every other dialog: a phone waits for this code
             PairingCodeDialog {
                 show-dialog: root.pairing-shown;
@@ -988,7 +1022,7 @@ export component App inherits Window {
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || shortcuts-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
-        || root.pairing-shown || root.pairing-qr-shown;
+        || root.pairing-shown || root.pairing-qr-shown || root.quit-shown;
     changed dialog-open => {
         if !self.dialog-open {
             shortcuts.focus();

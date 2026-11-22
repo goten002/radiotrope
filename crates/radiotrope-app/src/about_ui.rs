@@ -16,6 +16,8 @@ pub(crate) fn setup(ui: &App) {
     };
     info.set_config_dir(path_text(radiotrope_app::data::storage::config_dir()).into());
     info.set_cache_dir(path_text(radiotrope_app::data::cache::cache_dir()).into());
+    let log_file = crate::log_file::path().map(|p| p.display().to_string());
+    info.set_log_file(log_file.unwrap_or_default().into());
     info.set_repository(env!("CARGO_PKG_REPOSITORY").into());
     info.set_license(license_label(env!("CARGO_PKG_LICENSE")).into());
     info.set_authors(author_names(env!("CARGO_PKG_AUTHORS")).into());
