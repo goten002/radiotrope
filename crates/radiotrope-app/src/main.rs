@@ -2,6 +2,7 @@
 // next to it. Debug builds keep the console for their logs.
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod about_ui;
 mod app;
 mod args;
 mod caches;
@@ -61,6 +62,7 @@ use radiotrope_app::providers::{RadiotropeProvider, StationProvider};
 use radiotrope_app::text::{self, status, MISSING, SEPARATOR};
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
+use about_ui::setup_about;
 use app::controller::AppController;
 use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
@@ -71,6 +73,10 @@ use app::ui_sender::UiSender;
 use args::Args;
 use caches::{migrate_logo_ids, prune_caches_daily};
 use context::lock;
+
+// What the snapshot tool takes from the crate root
+#[cfg(any(test, feature = "ui-snapshots"))]
+pub(crate) use about_ui::{author_names, license_label};
 
 /// Our crates' messages from info up; other libraries' only when they fail
 const DEFAULT_LOG: &str = "error,radiotrope=info";
@@ -2132,78 +2138,6 @@ fn apply_logo_palette(ui: &App) {
 fn setup_text_util(ui: &App) {
     ui.global::<TextUtil>()
         .on_steady_digits(|text| radiotrope_app::text::steady_digits(&text).into());
-}
-
-/// Fill in the About dialog and handle its links
-fn setup_about(ui: &App) {
-    let info = ui.global::<AboutInfo>();
-    info.set_version(env!("CARGO_PKG_VERSION").into());
-    info.set_commit(env!("RADIOTROPE_GIT_HASH").into());
-    info.set_commit_date(env!("RADIOTROPE_GIT_DATE").into());
-    info.set_platform(platform_name().into());
-    let path_text = |p: radiotrope_app::error::Result<std::path::PathBuf>| {
-        p.map(|p| p.display().to_string()).unwrap_or_default()
-    };
-    info.set_config_dir(path_text(radiotrope_app::data::storage::config_dir()).into());
-    info.set_cache_dir(path_text(radiotrope_app::data::cache::cache_dir()).into());
-    info.set_repository(env!("CARGO_PKG_REPOSITORY").into());
-    info.set_license(license_label(env!("CARGO_PKG_LICENSE")).into());
-    info.set_authors(author_names(env!("CARGO_PKG_AUTHORS")).into());
-
-    ui.on_open_url(|url| open_url(&url));
-}
-
-/// Human-readable OS and CPU, e.g. "Linux aarch64"
-fn platform_name() -> String {
-    let os = match std::env::consts::OS {
-        "linux" => "Linux",
-        "macos" => "macOS",
-        "windows" => "Windows",
-        other => other,
-    };
-    format!("{os} {}", std::env::consts::ARCH)
-}
-
-/// Short display name for an SPDX license id, e.g. "GPLv3+" for
-/// GPL-3.0-or-later; other ids are shown as they are
-fn license_label(spdx: &str) -> &str {
-    match spdx {
-        "GPL-3.0-or-later" => "GPLv3+",
-        "GPL-3.0-only" => "GPLv3",
-        other => other,
-    }
-}
-
-/// Cargo's `authors` list without the email addresses
-fn author_names(authors: &str) -> String {
-    authors
-        .split(':')
-        .map(|a| a.split('<').next().unwrap_or(a).trim())
-        .filter(|a| !a.is_empty())
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
-/// Open a web link in the default browser. Does nothing if there is no
-/// browser (e.g. the embedded kiosk build).
-fn open_url(url: &str) {
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return;
-    }
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    match std::process::Command::new(program).arg(url).spawn() {
-        // Reap the launcher so it doesn't linger as a zombie
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
-        }
-        Err(e) => eprintln!("Failed to open {url}: {e}"),
-    }
 }
 
 /// Wire the Wi-Fi page to the iwd thread (Raspberry Pi build only). The
