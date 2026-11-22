@@ -3289,8 +3289,6 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af1892857762af5466d723f41febf4f80f92d1455de839ca9a76c955bf8793b9"
 dependencies = [
  "const-field-offset",
  "femtovg",

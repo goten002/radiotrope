@@ -9,7 +9,8 @@ members = [
     "crates/radiotrope-build",
     "crates/xtask",
 ]
-exclude = ["build", "yocto"]
+# vendor: patched copies of dependencies (see [patch.crates-io] below)
+exclude = ["build", "yocto", "vendor"]
 
 # Shared by every crate (`version.workspace = true` and so on). The crates
 # are not published to crates.io: the name `radiotrope` there would be the
@@ -83,3 +84,10 @@ strip = true
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# Slint 1.19.0's FemtoVG renderer draws parts of some letters one pixel off
+# (slint-ui/slint#15000). The copy in vendor/ is 1.19.0 with the fix from
+# slint-ui/slint#15003. Remove this table and vendor/i-slint-renderer-femtovg
+# when Slint >= 1.19.1 or 1.20 is used.
+[patch.crates-io]
+i-slint-renderer-femtovg = { path = "vendor/i-slint-renderer-femtovg" }
