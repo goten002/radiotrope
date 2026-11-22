@@ -621,6 +621,8 @@ pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error
         writeln!(index, "\n## {theme}\n")?;
         for shot in SHOTS {
             let ui = App::new()?;
+            // The shortcut list and the menu hints, as in the live app
+            crate::shortcuts::install(&ui);
             let window = window
                 .take()
                 .ok_or("Slint did not create a window adapter")?;
