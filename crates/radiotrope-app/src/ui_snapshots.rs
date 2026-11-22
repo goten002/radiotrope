@@ -580,6 +580,12 @@ const SHOTS: &[Shot] = &[
         "Live stream, codec, network, buffer and decode statistics.",
     ),
     Shot::new(
+        "statistics-failed",
+        "statistics",
+        "failed",
+        "Statistics for a stream that stopped sending audio.",
+    ),
+    Shot::new(
         "about",
         "about",
         "",
@@ -1066,12 +1072,16 @@ fn configure(ui: &App, shot: &Shot) {
             ui.set_agents_network(true);
             ui.set_agents_status("Listening on 192.0.2.42:8787".into());
         }
+        "statistics" if shot.state == "failed" => {
+            ui.set_stat_health("Failed · stopped sending".into());
+        }
         "remote" if shot.state != "off" => {
             ui.set_remote_on(true);
             match shot.state {
                 "status-info" => {
                     ui.set_remote_status("Can't start Remote Control: port 8750 is in use by another program. Close that program and try again.".into());
                     ui.set_remote_status_error(true);
+                    ui.set_remote_status_short("Can't start".into());
                 }
                 "code" => {
                     ui.set_pairing_device("Maya's phone".into());

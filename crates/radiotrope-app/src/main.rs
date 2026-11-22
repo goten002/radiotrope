@@ -1279,7 +1279,9 @@ fn main() {
                                 ui.set_filter_entries_error(Default::default());
                             }
                             Err(e) => {
-                                ui.set_filter_entries_error(format!("{e}").into());
+                                // The same words as the search window
+                                let problem = ServiceProblem::of(&e);
+                                ui.set_filter_entries_error(problem.message().into());
                             }
                         }
                         ui.set_filter_entries_loading(false);

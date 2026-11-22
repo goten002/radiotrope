@@ -1196,7 +1196,7 @@ export component AgentsChip inherits Rectangle {
     }
 
     in property <int> count;
-    in property <image> icon: @image-url("icons/robot.svg");
+    in property <image> icon: @image-url("icons/bot.svg");
     // Show the bubble with its top right corner here (window coordinates),
     // or hide it
     callback show-bubble(/* right */ length, /* top */ length);
@@ -1388,7 +1388,8 @@ export component ChoiceRow inherits Rectangle {
 
     height: Theme.row-menu;
     border-radius: Theme.radius-sm;
-    background: !root.enabled ? Theme.disabled-bg
+    // Disabled rows only dim their text: a filled row is too heavy in a menu
+    background: !root.enabled ? transparent
         : root.danger-armed ? (touch.pressed ? Theme.danger-pressed : Theme.danger-armed)
         : touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg
