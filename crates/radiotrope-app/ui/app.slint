@@ -7,7 +7,7 @@ import { MenuBar } from "menu-bar.slint";
 import { Playback } from "playback.slint";
 import { Favorites, FavoriteStation } from "favorites.slint";
 import { Controls } from "controls.slint";
-import { Theme, Defaults } from "defaults.slint";
+import { Theme, Defaults, ViewOptions } from "defaults.slint";
 import { NetworkStreamDialog } from "dialogs/network-stream.slint";
 import { ImportFavoritesDialog } from "dialogs/import-favorites.slint";
 import { StatisticsDialog, StatsData, StreamHealth } from "dialogs/statistics.slint";
@@ -26,7 +26,7 @@ import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.s
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil, AgentsBubble, AgentRow, ListenersBubble, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
-export { AboutInfo, StatsData, StreamHealth, Defaults, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
+export { AboutInfo, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
 
 export component App inherits Window {
     // The station in the taskbar and window lists while one is loaded
@@ -459,6 +459,8 @@ export component App inherits Window {
     // Accent color proxy — two-way bind to Theme global
     in-out property <color> accent-color <=> Theme.accent-base;
     in-out property <bool> panel-gradient <=> Theme.panel-gradient;
+    // View > Reduce Motion (the system's setting until it is picked)
+    in-out property <bool> reduce-motion <=> Theme.reduce-motion;
 
     // Shortcuts in the main window: Space plays or stops, Ctrl+F searches
     // stations, M mutes. Keys reach it only when the focused control
@@ -931,7 +933,7 @@ export component App inherits Window {
         // Steps the status animations (Motion), only while there is one to show
         Timer {
             interval: Defaults.motion-step;
-            running: !root.snapshot-mode && (root.is-playing || root.is-loading || root.is-recording);
+            running: !root.snapshot-mode && !Theme.reduce-motion && (root.is-playing || root.is-loading || root.is-recording);
             triggered => { Motion.tick += self.interval; }
         }
 

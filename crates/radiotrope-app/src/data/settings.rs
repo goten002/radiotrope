@@ -119,6 +119,21 @@ pub struct Settings {
     #[serde(default)]
     pub always_on_top: bool,
 
+    /// View > Zoom, in percent: one of [`ZOOM_CHOICES`], read through
+    /// [`zoom_percent`](Self::zoom_percent). Applied when the player starts.
+    #[serde(default = "default_zoom")]
+    pub zoom: u32,
+
+    /// The display's own scale (1.0, 1.25, 2.0...) as the last run saw it:
+    /// the zoom multiplies it, and it has to be known before the window is
+    /// made. `None` until a run has seen it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_scale: Option<f32>,
+
+    /// View > Reduce Motion; `None` follows the system's setting
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reduce_motion: Option<bool>,
+
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,6 +230,12 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_client: Option<String>,
 
+    // === Station directory ===
+    /// Tell the station directory when one of its stations is played (the
+    /// station's id, for its "most played" lists)
+    #[serde(default = "default_true")]
+    pub report_plays: bool,
+
     // === Remote Control (phones) ===
     /// Phones on the local network may find and pair with the player
     #[serde(default)]
@@ -278,6 +299,21 @@ fn default_sleep_minutes() -> u32 {
     30
 }
 
+/// The choices of View > Zoom, in percent
+pub const ZOOM_CHOICES: [u32; 5] = [90, 100, 115, 130, 150];
+
+fn default_zoom() -> u32 {
+    100
+}
+
+/// The zoom choice closest to `percent` (a hand-edited 120 reads as 115)
+pub fn nearest_zoom(percent: u32) -> u32 {
+    ZOOM_CHOICES
+        .into_iter()
+        .min_by_key(|choice| choice.abs_diff(percent))
+        .unwrap_or_else(default_zoom)
+}
+
 fn default_match_level() -> String {
     radiotrope::audio::LevelTarget::default()
         .as_str()
@@ -314,6 +350,9 @@ impl Default for Settings {
             custom_title_bar: true,
             rounded_corners: true,
             always_on_top: false,
+            zoom: default_zoom(),
+            display_scale: None,
+            reduce_motion: None,
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
@@ -337,6 +376,7 @@ impl Default for Settings {
             mcp_address: default_mcp_address(),
             mcp_interface: None,
             mcp_client: None,
+            report_plays: true,
             remote_control: false,
             remote_name: None,
             remote_share_recordings: false,
@@ -470,6 +510,18 @@ impl Settings {
     /// Toggle mute state
     pub fn toggle_mute(&mut self) {
         self.muted = !self.muted;
+    }
+
+    /// The zoom in percent, as one of [`ZOOM_CHOICES`]
+    pub fn zoom_percent(&self) -> u32 {
+        nearest_zoom(self.zoom)
+    }
+
+    /// The display's own scale as the last run saw it, if it is a usable
+    /// one (a hand edit could make it anything)
+    pub fn known_display_scale(&self) -> Option<f32> {
+        self.display_scale
+            .filter(|scale| scale.is_finite() && (0.5..=8.0).contains(scale))
     }
 
     /// Parse accent color hex string to RGB components
@@ -737,6 +789,60 @@ mod tests {
 
         let settings: Settings = serde_json::from_str(r#"{"volume": 7.5}"#).unwrap();
         assert_eq!(settings.volume, 1.0);
+    }
+
+    #[test]
+    fn the_view_options_round_trip() {
+        let path = temp_path();
+        let defaults = Settings::load_from(&path).unwrap();
+        assert_eq!(defaults.zoom_percent(), 100);
+        assert_eq!(defaults.reduce_motion, None, "follows the system");
+        assert!(defaults.report_plays, "on until switched off");
+        assert_eq!(defaults.known_display_scale(), None);
+
+        let (_, saved) = Settings::update_at(&path, |s| {
+            s.zoom = 130;
+            s.display_scale = Some(1.25);
+            s.reduce_motion = Some(true);
+            s.report_plays = false;
+        });
+        saved.unwrap();
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(loaded.zoom_percent(), 130);
+        assert_eq!(loaded.known_display_scale(), Some(1.25));
+        assert_eq!(loaded.reduce_motion, Some(true));
+        assert!(!loaded.report_plays);
+
+        // Back to following the system: the field leaves the file
+        let (_, saved) = Settings::update_at(&path, |s| s.reduce_motion = None);
+        saved.unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("reduce_motion"));
+        assert_eq!(Settings::load_from(&path).unwrap().reduce_motion, None);
+    }
+
+    #[test]
+    fn a_zoom_that_is_no_choice_reads_as_the_nearest_one() {
+        for (saved, read) in [
+            (0, 90),
+            (95, 90),
+            (100, 100),
+            (120, 115),
+            (125, 130),
+            (900, 150),
+        ] {
+            assert_eq!(nearest_zoom(saved), read, "{saved}%");
+        }
+        let path = temp_path();
+        // A zoom of the wrong type costs only itself
+        fs::write(
+            &path,
+            r#"{"zoom": "big", "report_plays": false, "display_scale": 0.0}"#,
+        )
+        .unwrap();
+        let loaded = Settings::load_from(&path).unwrap();
+        assert_eq!(loaded.zoom_percent(), 100);
+        assert!(!loaded.report_plays);
+        assert_eq!(loaded.known_display_scale(), None, "0 is no scale");
     }
 
     #[test]
@@ -1014,7 +1120,7 @@ mod tests {
             r#"{
                 "version": 7,
                 "volume": 0.7,
-                "zoom": 125,
+                "text_size": 125,
                 "start_at_login": {"enabled": true, "hidden": false}
             }"#,
         )
@@ -1022,11 +1128,11 @@ mod tests {
 
         let (settings, saved) = Settings::update_at(&path, |s| s.muted = true);
         saved.unwrap();
-        assert_eq!(settings.extra["zoom"], 125);
+        assert_eq!(settings.extra["text_size"], 125);
 
         let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(saved["version"], 7);
-        assert_eq!(saved["zoom"], 125);
+        assert_eq!(saved["text_size"], 125);
         assert_eq!(saved["start_at_login"]["enabled"], true);
         assert_eq!(saved["muted"], true);
         assert_eq!(saved["volume"].as_f64().unwrap() as f32, 0.7);

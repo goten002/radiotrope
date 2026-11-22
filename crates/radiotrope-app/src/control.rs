@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Sender, TrySendError};
 
 use radiotrope::audio::PlaybackState;
-use radiotrope_app::data::favorites::{FavoritesManager, ImportMode, ImportOutcome, PlayMetadata};
+use radiotrope_app::data::favorites::{
+    FavoritesManager, ImportMode, ImportOutcome, PlayMetadata, SaveJob,
+};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::schedule::{self, Action, ClockTime, Days, End, Entry, ScheduledStation};
 use radiotrope_app::data::types::{
@@ -249,9 +251,13 @@ impl Control {
     }
 
     /// A station by its directory id, looked up off the async thread. The
-    /// play is counted in the directory, as the GUI does; nobody waits on it.
+    /// play is counted in the directory, as the GUI does (not with Tools >
+    /// Connections > Report Plays off); nobody waits on it.
     pub async fn station_to_play(&self, id: String) -> Result<Station, Error> {
         let station = self.station(id).await?;
+        if !crate::view_options::report_plays() {
+            return Ok(station);
+        }
         let control = self.clone();
         let clicked = station.clone();
         tokio::task::spawn_blocking(move || {
@@ -464,36 +470,38 @@ impl Control {
         list: Vec<Favorite>,
         preview: bool,
     ) -> Result<(ImportOutcome, bool), Error> {
-        self.with_favorites(move |control, favorites| {
-            let outcome = favorites
-                .import_list(mode, &list, MAX_FAVORITES, preview)
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            if !preview && outcome.changes() {
-                control
-                    .save_favorites(favorites)
-                    .map_err(|e| Error::Failed(format!("Can't save: {e}")))?;
-            }
-            Ok((outcome, favorites.can_undo_import()))
-        })
-        .await?
+        let ((outcome, can_undo), saved) = self
+            .change_favorites(move |favorites| {
+                let outcome = favorites
+                    .import_list(mode, &list, MAX_FAVORITES, preview)
+                    .map_err(|e| Error::Failed(e.to_string()))?;
+                Ok((outcome, favorites.can_undo_import()))
+            })
+            .await?;
+        if !preview && outcome.changes() {
+            saved.map_err(|e| Error::Failed(format!("Can't save: {e}")))?;
+        }
+        Ok((outcome, can_undo))
     }
 
     /// Put back the favorites from before the last import; tells how many
     /// there are now, or `None` when there is nothing to undo
     pub async fn undo_favorites_import(&self) -> Result<Option<usize>, Error> {
-        self.with_favorites(move |control, favorites| {
-            if !favorites.can_undo_import() {
-                return Ok(None);
-            }
-            let count = favorites
-                .undo_import()
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            control
-                .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Can't save: {e}")))?;
-            Ok(Some(count))
-        })
-        .await?
+        let (count, saved) = self
+            .change_favorites(move |favorites| {
+                if !favorites.can_undo_import() {
+                    return Ok(None);
+                }
+                favorites
+                    .undo_import()
+                    .map(Some)
+                    .map_err(|e| Error::Failed(e.to_string()))
+            })
+            .await?;
+        if count.is_some() {
+            saved.map_err(|e| Error::Failed(format!("Can't save: {e}")))?;
+        }
+        Ok(count)
     }
 
     /// The plays and listening time of the favorite with this id
@@ -522,35 +530,31 @@ impl Control {
 
     /// Save a station to the favorites (a URL already there is updated)
     pub async fn add_favorite(&self, fav: Favorite) -> Result<(), Error> {
-        self.with_favorites(move |control, favorites| {
-            if favorites.count() >= MAX_FAVORITES && !favorites.is_favorite(fav.url()) {
-                return Err(Error::TooManyFavorites);
-            }
-            favorites
-                .add(fav)
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            control
-                .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Can't save: {e}")))
-        })
-        .await?
+        let ((), saved) = self
+            .change_favorites(move |favorites| {
+                if favorites.count() >= MAX_FAVORITES && !favorites.is_favorite(fav.url()) {
+                    return Err(Error::TooManyFavorites);
+                }
+                favorites.add(fav).map_err(|e| Error::Failed(e.to_string()))
+            })
+            .await?;
+        saved.map_err(|e| Error::Failed(format!("Can't save: {e}")))
     }
 
     /// Remove the favorite with this id; tells which it was
     pub async fn remove_favorite(&self, id: String) -> Result<Favorite, Error> {
-        self.with_favorites(move |control, favorites| {
-            if favorites.get(&id).is_none() {
-                return Err(Error::NoFavorite(id));
-            }
-            let removed = favorites
-                .remove(&id)
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            control
-                .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Removed, but can't save: {e}")))?;
-            Ok(removed)
-        })
-        .await?
+        let (removed, saved) = self
+            .change_favorites(move |favorites| {
+                if favorites.get(&id).is_none() {
+                    return Err(Error::NoFavorite(id));
+                }
+                favorites
+                    .remove(&id)
+                    .map_err(|e| Error::Failed(e.to_string()))
+            })
+            .await?;
+        saved.map_err(|e| Error::Failed(format!("Removed, but can't save: {e}")))?;
+        Ok(removed)
     }
 
     /// Change a favorite's name, stream, logo and country, as the window's
@@ -560,65 +564,64 @@ impl Control {
         id: String,
         edit: FavoriteEdit,
     ) -> Result<(Favorite, Favorite), Error> {
-        self.with_favorites(move |control, favorites| {
-            let old = favorites
-                .get(&id)
-                .cloned()
-                .ok_or_else(|| Error::NoFavorite(id.clone()))?;
-            let mut update = FavoriteUpdate::new()
-                .name(edit.name.clone())
-                .url(edit.url.clone());
-            update.logo_url = Some(edit.logo_url.clone().filter(|l| !l.is_empty()));
-            update.country = Some(edit.country.clone().filter(|c| !c.is_empty()));
-            if let Err(e) = favorites.update(&id, update) {
-                return Err(Error::Failed(
-                    if url_to_id(&edit.url) != id && favorites.is_favorite(&edit.url) {
-                        "Another favorite already has this stream URL".into()
-                    } else {
-                        e.to_string()
-                    },
-                ));
-            }
-            control
-                .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Changed, but can't save: {e}")))?;
-            let new = favorites
-                .get(&url_to_id(&edit.url))
-                .cloned()
-                .ok_or_else(|| Error::NoFavorite(url_to_id(&edit.url)))?;
-            Ok((old, new))
-        })
-        .await?
+        let (edited, saved) = self
+            .change_favorites(move |favorites| {
+                let old = favorites
+                    .get(&id)
+                    .cloned()
+                    .ok_or_else(|| Error::NoFavorite(id.clone()))?;
+                let mut update = FavoriteUpdate::new()
+                    .name(edit.name.clone())
+                    .url(edit.url.clone());
+                update.logo_url = Some(edit.logo_url.clone().filter(|l| !l.is_empty()));
+                update.country = Some(edit.country.clone().filter(|c| !c.is_empty()));
+                if let Err(e) = favorites.update(&id, update) {
+                    return Err(Error::Failed(
+                        if url_to_id(&edit.url) != id && favorites.is_favorite(&edit.url) {
+                            "Another favorite already has this stream URL".into()
+                        } else {
+                            e.to_string()
+                        },
+                    ));
+                }
+                let new = favorites
+                    .get(&url_to_id(&edit.url))
+                    .cloned()
+                    .ok_or_else(|| Error::NoFavorite(url_to_id(&edit.url)))?;
+                Ok((old, new))
+            })
+            .await?;
+        saved.map_err(|e| Error::Failed(format!("Changed, but can't save: {e}")))?;
+        Ok(edited)
     }
 
     /// Put the favorites in this order; any left out keep theirs after
     /// the ones given
     pub async fn reorder_favorites(&self, ids: Vec<String>) -> Result<(), Error> {
-        self.with_favorites(move |control, favorites| {
-            if let Some(missing) = ids.iter().find(|id| favorites.get(id).is_none()) {
-                return Err(Error::NoFavorite(missing.clone()));
-            }
-            let mut order: Vec<String> = Vec::with_capacity(favorites.count());
-            for id in &ids {
-                if !order.contains(id) {
-                    order.push(id.clone());
+        let ((), saved) = self
+            .change_favorites(move |favorites| {
+                if let Some(missing) = ids.iter().find(|id| favorites.get(id).is_none()) {
+                    return Err(Error::NoFavorite(missing.clone()));
                 }
-            }
-            for fav in favorites.sorted(FavoriteSort::Manual) {
-                let id = fav.id();
-                if !order.contains(&id) {
-                    order.push(id);
+                let mut order: Vec<String> = Vec::with_capacity(favorites.count());
+                for id in &ids {
+                    if !order.contains(id) {
+                        order.push(id.clone());
+                    }
                 }
-            }
-            let refs: Vec<&str> = order.iter().map(String::as_str).collect();
-            favorites
-                .reorder(&refs)
-                .map_err(|e| Error::Failed(e.to_string()))?;
-            control
-                .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Reordered, but can't save: {e}")))
-        })
-        .await?
+                for fav in favorites.sorted(FavoriteSort::Manual) {
+                    let id = fav.id();
+                    if !order.contains(&id) {
+                        order.push(id);
+                    }
+                }
+                let refs: Vec<&str> = order.iter().map(String::as_str).collect();
+                favorites
+                    .reorder(&refs)
+                    .map_err(|e| Error::Failed(e.to_string()))
+            })
+            .await?;
+        saved.map_err(|e| Error::Failed(format!("Reordered, but can't save: {e}")))
     }
 
     // -- Recording ----------------------------------------------------------
@@ -934,13 +937,15 @@ impl Control {
         })
     }
 
-    fn save_favorites(
+    /// The first half of a save of `favorites`: what there is to write,
+    /// copied while they are held (`None`: nothing changed)
+    fn begin_save(
         &self,
-        favorites: &mut FavoritesManager,
-    ) -> radiotrope_app::error::Result<()> {
+        favorites: &FavoritesManager,
+    ) -> radiotrope_app::error::Result<Option<SaveJob>> {
         match &self.favorites_file {
-            Some(path) => favorites.save_to(path),
-            None => favorites.save(),
+            Some(path) => Ok(favorites.begin_save_to(path)),
+            None => favorites.begin_save(),
         }
     }
 
@@ -969,6 +974,46 @@ impl Control {
         })
         .await
         .map_err(|e| Error::Failed(format!("Favorites unavailable: {e}")))
+    }
+
+    /// Run `change` on the favorites and save what it changed, off the
+    /// async thread. The favorites are held for the change and again to
+    /// note what was written, not while the disk is written and the file
+    /// lock waited for: the window, agents and phones go on meanwhile.
+    ///
+    /// Gives what `change` returned and how the save went. A `change` that
+    /// fails saves nothing.
+    async fn change_favorites<R, F>(
+        &self,
+        change: F,
+    ) -> Result<(R, radiotrope_app::error::Result<()>), Error>
+    where
+        F: FnOnce(&mut FavoritesManager) -> Result<R, Error> + Send + 'static,
+        R: Send + 'static,
+    {
+        let control = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let (value, job) = {
+                let mut favorites = control.favorites();
+                let value = change(&mut favorites)?;
+                (value, control.begin_save(&favorites))
+            };
+            let saved = match job {
+                Ok(Some(job)) => {
+                    let done = job.write();
+                    control
+                        .favorites
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .finish_save(done)
+                }
+                Ok(None) => Ok(()),
+                Err(e) => Err(e),
+            };
+            Ok((value, saved))
+        })
+        .await
+        .map_err(|e| Error::Failed(format!("Favorites unavailable: {e}")))?
     }
 }
 
@@ -1038,4 +1083,141 @@ pub fn sorted_genres(genres: &HashSet<String>) -> Vec<String> {
     let mut genres: Vec<String> = genres.iter().cloned().collect();
     genres.sort();
     genres
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radiotrope_app::providers::types::SearchResults;
+    use radiotrope_app::providers::StationProvider;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A directory with one station, which counts the plays reported to it
+    struct CountingDirectory {
+        plays: Arc<AtomicUsize>,
+    }
+
+    impl StationProvider for CountingDirectory {
+        fn name(&self) -> &'static str {
+            "Counting"
+        }
+        fn id(&self) -> &'static str {
+            "counting"
+        }
+        fn search(
+            &self,
+            _: &str,
+            _: usize,
+            _: usize,
+        ) -> radiotrope_app::error::Result<SearchResults> {
+            Ok(no_results())
+        }
+        fn browse_categories(&self) -> radiotrope_app::error::Result<Vec<Category>> {
+            Ok(Vec::new())
+        }
+        fn browse_category(
+            &self,
+            _: &Category,
+            _: usize,
+            _: usize,
+        ) -> radiotrope_app::error::Result<SearchResults> {
+            Ok(no_results())
+        }
+        fn get_popular(&self, _: usize) -> radiotrope_app::error::Result<Vec<Station>> {
+            Ok(Vec::new())
+        }
+        fn get_station(&self, id: &str) -> radiotrope_app::error::Result<Option<Station>> {
+            Ok((id == "jazz").then(|| {
+                Station::new("Jazz FM", "http://jazz.test/stream")
+                    .with_provider("counting", Some("jazz".to_string()))
+            }))
+        }
+        fn report_click(&self, _: &Station) -> radiotrope_app::error::Result<()> {
+            self.plays.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn no_results() -> SearchResults {
+        SearchResults {
+            total: Some(0),
+            stations: Vec::new(),
+            has_more: false,
+        }
+    }
+
+    /// A control over the counting directory, saving favorites in a folder
+    /// of its own
+    fn control(name: &str) -> (Control, Arc<AtomicUsize>, PathBuf) {
+        let (cmd_tx, _cmd_rx) = crossbeam_channel::bounded(8);
+        let plays = Arc::new(AtomicUsize::new(0));
+        let mut providers = ProviderRegistry::new();
+        providers.register(Box::new(CountingDirectory {
+            plays: plays.clone(),
+        }));
+        let dir = std::env::temp_dir().join(format!(
+            "radiotrope-control-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let control = Control::new(
+            cmd_tx,
+            Arc::new(Mutex::new(AppSnapshot::default())),
+            Arc::new(Mutex::new(FavoritesManager::new())),
+        )
+        .with_test_setup(providers, dir.join("favorites.json"));
+        (control, plays, dir)
+    }
+
+    /// Wait for the report, which nobody waits on
+    async fn reported(plays: &AtomicUsize, count: usize) -> bool {
+        for _ in 0..200 {
+            if plays.load(Ordering::SeqCst) == count {
+                return true;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        false
+    }
+
+    // The only test that changes the switch, which the whole process shares
+    #[tokio::test]
+    async fn a_play_is_not_reported_with_report_plays_off() {
+        let (control, plays, dir) = control("report");
+
+        crate::view_options::set_report_plays(false);
+        let station = control.station_to_play("jazz".into()).await.unwrap();
+        assert_eq!(station.name, "Jazz FM", "the station still plays");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(plays.load(Ordering::SeqCst), 0, "no report when off");
+
+        crate::view_options::set_report_plays(true);
+        control.station_to_play("jazz".into()).await.unwrap();
+        assert!(reported(&plays, 1).await, "one report when on");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn a_change_is_saved_and_leaves_nothing_unsaved() {
+        let (control, _, dir) = control("save");
+        let file = dir.join("favorites.json");
+
+        control
+            .add_favorite(Favorite::new("Jazz FM", "http://jazz.test/stream"))
+            .await
+            .unwrap();
+        assert!(std::fs::read_to_string(&file).unwrap().contains("Jazz FM"));
+        assert!(!control.favorites().is_dirty(), "the save was noted");
+
+        // A change that fails saves nothing and says why
+        let missing = control.remove_favorite("no-such-id".into()).await;
+        assert!(matches!(missing, Err(Error::NoFavorite(id)) if id == "no-such-id"));
+
+        let id = url_to_id("http://jazz.test/stream");
+        let removed = control.remove_favorite(id).await.unwrap();
+        assert_eq!(removed.name(), "Jazz FM");
+        assert!(!std::fs::read_to_string(&file).unwrap().contains("Jazz FM"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
