@@ -339,6 +339,9 @@ export component AccentColorDialog inherits Rectangle {
         title: "Accent Color";
         subtitle: "Used for highlights, buttons and the visualizer";
         card-width: Defaults.accent-color-width;
+        // A drag in the colour square or the hue bar belongs to the picker,
+        // also when the window is so short that the body scrolls
+        mouse-drag-scroll: false;
         close-requested => { root.show-dialog = false; }
 
         // Swatches, two rows of five

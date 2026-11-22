@@ -1914,3 +1914,7 @@ mod key_list_tests;
 #[cfg(test)]
 #[path = "favorites_keys_test.rs"]
 mod favorites_keys_tests;
+
+#[cfg(test)]
+#[path = "accent_drag_test.rs"]
+mod accent_drag_tests;
