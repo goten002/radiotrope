@@ -5,11 +5,11 @@
 
 pub mod config;
 pub mod data;
-pub mod error;
 pub mod network;
-pub mod providers;
 pub mod text;
 pub mod visual;
+
+pub use radiotrope_library::{error, providers};
 
 #[cfg(feature = "embedded")]
 pub mod wifi;

@@ -10,6 +10,30 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
+/// Get the application cache directory path
+///
+/// Uses the system cache directory:
+/// - Linux: `~/.cache/radiotrope/`
+/// - macOS: `~/Library/Caches/radiotrope/`
+/// - Windows: `C:\Users\<User>\AppData\Local\radiotrope\cache\`
+pub fn cache_dir() -> Result<PathBuf> {
+    dirs::cache_dir().map(|p| p.join(NAME)).ok_or_else(|| {
+        AppError::Config(
+            "Could not determine cache directory. HOME environment variable may not be set."
+                .to_string(),
+        )
+    })
+}
+
+/// Ensure the cache directory exists
+pub fn ensure_cache_dir() -> Result<PathBuf> {
+    let dir = cache_dir()?;
+    fs::create_dir_all(&dir).map_err(|e| {
+        AppError::Config(format!("Failed to create cache directory {:?}: {}", dir, e))
+    })?;
+    Ok(dir)
+}
+
 /// Get the application config directory path
 pub fn config_dir() -> Result<PathBuf> {
     dirs::config_dir().map(|p| p.join(NAME)).ok_or_else(|| {
@@ -37,7 +61,7 @@ pub fn data_path(filename: &str) -> Result<PathBuf> {
 // =============================================================================
 
 /// Create a directory if it doesn't exist, with proper error handling
-fn create_dir_if_needed(path: &Path) -> Result<()> {
+pub(super) fn create_dir_if_needed(path: &Path) -> Result<()> {
     match fs::create_dir_all(path) {
         Ok(()) => Ok(()),
         Err(e) => {

@@ -2,16 +2,13 @@
 //!
 //! HTTP client and utilities.
 
-pub mod api_cache;
 pub mod browse_logos;
-pub mod client;
 pub mod failed_logos;
 pub mod logo;
 
 // Re-export commonly used types
-pub use api_cache::ApiCache;
-pub use client::HttpClient;
 pub use logo::LogoService;
+pub use radiotrope_library::network::{api_cache, client, ApiCache, HttpClient};
 
 /// A local HTTP server for tests
 #[cfg(test)]

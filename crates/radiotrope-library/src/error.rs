@@ -1,4 +1,4 @@
-//! Error types for Radiotrope app services
+//! Error types for Radiotrope services
 //!
 //! Application-level errors that wrap engine errors and add app-specific variants.
 
@@ -36,7 +36,7 @@ impl From<std::io::Error> for AppError {
     }
 }
 
-/// Result type alias for Radiotrope app services
+/// Result type alias for Radiotrope services
 pub type Result<T> = std::result::Result<T, AppError>;
 
 /// Why a request to an online service failed, as the user should hear it

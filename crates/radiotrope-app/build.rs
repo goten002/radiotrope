@@ -84,8 +84,7 @@ fn emit_git_info() {
     }
 }
 
-/// Generate `$OUT_DIR/flags.rs` with the bundled country flags and the
-/// country name table from `assets/flags/`.
+/// Generate `$OUT_DIR/flags.rs` with the bundled country flags from `assets/flags/`.
 fn generate_flags() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/flags");
     println!("cargo:rerun-if-changed={}", dir.display());
@@ -115,21 +114,6 @@ fn generate_flags() {
         .unwrap();
     }
     out.push_str("];\n\n");
-
-    let names = std::fs::read_to_string(dir.join("names.tsv")).unwrap();
-    let mut pairs: Vec<(&str, &str)> = names
-        .lines()
-        .filter(|l| !l.starts_with('#') && !l.is_empty())
-        .filter_map(|l| l.split_once('\t'))
-        .collect();
-    pairs.sort();
-
-    out.push_str("/// Lowercase country name to ISO 3166-1 alpha-2 code, sorted by name\n");
-    out.push_str("static COUNTRY_NAMES: &[(&str, &str)] = &[\n");
-    for (name, code) in pairs {
-        writeln!(out, "    ({name:?}, {code:?}),").unwrap();
-    }
-    out.push_str("];\n");
 
     let out_path = Path::new(&std::env::var("OUT_DIR").unwrap()).join("flags.rs");
     std::fs::write(out_path, out).unwrap();

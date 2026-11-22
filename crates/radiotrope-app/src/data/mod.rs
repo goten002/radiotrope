@@ -4,18 +4,16 @@
 
 pub mod agent_token;
 pub mod cache;
-pub mod favorites;
 pub mod flags;
-pub mod languages;
 pub mod levels;
 pub mod recordings;
 pub mod remote;
 pub mod remote_cert;
 pub mod schedule;
 pub mod settings;
-pub mod storage;
 pub mod svg_logo;
-pub mod types;
+
+pub use radiotrope_library::data::{favorites, languages, storage, types};
 
 // Re-export common types
 pub use cache::ImageCache;

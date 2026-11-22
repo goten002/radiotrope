@@ -9,7 +9,7 @@
 //! day.
 
 use crate::config::caches::TEMP_FILE_MAX_AGE;
-use crate::data::cache::ensure_cache_dir;
+use crate::data::storage::ensure_cache_dir;
 use crate::data::types::fnv1a;
 use std::fs;
 use std::path::{Path, PathBuf};
