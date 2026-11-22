@@ -77,11 +77,12 @@ fn stderr_is_usable() -> bool {
     }
 }
 
-/// `%LOCALAPPDATA%\radiotrope\radiotrope.log`
+/// `%LOCALAPPDATA%\radiotrope\radiotrope.log`, or `data\local\` beside
+/// the program in portable mode
 pub fn log_path() -> Option<PathBuf> {
     Some(
-        dirs::data_local_dir()?
-            .join(radiotrope_app::config::app::NAME)
+        radiotrope_app::data::storage::local_dir()
+            .ok()?
             .join("radiotrope.log"),
     )
 }

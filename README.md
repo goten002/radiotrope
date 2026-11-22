@@ -129,8 +129,53 @@ Released binaries never contain or link FDK AAC either way.
 
 ### Windows
 
+Windows 10 and 11, on x64 and on ARM64. Each release has two kinds of
+download:
+
+| Download | Best for |
+|----------|----------|
+| `radiotrope-<version>-setup.exe` | Most people. One installer for x64 and ARM64: Start Menu entry, optional desktop icon, uninstaller, updates through WinGet. Installs for your user only (no administrator prompt) unless you choose **Install for all users**. |
+| `radiotrope-<version>-windows-x64.zip` / `-arm64.zip` | No install: unzip anywhere and run `radiotrope.exe`. No Start Menu entry and no updates. |
+
+With WinGet, `winget install Radiotrope.Radiotrope` installs it, and
+`winget upgrade Radiotrope.Radiotrope` (or `winget upgrade --all`) updates
+it. **The app never checks for updates on its own.** Run `winget upgrade`,
+or download the new installer from the releases page. The installer closes
+a running player, including one in the tray, before it updates.
+
+**Portable mode.** By default the zip uses the same folders as the installed
+app, so you can switch between them and keep everything. To keep all of the
+app's files in the unzipped folder instead (on a USB stick, say), create an
+empty file named `portable` next to `radiotrope.exe`. A file that ends up as
+`portable.txt` works too. Settings, favorites, cache and log then go to a
+`data` folder next to it, and nothing is written to `%APPDATA%` or
+`%LOCALAPPDATA%`. The folder must be one you can write to (not under
+`Program Files`). A portable copy runs as a separate player from an
+installed one.
+
+**"Windows protected your PC".** The downloads are not code-signed yet, so
+SmartScreen warns the first time. Check the download against the
+`SHA256SUMS` file on the release page first. In PowerShell:
+
+```powershell
+Get-FileHash .\radiotrope-0.1.0-setup.exe    # compare with the line for this file in SHA256SUMS
+```
+
+If the hashes match, choose **More info > Run anyway**.
+
+**Full AAC+.** No FDK AAC DLL is included. To use one, put it next to
+`radiotrope.exe`, as described in [AAC+ stations](#aac-stations-he-aac).
+
+**Uninstall** from **Settings > Apps > Installed apps**, or with
+`winget uninstall Radiotrope.Radiotrope`. The uninstaller asks whether to
+delete your settings, favorites and cache too (`%APPDATA%\radiotrope` and
+`%LOCALAPPDATA%\radiotrope`). For the zip, delete the folder, plus those two
+folders unless you used portable mode.
+
+#### Build from source on Windows
+
 1. Install Rust with [rustup](https://rustup.rs) (the default MSVC toolchain).
-2. Install the Visual Studio 2022 Build Tools with the **Desktop development with C++** workload.
+2. Install the Visual Studio 2022 Build Tools with the **Desktop development with C++** workload. On ARM64, also add the **C++ Clang Compiler for Windows** component.
 3. Install [CMake](https://cmake.org/download/) and make sure it is on `PATH`.
 4. Optional: install Git, so **Help > About** shows the commit the build came from.
 
@@ -142,7 +187,10 @@ cargo build --release
 
 The programs are in `target\release\` with an `.exe` ending. The release app
 opens without a console window. Started from a terminal it prints its log
-there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`.
+there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`
+(`data\local\radiotrope.log` in portable mode). See
+[packaging/windows](packaging/windows/README.md) for how the downloads are
+built.
 
 ## Using the desktop app
 
@@ -198,7 +246,8 @@ for the full list, including keys for focused controls.
 
 Favorites, listening stats, settings, schedules and pairings are JSON files in
 the config folder: `~/.config/radiotrope/` on Linux and
-`%APPDATA%\radiotrope\` on Windows. They are written atomically with a backup,
+`%APPDATA%\radiotrope\` on Windows (in [portable mode](#windows),
+`data\config\` next to the program). They are written atomically with a backup,
 and two open players see each other's favorite changes.
 
 Logging goes through the standard `log` crate: set `RUST_LOG`, for example

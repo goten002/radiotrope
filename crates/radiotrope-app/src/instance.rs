@@ -17,8 +17,8 @@
 //!   pipe of any name, so a client talks only to a pipe whose server runs as
 //!   its own user. The lock file lives in the local app data folder.
 //!
-//! A connection starts with one line saying what it wants ([`HELLO_MCP`] or
-//! [`HELLO_SHOW`]); an MCP session follows the first.
+//! A connection starts with one line saying what it wants ([`HELLO_MCP`],
+//! [`HELLO_SHOW`] or [`HELLO_QUIT`]); an MCP session follows the first.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
@@ -33,10 +33,25 @@ use tokio::io::AsyncWriteExt;
 pub const HELLO_MCP: &str = "radiotrope/1 mcp";
 /// First line of a connection from a second launch: show the window
 pub const HELLO_SHOW: &str = "radiotrope/1 show";
+/// First line of a connection from `radiotrope --quit`: exit
+pub const HELLO_QUIT: &str = "radiotrope/1 quit";
 
 /// How long a second launch keeps trying to reach a player that is still
 /// starting up
 const SHOW_WAIT: Duration = Duration::from_secs(5);
+
+/// How long `--quit` waits for the player to exit. The player itself waits
+/// up to about 7 seconds for a recording to be finished.
+const QUIT_WAIT: Duration = Duration::from_secs(20);
+
+/// What `radiotrope --quit` found
+#[derive(Debug, PartialEq, Eq)]
+pub enum Quit {
+    /// No player was running
+    NotRunning,
+    /// The player was asked to exit and has
+    Exited,
+}
 
 /// The result of trying to become the player
 pub enum Acquire {
@@ -152,6 +167,51 @@ pub fn ask_to_show() -> bool {
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
     })
+}
+
+/// Ask the running player to exit and wait until it has, so an installer
+/// can replace its files. Finding no player is a success too.
+pub fn ask_to_quit() -> io::Result<Quit> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let dir = runtime_dir()?;
+    runtime.block_on(quit_in(&dir, QUIT_WAIT))
+}
+
+async fn quit_in(dir: &Path, wait: Duration) -> io::Result<Quit> {
+    let deadline = Instant::now() + wait;
+    let mut asked = false;
+    loop {
+        // Holding the lock, even for a moment, means no player is running
+        match acquire_in(dir.to_path_buf()) {
+            Acquire::Primary(_) if asked => return Ok(Quit::Exited),
+            Acquire::Primary(_) => return Ok(Quit::NotRunning),
+            Acquire::Unavailable(e) => return Err(e),
+            Acquire::Running => {}
+        }
+        // A player that is still starting may not listen yet: ask until
+        // one hears it
+        if !asked {
+            if let Ok(mut conn) = connect_in(dir).await {
+                asked = conn
+                    .write_all(format!("{HELLO_QUIT}\n").as_bytes())
+                    .await
+                    .is_ok();
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                if asked {
+                    "the player was asked to quit but is still running"
+                } else {
+                    "the player is running but can't be reached"
+                },
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 /// Let process `pid` bring its window to the front, a right we have as the
@@ -393,14 +453,26 @@ fn socket_name(dir: &Path) -> io::Result<Name<'static>> {
 
 /// The pipe of the user with SID `sid`. Named pipes are machine-wide: the
 /// SID keeps two people on one computer apart, where names can share a
-/// spelling once made ASCII, and needs nothing from the environment. Tests
-/// pass their own folder, which names its own pipe.
+/// spelling once made ASCII, and needs nothing from the environment. Any
+/// folder but the usual `...\radiotrope` (a portable copy's, a test's) names
+/// a pipe of its own, told apart by a hash of the folder's path.
 #[cfg(any(windows, test))]
 fn pipe_name(sid: &str, dir: &Path) -> String {
     match dir.file_name().and_then(|n| n.to_str()) {
         Some("radiotrope") | None => format!("radiotrope-{sid}"),
-        Some(other) => format!("radiotrope-{sid}-{other}"),
+        Some(_) => format!("radiotrope-{sid}-{:016x}", path_hash(dir)),
     }
+}
+
+/// FNV-1a of the path, without regard to case (Windows paths ignore it)
+#[cfg(any(windows, test))]
+fn path_hash(dir: &Path) -> u64 {
+    dir.to_string_lossy()
+        .to_lowercase()
+        .bytes()
+        .fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+        })
 }
 
 /// Who a process runs as: its user's SID, e.g. "S-1-5-21-...-1001"
@@ -540,11 +612,13 @@ fn session_runtime_dir() -> Option<PathBuf> {
     (meta.is_dir() && meta.uid() == uid).then_some(dir)
 }
 
+/// The local app data folder, or in portable mode `data\local` beside the
+/// program (which then names a pipe of its own: a portable copy is a player
+/// apart from an installed one)
 #[cfg(not(unix))]
 fn runtime_dir() -> io::Result<PathBuf> {
-    let dir = dirs::data_local_dir()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no local app data folder"))?
-        .join("radiotrope");
+    let dir = radiotrope_app::data::storage::local_dir()
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "no local app data folder"))?;
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
 }
@@ -606,10 +680,17 @@ mod tests {
                 Path::new("radiotrope")
             )
         );
-        // A test's own folder gets a pipe of its own
+        // A test's or a portable copy's folder gets a pipe of its own, and
+        // two portable copies (both `data\local`) don't share one
+        let portable_a = pipe_name(sid, Path::new("D:/Radiotrope/data/local"));
+        let portable_b = pipe_name(sid, Path::new("E:/Apps/Radiotrope/data/local"));
+        assert!(portable_a.starts_with(&format!("radiotrope-{sid}-")));
+        assert_ne!(portable_a, format!("radiotrope-{sid}"));
+        assert_ne!(portable_a, portable_b);
+        // Windows paths ignore case
         assert_eq!(
-            pipe_name(sid, Path::new("/tmp/rt-inst-sock-42")),
-            format!("radiotrope-{sid}-rt-inst-sock-42")
+            portable_a,
+            pipe_name(sid, Path::new("d:/radiotrope/DATA/local"))
         );
     }
 
@@ -652,6 +733,48 @@ mod tests {
         let mut line = String::new();
         BufReader::new(server).read_line(&mut line).await.unwrap();
         assert_eq!(line.trim_end(), HELLO_SHOW);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quit_with_no_player_running_succeeds() {
+        let dir = scratch_dir("quit-none");
+        let found = quit_in(&dir, Duration::from_secs(1)).await.unwrap();
+        assert_eq!(found, Quit::NotRunning);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quit_asks_the_player_and_waits_for_it_to_exit() {
+        let dir = scratch_dir("quit");
+        let Acquire::Primary(instance) = acquire_in(dir.clone()) else {
+            panic!("no lock");
+        };
+        let listener = instance.listen().unwrap();
+        // The player: hear the request, then exit (which drops the lock)
+        let player = tokio::spawn(async move {
+            let server = listener.accept().await.unwrap();
+            let mut line = String::new();
+            BufReader::new(server).read_line(&mut line).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(instance);
+            line
+        });
+        let found = quit_in(&dir, Duration::from_secs(10)).await.unwrap();
+        assert_eq!(found, Quit::Exited);
+        assert_eq!(player.await.unwrap().trim_end(), HELLO_QUIT);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn quit_gives_up_on_a_player_that_stays() {
+        let dir = scratch_dir("quit-stays");
+        let Acquire::Primary(_instance) = acquire_in(dir.clone()) else {
+            panic!("no lock");
+        };
+        // Holds the lock but never listens
+        let error = quit_in(&dir, Duration::from_millis(300)).await.unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

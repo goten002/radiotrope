@@ -15,7 +15,7 @@ use interprocess::local_socket::tokio::prelude::*;
 use rmcp::ServiceExt;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 
-use crate::instance::{self, Acquire, Instance, HELLO_MCP, HELLO_SHOW};
+use crate::instance::{self, Acquire, Instance, HELLO_MCP, HELLO_QUIT, HELLO_SHOW};
 
 use super::tools::RadioTools;
 
@@ -36,9 +36,13 @@ const WELCOME: &str = "ok";
 /// Called when a second launch asks the player to show its window
 pub type ShowWindow = Arc<dyn Fn() + Send + Sync>;
 
-/// Serve MCP sessions and show requests on the local socket (blocking: call
-/// from a dedicated thread)
-pub fn serve(instance: &Instance, tools: RadioTools, show_window: ShowWindow) {
+/// Called when `radiotrope --quit` (an installer, a script) asks the player
+/// to exit
+pub type QuitApp = Arc<dyn Fn() + Send + Sync>;
+
+/// Serve MCP sessions, show and quit requests on the local socket
+/// (blocking: call from a dedicated thread)
+pub fn serve(instance: &Instance, tools: RadioTools, show_window: ShowWindow, quit: QuitApp) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -60,7 +64,12 @@ pub fn serve(instance: &Instance, tools: RadioTools, show_window: ShowWindow) {
         loop {
             match listener.accept().await {
                 Ok(conn) => {
-                    tokio::spawn(handle(conn, tools.clone(), show_window.clone()));
+                    tokio::spawn(handle(
+                        conn,
+                        tools.clone(),
+                        show_window.clone(),
+                        quit.clone(),
+                    ));
                 }
                 Err(e) => {
                     eprintln!("MCP: accept failed: {e}");
@@ -72,7 +81,7 @@ pub fn serve(instance: &Instance, tools: RadioTools, show_window: ShowWindow) {
 }
 
 /// One connection: read what it wants, then serve it
-async fn handle<S>(conn: S, tools: RadioTools, show_window: ShowWindow)
+async fn handle<S>(conn: S, tools: RadioTools, show_window: ShowWindow, quit: QuitApp)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
@@ -113,6 +122,8 @@ where
         }
     } else if hello == HELLO_SHOW {
         show_window();
+    } else if hello == HELLO_QUIT {
+        quit();
     }
 }
 
@@ -605,8 +616,29 @@ mod tests {
             .write_all(format!("{HELLO_SHOW}\n").as_bytes())
             .await
             .unwrap();
-        handle(server, test_tools(), show).await;
+        handle(server, test_tools(), show, Arc::new(|| {})).await;
         assert_eq!(shown.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_quit_request_quits_and_shows_nothing() {
+        let shown = Arc::new(AtomicUsize::new(0));
+        let quits = Arc::new(AtomicUsize::new(0));
+        let (shown_counter, quit_counter) = (shown.clone(), quits.clone());
+        let show: ShowWindow = Arc::new(move || {
+            shown_counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let quit: QuitApp = Arc::new(move || {
+            quit_counter.fetch_add(1, Ordering::SeqCst);
+        });
+        let (mut client, server) = duplex(256);
+        client
+            .write_all(format!("{HELLO_QUIT}\n").as_bytes())
+            .await
+            .unwrap();
+        handle(server, test_tools(), show, quit).await;
+        assert_eq!(quits.load(Ordering::SeqCst), 1);
+        assert_eq!(shown.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -621,7 +653,7 @@ mod tests {
             .write_all(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n")
             .await
             .unwrap();
-        handle(server, test_tools(), show).await;
+        handle(server, test_tools(), show, Arc::new(|| {})).await;
         assert_eq!(shown.load(Ordering::SeqCst), 0);
         let mut rest = Vec::new();
         client.read_to_end(&mut rest).await.unwrap();
@@ -632,7 +664,7 @@ mod tests {
     async fn an_mcp_hello_starts_a_session() {
         let show: ShowWindow = Arc::new(|| {});
         let (client, server) = duplex(64 * 1024);
-        let session = tokio::spawn(handle(server, test_tools(), show));
+        let session = tokio::spawn(handle(server, test_tools(), show, Arc::new(|| {})));
         let (read, mut write) = tokio::io::split(client);
         let mut read = BufReader::new(read);
         write

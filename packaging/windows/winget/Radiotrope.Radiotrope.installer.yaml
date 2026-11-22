@@ -1,0 +1,49 @@
+# Template for winget-pkgs: manifests/r/Radiotrope/Radiotrope/@VERSION@/
+# Filled in by render.ps1; see ../README.md ("WinGet")
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.9.0.schema.json
+PackageIdentifier: Radiotrope.Radiotrope
+PackageVersion: "@VERSION@"
+InstallerType: inno
+MinimumOSVersion: 10.0.17763.0
+UpgradeBehavior: install
+ReleaseDate: "@DATE@"
+# The Inno AppId, permanent (packaging/windows/radiotrope.iss)
+ProductCode: "{F8B5B3D8-4BAC-4AE4-9925-5AA527345B2E}_is1"
+AppsAndFeaturesEntries:
+  - DisplayName: Radiotrope
+    Publisher: Radiotrope
+    ProductCode: "{F8B5B3D8-4BAC-4AE4-9925-5AA527345B2E}_is1"
+Commands:
+  - radiotrope
+  - radiotrope-cli
+  - radiotrope-probe
+# One universal installer serves both architectures and both scopes
+Installers:
+  - Architecture: x64
+    Scope: user
+    InstallerUrl: https://github.com/goten002/radiotrope/releases/download/v@VERSION@/radiotrope-@VERSION@-setup.exe
+    InstallerSha256: "@SHA256@"
+    InstallerSwitches:
+      Custom: /CURRENTUSER
+  - Architecture: x64
+    Scope: machine
+    InstallerUrl: https://github.com/goten002/radiotrope/releases/download/v@VERSION@/radiotrope-@VERSION@-setup.exe
+    InstallerSha256: "@SHA256@"
+    ElevationRequirement: elevatesSelf
+    InstallerSwitches:
+      Custom: /ALLUSERS
+  - Architecture: arm64
+    Scope: user
+    InstallerUrl: https://github.com/goten002/radiotrope/releases/download/v@VERSION@/radiotrope-@VERSION@-setup.exe
+    InstallerSha256: "@SHA256@"
+    InstallerSwitches:
+      Custom: /CURRENTUSER
+  - Architecture: arm64
+    Scope: machine
+    InstallerUrl: https://github.com/goten002/radiotrope/releases/download/v@VERSION@/radiotrope-@VERSION@-setup.exe
+    InstallerSha256: "@SHA256@"
+    ElevationRequirement: elevatesSelf
+    InstallerSwitches:
+      Custom: /ALLUSERS
+ManifestType: installer
+ManifestVersion: 1.9.0

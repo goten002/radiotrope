@@ -1,0 +1,257 @@
+name: Package (Windows)
+
+# Builds the Windows downloads: a portable zip per architecture and one
+# Inno Setup installer for both, then installs, upgrades and uninstalls that
+# installer on x64 and ARM64. Nothing is published here: release.yml calls
+# this workflow and attaches the `dist-*` artefacts to a draft release.
+#
+#   dist-windows-x64        radiotrope-<ver>-windows-x64.zip
+#   dist-windows-arm64      radiotrope-<ver>-windows-arm64.zip
+#   dist-windows-installer  radiotrope-<ver>-setup.exe (x64 and ARM64)
+#
+# A pull request that changes the Windows packaging runs it too, and so can
+# a manual run (Actions > Package (Windows) > Run workflow): artefacts only.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version (`0.1.0` or `v0.1.0`); must match the workspace version. Empty for the workspace version.
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version; empty for the workspace version
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - packaging/windows/**
+      - .github/workflows/package-windows.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: windows-latest, target: x86_64-pc-windows-msvc }
+          # Native, so the build scripts and tests run as they will on a device
+          - { arch: arm64, runner: windows-11-arm, target: aarch64-pc-windows-msvc }
+    runs-on: ${{ matrix.runner }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      # No Visual C++ Redistributable needed on the user's PC. The C parts
+      # follow it too: cc reads the flag, and opusic-sys turns it into
+      # OPUS_STATIC_RUNTIME for the CMake-built libopus. stage.ps1 checks
+      # the result.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Version
+        id: version
+        shell: pwsh
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          $workspace = ((cargo metadata --no-deps --format-version 1 --locked | ConvertFrom-Json).packages |
+                        Where-Object name -eq 'radiotrope-app').version
+          $wanted = "$env:INPUT_VERSION" -replace '^v', ''
+          if ($wanted -and $wanted -ne $workspace) {
+            Write-Output "::error::Version $wanted does not match the workspace version $workspace (Cargo.toml)"
+            exit 1
+          }
+          Write-Output "Version $workspace"
+          "version=$workspace" >> $env:GITHUB_OUTPUT
+
+      # aws-lc-sys (rustls's crypto) needs clang-cl for its ARM64 assembly;
+      # MSVC's cl.exe can't build it. Its build script finds clang-cl on PATH.
+      - name: clang-cl for aws-lc-sys
+        if: matrix.arch == 'arm64'
+        shell: pwsh
+        run: |
+          if (-not (Select-String -Path Cargo.lock -Pattern '^name = "aws-lc-sys"$' -Quiet)) {
+            Write-Output 'aws-lc-sys is not used: nothing to do'
+            exit 0
+          }
+          if (Get-Command clang-cl -ErrorAction SilentlyContinue) {
+            clang-cl --version
+            exit 0
+          }
+          $llvm = "$env:ProgramFiles\LLVM\bin"
+          if (-not (Test-Path "$llvm\clang-cl.exe")) {
+            Write-Output '::error::clang-cl not found; aws-lc-sys needs it on ARM64'
+            exit 1
+          }
+          & "$llvm\clang-cl.exe" --version
+          Add-Content $env:GITHUB_PATH $llvm
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }} -p radiotrope-app -p radiotrope-cli -p radiotrope-probe
+
+      - name: Programs report their version
+        shell: pwsh
+        run: |
+          foreach ($p in 'radiotrope-cli', 'radiotrope-probe') {
+            $out = & "target\${{ matrix.target }}\release\$p.exe" --version
+            Write-Output $out
+            if ($out -ne "$p ${{ steps.version.outputs.version }}") { throw "unexpected: $out" }
+          }
+
+      - name: Stage and zip
+        shell: pwsh
+        run: packaging\windows\stage.ps1 -Target ${{ matrix.target }} -Arch ${{ matrix.arch }} -Version ${{ steps.version.outputs.version }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-${{ matrix.arch }}
+          path: dist/radiotrope-*-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+      # The unpacked files, for the installer job only
+      - uses: actions/upload-artifact@v4
+        with:
+          name: stage-windows-${{ matrix.arch }}
+          path: dist/stage/${{ matrix.arch }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  installer:
+    name: Installer
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-windows-x64
+          path: dist/stage/x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: stage-windows-arm64
+          path: dist/stage/arm64
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+          if (-not $iscc) { $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" }
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+            $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          }
+          & $iscc /? | Select-Object -First 1
+          & $iscc /Qp "/DAppVersion=${{ needs.build.outputs.version }}" `
+            "/DSourceX64=$PWD\dist\stage\x64\Radiotrope" `
+            "/DSourceArm64=$PWD\dist\stage\arm64\Radiotrope" `
+            "/DOutputDir=$PWD\dist" packaging\windows\radiotrope.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist\*.exe | Format-Table Name, Length -AutoSize
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-installer
+          path: dist/radiotrope-*-setup.exe
+          if-no-files-found: error
+
+  # Install, upgrade over a running player, run, uninstall: silently, the
+  # way WinGet does, on both architectures
+  smoke:
+    name: Installer smoke test (${{ matrix.arch }})
+    needs: [build, installer]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: x64, runner: windows-latest, machine: 0x8664 }
+          - { arch: arm64, runner: windows-11-arm, machine: 0xAA64 }
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-windows-installer
+          path: dist
+      - name: Silent per-user install
+        shell: pwsh
+        run: |
+          $setup = "dist\radiotrope-$env:VERSION-setup.exe"
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/LOG=install.log' -Wait -PassThru
+          Get-Content install.log -Tail 15
+          if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
+      - name: Installed files, architecture and uninstall entry
+        shell: pwsh
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\Radiotrope"
+          Get-ChildItem $app | Format-Table Name, Length -AutoSize
+          foreach ($p in 'radiotrope', 'radiotrope-cli', 'radiotrope-probe') {
+            $bytes = [IO.File]::ReadAllBytes("$app\$p.exe")
+            $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
+            if ($machine -ne ${{ matrix.machine }}) { throw ("{0}.exe is for machine 0x{1:X4}" -f $p, $machine) }
+          }
+          $out = & "$app\radiotrope-cli.exe" --version
+          Write-Output $out
+          if ($out -ne "radiotrope-cli $env:VERSION") { throw "unexpected: $out" }
+          $key = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{F8B5B3D8-4BAC-4AE4-9925-5AA527345B2E}_is1'
+          $entry = Get-ItemProperty $key
+          $entry | Select-Object DisplayName, DisplayVersion, Publisher, InstallLocation | Format-List
+          if ($entry.DisplayName -ne 'Radiotrope' -or $entry.DisplayVersion -ne $env:VERSION -or $entry.Publisher -ne 'Radiotrope') {
+            throw 'The uninstall entry does not match what WinGet expects'
+          }
+          if (-not (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Radiotrope.lnk")) { throw 'No Start Menu entry' }
+      - name: --quit with no player running
+        shell: pwsh
+        run: |
+          $p = Start-Process "$env:LOCALAPPDATA\Programs\Radiotrope\radiotrope.exe" -ArgumentList '--quit' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "--quit exited with $($p.ExitCode)" }
+      - name: Upgrade closes a running player
+        shell: pwsh
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\Radiotrope"
+          $env:SLINT_BACKEND = 'winit-software'
+          $player = Start-Process "$app\radiotrope.exe" -PassThru
+          Start-Sleep -Seconds 8
+          if ($player.HasExited) {
+            Write-Output "::warning::The player did not keep running on this runner (exit $($player.ExitCode)); upgrade-over-a-running-player not tested"
+            Get-Content "$env:LOCALAPPDATA\radiotrope\radiotrope.log" -ErrorAction SilentlyContinue | Select-Object -Last 20
+            exit 0
+          }
+          $p = Start-Process "dist\radiotrope-$env:VERSION-setup.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/CURRENTUSER', '/LOG=upgrade.log' -Wait -PassThru
+          Get-Content upgrade.log | Select-String -Pattern 'quit|Restart Manager|close' | Select-Object -First 10
+          if ($p.ExitCode -ne 0) { throw "setup exited with $($p.ExitCode)" }
+          if (-not $player.WaitForExit(5000)) { throw 'The player was still running after the upgrade' }
+          Write-Output "The player exited with $($player.ExitCode)"
+          Get-Content "$env:LOCALAPPDATA\radiotrope\radiotrope.log" -ErrorAction SilentlyContinue | Select-Object -Last 10
+      - name: Silent uninstall
+        shell: pwsh
+        run: |
+          $app = "$env:LOCALAPPDATA\Programs\Radiotrope"
+          # The uninstaller hands over to a copy of itself in the temp folder
+          # and exits: wait for the folder to go
+          Start-Process "$app\unins000.exe" -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART' -Wait
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Test-Path "$app\radiotrope.exe") -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          if (Test-Path "$app\radiotrope.exe") { throw 'The programs are still installed' }
+          Start-Sleep -Seconds 3
+          if (Test-Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{F8B5B3D8-4BAC-4AE4-9925-5AA527345B2E}_is1') {
+            throw 'The uninstall entry is still there'
+          }
+          if (Test-Path "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Radiotrope.lnk") { throw 'The Start Menu entry is still there' }
+          # A silent uninstall keeps the user's data unless /DELETEDATA
+          Write-Output "Data kept: $(Test-Path "$env:LOCALAPPDATA\radiotrope")"
