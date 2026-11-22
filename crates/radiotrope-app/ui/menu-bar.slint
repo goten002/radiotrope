@@ -942,9 +942,13 @@ export component MenuBar inherits Rectangle {
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
-        // 12 Zoom, 13-17 its percentages
+        // 12 Zoom, 13-17 its percentages (those too large for the screen greyed)
         Platform.has-window-frame,
-        root.zoom-open, root.zoom-open, root.zoom-open, root.zoom-open, root.zoom-open,
+        root.zoom-open && ViewOptions.zoom-choices[0] <= ViewOptions.zoom-fits,
+        root.zoom-open && ViewOptions.zoom-choices[1] <= ViewOptions.zoom-fits,
+        root.zoom-open && ViewOptions.zoom-choices[2] <= ViewOptions.zoom-fits,
+        root.zoom-open && ViewOptions.zoom-choices[3] <= ViewOptions.zoom-fits,
+        root.zoom-open && ViewOptions.zoom-choices[4] <= ViewOptions.zoom-fits,
         // 18 Window, 19 Use System Title Bar, 20 Rounded Corners
         Platform.has-window-frame, root.window-open,
         root.window-open && root.custom-frame && root.corners-available,
@@ -1458,8 +1462,11 @@ export component MenuBar inherits Rectangle {
                     label: percent + "%";
                     indent: Theme.space-16;
                     one-of-set: true;
+                    // Greyed when its smallest window is larger than the screen
+                    enabled: percent <= ViewOptions.zoom-fits;
                     // Which one the window has now, while another is picked
-                    hint: ViewOptions.zoom != ViewOptions.zoom-in-use && percent == ViewOptions.zoom-in-use ? "In use" : "";
+                    hint: percent > ViewOptions.zoom-fits ? "Too large for this screen"
+                        : ViewOptions.zoom != ViewOptions.zoom-in-use && percent == ViewOptions.zoom-in-use ? "In use" : "";
                     checked: ViewOptions.zoom == percent;
                     clicked => { ViewOptions.zoom = percent; }
                 }
