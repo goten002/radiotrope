@@ -140,12 +140,28 @@ export component VizContent inherits Rectangle {
     // Gap between spectrum bars
     in property <length> gap: 1px;
 
+    // Reduce Motion: a still picture of the style while a station plays,
+    // in place of the live levels (which nothing here then reads, so the
+    // tile isn't redrawn)
+    property <bool> still: Theme.reduce-motion;
+    property <[float]> still-bands: [
+        0.42, 0.58, 0.72, 0.8, 0.74, 0.62, 0.68, 0.56,
+        0.46, 0.52, 0.4, 0.34, 0.3, 0.22, 0.16, 0.1,
+    ];
+    property <[float]> bands: root.still ? root.still-bands : VizData.spectrum;
+    property <[float]> columns: root.still ? [0.5, 0.76, 0.68, 0.62, 0.49, 0.37, 0.26, 0.13] : VizData.columns;
+    property <[float]> peaks: root.still ? [0.63, 0.88, 0.75, 0.75, 0.63, 0.5, 0.38, 0.25] : VizData.peaks;
+    property <float> vu-left: root.still ? 0.62 : VizData.vu-left;
+    property <float> vu-right: root.still ? 0.55 : VizData.vu-right;
+
     // Loading animation (tuning): a needle sweeps back and forth across a
     // row of faint dial ticks, which light up and rise as it passes, like a
     // radio searching for the station
     property <int> tune-ticks: 16;
     // Needle position across the dial (0-1), easing at both ends
-    property <float> tune-pos: 0.5 - 0.5 * cos(mod(animation-tick() / Theme.tune-period * 180deg, 360deg));
+    // (with Reduce Motion on it stands in the middle)
+    property <float> tune-pos: root.still ? 0.5
+        : 0.5 - 0.5 * cos(mod(animation-tick() / Theme.tune-period * 180deg, 360deg));
     property <length> tune-gap: 2px;
     property <length> tune-tick: (root.width - (root.tune-ticks - 1) * root.tune-gap) / root.tune-ticks;
 
@@ -175,9 +191,9 @@ export component VizContent inherits Rectangle {
     // Nothing playing, or silence: the style is drawn at rest in a faint
     // colour (a flat line, floor-height bars, unlit dots), so the tile shows
     // which style is on instead of an empty box
-    property <bool> resting: !root.is-loading && (!VizData.active || !VizData.has-signal);
+    property <bool> resting: !root.is-loading && (!VizData.active || (!root.still && !VizData.has-signal));
     property <color> rest-color: Theme.text-tertiary.with-alpha(0.45);
-    property <int> rest-bands: VizData.spectrum.length > 0 ? VizData.spectrum.length : 16;
+    property <int> rest-bands: root.bands.length > 0 ? root.bands.length : 16;
     property <length> rest-bar: (root.width - (root.rest-bands - 1) * root.gap) / root.rest-bands;
 
     if root.resting && root.mode == "wave": Rectangle {
@@ -249,10 +265,10 @@ export component VizContent inherits Rectangle {
     if !root.resting && !root.is-loading && root.mode == "spectrum": HorizontalLayout {
         spacing: root.gap;
 
-        for val[i] in VizData.spectrum: Bar {
+        for val[i] in root.bands: Bar {
             horizontal-stretch: 1;
             level: val;
-            tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
+            tint: VizStyle.bar-color(i / max(1, root.bands.length - 1));
         }
     }
 
@@ -260,11 +276,11 @@ export component VizContent inherits Rectangle {
     if !root.resting && !root.is-loading && root.mode == "mirror": HorizontalLayout {
         spacing: root.gap;
 
-        for val[i] in VizData.spectrum: Bar {
+        for val[i] in root.bands: Bar {
             horizontal-stretch: 1;
             level: val;
             anchor: "center";
-            tint: VizStyle.bar-color(i / max(1, VizData.spectrum.length - 1));
+            tint: VizStyle.bar-color(i / max(1, root.bands.length - 1));
         }
     }
 
@@ -273,14 +289,14 @@ export component VizContent inherits Rectangle {
     // software renderer (Pi build) fills a path with one colour only.
     property <float> vw: root.width / 1px;
     property <float> vh: root.height / 1px;
-    property <int> last-band: VizData.spectrum.length - 1;
+    property <int> last-band: root.bands.length - 1;
 
     pure function wave-x(i: int) -> float {
         return clamp(i, 0, root.last-band) * root.vw / max(1, root.last-band);
     }
 
     pure function wave-y(i: int) -> float {
-        return root.vh - 1 - clamp(VizData.spectrum[clamp(i, 0, root.last-band)], 0, 1) * (root.vh - 3);
+        return root.vh - 1 - clamp(root.bands[clamp(i, 0, root.last-band)], 0, 1) * (root.vh - 3);
     }
 
 
@@ -363,13 +379,13 @@ export component VizContent inherits Rectangle {
     property <length> dots-size: root.dot-count * root.dot + (root.dot-count - 1) * root.dot-gap;
 
     if !root.resting && !root.is-loading && root.mode == "dots": Rectangle {
-        for level[c] in VizData.columns: Rectangle {
+        for level[c] in root.columns: Rectangle {
             // Level in dots: whole dots are lit, the one above lights by the
             // fraction, so the column fades between dots instead of jumping
             property <float> fill: clamp(level, 0, 1) * root.dot-count;
             // Dot holding the peak, shown only above the lit ones
-            property <int> peak-row: ceil(clamp(VizData.peaks[c], 0, 1) * root.dot-count) - 1;
-            property <color> tint: VizStyle.bar-color(c / max(1, VizData.columns.length - 1));
+            property <int> peak-row: ceil(clamp(root.peaks[c], 0, 1) * root.dot-count) - 1;
+            property <color> tint: VizStyle.bar-color(c / max(1, root.columns.length - 1));
 
             x: (parent.width - root.dots-size) / 2 + c * (root.dot + root.dot-gap);
             y: (parent.height - root.dots-size) / 2;
@@ -395,13 +411,13 @@ export component VizContent inherits Rectangle {
 
         Bar {
             width: 20px;
-            level: VizData.vu-left;
+            level: root.vu-left;
             spread: true;
         }
 
         Bar {
             width: 20px;
-            level: VizData.vu-right;
+            level: root.vu-right;
             spread: true;
         }
     }
@@ -413,14 +429,14 @@ export component VizContent inherits Rectangle {
 
         Bar {
             height: 20px;
-            level: VizData.vu-left;
+            level: root.vu-left;
             anchor: "left";
             spread: true;
         }
 
         Bar {
             height: 20px;
-            level: VizData.vu-right;
+            level: root.vu-right;
             anchor: "left";
             spread: true;
         }

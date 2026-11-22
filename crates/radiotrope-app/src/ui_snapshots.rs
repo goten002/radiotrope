@@ -150,6 +150,12 @@ const SHOTS: &[Shot] = &[
         "Playing station with codec, now-playing metadata and favorite row stats.",
     ),
     Shot::new(
+        "main-reduce-motion",
+        "main",
+        "reduce-motion",
+        "Playing with View > Reduce Motion on: steady bars and dot, a still visualizer.",
+    ),
+    Shot::new(
         "main-error",
         "main",
         "error",
@@ -351,6 +357,12 @@ const SHOTS: &[Shot] = &[
         "View menu with the inline Theme selector.",
     ),
     Shot::new(
+        "menu-view-end",
+        "view-group",
+        "tray",
+        "View menu with System Tray open, after End: the last row has the focus (scrolled into view in a short window).",
+    ),
+    Shot::new(
         "menu-theme",
         "view-group",
         "theme",
@@ -361,6 +373,12 @@ const SHOTS: &[Shot] = &[
         "view-group",
         "style",
         "Visualizer styles expanded in the View menu.",
+    ),
+    Shot::new(
+        "menu-zoom",
+        "view-group",
+        "zoom",
+        "Zoom choices expanded in the View menu, with Reduce Motion below.",
     ),
     Shot::new(
         "menu-window-options",
@@ -1045,6 +1063,7 @@ fn after_open(ui: &App, shot: &Shot) {
         // Enter in the form's first field saves it, and the save fails
         ("edit-favorite", "error") => press(ui, Key::Return),
         _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
+        _ if shot.name == "menu-view-end" => press(ui, Key::End),
         _ if shot.name == "menu-tools-keys" => {
             for _ in 0..3 {
                 press(ui, Key::DownArrow);
@@ -1408,6 +1427,7 @@ fn configure(ui: &App, shot: &Shot) {
             "sleep" => {
                 configure_sleep(ui);
             }
+            "reduce-motion" => ui.set_reduce_motion(true),
             "schedule" => {
                 ui.set_schedule_label("Record in 0:12".into());
             }

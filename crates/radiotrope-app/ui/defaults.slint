@@ -184,8 +184,12 @@ export global Theme {
     out property <length> dialog-radius: rounded-corners ? radius-lg : 0px;
 
     // ── Motion ──
-    out property <duration> fast: 120ms;
-    out property <duration> normal: 180ms;
+    // View > Reduce Motion (the system's setting until it is picked):
+    // transitions are instant, and the status animations, spinners and the
+    // visualizer stand still
+    in-out property <bool> reduce-motion: false;
+    out property <duration> fast: reduce-motion ? 0ms : 120ms;
+    out property <duration> normal: reduce-motion ? 0ms : 180ms;
     // Status animations, one cycle each. The bouncing now-playing bars:
     // the first bar, and how much slower each next one is
     out property <duration> bars-period: 520ms;
@@ -294,12 +298,30 @@ export global Theme {
     }
 }
 
+// Options of the View and Tools menus that the Rust side shows, saves and
+// follows (src/view_options.rs)
+export global ViewOptions {
+    // View > Zoom, in percent: the choice, which applies at the next
+    // start, and the zoom this run started with
+    in-out property <int> zoom: 100;
+    in property <int> zoom-in-use: 100;
+    // The percentages offered
+    out property <[int]> zoom-choices: [90, 100, 115, 130, 150];
+    // Reduce Motion was picked in the menu; until then Theme.reduce-motion
+    // follows the system
+    in-out property <bool> reduce-motion-chosen: false;
+    // Tools > Connections > Report Plays to the Station Directory
+    in-out property <bool> report-plays: true;
+    callback report-plays-changed(bool);
+}
+
 export global Defaults {
     // ── Main window ──
     out property <length> window-width: 800px;
     out property <length> window-height: 600px;
     out property <length> window-min-width: 640px;
-    out property <length> window-min-height: 480px;
+    // Low enough for a 768 px display at 150% zoom (the favorites scroll)
+    out property <length> window-min-height: 400px;
     // Edges to grab for resizing with the app's own title bar
     out property <length> resize-border: 8px;
     // Rounded corners with the app's own title bar (Windows 11 uses its own)
