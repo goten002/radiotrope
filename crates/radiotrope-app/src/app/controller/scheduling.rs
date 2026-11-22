@@ -638,7 +638,10 @@ impl AppController {
         }
     }
 
-    /// A bedtime stop: stops whatever plays, as Stop does
+    /// A bedtime stop: stops whatever plays, as Stop does. The fade that
+    /// led to it is over with it, so the next `apply_volume` puts the
+    /// user's volume back: for the next station, as the engine keeps a
+    /// stopped station at the volume it had while it fades out and ends.
     fn stop_for_schedule(&mut self) {
         self.active = None;
         self.fade_in = None;
@@ -808,6 +811,7 @@ pub fn clash_message(other: &Entry) -> String {
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use radiotrope::audio::{AudioEngine, AudioEvent, EngineConfig, EngineOutput};
     use radiotrope_app::data::schedule::{ClockTime, Days, End};
 
     use super::*;
@@ -1187,6 +1191,183 @@ mod tests {
         assert_eq!(s.volume, 0.8);
         drop(s);
         assert_eq!(controller.engine_volume, Some(0.8));
+    }
+
+    /// A tone that never ends, as a WAV stream
+    struct Tone {
+        pos: u64,
+    }
+
+    impl Tone {
+        /// 44.1 kHz, mono, 16-bit, of no known length
+        fn header() -> Vec<u8> {
+            let mut header = b"RIFF\xff\xff\xff\xffWAVEfmt ".to_vec();
+            header.extend_from_slice(&16u32.to_le_bytes());
+            header.extend_from_slice(&1u16.to_le_bytes());
+            header.extend_from_slice(&1u16.to_le_bytes());
+            header.extend_from_slice(&44_100u32.to_le_bytes());
+            header.extend_from_slice(&88_200u32.to_le_bytes());
+            header.extend_from_slice(&2u16.to_le_bytes());
+            header.extend_from_slice(&16u16.to_le_bytes());
+            header.extend_from_slice(b"data\xbf\xff\xff\xff");
+            header
+        }
+    }
+
+    impl std::io::Read for Tone {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            let header = Self::header();
+            for (i, byte) in buf.iter_mut().enumerate() {
+                let pos = self.pos + i as u64;
+                *byte = match header.get(pos as usize) {
+                    Some(b) => *b,
+                    None => {
+                        let at = pos - header.len() as u64;
+                        let sample = ((at / 2) as f32 * 0.1).sin() * 10_000.0;
+                        (sample as i16).to_le_bytes()[(at % 2) as usize]
+                    }
+                };
+            }
+            self.pos += buf.len() as u64;
+            Ok(buf.len())
+        }
+    }
+
+    impl std::io::Seek for Tone {
+        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.pos = match pos {
+                std::io::SeekFrom::Start(n) => n,
+                std::io::SeekFrom::Current(n) => self.pos.checked_add_signed(n).unwrap_or(0),
+                std::io::SeekFrom::End(_) => return Err(std::io::Error::other("endless")),
+            };
+            Ok(self.pos)
+        }
+    }
+
+    /// Play the tone on the controller's engine, and wait until it is heard
+    fn play_tone(controller: &AppController, state: &Arc<Mutex<AppSnapshot>>) {
+        let engine = controller.engine.as_ref().unwrap();
+        engine.play(Box::new(Tone { pos: 0 }), Some("wav".into()), None);
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match engine.event_receiver().recv_timeout(left) {
+                Ok(e) if matches!(e.event, AudioEvent::Playing(_)) => break,
+                Ok(_) => {}
+                Err(_) => panic!("the tone doesn't play"),
+            }
+        }
+        playing(state);
+        // Past the station's fade in
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+
+    /// A controller at volume 0.8 whose engine plays the tone into an
+    /// output with no device, 20 times as fast as it would be heard
+    fn heard() -> (AppController, Arc<Mutex<AppSnapshot>>) {
+        let (mut controller, state) = controller();
+        controller.engine = Some(
+            AudioEngine::with_config(EngineConfig {
+                output: EngineOutput::Silent { speed: 20.0 },
+                ..EngineConfig::default()
+            })
+            .expect("the engine starts"),
+        );
+        state.lock().unwrap().volume = 0.8;
+        controller.apply_volume(&Local::now());
+        play_tone(&controller, &state);
+        (controller, state)
+    }
+
+    /// The loudest sample the engine's output takes in the next `ms`
+    fn loudest(controller: &AppController, ms: u64) -> f32 {
+        let engine = controller.engine.as_ref().unwrap();
+        engine.take_output_peak();
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        engine.take_output_peak()
+    }
+
+    /// The fade to `stop_at` that `controller` runs ends there with no
+    /// sample louder than the fade had got, and the next station plays at
+    /// the user's volume
+    fn fades_to_a_stop_without_a_blip(
+        mut controller: AppController,
+        state: &Arc<Mutex<AppSnapshot>>,
+        stop_at: DateTime<Local>,
+    ) {
+        let full = loudest(&controller, 100);
+        assert!(full > 0.05, "the station isn't heard: {full}");
+
+        // Six seconds before the end: a tenth as loud
+        controller.run_schedule(stop_at - TimeDelta::seconds(6));
+        let volume = controller.engine_volume.unwrap();
+        assert!((volume - 0.08).abs() < 0.005, "{volume}");
+        assert!((state.lock().unwrap().fade_gain - 0.1).abs() < 0.01);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let faded = loudest(&controller, 100);
+        assert!(faded > 0.0 && faded < full * 0.05, "not faded: {faded}");
+
+        // The end: stopped, and the volume put back in the same step
+        controller.engine.as_ref().unwrap().take_output_peak();
+        controller.run_schedule(stop_at);
+        assert_eq!(controller.engine_volume, Some(0.8));
+        {
+            let s = state.lock().unwrap();
+            assert_eq!(s.playback, PlaybackState::Stopped);
+            // What the window, the tray and the phone show is the user's
+            assert_eq!(s.volume, 0.8);
+            assert_eq!(s.fade_gain, 1.0);
+        }
+        // Whatever was still to play (the engine's own short fade-out,
+        // what its player had queued) has played by then
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let after = controller.engine.as_ref().unwrap().take_output_peak();
+        assert!(
+            after <= faded * 1.01,
+            "louder after the stop ({after}) than the fade ended at ({faded})"
+        );
+        assert_eq!(loudest(&controller, 100), 0.0, "still heard");
+
+        // The next station is as loud as the one before the fade
+        play_tone(&controller, state);
+        let next = loudest(&controller, 100);
+        assert!((next - full).abs() < full * 0.1, "{next} after {full}");
+    }
+
+    #[test]
+    fn the_sleep_timers_fade_ends_without_a_blip_at_the_users_volume() {
+        let (mut controller, state) = heard();
+        controller.handle_command(AppCommand::SetSleepTimer {
+            minutes: Some(10),
+            fade: true,
+        });
+        let until = state.lock().unwrap().sleep.clone().unwrap().until;
+        fades_to_a_stop_without_a_blip(controller, &state, until);
+    }
+
+    #[test]
+    fn a_fading_stops_fade_ends_without_a_blip_at_the_users_volume() {
+        let (mut controller, state) = heard();
+        let (_, at) = save(
+            &mut controller,
+            Entry {
+                fade: true,
+                ..entry(Action::Stop)
+            },
+        );
+        fades_to_a_stop_without_a_blip(controller, &state, at);
+    }
+
+    #[test]
+    fn without_smooth_switching_a_fade_ends_without_a_blip_too() {
+        let (mut controller, state) = heard();
+        controller.handle_command(AppCommand::SetSmoothSwitching(false));
+        controller.handle_command(AppCommand::SetSleepTimer {
+            minutes: Some(10),
+            fade: true,
+        });
+        let until = state.lock().unwrap().sleep.clone().unwrap().until;
+        fades_to_a_stop_without_a_blip(controller, &state, until);
     }
 
     #[test]
