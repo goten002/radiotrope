@@ -10,7 +10,6 @@ component VolumeSlider inherits Rectangle {
     in property <float> level: 1;
     out property <bool> touch-pressed: touch.pressed;
     callback value-changed(float);
-    callback mute-toggled();
     // How far clicks and drags reach above and below the slider's own
     // height (the parent's padding), so the whole bar height takes them
     in property <length> grab-y: 0px;
@@ -40,6 +39,10 @@ component VolumeSlider inherits Rectangle {
     accessible-action-increment => { root.set(Math.round(root.value) + 5); }
     accessible-action-decrement => { root.set(Math.round(root.value) - 5); }
     accessible-action-set-value(v) => { root.set(v.to-float()); }
+
+    public function step(points: float) {
+        root.set(root.value + points);
+    }
 
     public function scroll-by(delta: length) {
         root.set(root.value + (delta / 1px / 24));
@@ -164,7 +167,7 @@ component VolumeSlider inherits Rectangle {
         }
     }
 
-    // Arrow keys, Page Up/Down, Home/End and M once the slider has focus
+    // Slider navigation here. M bubbles to the main shortcuts scope.
     keys := FocusScope {
         focus-gained(reason) => {
             if reason == FocusReason.tab-navigation {
@@ -195,10 +198,6 @@ component VolumeSlider inherits Rectangle {
             }
             if (e.text == Key.End) {
                 root.set(100);
-                return accept;
-            }
-            if (e.text == "m" || e.text == "M") {
-                root.mute-toggled();
                 return accept;
             }
             return reject;
@@ -243,6 +242,10 @@ export component Controls inherits Rectangle {
     // The press on the title came from a touch screen
     property <bool> title-touch-press: false;
     property <bool> title-cut: title-measure.preferred-width > np-area.width;
+
+    public function step-volume(points: float) {
+        vol-slider.step(points);
+    }
 
     // Play, or stop while playing or connecting (the button, or Space)
     public function play-or-stop() {
@@ -489,7 +492,6 @@ export component Controls inherits Rectangle {
                     value: root.volume * 100;
                     muted: root.is-muted;
                     level: root.volume-level;
-                    mute-toggled => { root.mute-clicked(); }
                     value-changed(val) => {
                         root.volume = val / 100;
                         root.volume-changed(root.volume);

@@ -1,3 +1,6 @@
+import { DesktopShortcuts, ShortcutAction } from "shortcuts.slint";
+import { KeyboardShortcutsDialog } from "dialogs/keyboard-shortcuts.slint";
+export { DesktopShortcuts, ShortcutAction, ShortcutRow } from "shortcuts.slint";
 import "fonts/Inter/static/Inter_18pt-Regular.ttf";
 import "fonts/Inter/static/Inter_18pt-SemiBold.ttf";
 import { MenuBar } from "menu-bar.slint";
@@ -91,6 +94,8 @@ export component App inherits Window {
     callback play-station(BrowseStation);
     callback toggle-favorite();
     callback play-favorite(FavoriteStation);
+    callback step-favorite(/* forward */ bool);
+    pure callback locate-favorite([FavoriteStation], string, string, ShortcutAction, int) -> int;
     callback delete-favorite(FavoriteStation);
     // Saves an edited favorite; returns why it couldn't, or "" when saved
     callback edit-favorite(FavoriteStation) -> string;
@@ -134,6 +139,7 @@ export component App inherits Window {
     callback recording-bitrate-changed(int);
     in-out property <bool> is-recording;
     in-out property <bool> can-record;
+    property <bool> can-toggle-recording: root.can-record || root.is-recording;
     // Phones listening over Remote Control, for the chip in the menu bar
     in property <[string]> listeners;
     in-out property <string> recording-text;
@@ -420,26 +426,55 @@ export component App inherits Window {
             // Not a Tab stop itself: Tab goes round the controls only
             focus-on-tab-navigation: false;
             key-pressed(event) => {
-                if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
-                    if event.modifiers.control && !event.modifiers.alt && (event.text == "f" || event.text == "F") {
-                        menu-bar.open-station-search();
-                        return accept;
-                    }
-                    if event.modifiers.control && !event.modifiers.alt && (event.text == "q" || event.text == "Q") {
-                        root.quit-app();
-                        return accept;
-                    }
+                if root.dialog-open {
                     return reject;
                 }
-                if event.text == Key.Space {
+                let action = DesktopShortcuts.match-key(event);
+                if action == ShortcutAction.favorite-up || action == ShortcutAction.favorite-down
+                    || action == ShortcutAction.favorite-first || action == ShortcutAction.favorite-last
+                    || action == ShortcutAction.favorite-page-up || action == ShortcutAction.favorite-page-down {
+                    if !favorites.move-highlight(action) {
+                        return reject;
+                    }
+                    self.focus();
+                } else if action == ShortcutAction.favorite-clear && favorites.has-highlight {
+                    favorites.clear-highlight();
+                } else if action == ShortcutAction.favorite-play && favorites.has-highlight {
+                    favorites.play-highlight();
+                } else if action == ShortcutAction.favorite-menu && favorites.has-highlight {
+                    favorites.open-highlight-menu();
+                } else if action == ShortcutAction.play-stop {
                     controls.play-or-stop();
-                    return accept;
-                }
-                if event.text == "m" || event.text == "M" {
+                } else if action == ShortcutAction.mute {
                     root.mute-clicked();
-                    return accept;
+                } else if action == ShortcutAction.volume-up {
+                    controls.step-volume(5);
+                } else if action == ShortcutAction.volume-down {
+                    controls.step-volume(-5);
+                } else if action == ShortcutAction.next-favorite || action == ShortcutAction.previous-favorite {
+                    root.step-favorite(action == ShortcutAction.next-favorite);
+                } else if action == ShortcutAction.record {
+                    if root.can-toggle-recording {
+                        root.toggle-recording();
+                    }
+                } else if action == ShortcutAction.toggle-favorite {
+                    if root.station-url != "" {
+                        root.toggle-favorite();
+                    }
+                } else if action == ShortcutAction.search {
+                    menu-bar.open-station-search();
+                } else if action == ShortcutAction.network-stream {
+                    menu-bar.open-network-stream();
+                } else if action == ShortcutAction.close-window {
+                    root.close();
+                } else if action == ShortcutAction.quit {
+                    root.quit-app();
+                } else if action == ShortcutAction.help {
+                    menu-bar.open-keyboard-shortcuts();
+                } else {
+                    return reject;
                 }
-                return reject;
+                return accept;
             }
 
             VerticalLayout {
@@ -493,6 +528,9 @@ export component App inherits Window {
                         }
                         export-favorites => { root.export-favorites(); }
                         import-favorites => { root.import-favorites(); }
+                        open-keyboard-shortcuts => {
+                            shortcuts-dialog.show-dialog = true;
+                        }
                         open-about => {
                             about-dialog.show-dialog = true;
                         }
@@ -509,7 +547,7 @@ export component App inherits Window {
                             accent-dialog.show-dialog = true;
                         }
                         is-recording: root.is-recording;
-                        can-record: root.can-record;
+                        can-toggle-recording: root.can-toggle-recording;
                         toggle-recording => { root.toggle-recording(); }
                         open-recording-settings => {
                             root.recording-folder-error = "";
@@ -552,7 +590,10 @@ export component App inherits Window {
                     }
                     }
                 }
-                Favorites {
+                favorites := Favorites {
+                    locate-favorite(model, highlight, playing, action, page) => {
+                        return root.locate-favorite(model, highlight, playing, action, page);
+                    }
                     vertical-stretch: 1;
                     favorites: root.favorites-list;
                     favorite-logos: root.favorite-logos;
@@ -643,6 +684,7 @@ export component App inherits Window {
             }
 
             browser-dialog := StationBrowserDialog {
+                search-shortcut-enabled: !picker-dialog.show-dialog;
                 playing-url: root.station-url;
                 is-playing: root.is-playing;
                 play-loading: root.is-loading;
@@ -746,6 +788,8 @@ export component App inherits Window {
                 share-toggled(on) => { root.remote-share-toggled(on); }
             }
 
+            shortcuts-dialog := KeyboardShortcutsDialog {}
+
             about-dialog := AboutDialog {
                 open-url(url) => { root.open-url(url); }
             }
@@ -809,7 +853,7 @@ export component App inherits Window {
     property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
         || eq-dialog.show-dialog || filters-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
-        || agents-dialog.show-dialog || about-dialog.show-dialog || root.show-wifi-settings
+        || agents-dialog.show-dialog || about-dialog.show-dialog || shortcuts-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
         || root.pairing-shown || root.pairing-qr-shown;
     changed dialog-open => {

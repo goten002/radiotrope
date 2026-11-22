@@ -1,3 +1,4 @@
+import { ShortcutAction } from "shortcuts.slint";
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
 import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator } from "components.slint";
@@ -101,6 +102,9 @@ component FavoriteRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
     in property <bool> is-current;
+    in property <bool> highlighted;
+    in property <bool> list-has-highlight;
+    callback pointer-moved(length, length);
     // Playback state when current: "playing", "loading", "error" or ""
     in property <string> state;
     in property <image> logo-image;
@@ -173,8 +177,8 @@ component FavoriteRow inherits Rectangle {
 
     height: RowMetrics.row-height;
     background: root.is-drag-source ? Theme.elevated
+              : root.highlighted ? Theme.menu-hover
               : is-current ? Theme.accent-soft
-              : touch.has-hover || handle.has-hover ? Theme.menu-hover
               : transparent;
     animate background { duration: Theme.fast; }
     border-radius: Theme.radius-md;
@@ -219,6 +223,9 @@ component FavoriteRow inherits Rectangle {
             }
         }
         pointer-event(event) => {
+            if event.kind == PointerEventKind.move && event.touch-finger-id == 0 && !self.pressed {
+                root.pointer-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
             if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
                 root.open-menu(self.mouse-x, self.mouse-y);
             }
@@ -363,8 +370,17 @@ component FavoriteRow inherits Rectangle {
     keys := FocusScope {
         focus-on-click: false;
         key-pressed(event) => {
-            if event.text == Key.Space || event.text == Key.Return {
-                root.clicked();
+            // Enter and the context-menu keys act on the list's highlight
+            // when it differs from the row reached with Tab.
+            if root.list-has-highlight && (event.text == Key.Return || event.text == Key.Menu
+                || (event.text == Key.F10 && event.modifiers.shift)) {
+                return reject;
+            }
+            if (event.text == Key.Space || event.text == Key.Return)
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                if !event.repeat {
+                    root.clicked();
+                }
                 return accept;
             }
             if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
@@ -395,6 +411,9 @@ component FavoriteRow inherits Rectangle {
             }
         }
         pointer-event(event) => {
+            if event.kind == PointerEventKind.move && event.touch-finger-id == 0 && !self.pressed {
+                root.pointer-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
             if event.kind == PointerEventKind.down {
                 root.stats-touch-press = event.touch-finger-id != 0;
             }
@@ -625,6 +644,9 @@ component FavoriteRow inherits Rectangle {
         width: 58px;
         mouse-cursor: root.dragging ? grabbing : grab;
         pointer-event(event) => {
+            if event.kind == PointerEventKind.move && event.touch-finger-id == 0 && !self.pressed {
+                root.pointer-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
+            }
             if event.button == PointerEventButton.right {
                 if event.kind == PointerEventKind.down {
                     root.open-menu(self.x + self.mouse-x, self.mouse-y);
@@ -690,6 +712,60 @@ export component Favorites inherits Rectangle {
     callback favorite-reset-stats-requested(FavoriteStation);
     callback favorites-reordered(/* from */ int, /* to */ int);
 
+    pure callback locate-favorite([FavoriteStation], string, string, ShortcutAction, int) -> int;
+    property <string> highlight-url;
+    property <bool> keyboard-highlight;
+    property <int> highlight-index: root.highlight-url == "" ? -1
+        : root.locate-favorite(root.favorites, root.highlight-url, "", ShortcutAction.unhandled, 0);
+    out property <bool> has-highlight: root.highlight-index >= 0;
+    property <string> menu-url;
+    property <length> last-pointer-x: -1px;
+    property <length> last-pointer-y: -1px;
+
+    changed highlight-index => {
+        if !root.has-highlight {
+            root.highlight-url = "";
+        } else if root.keyboard-highlight {
+            list.reveal(root.highlight-index);
+        }
+    }
+
+    public function move-highlight(action: ShortcutAction) -> bool {
+        let page = max(1, floor(fav-flickable.height / RowMetrics.row-stride));
+        let index = root.locate-favorite(root.favorites, root.highlight-url,
+            root.is-playing ? root.current-station-url : "", action, page);
+        if index < 0 {
+            return false;
+        }
+        root.keyboard-highlight = true;
+        root.highlight-url = root.favorites[index].url;
+        list.reveal(index);
+        return true;
+    }
+
+    public function clear-highlight() {
+        root.highlight-url = "";
+        root.keyboard-highlight = false;
+    }
+
+    function activate(station: FavoriteStation) {
+        root.pinned-stats-id = "";
+        root.favorite-clicked(station);
+    }
+
+    public function play-highlight() {
+        if root.has-highlight {
+            root.activate(root.favorites[root.highlight-index]);
+        }
+    }
+
+    public function open-highlight-menu() {
+        if root.has-highlight {
+            list.reveal(root.highlight-index);
+            root.menu-url = root.highlight-url;
+        }
+    }
+
     // Drag state
     property <int> drag-from-index: -1;
     property <int> drag-target-index: -1;
@@ -733,7 +809,19 @@ export component Favorites inherits Rectangle {
     }
 
     // Favorites list
-    if favorites.length > 0: list := Rectangle {
+    list := Rectangle {
+        visible: root.favorites.length > 0;
+
+        function reveal(index: int) {
+            let top = RowMetrics.list-padding + index * RowMetrics.row-stride;
+            let visible-top = -fav-flickable.content-y;
+            let visible-bottom = visible-top + fav-flickable.height;
+            let target = top < visible-top ? top
+                : top + RowMetrics.row-height > visible-bottom ? top + RowMetrics.row-height - fav-flickable.height
+                : visible-top;
+            fav-flickable.content-y = -clamp(target, 0px, max(0px, fav-flickable.content-height - fav-flickable.height));
+        }
+
         // Auto-scroll speed while the pointer is near or past the list's top or
         // bottom edge: positive scrolls up, faster the further out it is
         property <length> edge-zone: 48px;
@@ -797,6 +885,25 @@ export component Favorites inherits Rectangle {
                     z: root.drag-from-index == idx ? 1 : 0;
 
                     FavoriteRow {
+                        property <bool> menu-requested: root.menu-url != "" && root.menu-url == station.url;
+                        changed menu-requested => {
+                            if self.menu-requested {
+                                root.menu-url = "";
+                                self.open-menu(58px, self.height - 8px);
+                            }
+                        }
+                        pointer-moved(x, y) => {
+                            // Slint can redeliver a move at the same window coordinates.
+                            if x != root.last-pointer-x || y != root.last-pointer-y {
+                                root.last-pointer-x = x;
+                                root.last-pointer-y = y;
+                                root.keyboard-highlight = false;
+                                root.highlight-url = station.url;
+                            }
+                        }
+                        highlighted: root.highlight-url == station.url && root.highlight-url != "";
+                        list-has-highlight: root.has-highlight;
+
                         // Dragged row follows the pointer; rows between its
                         // old and new place slide over to open a gap
                         y: root.drag-from-index == idx ? root.drag-offset
@@ -825,10 +932,7 @@ export component Favorites inherits Rectangle {
                         is-drag-source: root.drag-from-index == idx;
                         dragging: root.drag-from-index >= 0;
                         row-index: idx;
-                        clicked => {
-                            root.pinned-stats-id = "";
-                            root.favorite-clicked(station);
-                        }
+                        clicked => { root.activate(station); }
                         listen-time: station.listen-time;
                         last-played: station.last-played;
                         play-count: station.play-count;

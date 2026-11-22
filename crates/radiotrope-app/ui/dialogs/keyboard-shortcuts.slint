@@ -1,0 +1,72 @@
+import { ScrollView } from "std-widgets.slint";
+import { DialogShell, SectionHeader } from "../components.slint";
+import { Defaults, Theme } from "../defaults.slint";
+import { DesktopShortcuts } from "../shortcuts.slint";
+
+export component KeyboardShortcutsDialog inherits Rectangle {
+    in-out property <bool> show-dialog;
+
+    if root.show-dialog: DialogShell {
+        title: "Keyboard Shortcuts";
+        card-width: Defaults.statistics-width;
+        card-height: 480px;
+        close-requested => { root.show-dialog = false; }
+        capture-key(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta || event.modifiers.shift {
+                return reject;
+            }
+            let bottom = min(0px, scroll.visible-height - scroll.content-height);
+            if event.text == Key.UpArrow {
+                scroll.content-y = min(0px, scroll.content-y + 24px);
+            } else if event.text == Key.DownArrow {
+                scroll.content-y = max(bottom, scroll.content-y - 24px);
+            } else if event.text == Key.PageUp {
+                scroll.content-y = min(0px, scroll.content-y + scroll.visible-height);
+            } else if event.text == Key.PageDown {
+                scroll.content-y = max(bottom, scroll.content-y - scroll.visible-height);
+            } else if event.text == Key.Home {
+                scroll.content-y = 0px;
+            } else if event.text == Key.End {
+                scroll.content-y = bottom;
+            } else {
+                return reject;
+            }
+            return accept;
+        }
+
+        scroll := ScrollView {
+            content-width: self.visible-width;
+            content-height: shortcut-list.preferred-height;
+            horizontal-scrollbar-policy: always-off;
+
+            shortcut-list := VerticalLayout {
+                width: scroll.content-width;
+                spacing: 6px;
+                padding-right: 14px;
+
+                for row in DesktopShortcuts.rows: VerticalLayout {
+                    if row.heading != "": SectionHeader { title: row.heading; }
+                    HorizontalLayout {
+                        spacing: 12px;
+                        Text {
+                            text: row.description;
+                            color: Theme.text-secondary;
+                            font-size: Theme.font-base;
+                            wrap: word-wrap;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            width: 190px;
+                            text: row.keys;
+                            color: Theme.text-primary;
+                            font-size: Theme.font-base;
+                            font-weight: 600;
+                            horizontal-alignment: right;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

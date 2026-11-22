@@ -1,3 +1,4 @@
+import { DesktopShortcuts, ShortcutAction } from "shortcuts.slint";
 import { Theme } from "defaults.slint";
 import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Picker } from "components.slint";
 import { VizStyle } from "visualization.slint";
@@ -28,6 +29,7 @@ component MenuItem inherits Rectangle {
 
     accessible-role: button;
     accessible-label: root.label;
+    accessible-description: root.shortcut;
     accessible-enabled: root.enabled;
     accessible-action-default => {
         if root.enabled {
@@ -441,8 +443,9 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> show-visualizer: true;
     callback open-wifi-settings();
     callback open-about();
+    callback open-keyboard-shortcuts();
     in property <bool> is-recording;
-    in property <bool> can-record;
+    in property <bool> can-toggle-recording;
     callback toggle-recording();
     callback open-recording-settings();
     callback open-recordings-folder();
@@ -692,6 +695,7 @@ export component MenuBar inherits Rectangle {
 
                 MenuItem {
                     label: "Network Stream";
+                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.network-stream) : "";
                     icon: @image-url("icons/link.svg");
                     clicked => {
                         root.open-network-stream();
@@ -702,7 +706,7 @@ export component MenuBar inherits Rectangle {
                 if !Platform.has-power-off: MenuItem {
                     label: "Quit";
                     icon: @image-url("icons/power-off.svg");
-                    shortcut: "Ctrl+Q";
+                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.quit) : "";
                     clicked => {
                         root.quit-app();
                         open-popup.close();
@@ -755,6 +759,7 @@ export component MenuBar inherits Rectangle {
 
                 MenuItem {
                     label: "Search Stations";
+                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.search) : "";
                     icon: @image-url("icons/magnifying-glass.svg");
                     clicked => {
                         root.open-station-search();
@@ -982,6 +987,15 @@ export component MenuBar inherits Rectangle {
             help-popup-layout := VerticalLayout {
                 padding: 4px;
 
+                if DesktopShortcuts.enabled: MenuItem {
+                    label: "Keyboard Shortcuts";
+                    shortcut: DesktopShortcuts.label(ShortcutAction.help);
+                    // Open first: closing the popup takes this item with it
+                    clicked => {
+                        root.open-keyboard-shortcuts();
+                        help-popup.close();
+                    }
+                }
                 MenuItem {
                     label: "About Radiotrope";
                     icon: @image-url("icons/circle-info.svg");
@@ -1034,8 +1048,9 @@ export component MenuBar inherits Rectangle {
                 MenuSeparator {}
                 MenuItem {
                     label: root.is-recording ? "Stop Recording" : "Start Recording";
+                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.record) : "";
                     // Greyed out until a station plays
-                    enabled: root.is-recording || root.can-record;
+                    enabled: root.can-toggle-recording;
                     icon: @image-url("icons/circle.svg");
                     clicked => {
                         root.toggle-recording();

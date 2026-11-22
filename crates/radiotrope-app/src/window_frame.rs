@@ -26,6 +26,14 @@ thread_local! {
     /// The winit window the events last came from
     static WINDOW_SEEN: std::cell::Cell<Option<winit::window::WindowId>> =
         const { std::cell::Cell::new(None) };
+    static ALT_GRAPH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static CONTROL_ALT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Slint's public key event has no AltGr flag and can strip Ctrl+Alt from
+/// a Windows AltGr character. Keep the native modifier state for matching.
+pub fn alt_graph_held() -> bool {
+    ALT_GRAPH.get() || CONTROL_ALT.get()
 }
 
 /// Start watching the window's events: note when it loses the focus, for
@@ -37,7 +45,21 @@ pub fn watch_window(window: &slint::Window, new_window: impl Fn() + 'static) {
     window.on_winit_window_event(move |window, event| {
         use winit::event::WindowEvent;
         match event {
-            WindowEvent::Focused(false) => FOCUS_LOST.set(Some(std::time::Instant::now())),
+            WindowEvent::Focused(false) => {
+                FOCUS_LOST.set(Some(std::time::Instant::now()));
+                ALT_GRAPH.set(false);
+                CONTROL_ALT.set(false);
+            }
+            WindowEvent::KeyboardInput { event, .. }
+                if event.logical_key
+                    == winit::keyboard::Key::Named(winit::keyboard::NamedKey::AltGraph) =>
+            {
+                ALT_GRAPH.set(event.state.is_pressed());
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let state = modifiers.state();
+                CONTROL_ALT.set(state.control_key() && state.alt_key());
+            }
             WindowEvent::Resized(_) | WindowEvent::Focused(true) => {
                 let id = window.with_winit_window(|w| w.id());
                 if id.is_some() && id != WINDOW_SEEN.get() {

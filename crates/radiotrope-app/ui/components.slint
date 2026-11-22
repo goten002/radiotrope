@@ -86,8 +86,11 @@ export component ButtonKeys inherits FocusScope {
 
     focus-on-click: false;
     key-pressed(event) => {
-        if event.text == Key.Space || event.text == Key.Return {
-            root.activated();
+        if (event.text == Key.Space || event.text == Key.Return)
+            && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+            if !event.repeat {
+                root.activated();
+            }
             return accept;
         }
         return reject;
@@ -529,6 +532,8 @@ export component DialogShell inherits Rectangle {
     in property <bool> show-back: false;
     callback close-requested();
     callback back-requested();
+    callback capture-key(KeyEvent) -> EventResult;
+    capture-key(event) => { return reject; }
 
     // For a control that goes away while it has the focus: with nothing
     // focused, Esc would do nothing, so the dialog takes the focus back
@@ -571,6 +576,7 @@ export component DialogShell inherits Rectangle {
         // A backdrop click closes the dialog at once, rather than first
         // taking the focus from a text field
         focus-on-click: false;
+        capture-key-pressed(event) => { return root.capture-key(event); }
         key-pressed(event) => {
             if event.text == Key.Escape {
                 root.close-requested();

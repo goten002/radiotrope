@@ -10,6 +10,7 @@ mod remote;
 mod remote_ui;
 mod row_logos;
 mod schedule_ui;
+mod shortcuts;
 #[cfg(feature = "desktop")]
 mod tray;
 #[cfg(feature = "desktop")]
@@ -197,6 +198,18 @@ fn main() {
 
     // Create Slint UI
     let ui = App::new().unwrap();
+    shortcuts::install(&ui);
+    ui.on_locate_favorite(|model, highlighted, playing, action, page| {
+        shortcuts::favorite_highlight(
+            model.iter().map(|station| station.url),
+            highlighted.as_str(),
+            playing.as_str(),
+            action,
+            page.max(0) as usize,
+        )
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
+    });
 
     // Wayland app_id / X11 WM_CLASS: desktops match it against the
     // `radiotrope.desktop` file (and its StartupWMClass) to find the icon.
@@ -639,6 +652,30 @@ fn main() {
                         provider_id: None,
                     },
                 );
+            }
+        });
+    }
+
+    {
+        let ui_weak = ui.as_weak();
+        let state = shared_state.clone();
+        ui.on_step_favorite(move |forward| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            let playing_url = {
+                let state = state.lock().unwrap_or_else(|e| e.into_inner());
+                state
+                    .station_url
+                    .clone()
+                    .filter(|_| state.playback == PlaybackState::Playing && !state.alarm_beep)
+            };
+            let favorites = ui.get_favorites_list();
+            let index = shortcuts::favorite_step(
+                favorites.iter().map(|station| station.url),
+                playing_url.as_deref(),
+                forward,
+            );
+            if let Some(station) = index.and_then(|index| favorites.row_data(index)) {
+                ui.invoke_play_favorite(station);
             }
         });
     }
@@ -1791,6 +1828,7 @@ fn main() {
             slint::CloseRequestResponse::HideWindow
         });
     }
+    #[cfg(feature = "desktop")]
     ui.on_quit_app(quit_app);
 
     // The tray icon, and whether the desktop shows one (GNOME only with
