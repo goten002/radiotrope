@@ -25,7 +25,8 @@ use crate::headless::HeadlessPlatform;
 use crate::mcp::setup::{self, AgentApp};
 use crate::{
     flag_image, remote_ui::qr_image, show_eq_presets, AboutInfo, AgentRow, App, BrowseStation,
-    Defaults, FavoriteStation, FilterEntry, RemoteDevice, ScheduleDraft, ScheduleRow, VizData,
+    Defaults, FavoriteStation, FilterEntry, RemoteDevice, ScheduleDraft, ScheduleRow, ViewOptions,
+    VizData,
 };
 
 #[derive(clap::ValueEnum, Clone, Copy, Default)]
@@ -396,6 +397,12 @@ const SHOTS: &[Shot] = &[
         "view-group",
         "zoom",
         "Zoom choices expanded in the View menu.",
+    ),
+    Shot::new(
+        "menu-zoom-pending",
+        "view-group",
+        "zoom",
+        "Zoom choices with another zoom picked than the window's: the restart note.",
     ),
     Shot::new(
         "menu-window-options",
@@ -1510,6 +1517,9 @@ fn seed_statistics(ui: &App) {
 }
 
 fn configure(ui: &App, shot: &Shot) {
+    if shot.name == "menu-zoom-pending" {
+        ui.global::<ViewOptions>().set_zoom(130);
+    }
     match shot.screen {
         "main" => match shot.state {
             "stopped" | "loading" | "error" | "error-long" | "empty" => {
@@ -1996,3 +2006,7 @@ mod accent_drag_tests;
 #[cfg(test)]
 #[path = "report_plays_test.rs"]
 mod report_plays_tests;
+
+#[cfg(test)]
+#[path = "zoom_stats_test.rs"]
+mod zoom_stats_tests;

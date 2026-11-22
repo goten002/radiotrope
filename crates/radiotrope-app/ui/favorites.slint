@@ -139,8 +139,6 @@ component FavoriteRow inherits Rectangle {
     in property <bool> can-drag: true;
     // Pressed once while recording: the next press switches to it
     in property <bool> armed: false;
-    // The arrow keys rest on this row: its stats bubble shows as on hover
-    in property <bool> key-stats: false;
     // It can go one place up or down (not at the edge, not while finding)
     in property <bool> can-move-up: true;
     in property <bool> can-move-down: true;
@@ -174,13 +172,6 @@ component FavoriteRow inherits Rectangle {
     property <bool> stats-ready: false;
     // The press on the stats came from a touch screen
     property <bool> stats-touch-press: false;
-    // The arrow keys have rested on the row as long
-    property <bool> key-stats-ready: false;
-    changed key-stats => {
-        if !self.key-stats {
-            self.key-stats-ready = false;
-        }
-    }
     // The menu's row under the arrow keys (-1: none; 0 Edit, 1 Move Up,
     // 2 Move Down, 3 Move to Top, 4 Move to Bottom, 5 Reset, 6 Remove)
     in-out property <int> menu-active: -1;
@@ -403,8 +394,10 @@ component FavoriteRow inherits Rectangle {
         }
     }
 
-    // Hovering the stats explains them in a bubble to their left. Clicks
-    // pass through to the row.
+    // Hovering the stats explains them in a bubble to their left: only the
+    // pointer on the stats, not the rest of the row or the arrow keys
+    // (screen readers hear them in the row's description). Clicks pass
+    // through to the row.
     stats-touch := TouchArea {
         visible: root.show-stats;
         x: root.width - self.width;
@@ -442,17 +435,10 @@ component FavoriteRow inherits Rectangle {
         triggered => { root.stats-ready = true; }
     }
 
-    Timer {
-        interval: Defaults.hover-delay;
-        running: root.key-stats && !root.key-stats-ready;
-        triggered => { root.key-stats-ready = true; }
-    }
-
     // Styled like the Statistics tiles: a caption over the total, and
     // label and value rows beside it
     stats-bubble := PopupCard {
         property <bool> shown: ((stats-touch.has-hover && root.stats-ready)
-                || (root.key-stats && root.key-stats-ready && root.show-stats)
                 || (root.stats-pinned && root.show-stats))
             && !stats-touch.pressed && !root.dragging;
         property <bool> played: root.last-played != "";
@@ -1284,7 +1270,6 @@ export component Favorites inherits Rectangle {
                         row-index: idx;
                         row-count: root.shown.length;
                         armed: root.armed-url == station.url && root.armed-url != "";
-                        key-stats: self.highlighted && root.keyboard-highlight && cursor.has-focus;
                         can-move-up: !root.finding && idx > 0;
                         can-move-down: !root.finding && idx < root.shown.length - 1;
                         step-requested(step) => { root.favorites-reordered(idx, idx + step); }

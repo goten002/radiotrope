@@ -487,10 +487,13 @@ export component Controls inherits Rectangle {
         // ── Record button, left of the volume ──
         VerticalLayout {
             alignment: center;
-            IconButton {
+            record-button := IconButton {
+                // While recording, the red ring with its dot drawn below,
+                // fading slowly between the idle grey and red
+                property <bool> pulsing: root.is-recording && root.can-toggle-recording;
                 width: Theme.control-field;
                 height: Theme.control-field;
-                icon: @image-url("icons/record.svg");
+                icon: self.pulsing ? @image-url("icons/record-ring.svg") : @image-url("icons/record.svg");
                 icon-size: Theme.icon-lg;
                 label: root.is-recording ? "Stop Recording (R)" : "Start Recording (R)";
                 // Red while recording
@@ -498,6 +501,18 @@ export component Controls inherits Rectangle {
                 hover-color: root.is-recording ? Theme.danger : Theme.text-primary;
                 enabled: root.can-toggle-recording;
                 clicked => { root.toggle-recording(); }
+
+                // The record icon's dot (r 4 of 24). Only there while
+                // recording, so the animation ticks only then.
+                if self.pulsing: Rectangle {
+                    // 0 grey, 1 red: a sine ease in and out, one cycle
+                    // every Theme.record-pulse
+                    property <float> red: 0.5 - 0.5 * cos(mod(animation-tick() / Theme.record-pulse * 360deg, 360deg));
+                    width: record-button.icon-size / 3;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: Theme.danger.mix(Theme.text-secondary, self.red);
+                }
             }
         }
 
