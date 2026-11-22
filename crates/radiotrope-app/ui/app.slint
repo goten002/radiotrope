@@ -9,7 +9,7 @@ import { NetworkStreamDialog } from "dialogs/network-stream.slint";
 import { ImportFavoritesDialog } from "dialogs/import-favorites.slint";
 import { StatisticsDialog } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
-import { CountryPickerDialog, CountryEntry } from "dialogs/country-picker.slint";
+import { FilterPickerDialog, FilterEntry } from "dialogs/filter-picker.slint";
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
@@ -23,7 +23,7 @@ import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.s
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { TextUtil, AgentsBubble, AgentRow, ListenersBubble, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
-export { AboutInfo, Defaults, TextUtil, VizData, VizStyle, BrowseStation, CountryEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
+export { AboutInfo, Defaults, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
 
 export component App inherits Window {
     title: "Radiotrope";
@@ -84,9 +84,9 @@ export component App inherits Window {
     callback stop-clicked();
     callback volume-changed(float);
     callback mute-clicked();
-    callback search-stations(string);
-    // Stations in a country: name, ISO code (may be empty), name query (may be empty)
-    callback browse-country(string, string, string);
+    // Station search: name query, country code, genre slug, language code
+    // (each may be empty)
+    callback search-stations(string, string, string, string);
     callback load-more-stations();
     callback play-station(BrowseStation);
     callback toggle-favorite();
@@ -106,10 +106,11 @@ export component App inherits Window {
     out property <bool> stats-open: stats-dialog.show-dialog;
     changed show-visualizer => { root.live-views-changed(); }
     changed stats-open => { root.live-views-changed(); }
-    callback load-top-stations();
-    callback load-countries();
+    // The countries, genres or languages for the filter picker ("country",
+    // "genre", "language"), and narrowing that list by name
+    callback load-filter-entries(string);
     callback open-url(string);
-    callback filter-countries(string);
+    callback filter-filter-entries(string);
     callback eq-band-changed(int, float);
     callback eq-preamp-changed(float);
     callback eq-preset-selected(string);
@@ -285,12 +286,6 @@ export component App inherits Window {
     in-out property <string> search-error <=> browser-dialog.search-error;
     in-out property <int> search-retry-in <=> browser-dialog.retry-in;
     in-out property <bool> has-more <=> browser-dialog.has-more;
-    // What the station browser shows, so Rust can put a mode's list aside
-    // and bring it back when that mode is opened again
-    in-out property <string> browse-mode <=> browser-dialog.search-mode;
-    in-out property <string> browse-typed <=> browser-dialog.search-query;
-    in-out property <string> browse-shown <=> browser-dialog.shown-query;
-    in-out property <length> browse-scroll <=> browser-dialog.list-scroll;
     // Rows of the station browser on screen, and when they change
     out property <int> browse-visible-first: browser-dialog.visible-first;
     out property <int> browse-visible-count: browser-dialog.visible-count;
@@ -298,12 +293,6 @@ export component App inherits Window {
     callback browse-closed();
     // Try the station browser's failed request again
     callback retry-browse();
-    in-out property <string> browse-country-name <=> browser-dialog.country-name;
-    // Put the current list aside (per mode) before showing another one
-    callback stash-browse();
-    // Bring back the list kept for a mode ("search", or "country" with its
-    // name); false when there is none and it has to be loaded
-    callback restore-browse(/* mode */ string, /* country */ string) -> bool;
     // Star on a search result: add it to favorites or remove it
     callback toggle-browse-favorite(BrowseStation);
 
@@ -320,11 +309,12 @@ export component App inherits Window {
     in-out property <bool> import-message-error <=> import-dialog.message-error;
     in-out property <string> import-message-detail <=> import-dialog.message-detail;
 
-    // Country picker proxy properties (for Rust access)
-    in-out property <[CountryEntry]> countries <=> picker-dialog.countries;
-    in-out property <string> country-filter <=> picker-dialog.filter-text;
-    in-out property <bool> country-loading <=> picker-dialog.loading;
-    in-out property <string> country-error <=> picker-dialog.error;
+    // Filter picker proxy properties (for Rust access)
+    in-out property <string> filter-kind <=> picker-dialog.kind;
+    in-out property <[FilterEntry]> filter-entries <=> picker-dialog.entries;
+    in-out property <string> filter-entries-text <=> picker-dialog.filter-text;
+    in-out property <bool> filter-entries-loading <=> picker-dialog.loading;
+    in-out property <string> filter-entries-error <=> picker-dialog.error;
 
     // Equalizer proxy properties
     in-out property <bool> eq-enabled <=> eq-dialog.eq-enabled;
@@ -404,33 +394,20 @@ export component App inherits Window {
     // stations, M mutes. Keys reach it only when the focused control
     // doesn't use them (text fields keep theirs), and dialogs sit outside
     // it, so it is quiet while one is open.
-    // Station browser listing one country's stations. Stations already
-    // listed for that country are kept, so reopening it is instant.
-    function open-country(name: string, code: string, flag: image) {
-        if browser-dialog.search-mode != "country" || browser-dialog.country-name != name || browser-dialog.search-results.length == 0 {
-            root.stash-browse();
-            if !root.restore-browse("country", name) {
-                browser-dialog.search-mode = "country";
-                browser-dialog.reset-query();
-                browser-dialog.search-results = [];
-                browser-dialog.browse-logos = [];
-                browser-dialog.search-error = "";
-                browser-dialog.has-more = false;
-                browser-dialog.search-loading = true;
-                root.browse-country(name, code, "");
-            }
-            browser-dialog.country-name = name;
-            browser-dialog.country-code = code;
-            browser-dialog.country-flag = flag;
-        }
-        browser-dialog.show-dialog = true;
-    }
-
-    function show-country-list() {
+    // The filter picker for one of the station browser's filters, in place
+    // of the browser until something is picked or it is closed
+    function show-filter-picker(kind: string) {
+        browser-dialog.show-dialog = false;
+        picker-dialog.kind = kind;
+        picker-dialog.selected-code = kind == "genre" ? browser-dialog.genre-code
+            : kind == "language" ? browser-dialog.language-code
+            : browser-dialog.country-code;
+        picker-dialog.entries = [];
+        picker-dialog.error = "";
         picker-dialog.loading = true;
         picker-dialog.filter-text = "";
         picker-dialog.show-dialog = true;
-        root.load-countries();
+        root.load-filter-entries(kind);
     }
     forward-focus: shortcuts;
     // The whole window inside one box, so that with rounded corners
@@ -508,30 +485,15 @@ export component App inherits Window {
                             stream-dialog.show-dialog = true;
                         }
                         open-station-search => {
-                            // Keep the last search when reopening; load top stations on
-                            // first open or when coming back from a country list
-                            if browser-dialog.search-mode != "search" || browser-dialog.search-results.length == 0 {
-                                root.stash-browse();
-                                if !root.restore-browse("search", "") {
-                                    browser-dialog.search-mode = "search";
-                                    browser-dialog.reset-query();
-                                    browser-dialog.search-loading = true;
-                                    root.load-top-stations();
-                                }
+                            // Keep the last search and filters when reopening;
+                            // load the most played stations on first open
+                            if browser-dialog.search-results.length == 0 && !browser-dialog.search-loading {
+                                browser-dialog.run-search();
                             }
                             browser-dialog.show-dialog = true;
                         }
-                        // Reopen the country picked earlier in this session; the
-                        // browser's "Countries" button goes back to the list
                         export-favorites => { root.export-favorites(); }
                         import-favorites => { root.import-favorites(); }
-                        open-country-picker => {
-                            if browser-dialog.country-name != "" {
-                                root.open-country(browser-dialog.country-name, browser-dialog.country-code, browser-dialog.country-flag);
-                            } else {
-                                root.show-country-list();
-                            }
-                        }
                         open-about => {
                             about-dialog.show-dialog = true;
                         }
@@ -687,12 +649,10 @@ export component App inherits Window {
                 play-loading: root.is-loading;
                 play-error: root.is-error;
                 play-status: root.status-text;
-                search-stations(query) => { root.search-stations(query); }
-                search-in-country(name, code, query) => { root.browse-country(name, code, query); }
-                change-country() => {
-                    browser-dialog.show-dialog = false;
-                    root.show-country-list();
+                search-stations(query, country, genre, language) => {
+                    root.search-stations(query, country, genre, language);
                 }
+                pick-filter(kind) => { root.show-filter-picker(kind); }
                 load-more() => { root.load-more-stations(); }
                 retry() => { root.retry-browse(); }
                 station-selected(station) => { root.play-station(station); }
@@ -714,12 +674,25 @@ export component App inherits Window {
                 color-changed(color) => { root.accent-color-changed(color); }
             }
 
-            picker-dialog := CountryPickerDialog {
-                country-selected(country) => {
-                    root.open-country(country.name, country.code, country.flag);
+            picker-dialog := FilterPickerDialog {
+                entry-selected(entry) => {
+                    if self.kind == "genre" {
+                        browser-dialog.genre-name = entry.name;
+                        browser-dialog.genre-code = entry.code;
+                    } else if self.kind == "language" {
+                        browser-dialog.language-name = entry.name;
+                        browser-dialog.language-code = entry.code;
+                    } else {
+                        browser-dialog.country-name = entry.name;
+                        browser-dialog.country-code = entry.code;
+                        browser-dialog.country-flag = entry.flag;
+                    }
+                    browser-dialog.show-dialog = true;
+                    browser-dialog.run-search();
                 }
-                load-countries() => { root.load-countries(); }
-                filter-countries(text) => { root.filter-countries(text); }
+                dismissed() => { browser-dialog.show-dialog = true; }
+                load-entries(kind) => { root.load-filter-entries(kind); }
+                filter-entries(text) => { root.filter-filter-entries(text); }
             }
 
             recording-dialog := RecordingSettingsDialog {

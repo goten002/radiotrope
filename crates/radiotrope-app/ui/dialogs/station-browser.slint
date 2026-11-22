@@ -244,9 +244,113 @@ component StationRow inherits Rectangle {
     }
 }
 
+// A filter under the search box: "Any country" or the one chosen, with a
+// ✕ to clear it. Clicking it opens the list to choose from.
+component FilterChip inherits Rectangle {
+    // "Any country" and the like when nothing is chosen
+    in property <string> any-label;
+    // The chosen value, empty for Any
+    in property <string> value;
+    in property <image> flag;
+    callback clicked();
+    callback cleared();
+
+    property <bool> active: root.value != "";
+
+    height: 30px;
+    min-width: 0;
+    horizontal-stretch: 1;
+    border-radius: self.height / 2;
+    background: touch.has-hover ? Theme.menu-hover : Theme.surface;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent : Theme.hairline;
+    animate background, border-color { duration: Theme.fast; }
+    forward-focus: keys;
+
+    accessible-role: button;
+    accessible-label: root.active ? root.value : root.any-label;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: root.active ? 4px : 10px;
+        spacing: 6px;
+
+        if root.active && root.flag.width > 0: VerticalLayout {
+            alignment: center;
+
+            Image {
+                source: root.flag;
+                width: 18px;
+                height: 13px;
+                image-fit: contain;
+            }
+        }
+
+        Text {
+            text: root.active ? root.value : root.any-label;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-md;
+            font-weight: root.active ? 600 : 400;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+        }
+
+        if !root.active: VerticalLayout {
+            alignment: center;
+
+            Icon {
+                width: 10px;
+                height: 10px;
+                source: @image-url("../icons/chevron-down.svg");
+                colorize: Theme.text-secondary;
+            }
+        }
+
+        // Clear the filter
+        if root.active: Rectangle {
+            width: 22px;
+            height: 22px;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.height / 2;
+            background: clear-touch.has-hover ? Theme.hairline : transparent;
+            accessible-role: button;
+            accessible-label: "Clear \{root.value}";
+            accessible-action-default => { root.cleared(); }
+
+            clear-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.cleared(); }
+            }
+
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: 10px;
+                height: 10px;
+                source: @image-url("../icons/xmark.svg");
+                colorize: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+    }
+}
+
 export component StationBrowserDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
-    in-out property <string> search-mode: "search";
     in-out property <bool> search-loading: false;
     in-out property <bool> search-loading-more: false;
     in-out property <string> search-error: "";
@@ -257,10 +361,18 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <[BrowseStation]> search-results: [];
     in-out property <[image]> browse-logos: [];
     in-out property <bool> has-more: false;
+    // The filters in force, each a name to show and the code the directory
+    // is asked for (empty: any)
     in-out property <string> country-name: "";
-    // ISO 3166-1 code of the country, empty if unknown
+    // ISO 3166-1 code
     in-out property <string> country-code: "";
     in-out property <image> country-flag;
+    in-out property <string> genre-name: "";
+    // The directory's slug
+    in-out property <string> genre-code: "";
+    in-out property <string> language-name: "";
+    in-out property <string> language-code: "";
+    property <bool> filtered: root.country-code != "" || root.genre-code != "" || root.language-code != "";
     // Current playback, so the row of the station being played shows its
     // state even while the dialog hides the player
     in property <string> playing-url;
@@ -295,48 +407,32 @@ export component StationBrowserDialog inherits Rectangle {
         root.visible-rows-changed();
     }
 
-    // Search by name; an empty query loads the top stations
-    callback search-stations(string);
-    // Search by name within a country (name, code, query); an empty query
-    // lists the country's stations
-    callback search-in-country(string, string, string);
-    // Back to the country list (country mode only)
-    callback change-country();
+    // Search by name within the filters (query, country code, genre slug,
+    // language code); with nothing given, the most played stations
+    callback search-stations(string, string, string, string);
+    // Open the list of countries, genres or languages ("country", "genre",
+    // "language") to choose a filter from
+    callback pick-filter(string);
     callback load-more();
     // Try the failed request again (the first page, or the next one)
     callback retry();
     callback station-selected(BrowseStation);
     callback favorite-toggled(BrowseStation);
 
-    // Forget the typed query, for when the dialog opens in a new mode
-    public function reset-query() {
-        root.search-query = "";
-        root.shown-query = "";
-        root.list-scroll = 0;
-    }
-
-    function run-search() {
+    // Search again with the query on screen, for a filter just changed
+    public function run-search() {
         root.shown-query = root.search-query;
         root.list-scroll = 0;
         root.search-loading = true;
-        if root.search-mode == "country" {
-            root.search-in-country(root.country-name, root.country-code, root.search-query);
-        } else {
-            root.search-stations(root.search-query);
-        }
+        root.search-stations(root.search-query, root.country-code, root.genre-code, root.language-code);
     }
 
     if show-dialog: DialogShell {
-        title: root.search-mode == "country"
-            ? "Stations in \{root.country-name}"
-            : "Search Radio Stations";
+        title: "Search Radio Stations";
         subtitle: "From the Radiotrope station directory";
-        icon: root.search-mode == "country" ? root.country-flag : @image-url("");
         card-width: Defaults.station-browser-width;
         card-height: Defaults.station-browser-height;
         auto-focus: false;
-        show-back: root.search-mode == "country";
-        back-requested => { root.change-country(); }
         close-requested => { root.show-dialog = false; }
 
         // Search input
@@ -348,9 +444,7 @@ export component StationBrowserDialog inherits Rectangle {
                 horizontal-stretch: 1;
                 clearable: true;
                 init => { self.focus-input(); }
-                placeholder-text: root.search-mode == "country"
-                    ? "Search stations in \{root.country-name}..."
-                    : "Search by station name...";
+                placeholder-text: "Search by station name...";
                 text <=> root.search-query;
                 accepted(query) => {
                     if root.search-query != "" || root.shown-query != "" {
@@ -377,6 +471,45 @@ export component StationBrowserDialog inherits Rectangle {
                     if root.search-query != "" {
                         root.run-search();
                     }
+                }
+            }
+        }
+
+        // Filters: country, genre and language
+        HorizontalLayout {
+            spacing: 8px;
+
+            FilterChip {
+                any-label: "Any country";
+                value: root.country-name;
+                flag: root.country-flag;
+                clicked => { root.pick-filter("country"); }
+                cleared => {
+                    root.country-name = "";
+                    root.country-code = "";
+                    root.run-search();
+                }
+            }
+
+            FilterChip {
+                any-label: "Any genre";
+                value: root.genre-name;
+                clicked => { root.pick-filter("genre"); }
+                cleared => {
+                    root.genre-name = "";
+                    root.genre-code = "";
+                    root.run-search();
+                }
+            }
+
+            FilterChip {
+                any-label: "Any language";
+                value: root.language-name;
+                clicked => { root.pick-filter("language"); }
+                cleared => {
+                    root.language-name = "";
+                    root.language-code = "";
+                    root.run-search();
                 }
             }
         }
@@ -471,8 +604,8 @@ export component StationBrowserDialog inherits Rectangle {
             // Empty state
             if root.search-results.length == 0
                 && !root.search-loading && root.search-error == "": Text {
-                text: root.search-mode == "country"
-                    ? "No stations found in \{root.country-name}"
+                text: root.filtered
+                    ? "No stations found. Try removing a filter."
                     : "No stations found";
                 color: Theme.text-secondary;
                 font-size: Theme.font-base;

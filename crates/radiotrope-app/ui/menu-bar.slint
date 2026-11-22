@@ -430,7 +430,6 @@ export component MenuBar inherits Rectangle {
 
     callback open-network-stream();
     callback open-station-search();
-    callback open-country-picker();
     callback export-favorites();
     callback import-favorites();
     callback open-statistics();
@@ -759,14 +758,6 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/magnifying-glass.svg");
                     clicked => {
                         root.open-station-search();
-                        stations-popup.close();
-                    }
-                }
-                MenuItem {
-                    label: "By Country";
-                    icon: @image-url("icons/earth-europe.svg");
-                    clicked => {
-                        root.open-country-picker();
                         stations-popup.close();
                     }
                 }
