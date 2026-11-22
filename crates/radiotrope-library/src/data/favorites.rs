@@ -100,6 +100,12 @@ struct StoredFavoritesFile {
     favorites: Vec<serde_json::Value>,
 }
 
+/// An explicit edit to a shared favorites file.
+pub enum FavoriteEdit {
+    Add(Box<Favorite>),
+    Remove(String),
+}
+
 /// The stats file: plays and listening time by favorite id
 #[derive(Debug, Serialize, Deserialize)]
 struct StatsFile {
@@ -196,6 +202,78 @@ impl FavoritesManager {
             Err(e) => eprintln!("Stats: {e}"),
         }
         manager.stats_base = manager.stats.clone();
+        Ok(manager)
+    }
+
+    /// Read favorites without recovery writes. Invalid entries or an unreadable
+    /// file are reported to the caller, and only a missing file starts empty.
+    pub fn observe(path: &Path) -> Result<Self> {
+        let mut manager = Self::new();
+        manager.seen = storage::stamp(path);
+        match std::fs::read_to_string(path) {
+            Ok(text) => {
+                let file: StoredFavoritesFile = serde_json::from_str(&text)
+                    .map_err(|e| AppError::Config(format!("Invalid favorites: {e}")))?;
+                for entry in file.favorites {
+                    let favorite: Favorite = serde_json::from_value(entry)
+                        .map_err(|e| AppError::Config(format!("Invalid favorite: {e}")))?;
+                    manager.favorites.insert(favorite.id(), favorite);
+                }
+            }
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && path
+                        .symlink_metadata()
+                        .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
+            Err(error) => {
+                return Err(AppError::Config(format!(
+                    "Cannot read {}: {error}",
+                    path.display()
+                )));
+            }
+        }
+        manager.path = Some(path.to_path_buf());
+        manager.base = manager.favorites.clone();
+        Ok(manager)
+    }
+
+    /// Refresh a read-only snapshot when the file changes.
+    pub fn refresh_observed(&mut self, path: &Path) -> Result<bool> {
+        if self.path.as_deref() == Some(path) && self.seen == storage::stamp(path) {
+            return Ok(false);
+        }
+        *self = Self::observe(path)?;
+        Ok(true)
+    }
+
+    /// Apply an explicit favorites edit to the latest readable file under the
+    /// same lock used by desktop saves.
+    pub fn edit_file(path: &Path, edit: FavoriteEdit) -> Result<Self> {
+        let _lock = lock_for_save(path)?;
+        let mut manager = Self::observe(path)?;
+        // add/remove normally reload from disk. This snapshot already holds
+        // the lock and must use the strict read above.
+        manager.path = None;
+        match edit {
+            FavoriteEdit::Add(favorite) => {
+                let station = &favorite.station;
+                if manager
+                    .find_match(&station.url, station.provider_id.as_deref())
+                    .is_none()
+                {
+                    manager.add(*favorite)?;
+                }
+            }
+            FavoriteEdit::Remove(id) => {
+                if manager.get(&id).is_some() {
+                    manager.remove(&id)?;
+                }
+            }
+        }
+        manager.path = Some(path.to_path_buf());
+        if manager.dirty {
+            manager.write_favorites(path)?;
+        }
         Ok(manager)
     }
 
@@ -323,13 +401,7 @@ impl FavoritesManager {
         self.reload_favorites(true);
 
         if self.dirty {
-            let file = FavoritesFile {
-                version: FAVORITES_VERSION,
-                favorites: self.favorites.values().cloned().collect(),
-            };
-            self.seen = Some(storage::save_to_stamped(path, &file)?);
-            self.base = self.favorites.clone();
-            self.dirty = false;
+            self.write_favorites(path)?;
         }
 
         if self.stats_dirty {
@@ -342,6 +414,17 @@ impl FavoritesManager {
             self.stats_base = self.stats.clone();
             self.stats_dirty = false;
         }
+        Ok(())
+    }
+
+    fn write_favorites(&mut self, path: &Path) -> Result<()> {
+        let file = FavoritesFile {
+            version: FAVORITES_VERSION,
+            favorites: self.favorites.values().cloned().collect(),
+        };
+        self.seen = Some(storage::save_to_stamped(path, &file)?);
+        self.base = self.favorites.clone();
+        self.dirty = false;
         Ok(())
     }
 
@@ -404,7 +487,7 @@ impl FavoritesManager {
             .max()
             .unwrap_or(-1);
         let mut favorite = favorite;
-        favorite.sort_order = max_order + 1;
+        favorite.sort_order = max_order.saturating_add(1);
 
         self.favorites.insert(id, favorite);
         self.dirty = true;

@@ -1,42 +1,40 @@
 //! Radiotrope CLI: the terminal internet radio player
 //!
-//! Plays your favorites from the Radiotrope app, or a stream URL, with the
-//! station's details, a spectrum and recording. It reads the app's
-//! favorites and settings and never writes them.
+//! Plays favorites, searches the station directory, and records streams.
 
+mod favorites;
+mod input;
 mod library;
 mod player;
 mod recording;
+mod search;
 mod ui;
 mod visual;
 
 use std::io;
 #[cfg(unix)]
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyEventKind};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::ExecutableCommand;
 use ratatui::prelude::*;
 
 use radiotrope::audio::AudioEngine;
+use radiotrope_library::data::favorites::FavoritesManager;
 
+use favorites::FavoritesWorker;
+use input::Effect;
 use library::{Settings, Station};
 use player::{Phase, Player, VOLUME_STEP};
+use search::SearchWorker;
 use ui::{ColorMode, Palette, View};
-
-/// How often the favorites file is checked for changes the app saved
-const FAVORITES_CHECK: Duration = Duration::from_secs(2);
-
-/// Rows `PgUp` and `PgDn` move
-const PAGE: isize = 10;
 
 #[derive(Parser)]
 #[command(
     name = "radiotrope-cli",
-    about = "Terminal internet radio player: your Radiotrope favorites, or any stream URL",
+    about = "Play internet radio, search the station directory, and manage shared Radiotrope favorites",
     version
 )]
 struct Cli {
@@ -61,31 +59,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     let favorites_path = library::favorites_path();
-    let favorites = favorites_path
+    let loaded = favorites_path
         .as_deref()
-        .map(library::read_favorites)
-        .unwrap_or_default();
+        .ok_or_else(|| "Favorites directory unavailable".to_owned())
+        .and_then(|path| FavoritesManager::observe(path).map_err(|error| error.to_string()));
+    let (manager, mut favorites_error) = match loaded {
+        Ok(manager) => (manager, None),
+        Err(error) => (FavoritesManager::new(), Some(error)),
+    };
+    let favorites = favorites::stations(&manager);
     let settings = read_settings();
 
     let start = match cli.station.as_deref().map(str::trim) {
         None | Some("") => None,
-        Some(arg) if arg.contains("://") => Some(Station {
-            name: String::new(),
-            url: arg.to_string(),
-            country: None,
-        }),
-        Some(arg) => match library::find_favorite(&favorites, arg) {
-            Some(station) => Some(station.clone()),
-            None => {
-                eprintln!("No favorite matches \"{arg}\".");
-                if favorites.is_empty() {
-                    eprintln!("There are no favorites yet: add some in the Radiotrope app, or give a stream URL.");
-                } else {
-                    eprintln!("Run radiotrope-cli without a station to see your favorites.");
+        Some(arg) if arg.contains("://") => Some(
+            favorites
+                .iter()
+                .find(|station| station.url == arg)
+                .cloned()
+                .unwrap_or_else(|| Station::new("", arg)),
+        ),
+        Some(arg) => {
+            match library::find_favorite(&favorites, arg) {
+                Some(station) => Some(station.clone()),
+                None => {
+                    eprintln!("No favorite matches \"{arg}\".");
+                    if let Some(error) = &favorites_error {
+                        eprintln!("Favorites: {error}");
+                    } else if favorites.is_empty() {
+                        eprintln!("There are no favorites yet: open station search, or give a stream URL.");
+                    } else {
+                        eprintln!("Run radiotrope-cli without a station to see your favorites.");
+                    }
+                    std::process::exit(2);
                 }
-                std::process::exit(2);
             }
-        },
+        }
     };
 
     let engine = match AudioEngine::new() {
@@ -108,15 +117,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         player.play(station);
     }
 
+    let search_worker = SearchWorker::spawn();
+    let favorites_worker =
+        favorites_path.and_then(|path| match FavoritesWorker::spawn(path, manager) {
+            Ok(worker) => Some(worker),
+            Err(error) => {
+                favorites_error = Some(error.to_string());
+                None
+            }
+        });
+    if favorites_worker.is_some() {
+        if let Some(error) = favorites_error {
+            view.apply_favorites(favorites::Reply::Followed(Err(error)));
+        }
+    } else {
+        view.favorites_error = favorites_error;
+    }
+
     // The guard puts the terminal back however this ends: a quit, an
     // error returned by `?`, or a panic
     let terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let mut favorites_seen = favorites_path.as_deref().and_then(library::modified);
-    let mut favorites_checked = Instant::now();
     loop {
         player.poll();
+        if let Ok(worker) = &search_worker {
+            view.search.poll(worker);
+        }
+        if let Some(worker) = &favorites_worker {
+            view.poll_favorites(worker);
+        }
         if player.phase == Phase::Playing {
             let mut a = analysis.lock().unwrap_or_else(|e| e.into_inner());
             view.spectrum.update(Some(&mut a));
@@ -129,22 +159,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if event::poll(ui::frame_interval(&view, &player))? {
             if let Event::Key(key) = event::read()? {
                 // Windows also reports key releases
-                if key.kind == KeyEventKind::Press && !handle_key(key, &mut view, &mut player) {
+                if key.kind == KeyEventKind::Press
+                    && !apply_effect(
+                        input::route(key, &mut view),
+                        &mut view,
+                        &mut player,
+                        search_worker.as_ref().ok(),
+                        favorites_worker.as_ref(),
+                    )
+                {
                     break;
                 }
             }
         }
-
-        if favorites_checked.elapsed() >= FAVORITES_CHECK {
-            favorites_checked = Instant::now();
-            if let Some(path) = favorites_path.as_deref() {
-                let stamp = library::modified(path);
-                if stamp != favorites_seen {
-                    favorites_seen = stamp;
-                    view.replace_favorites(library::read_favorites(path));
-                }
-            }
-        }
+    }
+    if let Some(worker) = favorites_worker {
+        worker.finish();
     }
 
     // Save any recording and close the engine while the screen is still
@@ -162,39 +192,56 @@ fn read_settings() -> Settings {
         .unwrap_or_default()
 }
 
-/// Act on a key; false to quit
-fn handle_key(key: KeyEvent, view: &mut View, player: &mut Player) -> bool {
-    match key.code {
-        // Raw mode turns Ctrl+C into a key press
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => return false,
-        KeyCode::Char('q') | KeyCode::Esc => return false,
-        KeyCode::Up | KeyCode::Char('k') => view.move_cursor(-1),
-        KeyCode::Down | KeyCode::Char('j') => view.move_cursor(1),
-        KeyCode::PageUp => view.move_cursor(-PAGE),
-        KeyCode::PageDown => view.move_cursor(PAGE),
-        KeyCode::Home => view.move_cursor(isize::MIN / 2),
-        KeyCode::End => view.move_cursor(isize::MAX / 2),
-        KeyCode::Enter => {
-            if let Some(i) = view.cursor() {
-                player.play(view.favorites[i].clone());
+fn apply_effect(
+    effect: Effect,
+    view: &mut View,
+    player: &mut Player,
+    search_worker: Option<&SearchWorker>,
+    favorites_worker: Option<&FavoritesWorker>,
+) -> bool {
+    match effect {
+        Effect::None => {}
+        Effect::Quit => return false,
+        Effect::CloseSearch => {
+            if let Some(worker) = search_worker {
+                worker.clear_pending();
             }
         }
-        KeyCode::Char(' ') => {
+        Effect::Search(request) => {
+            let result = search_worker
+                .ok_or_else(|| "Search worker unavailable".to_owned())
+                .and_then(|worker| worker.request(request.clone()));
+            if let Err(error) = result {
+                view.search.apply(search::Reply {
+                    request,
+                    result: Err(error),
+                });
+            }
+        }
+        Effect::Edit(edit) => {
+            let result = favorites_worker
+                .ok_or_else(|| "Favorites worker unavailable".to_owned())
+                .and_then(|worker| worker.edit(edit));
+            if let Err(error) = result {
+                view.apply_favorites(favorites::Reply::Edited(Err(error)));
+            }
+        }
+        Effect::Play => {
+            if let Some(station) = view.highlighted() {
+                player.play(station.clone());
+            }
+        }
+        Effect::TogglePlayback => {
             if player.is_active() {
                 player.stop();
-            } else if let Some(station) = player.station.clone() {
-                player.play(station);
-            } else if let Some(i) = view.cursor() {
-                player.play(view.favorites[i].clone());
+            } else if let Some(station) = player.station.as_ref().or_else(|| view.highlighted()) {
+                player.play(station.clone());
             }
         }
-        KeyCode::Char('n') => step_station(view, player, 1),
-        KeyCode::Char('p') => step_station(view, player, -1),
-        KeyCode::Char('+') | KeyCode::Char('=') => player.change_volume(VOLUME_STEP),
-        KeyCode::Char('-') | KeyCode::Char('_') => player.change_volume(-VOLUME_STEP),
-        KeyCode::Char('m') => player.toggle_mute(),
-        KeyCode::Char('r') => player.toggle_recording(&read_settings()),
-        _ => {}
+        Effect::StepFavorite(delta) => step_station(view, player, delta),
+        Effect::Volume(direction) => player.change_volume(direction as f32 * VOLUME_STEP),
+        Effect::Mute => player.toggle_mute(),
+        Effect::Record => player.toggle_recording(&read_settings()),
     }
     true
 }
@@ -215,7 +262,9 @@ fn step_station(view: &mut View, player: &mut Player, delta: isize) {
         Some(i) => (i + delta).rem_euclid(count),
         None => 0,
     } as usize;
-    view.select(next);
+    if !view.search.open {
+        view.select(next);
+    }
     player.play(view.favorites[next].clone());
 }
 

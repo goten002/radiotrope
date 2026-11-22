@@ -5917,8 +5917,11 @@ dependencies = [
  "libc",
  "radiotrope",
  "radiotrope-app",
+ "radiotrope-library",
  "ratatui",
  "serde_json",
+ "tempfile",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

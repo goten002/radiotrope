@@ -1,25 +1,20 @@
-//! The app's favorites and settings, read only
-//!
-//! The terminal player never writes the app's files: it reads the fields
-//! it needs from `favorites.json` and `settings.json` and leaves the rest.
-//! Each field is read on its own, so a field the app adds, drops or
-//! changes costs only that field.
+//! Read-only access to the app's settings and startup station lookup.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use serde_json::Value;
 
-/// The app's folder name, under the system's config folder
-const APP_DIR: &str = "radiotrope";
+use radiotrope_library::data::storage;
+pub use radiotrope_library::data::types::Station;
+
 const FAVORITES_FILE: &str = "favorites.json";
 const SETTINGS_FILE: &str = "settings.json";
 
 /// The app's config folder: `~/.config/radiotrope` on Linux,
 /// `%APPDATA%\radiotrope` on Windows
 pub fn config_dir() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join(APP_DIR))
+    storage::config_dir().ok()
 }
 
 pub fn favorites_path() -> Option<PathBuf> {
@@ -28,47 +23,6 @@ pub fn favorites_path() -> Option<PathBuf> {
 
 pub fn settings_path() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join(SETTINGS_FILE))
-}
-
-/// A station to play: a favorite, or a URL given on the command line
-#[derive(Debug, Clone, PartialEq)]
-pub struct Station {
-    pub name: String,
-    pub url: String,
-    pub country: Option<String>,
-}
-
-/// The favorites in the app's order. A missing or unreadable file is no
-/// favorites; an entry without a name or URL is skipped.
-pub fn read_favorites(path: &Path) -> Vec<Station> {
-    let Some(file) = read_json(path) else {
-        return Vec::new();
-    };
-    let Some(entries) = file.get("favorites").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let mut favorites: Vec<(i64, Station)> = entries
-        .iter()
-        .filter_map(|entry| {
-            let url = text(entry, "url")?;
-            let name = text(entry, "name").unwrap_or_else(|| url.clone());
-            let order = entry.get("sort_order").and_then(Value::as_i64).unwrap_or(0);
-            Some((
-                order,
-                Station {
-                    name,
-                    url,
-                    country: text(entry, "country"),
-                },
-            ))
-        })
-        .collect();
-    // The app's own order (sort_order), with the name settling ties
-    favorites.sort_by(|(a, x), (b, y)| {
-        a.cmp(b)
-            .then_with(|| x.name.to_lowercase().cmp(&y.name.to_lowercase()))
-    });
-    favorites.into_iter().map(|(_, station)| station).collect()
 }
 
 /// Recording file format, as the app names it in its settings
@@ -175,11 +129,6 @@ pub fn read_settings(path: &Path) -> Settings {
     settings
 }
 
-/// When `path` last changed, to notice the app saving it
-pub fn modified(path: &Path) -> Option<SystemTime> {
-    fs::metadata(path).and_then(|m| m.modified()).ok()
-}
-
 fn read_json(path: &Path) -> Option<Value> {
     let text = fs::read_to_string(path).ok()?;
     serde_json::from_str(&text).ok()
@@ -228,11 +177,7 @@ mod tests {
     use super::*;
 
     fn station(name: &str) -> Station {
-        Station {
-            name: name.to_string(),
-            url: format!("http://{name}.test/"),
-            country: None,
-        }
+        Station::new(name, format!("http://{name}.test/"))
     }
 
     #[test]
@@ -249,7 +194,6 @@ mod tests {
     #[test]
     fn missing_files_give_the_defaults() {
         let nowhere = Path::new("/nonexistent/radiotrope-cli-test.json");
-        assert!(read_favorites(nowhere).is_empty());
         assert_eq!(read_settings(nowhere), Settings::default());
     }
 
@@ -271,20 +215,6 @@ mod tests {
         assert_eq!(&settings.eq_gains[..3], &[1.0, 0.0, 3.0]);
         assert_eq!(settings.recording_format, RecordFormat::Mp3);
 
-        let path = dir.join("favorites.json");
-        fs::write(
-            &path,
-            r#"{"version": 1, "favorites": [
-                {"name": "B", "url": "http://b.test/", "sort_order": 2},
-                {"name": "No URL"},
-                {"url": "http://a.test/", "sort_order": 1, "country": "Greece"}]}"#,
-        )
-        .unwrap();
-        let favorites = read_favorites(&path);
-        assert_eq!(favorites.len(), 2);
-        assert_eq!(favorites[0].name, "http://a.test/");
-        assert_eq!(favorites[0].country.as_deref(), Some("Greece"));
-        assert_eq!(favorites[1].name, "B");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -324,7 +254,7 @@ mod tests {
             app.move_to_edge(&last, true).unwrap();
             app.save_to(&path).unwrap();
 
-            let ours = read_favorites(&path);
+            let ours = crate::favorites::stations(&FavoritesManager::observe(&path).unwrap());
             let theirs = app.sorted(FavoriteSort::Manual);
             assert_eq!(ours.len(), theirs.len());
             for (ours, theirs) in ours.iter().zip(theirs) {
