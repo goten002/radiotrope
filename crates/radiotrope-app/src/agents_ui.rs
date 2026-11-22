@@ -64,11 +64,7 @@ pub(crate) fn setup(
         let listen_for_apply = listen.clone();
         move |change: &dyn Fn(&mut radiotrope_app::data::settings::Settings)| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-            change(&mut settings);
-            if let Err(e) = settings.save() {
-                eprintln!("Failed to save agent settings: {e}");
-            }
+            let settings = crate::window_settings::update_settings(change);
             show_listen_choices(&ui, &settings, &listen_for_apply);
             agents.apply_network_later(&settings, show_agents_network_later(&ui));
         }
@@ -317,9 +313,5 @@ fn default_port() -> u16 {
 }
 
 fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
-    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-    change(&mut settings);
-    if let Err(e) = settings.save() {
-        eprintln!("Failed to save agent settings: {e}");
-    }
+    crate::window_settings::update_settings(change);
 }

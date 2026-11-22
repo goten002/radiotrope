@@ -39,11 +39,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> slin
         let remote = remote.clone();
         move |change: &dyn Fn(&mut Settings)| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let mut settings = Settings::load().unwrap_or_default();
-            change(&mut settings);
-            if let Err(e) = settings.save() {
-                eprintln!("Failed to save Remote Control settings: {e}");
-            }
+            let settings = crate::window_settings::update_settings(change);
             ui.set_remote_on(settings.remote_control);
             ui.set_remote_share_recordings(settings.remote_share_recordings);
             ui.set_remote_name(settings.remote_name.clone().unwrap_or_default().into());

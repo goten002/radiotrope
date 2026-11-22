@@ -101,6 +101,8 @@ struct FavoritesFile {
 /// one damaged entry doesn't cost all the others
 #[derive(Deserialize)]
 struct StoredFavoritesFile {
+    #[serde(default)]
+    version: u32,
     favorites: Vec<serde_json::Value>,
 }
 
@@ -130,6 +132,7 @@ impl Default for FavoritesFile {
 /// Manages favorites in memory
 ///
 /// Uses URL hash as ID, so lookups by URL are O(1).
+#[derive(Clone)]
 pub struct FavoritesManager {
     /// All favorites by ID (which is derived from URL hash)
     favorites: HashMap<String, Favorite>,
@@ -153,6 +156,48 @@ pub struct FavoritesManager {
     stats_seen: Option<FileStamp>,
     /// The stats as that read or write left them
     stats_base: HashMap<String, StationStats>,
+    /// How many saves were run on this manager, so a save run on a copy
+    /// (see [`begin_save`](Self::begin_save)) knows when it was overtaken
+    saves: u64,
+}
+
+/// A save taken out of a [`FavoritesManager`] with
+/// [`begin_save`](FavoritesManager::begin_save): what it held then.
+/// [`write`](Self::write) needs no manager, so the mutex around one is free
+/// while the disk is.
+pub struct SaveJob {
+    path: PathBuf,
+    /// The manager as it was: the save is run on it
+    copy: FavoritesManager,
+    taken: Taken,
+}
+
+/// What a manager held when a [`SaveJob`] was taken from it
+struct Taken {
+    favorites: HashMap<String, Favorite>,
+    stats: HashMap<String, StationStats>,
+    saves: u64,
+}
+
+/// A [`SaveJob`] that was run, for
+/// [`finish_save`](FavoritesManager::finish_save)
+pub struct SaveDone {
+    copy: FavoritesManager,
+    taken: Taken,
+    result: Result<()>,
+}
+
+impl SaveJob {
+    /// Lock the favorites folder, take in what another player saved, and
+    /// write. This is the slow part: the file lock is waited for up to 3 s.
+    pub fn write(mut self) -> SaveDone {
+        let result = self.copy.save_to(&self.path);
+        SaveDone {
+            copy: self.copy,
+            taken: self.taken,
+            result,
+        }
+    }
 }
 
 impl FavoritesManager {
@@ -169,6 +214,7 @@ impl FavoritesManager {
             stats_dirty: false,
             stats_seen: None,
             stats_base: HashMap::new(),
+            saves: 0,
         }
     }
 
@@ -400,6 +446,7 @@ impl FavoritesManager {
             return Ok(());
         }
         let _lock = lock_for_save(path)?;
+        self.saves += 1;
         if self.path.as_deref() != Some(path) {
             // A file this manager hasn't read: the favorites already in it
             // stay, next to the ones here (stats too)
@@ -427,6 +474,87 @@ impl FavoritesManager {
             self.stats_dirty = false;
         }
         Ok(())
+    }
+
+    /// The first half of a save that doesn't hold the manager while the
+    /// disk is written: what there is to save to the default location, or
+    /// `None` when nothing changed. Run it with [`SaveJob::write`] (with
+    /// the manager's mutex let go), then hand the result to
+    /// [`finish_save`](Self::finish_save).
+    pub fn begin_save(&self) -> Result<Option<SaveJob>> {
+        if !self.is_dirty() {
+            return Ok(None);
+        }
+        Ok(self.begin_save_to(&storage::data_path(FAVORITES_FILE)?))
+    }
+
+    /// [`begin_save`](Self::begin_save) to a specific path
+    pub fn begin_save_to(&self, path: &Path) -> Option<SaveJob> {
+        self.is_dirty().then(|| SaveJob {
+            path: path.to_path_buf(),
+            copy: self.clone(),
+            taken: Taken {
+                favorites: self.favorites.clone(),
+                stats: self.stats.clone(),
+                saves: self.saves,
+            },
+        })
+    }
+
+    /// The second half: note what `done` wrote. What changed here while it
+    /// was written stays, and stays to be saved; what another player had
+    /// saved is taken in. Returns how the save went: after an error what
+    /// wasn't written is still unsaved here.
+    pub fn finish_save(&mut self, done: SaveDone) -> Result<()> {
+        let SaveDone {
+            copy,
+            taken,
+            result,
+        } = done;
+        // Saved here meanwhile: that save took this one's file in, or this
+        // one took in that save's
+        if self.saves != taken.saves {
+            return result;
+        }
+        self.saves += 1;
+        // Still to be written on the copy: that write failed
+        if !copy.dirty {
+            let mut favorites = copy.favorites;
+            for id in self.favorites.keys().chain(taken.favorites.keys()) {
+                let ours = self.favorites.get(id);
+                if ours != taken.favorites.get(id) {
+                    match ours {
+                        Some(favorite) => favorites.insert(id.clone(), favorite.clone()),
+                        None => favorites.remove(id),
+                    };
+                }
+            }
+            if favorites != self.favorites {
+                self.favorites = favorites;
+                self.generation += 1;
+            }
+            self.path = copy.path;
+            self.seen = copy.seen;
+            self.base = copy.base;
+            self.dirty = self.favorites != self.base;
+        }
+        if !copy.stats_dirty {
+            let mut stats = copy.stats;
+            for id in self.stats.keys().chain(taken.stats.keys()) {
+                let ours = self.stats.get(id);
+                if ours != taken.stats.get(id) {
+                    match ours {
+                        Some(s) => stats.insert(id.clone(), *s),
+                        None => stats.remove(id),
+                    };
+                }
+            }
+            self.stats = stats;
+            self.stats_seen = copy.stats_seen;
+            self.stats_base = copy.stats_base;
+            self.stats_dirty = self.stats != self.stats_base;
+        }
+        result
     }
 
     fn write_favorites(&mut self, path: &Path) -> Result<()> {
@@ -1210,6 +1338,18 @@ fn no_lock_here(path: &Path, e: &std::io::Error) {
 
 /// The favorites in a file read from `path`, by ID
 fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favorite> {
+    if file.version > FAVORITES_VERSION {
+        static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            eprintln!(
+                "Favorites: {} was saved by a newer Radiotrope (version {}, this one writes {}); \
+                 what this one doesn't know is dropped when it saves",
+                path.display(),
+                file.version,
+                FAVORITES_VERSION
+            );
+        }
+    }
     let mut favorites = HashMap::new();
     let mut skipped = 0;
     for entry in file.favorites {
@@ -1937,6 +2077,103 @@ mod tests {
                 .total_listen_time_secs,
             60
         );
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_save_in_two_halves_writes_what_was_held_and_leaves_the_manager_free() {
+        let (path, mut gui, _) = two_players(&["http://a.test"]);
+        assert!(gui.begin_save_to(&path).is_none(), "nothing to save yet");
+        gui.add(Favorite::new("B", "http://b.test")).unwrap();
+        let job = gui.begin_save_to(&path).unwrap();
+
+        // Changed while the disk is written: not in this save
+        gui.add(Favorite::new("C", "http://c.test")).unwrap();
+        gui.add_listening("http://a.test", 60, true).unwrap();
+        let done = job.write();
+        assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
+
+        gui.finish_save(done).unwrap();
+        assert_eq!(
+            urls(&gui),
+            ["http://a.test", "http://b.test", "http://c.test"]
+        );
+        assert!(gui.is_dirty(), "the later changes are still to be saved");
+
+        let done = gui.begin_save_to(&path).unwrap().write();
+        gui.finish_save(done).unwrap();
+        assert!(!gui.is_dirty());
+        assert!(gui.begin_save_to(&path).is_none());
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(urls(&saved), urls(&gui));
+        assert_eq!(
+            saved
+                .stats(&url_to_id("http://a.test"))
+                .total_listen_time_secs,
+            60
+        );
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_save_in_two_halves_takes_in_what_another_player_saved() {
+        let (path, mut gui, mut agent) = two_players(&["http://a.test", "http://gone.test"]);
+        gui.add(Favorite::new("B", "http://b.test")).unwrap();
+        let shown = gui.generation();
+        let job = gui.begin_save_to(&path).unwrap();
+
+        // Saved by the other player before this save reaches the disk
+        agent.add(Favorite::new("C", "http://c.test")).unwrap();
+        agent.remove(&url_to_id("http://gone.test")).unwrap();
+        agent.save_to(&path).unwrap();
+        gui.finish_save(job.write()).unwrap();
+
+        let all = ["http://a.test", "http://b.test", "http://c.test"];
+        assert_eq!(urls(&gui), all);
+        assert!(gui.generation() > shown, "the list is drawn again");
+        assert!(!gui.is_dirty());
+        assert_eq!(saved_urls(&path), all);
+        // Nothing new in the file for this manager
+        assert!(!gui.reload_if_changed());
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_save_in_two_halves_that_fails_leaves_the_changes_pending() {
+        let (path, mut gui, _) = two_players(&["http://a.test"]);
+        gui.add(Favorite::new("B", "http://b.test")).unwrap();
+        gui.add_listening("http://a.test", 60, true).unwrap();
+        let shown = gui.generation();
+        let lock = lock_for_save(&path)
+            .unwrap()
+            .expect("the test folder can lock");
+        let done = gui.begin_save_to(&path).unwrap().write();
+        assert!(gui.finish_save(done).is_err());
+        assert!(gui.is_dirty());
+        assert_eq!(gui.generation(), shown);
+        assert_eq!(saved_urls(&path), ["http://a.test"]);
+        drop(lock);
+
+        let done = gui.begin_save_to(&path).unwrap().write();
+        gui.finish_save(done).unwrap();
+        assert!(!gui.is_dirty());
+        assert_eq!(saved_urls(&path), ["http://a.test", "http://b.test"]);
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_save_in_two_halves_overtaken_by_a_whole_save_changes_nothing_here() {
+        let (path, mut gui, _) = two_players(&["http://a.test"]);
+        gui.add(Favorite::new("B", "http://b.test")).unwrap();
+        let job = gui.begin_save_to(&path).unwrap();
+        gui.add(Favorite::new("C", "http://c.test")).unwrap();
+        gui.save_to(&path).unwrap();
+        gui.finish_save(job.write()).unwrap();
+
+        assert!(!gui.is_dirty());
+        let all = ["http://a.test", "http://b.test", "http://c.test"];
+        assert_eq!(urls(&gui), all);
+        assert_eq!(saved_urls(&path), all);
         remove_files(&path);
     }
 
