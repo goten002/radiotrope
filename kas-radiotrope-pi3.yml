@@ -76,6 +76,11 @@ local_conf_header:
     # machine name, raspberrypi3-64)
     hostname:pn-base-files = "radiotrope-pi"
 
+    # Local time zone, for the Scheduler and the clock: a name from the tz
+    # database (/usr/share/zoneinfo), such as "Europe/London". The image
+    # has no zone setting on screen, so set yours here before building
+    DEFAULT_TIMEZONE ?= "Europe/Athens"
+
     # Accept all licenses for firmware blobs
     LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"
 

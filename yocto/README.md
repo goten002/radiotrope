@@ -3,8 +3,22 @@
 Builds a minimal embedded Linux image for running Radiotrope as a kiosk appliance on Raspberry Pi 3B+.
 
 > [!NOTE]
-> This image is experimental: it is built and tested on the hardware below
-> only, and things may change or break between versions.
+> This is a build recipe, not a download: you build the image yourself,
+> which takes several hours the first time. It is experimental, built and
+> tested on the one set of parts below only, and things may change or break
+> between versions. Another Pi model, screen or amplifier needs changes to
+> the layer before it works.
+
+## What to buy
+
+- Raspberry Pi 3 Model B+ (not a 3B, 4 or 5)
+- Waveshare 5inch DSI LCD (B), the 800x480 capacitive touchscreen
+- InnoMaker HiFi AMP Pro (MA12070P amplifier HAT)
+- A 9–24 V DC power supply for the amplifier, which also powers the Pi
+  through the GPIO header (see [hardware.md](hardware.md))
+- Two passive speakers, 4–8 Ω
+- A microSD card, 8 GB or larger, and a card reader for the computer that
+  builds the image
 
 ## Target Hardware
 
@@ -16,7 +30,8 @@ See [hardware.md](hardware.md) for detailed specs, wiring, and device tree confi
 
 ## Prerequisites
 
-- [kas](https://kas.readthedocs.io/) build tool: `pip install kas`
+- [kas](https://kas.readthedocs.io/) build tool: `pipx install kas` (plain
+  `pip install` is refused by most current distributions)
 - [podman](https://podman.io/) or Docker (for container builds on non-Debian hosts)
 - ~50 GB free disk space (first build)
 
@@ -66,6 +81,19 @@ ssh root@<pi address>   # the Pi shows up on the router as radiotrope-pi
 
 Without that file the release image has no SSH server.
 
+### Time zone
+
+The image has no time zone setting on screen. It uses the zone in the kas
+file, which the Scheduler and the clock follow; the default is Athens.
+Change it to yours before building, with a name from the tz database:
+
+```yaml
+    DEFAULT_TIMEZONE ?= "Europe/London"
+```
+
+On a running Pi with SSH, `timedatectl set-timezone Europe/London` and
+then `systemctl restart radiotrope` change it until the next flash.
+
 Or use the convenience script:
 
 ```bash
@@ -83,6 +111,45 @@ sync
 ```
 
 Replace `/dev/sdX` with your SD card device.
+
+## After flashing
+
+No keyboard or SSH is needed for this part:
+
+1. Put the card in the Pi and power the amplifier. The screen shows
+   "Booting...", then the player.
+2. Open **Tools > Wi-Fi Settings**, pick your network and type its
+   password on the screen keyboard. The Pi joins it again on every start.
+3. Wait a minute for the clock to set itself over the network, then search
+   for stations and add favorites.
+4. To control the player from a phone, open **Tools > Connections >
+   Remote Control**, turn on "Allow phones on this network", press **Pair a
+   Phone** and scan the code with the Radiotrope Remote app.
+
+## Updating
+
+A new image replaces the whole SD card, including `/var/lib/radiotrope`
+where the player keeps favorites, settings, schedules and paired phones.
+Copy them off first, over SSH (dev image, or the release image with a
+key):
+
+```bash
+ssh root@radiotrope-pi tar -C /var/lib/radiotrope -czf - .config > radiotrope-backup.tar.gz
+```
+
+Build and flash the new image, then put the files back and restart the
+player:
+
+```bash
+ssh root@radiotrope-pi 'systemctl stop radiotrope &&
+    tar -C /var/lib/radiotrope -xzf - &&
+    chown -R radiotrope:radiotrope /var/lib/radiotrope/.config &&
+    systemctl start radiotrope' < radiotrope-backup.tar.gz
+```
+
+Without SSH the new image starts with no favorites, and phones need to
+pair again. Recordings in `/var/lib/radiotrope/Music` are lost too; copy
+them off the same way, or record to a USB stick (see below).
 
 ## What's in the Image
 
@@ -158,6 +225,8 @@ Things to look at the first time a new image runs on the Pi, over SSH
 - Clock: the Pi has no clock of its own. `timedatectl` says "System clock
   synchronized: yes" within a minute of Wi-Fi coming up; the Scheduler,
   the Sleep Timer and HTTPS stations all depend on it.
+- Time zone: `timedatectl` shows the zone set in the kas file, and the
+  Scheduler dialog shows your local time.
 - Memory: `free -m` shows most of the 1 GB free; `dmesg | grep -i cma`
   has no allocation failures (the image reserves 96 MB for the display).
 - Power Off and Restart: Open > Restart (pressed twice) shows

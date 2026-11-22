@@ -15,11 +15,14 @@ do_rootfs[file-checksums] += "${@'${RADIOTROPE_SSH_KEYS}:True' if os.path.isfile
 # kernel-modules is every module the kernel builds (the machine recommends
 # it too). Trim it to the modules in use once the image has run on the Pi:
 # `lsmod` there gives the list. Wi-Fi firmware for the 3B+ (BCM43455) comes
-# with the machine's recommendations.
+# with the machine's recommendations. tzdata gives the Pi a local time
+# zone (DEFAULT_TIMEZONE in the kas file); without it the Scheduler runs
+# on UTC.
 IMAGE_INSTALL += " \
     radiotrope \
     alsa-utils \
     ca-certificates \
+    tzdata \
     kernel-modules \
     libinput \
     seatd \
