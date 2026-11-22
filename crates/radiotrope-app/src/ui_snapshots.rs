@@ -437,6 +437,12 @@ const SHOTS: &[Shot] = &[
         "A result row whose station failed to connect.",
     ),
     Shot::new(
+        "search-keyboard-row",
+        "search",
+        "keyboard",
+        "The results list with the keyboard: Down from the search field, the second row active.",
+    ),
+    Shot::new(
         "picker-country",
         "picker",
         "country",
@@ -447,6 +453,12 @@ const SHOTS: &[Shot] = &[
         "picker",
         "genre",
         "Genre filter options and counts.",
+    ),
+    Shot::new(
+        "picker-keyboard-row",
+        "picker",
+        "country-keys",
+        "The country list with the keyboard: Down from the filter field, the third row active.",
     ),
     Shot::new(
         "picker-loading",
@@ -941,6 +953,13 @@ fn after_open(ui: &App, shot: &Shot) {
                 slint::platform::update_timers_and_animations();
             }
         }
+        // Down from the text field goes into the list, then moves in it
+        ("search", "keyboard") | ("picker", "country-keys") => {
+            for _ in 0..if shot.screen == "search" { 2 } else { 3 } {
+                press(ui, Key::DownArrow);
+                slint::platform::update_timers_and_animations();
+            }
+        }
         ("picker", "no-match") => {
             // What the filter callback leaves for a text nothing matches
             ui.set_filter_entries_text("Atlantis".into());
@@ -1210,23 +1229,24 @@ fn show_agent_lines(ui: &App, app: AgentApp) {
 }
 
 fn seed_statistics(ui: &App) {
-    ui.set_stat_health(status::PLAYING.into());
-    ui.set_stat_playtime("24:18".into());
-    ui.set_stat_codec("AAC".into());
-    ui.set_stat_bitrate("192 kbps".into());
-    ui.set_stat_sample_rate("48 kHz".into());
-    ui.set_stat_channels("Stereo".into());
-    ui.set_stat_received("33.4 MB".into());
-    ui.set_stat_segments(MISSING.into());
-    ui.set_stat_throughput("197 kbps".into());
-    ui.set_stat_buffer_level("352 KB".into());
-    ui.set_stat_buffer_capacity("512 KB".into());
-    ui.set_stat_frames_played("68,343".into());
-    ui.set_stat_decode_errors("0".into());
-    ui.set_stat_underruns("0".into());
-    ui.set_stat_hum("50 Hz".into());
-    ui.set_stat_leveler("−2.4 dB".into());
-    ui.set_stat_hiss("Light".into());
+    let ui = ui.global::<crate::StatsData>();
+    crate::show_health(&ui, &HealthState::Healthy);
+    ui.set_playtime("24:18".into());
+    ui.set_codec("AAC".into());
+    ui.set_bitrate("192 kbps".into());
+    ui.set_sample_rate("48 kHz".into());
+    ui.set_channels("Stereo".into());
+    ui.set_received("33.4 MB".into());
+    ui.set_segments(MISSING.into());
+    ui.set_throughput("197 kbps".into());
+    ui.set_buffer_level("352 KB".into());
+    ui.set_buffer_capacity("512 KB".into());
+    ui.set_frames_played("68,343".into());
+    ui.set_decode_errors("0".into());
+    ui.set_underruns("0".into());
+    ui.set_hum("50 Hz".into());
+    ui.set_leveler("−2.4 dB".into());
+    ui.set_hiss("Light".into());
 }
 
 fn configure(ui: &App, shot: &Shot) {
@@ -1303,7 +1323,8 @@ fn configure(ui: &App, shot: &Shot) {
             if matches!(shot.state, "filtered" | "next-loading" | "next-error") {
                 ui.set_snapshot_country_flag(flag_image(Some("GB"), None));
             }
-            if shot.name == "search-results" || matches!(shot.state, "next-loading" | "next-error")
+            if shot.name == "search-results"
+                || matches!(shot.state, "next-loading" | "next-error" | "keyboard")
             {
                 set_results(ui);
             }
@@ -1421,8 +1442,9 @@ fn configure(ui: &App, shot: &Shot) {
             }
         }
         "statistics" => match shot.state {
-            "failed" => ui.set_stat_health(
-                crate::format_health(&HealthState::Failed(FailureReason::StreamStall)).into(),
+            "failed" => crate::show_health(
+                &ui.global::<crate::StatsData>(),
+                &HealthState::Failed(FailureReason::StreamStall),
             ),
             "stopped" => crate::clear_stats_ui(ui),
             _ => {}
@@ -1480,7 +1502,8 @@ fn open_screen(ui: &App, shot: &Shot) {
                 ui.set_filter_entries_error("The station directory did not respond.".into());
             }
             "loading" => {}
-            kind => set_picker_entries(ui, kind),
+            "genre" => set_picker_entries(ui, "genre"),
+            _ => set_picker_entries(ui, "country"),
         }
     }
 }
@@ -1581,3 +1604,7 @@ mod tests;
 #[cfg(test)]
 #[path = "menu_keys_test.rs"]
 mod menu_keys_tests;
+
+#[cfg(test)]
+#[path = "key_lists_test.rs"]
+mod key_list_tests;

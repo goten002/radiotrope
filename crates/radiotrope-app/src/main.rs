@@ -51,14 +51,13 @@ use slint::Model;
 
 use radiotrope::audio::{AudioAnalysis, HissLevel, LevelTarget, SharedStats};
 
-use radiotrope_app::config::ui::{FAVORITES_SAVE_DELAY, SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT};
+use radiotrope_app::config::ui::{SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT};
 use radiotrope_app::data::favorites::FavoritesManager;
 use radiotrope_app::data::types::Station;
 use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 
 use app::controller::AppController;
-use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
@@ -68,7 +67,7 @@ use context::{lock, AppContext};
 use favorites_list::refresh_favorites;
 use favorites_ui::{credit_listening, show_edited_favorite, EditedFavorite};
 use recording_ui::{save_recording_settings, station_cover_png};
-use window_settings::save_settings;
+use window_settings::save_settings_at_exit;
 
 // What the snapshot tool takes from the crate root
 #[cfg(any(test, feature = "ui-snapshots"))]
@@ -80,7 +79,7 @@ pub(crate) use browse_ui::flag_image;
 #[cfg(any(test, feature = "ui-snapshots"))]
 pub(crate) use player_ui::UNNAMED_STATION;
 #[cfg(any(test, feature = "ui-snapshots"))]
-pub(crate) use stats_ui::{clear_stats_ui, format_health};
+pub(crate) use stats_ui::{clear_stats_ui, show_health};
 #[cfg(any(test, feature = "ui-snapshots"))]
 pub(crate) use window_settings::show_eq_presets;
 
@@ -180,15 +179,7 @@ fn main() {
     let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
     // Listening time is saved a moment after it is added, on a thread of
     // its own: the UI doesn't wait on the disk once a minute
-    let favorites_saver = {
-        let favorites = favorites.clone();
-        DelayedSave::start("favorites-save", FAVORITES_SAVE_DELAY, move || {
-            let mut favs = lock(&favorites);
-            if let Err(e) = favs.save() {
-                eprintln!("Failed to save favorites: {e}");
-            }
-        })
-    };
+    let favorites_saver = favorites_ui::start_saver(&favorites);
 
     // `--mcp --standalone`: serve this agent on stdio, in this process
     if args.mcp {
@@ -270,7 +261,15 @@ fn main() {
         let tools = agents.tools();
         let window = ui.as_weak();
         let show_window: mcp::local::ShowWindow = Arc::new(move || {
-            let _ = window.upgrade_in_event_loop(|ui| bring_to_front(ui.window()));
+            let _ = window.upgrade_in_event_loop(|ui| {
+                // A window that is open but covered is raised, which
+                // asking for the focus doesn't do on Wayland
+                #[cfg(feature = "desktop")]
+                if window_frame::raise_shown(ui.window()) {
+                    return;
+                }
+                bring_to_front(ui.window());
+            });
         });
         // `radiotrope --quit`: exit as the menu's Quit does
         let quit: mcp::local::QuitApp = Arc::new(|| {
@@ -485,10 +484,10 @@ fn main() {
     if let Some(session) = listen_session.borrow_mut().take() {
         credit_listening(&ui, &listen_favs, &favorites_saver, session);
     }
-    favorites_saver.flush();
+    favorites_ui::save_at_exit(&favorites, &favorites_saver);
 
     // Final save before shutdown
-    save_settings(&shared_state, &ui);
+    save_settings_at_exit(&shared_state, &ui);
 
     // Give the controller time to finish a recording in progress, so the
     // end of the file is written before the process exits

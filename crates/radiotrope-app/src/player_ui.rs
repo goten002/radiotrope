@@ -6,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, ModelRc, SharedPixelBuffer, VecModel};
 
-use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::{PLAY_TAKE_TIMEOUT, SETTINGS_SAVE_DELAY};
 use radiotrope_app::data::favorites::PlayMetadata;
 use radiotrope_app::data::types::Station;
@@ -19,7 +18,7 @@ use crate::app::delayed_save::DelayedSave;
 use crate::app::listening::ListenSession;
 use crate::app::picked_station::{PendingPick, PickedStation};
 use crate::app::shown_station::ShownStation;
-use crate::app::state::AppSnapshot;
+use crate::app::state::{AppSnapshot, PlayerPhase};
 use crate::context::{lock, AppContext};
 use crate::favorites_list::{refresh_favorites, FAVORITES_SHOWN};
 use crate::favorites_ui::track_listening;
@@ -29,7 +28,7 @@ use crate::viz_ui::viz_wanted;
 use crate::window_settings::{
     save_settings, show_filters, window_settings, write_settings, FilterSettings, WindowSettings,
 };
-use crate::{app, schedule_ui, App, Defaults, VizStyle};
+use crate::{app, schedule_ui, App, Defaults, StatsData, VizStyle};
 
 /// The header at startup: the visualizer takes its colours from the
 /// station logo, and the station of the last run is shown, ready to play
@@ -171,6 +170,8 @@ struct PlayerView {
     codec_info: slint::SharedString,
     status_text: slint::SharedString,
     is_error: bool,
+    /// What the player is doing; `is_loading` and `is_playing` follow it
+    phase: PlayerPhase,
     is_loading: bool,
     is_playing: bool,
     alarm_beep: bool,
@@ -190,13 +191,15 @@ struct PlayerView {
 
 impl PlayerView {
     fn of(s: &AppSnapshot) -> Self {
+        let phase = s.phase();
         Self {
             station_name: s.station_name.as_deref().unwrap_or(UNNAMED_STATION).into(),
             codec_info: format_codec_line(s).into(),
             status_text: s.status_text.as_ref().into(),
             is_error: s.is_error,
-            is_loading: s.is_resolving || s.status_text == status::CONNECTING,
-            is_playing: s.playback == PlaybackState::Playing,
+            phase,
+            is_loading: phase.is_loading(),
+            is_playing: phase == PlayerPhase::Playing,
             alarm_beep: s.alarm_beep,
             now_playing: if !s.title.is_empty() {
                 if !s.artist.is_empty() {
@@ -226,6 +229,7 @@ impl PlayerView {
         self.codec_info = AWAITING_STREAM.into();
         self.status_text = STARTING_STATUS.into();
         self.is_error = false;
+        self.phase = PlayerPhase::Connecting;
         self.is_loading = true;
         self.is_playing = false;
         self.now_playing = Default::default();
@@ -251,6 +255,30 @@ struct Poll {
 }
 
 impl Poll {
+    /// One round of the poll, and how long until the next
+    fn run(&mut self, ui: &App) -> Duration {
+        // The minimized flag, kept for all who ask (on X11 each reading
+        // waits for the X server)
+        #[cfg(feature = "desktop")]
+        crate::window_frame::refresh_minimized(ui.window());
+        self.tick(ui);
+        // The tray follows the window from here: no timer of its own
+        #[cfg(feature = "desktop")]
+        crate::tray::refresh(ui);
+        #[cfg(feature = "desktop")]
+        {
+            let on_screen = ui.window().is_visible() && !crate::window_frame::minimized();
+            poll_interval(
+                on_screen,
+                SHOWN_PHASE.get(),
+                LAST_ACTIVITY.get().map(|at| at.elapsed()),
+            )
+        }
+        // The kiosk's touches aren't watched, so its poll doesn't rest
+        #[cfg(not(feature = "desktop"))]
+        POLL_FAST
+    }
+
     /// Shared state → Slint properties (runs on the UI thread)
     fn tick(&mut self, ui: &App) {
         let ctx = &self.ctx;
@@ -327,6 +355,7 @@ impl Poll {
 
     /// The player's state into the window, without holding any lock
     fn show(&self, ui: &App, view: PlayerView) {
+        SHOWN_PHASE.set(view.phase);
         ui.set_station_name(view.station_name);
         ui.set_codec_info(view.codec_info);
         ui.set_status_text(view.status_text);
@@ -339,7 +368,8 @@ impl Poll {
                 if let Ok(s) = stats.try_lock() {
                     let started = s.play_started_at;
                     drop(s);
-                    ui.set_stat_playtime(format_playtime(started).into());
+                    ui.global::<StatsData>()
+                        .set_playtime(format_playtime(started).into());
                 }
             }
         }
@@ -431,8 +461,71 @@ impl Poll {
     }
 }
 
-/// Start the poll that shows the controller's state in the window, every
-/// 200 ms. It runs while the returned timer is kept.
+/// The poll's pace while a station plays or starts in a window on screen,
+/// and for a moment after the user did something
+const POLL_FAST: Duration = Duration::from_millis(200);
+
+/// ... and while nothing plays, or the window is hidden or minimized: a
+/// silent radio in the tray wakes the UI thread once a second, not five
+/// times
+#[cfg(feature = "desktop")]
+const POLL_SLOW: Duration = Duration::from_secs(1);
+
+/// The poll stays fast this long after the user's last key, click or tray
+/// action, so what they changed shows at once
+#[cfg(feature = "desktop")]
+const POLL_AWAKE: Duration = Duration::from_secs(3);
+
+/// How long until the next poll. `since_activity` is the time since the
+/// user last did something, in the window or the tray.
+#[cfg(feature = "desktop")]
+fn poll_interval(
+    on_screen: bool,
+    phase: PlayerPhase,
+    since_activity: Option<Duration>,
+) -> Duration {
+    let awake = since_activity.is_some_and(|since| since < POLL_AWAKE);
+    if awake || (on_screen && phase.is_active()) {
+        POLL_FAST
+    } else {
+        POLL_SLOW
+    }
+}
+
+thread_local! {
+    /// The phase the window shows, for the tray and the poll's pace
+    static SHOWN_PHASE: std::cell::Cell<PlayerPhase> = const { std::cell::Cell::new(PlayerPhase::Idle) };
+    /// When the user last did something, in the window or the tray
+    #[cfg(feature = "desktop")]
+    static LAST_ACTIVITY: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
+    /// The poll's timer, for [`wake_poll`]
+    static POLL_TIMER: std::cell::RefCell<std::rc::Weak<slint::Timer>> =
+        const { std::cell::RefCell::new(std::rc::Weak::new()) };
+}
+
+/// What the player is doing, as the window shows it (a station just picked
+/// counts as connecting before the controller takes it up)
+#[cfg(feature = "desktop")]
+pub(crate) fn shown_phase() -> PlayerPhase {
+    SHOWN_PHASE.get()
+}
+
+/// The user did something (a key or click in the window, a tray action):
+/// a resting poll runs fast again, so the answer shows without a wait
+#[cfg(feature = "desktop")]
+pub(crate) fn wake_poll() {
+    LAST_ACTIVITY.set(Some(Instant::now()));
+    let timer = POLL_TIMER.with(|t| t.borrow().upgrade());
+    if let Some(timer) = timer {
+        if timer.interval() != POLL_FAST {
+            timer.set_interval(POLL_FAST);
+        }
+    }
+}
+
+/// Start the poll that shows the controller's state in the window: every
+/// 200 ms while a station plays in a window on screen, once a second while
+/// it rests. It runs while the returned timer is kept.
 pub(crate) fn start_poll(
     ui: &App,
     ctx: &AppContext,
@@ -441,7 +534,7 @@ pub(crate) fn start_poll(
     engine_stats: &EngineStats,
     listen_session: &std::rc::Rc<std::cell::RefCell<Option<ListenSession>>>,
     favorites_saver: &DelayedSave,
-) -> slint::Timer {
+) -> std::rc::Rc<slint::Timer> {
     let mut poll = Poll {
         ctx: ctx.clone(),
         viz_timer: viz_timer.clone(),
@@ -455,15 +548,20 @@ pub(crate) fn start_poll(
         settings: app::settings_watch::SettingsWatch::new(SETTINGS_SAVE_DELAY),
     };
     let ui_weak = ui.as_weak();
-    let timer = slint::Timer::default();
-    timer.start(
-        slint::TimerMode::Repeated,
-        Duration::from_millis(200),
-        move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            poll.tick(&ui);
-        },
-    );
+    let timer = std::rc::Rc::new(slint::Timer::default());
+    let this = std::rc::Rc::downgrade(&timer);
+    POLL_TIMER.with(|t| *t.borrow_mut() = this.clone());
+    timer.start(slint::TimerMode::Repeated, POLL_FAST, move || {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        let next = poll.run(&ui);
+        if let Some(timer) = this.upgrade() {
+            if timer.interval() != next {
+                timer.set_interval(next);
+            }
+        }
+    });
+    #[cfg(feature = "desktop")]
+    crate::window_frame::on_activity(wake_poll);
     timer
 }
 
@@ -692,6 +790,7 @@ pub(crate) fn play_station_with_metadata(ui: &App, ctx: &AppContext, req: PlayMe
     ui.set_now_playing_title(Default::default());
     ui.set_is_station_favorited(is_favorite);
     ui.set_is_loading(true);
+    SHOWN_PHASE.set(PlayerPhase::Connecting);
 
     // Save settings (persists last_station, volume, eq, etc.)
     {
@@ -747,6 +846,7 @@ fn format_codec_line(s: &AppSnapshot) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use radiotrope::audio::PlaybackState;
 
     #[test]
     fn codec_line_joins_with_middle_dots() {
@@ -794,11 +894,49 @@ mod tests {
             ..Default::default()
         };
         assert!(PlayerView::of(&s).is_loading);
+        // Handed to the engine: "Connecting…", then "Buffering 40%"
         s.is_resolving = false;
+        s.is_connecting = true;
         s.status_text = status::CONNECTING.into();
         assert!(PlayerView::of(&s).is_loading);
-        s.status_text = "Playing".into();
+        s.status_text = "Buffering 40%".into();
+        let view = PlayerView::of(&s);
+        assert_eq!(view.phase, PlayerPhase::Buffering);
+        assert!(view.is_loading && !view.is_playing);
+        // A recording waiting for its station, between two tries
+        s.is_connecting = false;
+        s.status_text = status::RECONNECTING.into();
+        let view = PlayerView::of(&s);
+        assert_eq!(view.phase, PlayerPhase::Reconnecting);
+        assert!(view.is_loading);
+        // The words alone start nothing
+        s.status_text = "Connecting\u{2026}".into();
         assert!(!PlayerView::of(&s).is_loading);
+        s.playback = PlaybackState::Playing;
+        s.status_text = "On air".into();
+        let view = PlayerView::of(&s);
+        assert!(view.is_playing && !view.is_loading);
+    }
+
+    #[cfg(feature = "desktop")]
+    #[test]
+    fn the_poll_rests_while_nothing_plays_or_the_window_is_away() {
+        use PlayerPhase::*;
+        // On screen: fast while a station plays or starts
+        for phase in [Connecting, Buffering, Playing, Reconnecting] {
+            assert_eq!(poll_interval(true, phase, None), POLL_FAST, "{phase:?}");
+            // Hidden in the tray or minimized
+            assert_eq!(poll_interval(false, phase, None), POLL_SLOW, "{phase:?}");
+        }
+        for phase in [Idle, Stopped, Failed, Paused] {
+            assert_eq!(poll_interval(true, phase, None), POLL_SLOW, "{phase:?}");
+            assert_eq!(poll_interval(false, phase, None), POLL_SLOW, "{phase:?}");
+        }
+        // The user just did something: fast, wherever the window is
+        let just_now = Some(Duration::from_millis(500));
+        assert_eq!(poll_interval(true, Stopped, just_now), POLL_FAST);
+        assert_eq!(poll_interval(false, Idle, just_now), POLL_FAST);
+        assert_eq!(poll_interval(true, Stopped, Some(POLL_AWAKE)), POLL_SLOW);
     }
 
     #[test]
@@ -828,5 +966,6 @@ mod tests {
         assert_eq!(view.codec_info, AWAITING_STREAM);
         assert_eq!(view.now_playing, "");
         assert!(view.is_loading && !view.is_playing && !view.is_error);
+        assert_eq!(view.phase, PlayerPhase::Connecting);
     }
 }

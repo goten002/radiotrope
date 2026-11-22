@@ -9,7 +9,7 @@ use radiotrope::audio::{LevelPhase, PlaybackState, RecordingFormat};
 use radiotrope_app::data::schedule;
 use radiotrope_app::data::types::url_to_id;
 
-use crate::app::state::AppSnapshot;
+use crate::app::state::{AppSnapshot, PlayerPhase};
 
 /// The accent the window uses when the user picked none (Theme's
 /// accent-default in ui/defaults.slint)
@@ -268,19 +268,16 @@ fn schedule_rev(s: &AppSnapshot) -> u64 {
     hasher.finish()
 }
 
+/// The phase under the names phones know
 fn playback_name(s: &AppSnapshot) -> &'static str {
-    if s.is_resolving {
-        return "resolving";
-    }
-    // The station is picked but not heard yet: a phone keeps showing it
-    // as the one starting, not as stopped
-    if s.is_connecting && s.playback == PlaybackState::Stopped {
-        return "connecting";
-    }
-    match s.playback {
-        PlaybackState::Stopped => "stopped",
-        PlaybackState::Playing => "playing",
-        PlaybackState::Paused => "paused",
+    match s.phase() {
+        PlayerPhase::Connecting => "resolving",
+        // The station is picked but not heard yet: a phone keeps showing it
+        // as the one starting, not as stopped
+        PlayerPhase::Buffering | PlayerPhase::Reconnecting => "connecting",
+        PlayerPhase::Playing => "playing",
+        PlayerPhase::Paused => "paused",
+        PlayerPhase::Idle | PlayerPhase::Stopped | PlayerPhase::Failed => "stopped",
     }
 }
 

@@ -1,6 +1,8 @@
 import { DesktopShortcuts, ShortcutAction } from "../shortcuts.slint";
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, StatusPanel, ChipVariant } from "../components.slint";
+import { DialogShell, Icon, ButtonKeys, FocusRing, Motion, StatusPanel, ChipVariant } from "../components.slint";
+import { StationState, StationRowSurface, StationLogo, StationStateMark } from "../station-row.slint";
+import { KeyListCursor } from "../key-list.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -18,6 +20,8 @@ export struct BrowseStation {
     is-favorite: bool,
 }
 
+// One search result, built from the same parts as a favorites row. Not a
+// Tab stop: the list has one, which stands for the active row.
 component StationRow inherits Rectangle {
     in property <string> name;
     in property <string> country;
@@ -25,50 +29,42 @@ component StationRow inherits Rectangle {
     in property <int> bitrate;
     in property <image> logo-image;
     in property <bool> has-logo;
-    // Playback state of this station: "", "loading", "playing" or "error"
-    in property <string> state;
+    // What the player is doing with this station
+    in property <StationState> state;
     // Status line shown instead of the country while loading or failed
     in property <string> status;
     in property <bool> is-favorite;
+    // The keyboard's row, while the list has the focus
+    in property <bool> key-active;
+    // The row in one sentence, for screen readers
+    in property <string> description;
+    in property <int> row-index;
+    in property <int> row-count;
     callback clicked();
     callback favorite-clicked();
 
     height: Theme.row-media;
-    border-radius: Theme.radius-md;
-    // As in Favorites: the active row (playing, connecting or failed) has a
-    // tint and an accent rail; a failure shows in the icon and status line
-    background: touch.has-hover ? Theme.hover-bg
-        : root.state != "" ? Theme.accent-soft : transparent;
-    animate background { duration: Theme.fast; }
-    forward-focus: keys;
 
     accessible-role: list-item;
     accessible-label: root.name;
-    accessible-description: root.state != "" && root.status != "" ? root.status : root.country;
+    accessible-description: root.description;
+    accessible-item-index: root.row-index;
+    accessible-item-count: root.row-count;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.state != StationState.none;
     accessible-action-default => { root.clicked(); }
+
+    // As in Favorites: the active row (playing, connecting or failed) has a
+    // tint and a rail; a failure shows in the mark and the status line
+    surface := StationRowSurface {
+        current: root.state != StationState.none;
+        failed: root.state == StationState.failed;
+        highlighted: touch.has-hover || root.key-active;
+    }
 
     touch := TouchArea {
         clicked => { root.clicked(); }
         mouse-cursor: pointer;
-    }
-
-    // Enter or Space plays the station
-    keys := ButtonKeys {
-        activated => { root.clicked(); }
-    }
-
-    if keys.has-focus: FocusRing {
-        radius: root.border-radius;
-    }
-
-    // Accent rail on the active row, as tall as the logo
-    if root.state != "": Rectangle {
-        x: 0;
-        y: (parent.height - 40px) / 2;
-        width: 3px;
-        height: 40px;
-        background: Theme.accent;
-        border-radius: self.width / 2;
     }
 
     HorizontalLayout {
@@ -77,33 +73,13 @@ component StationRow inherits Rectangle {
         spacing: Theme.space-8;
         alignment: stretch;
 
-        // Station logo
         VerticalLayout {
             alignment: center;
             width: 40px;
 
-            Rectangle {
-                width: 40px;
-                height: 40px;
-                border-radius: Theme.radius-sm;
-                background: Theme.elevated;
-                border-width: 1px;
-                border-color: Theme.hairline;
-                clip: true;
-
-                if root.has-logo: Image {
-                    source: root.logo-image;
-                    width: 40px;
-                    height: 40px;
-                    image-fit: contain;
-                }
-
-                if !root.has-logo: Icon {
-                    source: @image-url("../icons/radio.svg");
-                    width: Theme.icon-md;
-                    height: Theme.icon-md;
-                    colorize: Theme.accent;
-                }
+            StationLogo {
+                logo: root.logo-image;
+                has-logo: root.has-logo;
             }
         }
 
@@ -119,52 +95,28 @@ component StationRow inherits Rectangle {
                 Text {
                     horizontal-stretch: 0;
                     text: root.name;
-                    color: root.state == "playing" || root.state == "loading"
-                        ? Theme.accent-text : Theme.text-primary;
+                    color: surface.name-color;
                     font-size: Theme.font-base;
                     font-weight: Theme.weight-semibold;
                     overflow: elide;
+                    // The row says it all in one description
+                    accessible-role: none;
                 }
 
-                // Playback state: bouncing bars, a spinner or an error mark
-                if root.state == "playing": VerticalLayout {
-                    horizontal-stretch: 0;
-                    alignment: center;
-                    NowPlayingBars {}
-                }
-
-                if root.state == "loading": VerticalLayout {
-                    horizontal-stretch: 0;
-                    alignment: center;
-                    Icon {
-                        source: @image-url("../icons/spinner.svg");
-                        width: Theme.icon-sm;
-                        height: Theme.icon-sm;
-                        colorize: Theme.accent-text;
-                        rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
-                    }
-                }
-
-                if root.state == "error": VerticalLayout {
-                    horizontal-stretch: 0;
-                    alignment: center;
-                    Icon {
-                        source: @image-url("../icons/circle-exclamation.svg");
-                        width: Theme.icon-sm;
-                        height: Theme.icon-sm;
-                        colorize: Theme.danger-text;
-                    }
+                if root.state != StationState.none: StationStateMark {
+                    state: root.state;
                 }
 
                 Rectangle { horizontal-stretch: 1; }
             }
 
             Text {
-                text: (root.state == "loading" || root.state == "error") && root.status != ""
+                text: (root.state == StationState.loading || root.state == StationState.failed) && root.status != ""
                     ? root.status : root.country;
-                color: root.state == "error" ? Theme.danger-text : Theme.text-secondary;
+                color: root.state == StationState.failed ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
+                accessible-role: none;
             }
         }
 
@@ -193,6 +145,7 @@ component StationRow inherits Rectangle {
                         font-weight: Theme.weight-semibold;
                         horizontal-alignment: center;
                         overflow: elide;
+                        accessible-role: none;
                     }
                 }
             }
@@ -208,11 +161,13 @@ component StationRow inherits Rectangle {
                 color: Theme.text-secondary;
                 font-size: Theme.font-sm;
                 horizontal-alignment: right;
+                accessible-role: none;
             }
         }
 
         // Add to or remove from favorites without playing; last, like
-        // row actions elsewhere, so the details line up to its left
+        // row actions elsewhere, so the details line up to its left. For
+        // the pointer: on the keyboard the list's favorite key does it.
         VerticalLayout {
             alignment: center;
             width: 30px;
@@ -236,21 +191,13 @@ component StationRow inherits Rectangle {
                     height: Theme.icon-md;
                     source: root.is-favorite ? @image-url("../icons/star.svg")
                         : @image-url("../icons/star-regular.svg");
-                    colorize: root.is-favorite ? Theme.accent
-                        : star-touch.has-hover ? Theme.text-primary : Theme.text-tertiary;
+                    colorize: root.is-favorite ? Theme.selection-mark
+                        : star-touch.has-hover ? Theme.text-primary : surface.faint-color;
                 }
 
                 star-touch := TouchArea {
                     mouse-cursor: pointer;
                     clicked => { root.favorite-clicked(); }
-                }
-
-                star-keys := ButtonKeys {
-                    activated => { root.favorite-clicked(); }
-                }
-
-                if star-keys.has-focus: FocusRing {
-                    radius: parent.border-radius;
                 }
             }
         }
@@ -262,6 +209,8 @@ component StationRow inherits Rectangle {
 // search field's height and shape, and both filters share the row equally,
 // so a long value elides rather than moving the other one.
 component FilterChip inherits Rectangle {
+    // What it filters by, for screen readers: "Country"
+    in property <string> name;
     // "Any country" and the like when nothing is chosen
     in property <string> any-label;
     // The chosen value, empty for Any
@@ -280,12 +229,12 @@ component FilterChip inherits Rectangle {
     background: touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg : Theme.elevated;
     border-width: 1px;
-    border-color: root.active ? Theme.accent : Theme.field-border;
+    border-color: root.active ? Theme.accent-graphic : Theme.field-border;
     animate background, border-color { duration: Theme.fast; }
     forward-focus: keys;
 
     accessible-role: button;
-    accessible-label: root.active ? root.value : root.any-label;
+    accessible-label: "\{root.name}: \{root.active ? root.value : "any"}";
     accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
@@ -314,6 +263,8 @@ component FilterChip inherits Rectangle {
                 width: 18px;
                 height: 13px;
                 image-fit: contain;
+                // Decoration: the name beside it says the country
+                accessible-role: none;
             }
         }
 
@@ -324,6 +275,7 @@ component FilterChip inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
+            accessible-role: none;
         }
 
         if !root.active: VerticalLayout {
@@ -352,6 +304,20 @@ component FilterChip inherits Rectangle {
             clear-touch := TouchArea {
                 mouse-cursor: pointer;
                 clicked => { root.cleared(); }
+            }
+
+            // It goes away once the filter is cleared: the focus moves to
+            // the filter itself first, so it stays in the dialog
+            clear-keys := ButtonKeys {
+                activated => {
+                    keys.focus();
+                    root.cleared();
+                }
+            }
+
+            if clear-keys.has-focus: FocusRing {
+                radius: parent.border-radius;
+                offset: 0px;
             }
 
             Icon {
@@ -399,6 +365,12 @@ export component StationBrowserDialog inherits Rectangle {
     // Row picked last (provider ID or URL); the played URL may differ
     // after resolving a playlist or matching a favorite
     property <string> picked: "";
+    // The keyboard's row in the results (-1: none yet), whether the list
+    // has the focus, and requests to give it or the search field the focus
+    property <int> active-row: -1;
+    property <bool> list-focused;
+    property <int> focus-list-request;
+    property <int> focus-search-request;
     changed show-dialog => {
         if !self.show-dialog {
             root.picked = "";
@@ -435,8 +407,54 @@ export component StationBrowserDialog inherits Rectangle {
     callback station-selected(BrowseStation);
     callback favorite-toggled(BrowseStation);
 
+    // Ask for the next page, unless it is on its way or has failed (then
+    // the countdown or Try Again fetches it)
+    function fetch-more() {
+        if root.has-more && !root.search-loading-more && root.search-error == "" {
+            root.search-loading-more = true;
+            root.load-more();
+        }
+    }
+
+    function pick(station: BrowseStation) {
+        root.picked = station.provider-id != "" ? station.provider-id : station.url;
+        root.station-selected(station);
+    }
+
+    // The row clicked here; before any click, the row whose URL is playing
+    pure function state-of(station: BrowseStation) -> StationState {
+        return !(root.picked != ""
+                ? root.picked == (station.provider-id != "" ? station.provider-id : station.url)
+                : station.url == root.playing-url) ? StationState.none
+            : root.play-error ? StationState.failed
+            : root.play-loading ? StationState.loading
+            : root.is-playing ? StationState.playing : StationState.none;
+    }
+
+    pure function join(a: string, b: string) -> string {
+        return a == "" ? b : b == "" ? a : "\{a}, \{b}";
+    }
+
+    // A result in one sentence for screen readers: its status or country,
+    // the codec, the bitrate, and whether it is a favorite
+    pure function describe(station: BrowseStation, state: StationState) -> string {
+        return root.join(root.join(root.join(
+            (state == StationState.loading || state == StationState.failed) && root.play-status != ""
+                ? root.play-status
+                : state == StationState.playing ? root.join("Playing", station.country) : station.country,
+            station.codec),
+            station.bitrate > 0 ? "\{station.bitrate} kbps" : ""),
+            station.is-favorite ? "in favorites" : "");
+    }
+
     // Search again with the query on screen, for a filter just changed
     public function run-search() {
+        // The list goes away while it loads: if it had the focus, the
+        // search field takes it, so Esc still closes the dialog
+        if root.list-focused {
+            root.focus-search-request += 1;
+        }
+        root.active-row = -1;
         root.shown-query = root.search-query;
         root.list-scroll = 0;
         root.search-loading = true;
@@ -456,6 +474,12 @@ export component StationBrowserDialog inherits Rectangle {
                 search-input.focus-input();
                 return accept;
             }
+            // Down from the search field goes into the results
+            if event.text == Key.DownArrow && search-input.has-focus && root.search-results.length > 0
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                root.focus-list-request += 1;
+                return accept;
+            }
             return reject;
         }
 
@@ -468,6 +492,9 @@ export component StationBrowserDialog inherits Rectangle {
                 horizontal-stretch: 1;
                 clearable: true;
                 init => { self.focus-input(); }
+                property <int> focus-request: root.focus-search-request;
+                changed focus-request => { self.focus-input(); }
+                label: "Search by station name";
                 placeholder-text: "Search by station name";
                 text <=> root.search-query;
                 accepted(query) => {
@@ -506,6 +533,7 @@ export component StationBrowserDialog inherits Rectangle {
             height: Theme.control-field;
 
             FilterChip {
+                name: "Country";
                 any-label: "Any country";
                 value: root.country-name;
                 flag: root.country-flag;
@@ -518,6 +546,7 @@ export component StationBrowserDialog inherits Rectangle {
             }
 
             FilterChip {
+                name: "Genre";
                 any-label: "Any genre";
                 value: root.genre-name;
                 clicked => { root.pick-filter("genre"); }
@@ -531,7 +560,7 @@ export component StationBrowserDialog inherits Rectangle {
             // Greyed out while no filter is set
             SecondaryButton {
                 label: "Reset Filters";
-                icon: @image-url("../icons/rotate-left.svg");
+                icon: @image-url("../icons/reset.svg");
                 height: Theme.control-field;
                 enabled: root.filtered;
                 clicked => {
@@ -590,7 +619,6 @@ export component StationBrowserDialog inherits Rectangle {
 
                 StatusPanel {
                     padding-bottom: 0;
-                    icon: @image-url("../icons/circle-exclamation.svg");
                     variant: ChipVariant.danger;
                     title: root.search-error;
                     message: root.retry-in > 0 ? "Trying again in \{root.retry-in} s" : "";
@@ -627,8 +655,17 @@ export component StationBrowserDialog inherits Rectangle {
                     : root.shown-query != "" ? "Check the spelling or try another name." : "";
             }
 
-            // Results list
+            // Results list: one Tab stop. The arrows, Page Up / Page Down
+            // and Home / End move the active row, Enter or Space plays it
+            // and the favorite key stars it; Up on the first row goes back
+            // to the search field.
             if root.search-results.length > 0: Rectangle {
+                accessible-role: AccessibleRole.list;
+                accessible-label: "Stations";
+
+                property <int> focus-request: root.focus-list-request;
+                changed focus-request => { cursor.focus(); }
+
                 results-flick := Flickable {
                     content-height: rows.height;
                     content-y <=> root.list-scroll;
@@ -636,13 +673,20 @@ export component StationBrowserDialog inherits Rectangle {
                     // Infinite scroll: fetch the next page when the view
                     // comes within about five rows of the end
                     changed content-y => {
-                        // After a failure, the countdown or Try Again fetches it
-                        if root.has-more && !root.search-loading-more
-                           && root.search-error == ""
-                           && self.height - self.content-y > self.content-height - 300px {
-                            root.search-loading-more = true;
-                            root.load-more();
+                        if self.height - self.content-y > self.content-height - 300px {
+                            root.fetch-more();
                         }
+                    }
+
+                    // Scroll just far enough to show the row
+                    function reveal(index: int) {
+                        let top = index * rows.row-height;
+                        let shown = -self.content-y;
+                        let target = top < shown ? top
+                            : top + rows.row-height + 2 * Theme.space-4 > shown + self.height
+                                ? top + rows.row-height + 2 * Theme.space-4 - self.height
+                            : shown;
+                        self.content-y = -clamp(target, 0px, max(0px, self.content-height - self.height));
                     }
 
                     // Only the rows on screen (and a couple either side)
@@ -676,21 +720,17 @@ export component StationBrowserDialog inherits Rectangle {
                             has-logo: self.idx < root.browse-logos.length
                                 ? root.browse-logos[self.idx].width > 0
                                 : false;
-                            // The row clicked here; before any click, the row
-                            // whose URL is playing
-                            property <bool> active: root.picked != ""
-                                ? root.picked == (station.provider-id != "" ? station.provider-id : station.url)
-                                : station.url == root.playing-url;
-                            state: !self.active ? ""
-                                : root.play-error ? "error"
-                                : root.play-loading ? "loading"
-                                : root.is-playing ? "playing" : "";
+                            state: root.state-of(station);
                             status: root.play-status;
                             is-favorite: station.is-favorite;
+                            key-active: cursor.has-focus && root.active-row == self.idx;
+                            description: root.describe(station, self.state);
+                            row-index: self.idx;
+                            row-count: root.search-results.length;
                             favorite-clicked => { root.favorite-toggled(station); }
                             clicked => {
-                                root.picked = station.provider-id != "" ? station.provider-id : station.url;
-                                root.station-selected(station);
+                                root.active-row = self.idx;
+                                root.pick(station);
                             }
                         }
 
@@ -709,7 +749,7 @@ export component StationBrowserDialog inherits Rectangle {
                                     source: @image-url("../icons/spinner.svg");
                                     width: Theme.icon-sm;
                                     height: Theme.icon-sm;
-                                    colorize: Theme.accent-text;
+                                    colorize: Theme.selection-mark;
                                     rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
                                 }
                             }
@@ -718,6 +758,49 @@ export component StationBrowserDialog inherits Rectangle {
                                 color: Theme.text-secondary;
                                 font-size: Theme.font-md;
                                 vertical-alignment: center;
+                            }
+                        }
+
+                        // The list's one Tab stop, over the active row
+                        cursor := KeyListCursor {
+                            property <BrowseStation> station: root.search-results[root.active-row];
+                            x: Theme.space-4;
+                            y: Theme.space-4 + max(0, root.active-row) * rows.row-height;
+                            width: rows.width - 2 * Theme.space-4;
+                            height: rows.row-height;
+                            count: root.search-results.length;
+                            active: root.active-row;
+                            // Come in on the first row in view
+                            start: ceil(-root.list-scroll / rows.row-height);
+                            page: max(1, floor(results-flick.height / rows.row-height) - 1);
+                            item-label: self.station.name;
+                            item-description: root.describe(self.station, root.state-of(self.station));
+                            item-selected: root.state-of(self.station) != StationState.none;
+                            ring-radius: Theme.radius-md;
+                            changed has-focus => { root.list-focused = self.has-focus; }
+                            move-to(index) => {
+                                root.active-row = index;
+                                results-flick.reveal(index);
+                                // The last rows fetch the next page, also
+                                // when the list is too short to scroll
+                                if index >= root.search-results.length - 5 {
+                                    root.fetch-more();
+                                }
+                            }
+                            activated => { root.pick(self.station); }
+                            left-at-top => { search-input.focus-input(); }
+                            key(event) => {
+                                // The window's favorite key stars the active row
+                                if self.active >= 0 && !event.modifiers.control && !event.modifiers.alt
+                                    && !event.modifiers.meta && (event.text == "f" || event.text == "F"
+                                        || (DesktopShortcuts.enabled
+                                            && DesktopShortcuts.match-key(event) == ShortcutAction.toggle-favorite)) {
+                                    if !event.repeat {
+                                        root.favorite-toggled(self.station);
+                                    }
+                                    return accept;
+                                }
+                                return reject;
                             }
                         }
                     }
@@ -735,14 +818,17 @@ export component StationBrowserDialog inherits Rectangle {
         }
 
         // Footer: how many stations, and a failed next page with its retry.
-        // Only with results; otherwise the status panel takes the room.
-        if root.search-results.length > 0: HorizontalLayout {
+        // The row stays (blank) in the other states, so the results area
+        // keeps its height when a search returns.
+        HorizontalLayout {
             height: Theme.control-button;
             alignment: stretch;
             spacing: Theme.space-8;
 
             Text {
-                text: "\{root.search-results.length} stations";
+                text: root.search-results.length == 0 ? ""
+                    : root.search-results.length == 1 ? "1 station"
+                    : "\{root.search-results.length} stations";
                 color: Theme.text-secondary;
                 font-size: Theme.font-sm;
                 vertical-alignment: center;
@@ -750,7 +836,7 @@ export component StationBrowserDialog inherits Rectangle {
             }
 
             // The next page failed: the list stays, with the reason here
-            if root.search-error != "": HorizontalLayout {
+            if root.search-error != "" && root.search-results.length > 0: HorizontalLayout {
                 horizontal-stretch: 0;
                 alignment: end;
                 spacing: Theme.space-6;
@@ -761,7 +847,7 @@ export component StationBrowserDialog inherits Rectangle {
                     Icon {
                         width: Theme.icon-sm;
                         height: Theme.icon-sm;
-                        source: @image-url("../icons/circle-exclamation.svg");
+                        source: @image-url("../icons/circle-alert.svg");
                         colorize: Theme.danger-text;
                     }
                 }

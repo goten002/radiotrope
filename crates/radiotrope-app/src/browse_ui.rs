@@ -181,10 +181,10 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                     let _ = f.add(fav);
                 }
             }
-            let _ = f.save();
             let current = ui.get_station_url();
             ui.set_is_station_favorited(!current.is_empty() && f.is_favorite(&current));
             drop(f);
+            crate::favorites_ui::save_favorites();
             refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
         });
     }

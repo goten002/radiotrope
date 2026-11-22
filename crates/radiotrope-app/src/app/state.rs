@@ -244,6 +244,84 @@ pub struct AppSnapshot {
     pub listen: Option<Listen>,
 }
 
+/// What the player is doing, worked out from the state's flags: the
+/// window, the tray and phones ask this instead of reading the status
+/// line, whose wording is free to change
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PlayerPhase {
+    /// Nothing was played yet
+    #[default]
+    Idle,
+    /// The station's stream is being found
+    Connecting,
+    /// The engine has the stream and fills its buffer; nothing is heard yet
+    Buffering,
+    Playing,
+    /// The station went away and is tried again (a recording waits for it)
+    Reconnecting,
+    Paused,
+    Stopped,
+    /// The station didn't start, or ended with an error
+    Failed,
+}
+
+impl PlayerPhase {
+    /// On its way to playing: the status chip pulses and Play reads Stop
+    pub fn is_loading(self) -> bool {
+        matches!(
+            self,
+            PlayerPhase::Connecting | PlayerPhase::Buffering | PlayerPhase::Reconnecting
+        )
+    }
+
+    /// Playing or on its way to: a Stop has something to stop
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn is_active(self) -> bool {
+        self == PlayerPhase::Playing || self.is_loading()
+    }
+}
+
+impl AppSnapshot {
+    /// What the player is doing now
+    pub fn phase(&self) -> PlayerPhase {
+        if self.playback == PlaybackState::Playing {
+            return PlayerPhase::Playing;
+        }
+        if self.playback == PlaybackState::Paused {
+            return PlayerPhase::Paused;
+        }
+        if self.waits_to_reconnect() {
+            return PlayerPhase::Reconnecting;
+        }
+        if self.is_resolving {
+            return PlayerPhase::Connecting;
+        }
+        if self.is_connecting {
+            return PlayerPhase::Buffering;
+        }
+        if self.is_error {
+            return PlayerPhase::Failed;
+        }
+        if self.play_seq == 0 {
+            PlayerPhase::Idle
+        } else {
+            PlayerPhase::Stopped
+        }
+    }
+
+    /// The station isn't heard and is tried again. The controller has no
+    /// flag for this: a recording that goes on while nothing plays is one
+    /// waiting for its station, and otherwise the status is the one constant
+    /// the controller sets while it retries (compared as that constant, never
+    /// as its wording).
+    fn waits_to_reconnect(&self) -> bool {
+        self.playback == PlaybackState::Stopped
+            && !self.is_error
+            && (self.recording.is_some()
+                || self.status_text == radiotrope_app::text::status::RECONNECTING)
+    }
+}
+
 /// The running sleep timer
 #[derive(Clone, Debug, PartialEq)]
 pub struct SleepTimerInfo {
@@ -405,5 +483,133 @@ impl Default for AppSnapshot {
             next_run: None,
             listen: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radiotrope_app::text::status;
+
+    /// One state per phase, as the controller leaves them
+    fn states() -> Vec<(PlayerPhase, AppSnapshot)> {
+        let played = || AppSnapshot {
+            play_seq: 1,
+            station_url: Some("http://jazz.test/stream".into()),
+            ..Default::default()
+        };
+        vec![
+            (PlayerPhase::Idle, AppSnapshot::default()),
+            (
+                PlayerPhase::Connecting,
+                AppSnapshot {
+                    is_resolving: true,
+                    status_text: status::CONNECTING.into(),
+                    ..played()
+                },
+            ),
+            (
+                PlayerPhase::Buffering,
+                AppSnapshot {
+                    is_connecting: true,
+                    status_text: "Buffering 40%".into(),
+                    ..played()
+                },
+            ),
+            (
+                PlayerPhase::Playing,
+                AppSnapshot {
+                    playback: PlaybackState::Playing,
+                    status_text: status::PLAYING.into(),
+                    ..played()
+                },
+            ),
+            (
+                PlayerPhase::Paused,
+                AppSnapshot {
+                    playback: PlaybackState::Paused,
+                    status_text: status::PAUSED.into(),
+                    ..played()
+                },
+            ),
+            (
+                PlayerPhase::Stopped,
+                AppSnapshot {
+                    status_text: status::STOPPED.into(),
+                    ..played()
+                },
+            ),
+            (
+                PlayerPhase::Failed,
+                AppSnapshot {
+                    is_error: true,
+                    status_text: "Can't connect".into(),
+                    ..played()
+                },
+            ),
+            // A recording waits for its station, between two tries
+            (
+                PlayerPhase::Reconnecting,
+                AppSnapshot {
+                    recording: Some(RecordingProgress {
+                        path: PathBuf::from("jazz.mp3"),
+                        duration: Duration::from_secs(90),
+                        bytes: 1,
+                    }),
+                    status_text: status::RECONNECTING.into(),
+                    ..played()
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn the_phase_follows_the_flags() {
+        for (phase, state) in states() {
+            assert_eq!(state.phase(), phase, "{}", state.status_text);
+        }
+    }
+
+    #[test]
+    fn rewording_the_status_keeps_the_phase() {
+        // Every status as some other wording: the phase is the same.
+        // Reconnecting is told by its waiting recording here.
+        for (phase, mut state) in states() {
+            state.status_text = format!("{} (reworded)", state.status_text).into();
+            assert_eq!(state.phase(), phase);
+        }
+        // Without a recording, a retry is known by the constant the
+        // controller sets, whatever it reads
+        let retrying = AppSnapshot {
+            play_seq: 1,
+            is_resolving: true,
+            status_text: status::RECONNECTING.into(),
+            ..Default::default()
+        };
+        assert_eq!(retrying.phase(), PlayerPhase::Reconnecting);
+    }
+
+    #[test]
+    fn loading_is_connecting_buffering_and_reconnecting() {
+        use PlayerPhase::*;
+        for phase in [Connecting, Buffering, Reconnecting] {
+            assert!(phase.is_loading() && phase.is_active(), "{phase:?}");
+        }
+        for phase in [Idle, Paused, Stopped, Failed] {
+            assert!(!phase.is_loading() && !phase.is_active(), "{phase:?}");
+        }
+        assert!(Playing.is_active() && !Playing.is_loading());
+    }
+
+    #[test]
+    fn a_stall_while_playing_is_still_playing() {
+        // "Waiting for data…" is shown as an error, with the station on
+        let stalled = AppSnapshot {
+            playback: PlaybackState::Playing,
+            is_error: true,
+            status_text: status::WAITING_FOR_DATA.into(),
+            ..Default::default()
+        };
+        assert_eq!(stalled.phase(), PlayerPhase::Playing);
     }
 }
