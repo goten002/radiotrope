@@ -344,22 +344,17 @@ export component AccentColorDialog inherits Rectangle {
         mouse-drag-scroll: false;
         close-requested => { root.show-dialog = false; }
 
-        // Swatches, two rows of five
-        VerticalLayout {
-            spacing: Theme.space-6;
+        // Swatches, all in one row across the card
+        HorizontalLayout {
+            alignment: space-between;
 
-            for row in [0, 1]: HorizontalLayout {
-                alignment: center;
-                spacing: Theme.space-12;
-
-                for i in [0, 1, 2, 3, 4]: ColorSwatch {
-                    swatch-color: root.swatches[row * 5 + i];
-                    name: Theme.accent-swatch-names[row * 5 + i];
-                    is-selected: Theme.accent-base == root.swatches[row * 5 + i];
-                    clicked => {
-                        Theme.accent-base = root.swatches[row * 5 + i];
-                        root.color-changed(root.swatches[row * 5 + i]);
-                    }
+            for swatch[i] in root.swatches: ColorSwatch {
+                swatch-color: swatch;
+                name: Theme.accent-swatch-names[i];
+                is-selected: Theme.accent-base == swatch;
+                clicked => {
+                    Theme.accent-base = swatch;
+                    root.color-changed(swatch);
                 }
             }
         }
@@ -374,7 +369,7 @@ export component AccentColorDialog inherits Rectangle {
                 current: Theme.accent-base;
                 // Keep the whole dialog on a 480 px tall screen; nothing
                 // below depends on the colour, so its height stays put
-                square-height: Math.clamp(root.height - 380px - Theme.space-6 - Theme.control-field,
+                square-height: Math.clamp(root.height - 336px - Theme.space-6 - Theme.control-field,
                     64px, Defaults.accent-picker-height);
                 picked(c, final) => {
                     Theme.accent-base = c;
