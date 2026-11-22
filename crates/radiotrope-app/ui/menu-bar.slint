@@ -11,6 +11,14 @@ import { Platform } from "@platform/wifi.slint";
 global MenuNav {
     // -1: no row yet (a menu opened with the mouse)
     in-out property <int> active: -1;
+    // Counts the menus opened. A row belongs to the menu that was opening
+    // when it was made: the rows of the menu being replaced are still
+    // there for a moment, and one with the same slot would take the focus.
+    out property <int> opening;
+    public function begin() {
+        self.opening += 1;
+        self.active = -1;
+    }
 
     pure function hit(usable: [bool], slot: int) -> bool {
         return slot >= 0 && slot < usable.length && usable[slot];
@@ -155,7 +163,9 @@ component MenuRowBase inherits Rectangle {
     in property <bool> pressed;
     // Its place in the menu for the arrow keys (see MenuNav); -1: none
     in property <int> slot: -1;
-    out property <bool> current: root.slot >= 0 && MenuNav.active == root.slot;
+    property <int> menu: -1;
+    out property <bool> current: root.slot >= 0 && root.menu == MenuNav.opening && MenuNav.active == root.slot;
+    init => { self.menu = MenuNav.opening; }
 
     height: Theme.row-menu;
     min-width: 200px;
@@ -380,11 +390,13 @@ component GroupMenuItem inherits MenuRowBase {
 // moves to the next theme. Tab reaches the three choices themselves.
 component ThemeMenuRow inherits Rectangle {
     in property <int> slot: -1;
-    property <bool> current: root.slot >= 0 && MenuNav.active == root.slot;
+    property <int> menu: -1;
+    property <bool> current: root.slot >= 0 && root.menu == MenuNav.opening && MenuNav.active == root.slot;
     changed current => {
         if self.current { keys.focus(); }
     }
     init => {
+        self.menu = MenuNav.opening;
         if self.current { keys.focus(); }
     }
 
@@ -762,7 +774,7 @@ export component MenuBar inherits Rectangle {
         if menu == "window" {
             root.window-menu-x = move-area.x + 2px;
             root.window-menu-y = 29px;
-            MenuNav.active = -1;
+            MenuNav.begin();
             window-popup.show();
         }
     }
@@ -778,7 +790,7 @@ export component MenuBar inherits Rectangle {
     // 4 Help. Opening one closes the one that was open. With the keyboard
     // the first row gets the focus.
     function show-menu(index: int, keyboard: bool) {
-        MenuNav.active = -1;
+        MenuNav.begin();
         root.view-group = "";
         root.tools-group = "";
         root.confirm-power-off = false;
@@ -940,7 +952,7 @@ export component MenuBar inherits Rectangle {
                         if !root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true) {
                             root.window-menu-x = move-area.x + self.mouse-x + 2px;
                             root.window-menu-y = self.mouse-y + 2px;
-                            MenuNav.active = -1;
+                            MenuNav.begin();
                             window-popup.show();
                         }
                     } else if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {

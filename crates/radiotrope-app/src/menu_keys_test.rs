@@ -80,7 +80,9 @@ fn the_menus_work_with_the_keyboard_only() {
     press_keys(&[Return]);
     assert!(ui.get_keep_on_top(), "View > Window > Always on Top");
 
-    // Left from View is Stations, and its first row opens the search
+    // Left folds the Window group and stops on its row (slot 12); Left
+    // again is Stations, whose first row opens the search. The View menu's
+    // own first row must not take the focus back on the way.
     press_keys(&[LeftArrow, LeftArrow]);
     assert!(!ui.get_dialog_open());
     press_keys(&[Return]);
