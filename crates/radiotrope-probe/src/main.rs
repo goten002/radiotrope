@@ -63,7 +63,7 @@ struct Args {
 }
 
 const EXIT_HELP: &str = "Exit status: 0 up, 1 degraded, 2 down (the worst station counts), \
-3 the check could not run.";
+3 the check can't run.";
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Output {

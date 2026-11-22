@@ -135,7 +135,7 @@ fn run(url: &str, options: &Options, started: Instant, report: &mut Report) {
         report.error = Some(ErrorInfo {
             code: ErrorCode::StreamFailed,
             http_status: None,
-            message: format!("Could not start the check: {e}"),
+            message: format!("Can't start the check: {e}"),
         });
         return;
     }
@@ -282,10 +282,7 @@ fn follow(
         if errors > 0 && errors as f64 > (frames + errors) as f64 * MAX_DECODE_ERROR_SHARE {
             report.problems.push(Problem {
                 code: ProblemCode::DecodeErrors,
-                message: format!(
-                    "{errors} of {} frames could not be decoded",
-                    frames + errors
-                ),
+                message: format!("Can't decode {errors} of {} frames", frames + errors),
             });
         }
     }
@@ -426,7 +423,7 @@ fn listen(
         report.problems.push(Problem {
             code: ProblemCode::Slow,
             message: format!(
-                "Only {decoded:.1} s of audio came in {listened:.1} s ({:.0} % of real time)",
+                "Only {decoded:.1} s of audio came in {listened:.1} s ({:.0}% of real time)",
                 decoded / listened * 100.0
             ),
         });

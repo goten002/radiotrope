@@ -56,7 +56,15 @@ fn network(e: &reqwest::Error, message: String) -> ErrorInfo {
     from_text(message)
 }
 
-/// Engine errors that come as text
+/// The engine's words for a station it couldn't connect to: "Can't
+/// connect to <host>" now, "Could not connect to <host>" before
+const CONNECT_FAILED: [&str; 2] = ["can't connect", "could not connect"];
+
+/// Engine errors that come as text. The engine's other network texts ("Can't
+/// reach the server (…)", "Can't read the server's answer", "Can't open …:
+/// not a valid web address") match nothing here and stay stream_failed, as
+/// their old wording did; a cause inside the brackets (a timeout, a failed
+/// name lookup) still counts.
 fn from_text(message: String) -> ErrorInfo {
     let lower = message.to_lowercase();
     if let Some(status) = http_status(&message) {
@@ -77,7 +85,7 @@ fn from_text(message: String) -> ErrorInfo {
         ErrorCode::Timeout
     } else if is_dns(&lower) {
         ErrorCode::Dns
-    } else if lower.contains("could not connect") {
+    } else if CONNECT_FAILED.iter().any(|m| lower.contains(m)) {
         ErrorCode::Connect
     } else if lower.contains("probe error")
         || lower.contains("no audio track")
@@ -194,6 +202,7 @@ mod tests {
             ("Timeout waiting for stream data", ErrorCode::Timeout),
             ("Connection timed out", ErrorCode::Timeout),
             ("Could not connect to radio.example", ErrorCode::Connect),
+            ("Can't connect to radio.example", ErrorCode::Connect),
             ("Probe error: unsupported format", ErrorCode::DecodeFailed),
             ("The stream ended before any audio", ErrorCode::NoAudio),
             ("something new", ErrorCode::StreamFailed),
@@ -202,6 +211,113 @@ mod tests {
             let (code, status, _) = code_of(RadioError::Stream(message.to_string()));
             assert_eq!(code, expected, "{message}");
             assert_eq!(status, None, "{message}");
+        }
+    }
+
+    /// A server on a free local port that answers one request with
+    /// `reply`, or holds it unanswered for `hold`, then closes
+    fn one_shot_server(reply: &'static [u8], hold: std::time::Duration) -> u16 {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            if let Ok((mut socket, _)) = listener.accept() {
+                let mut request = [0u8; 1024];
+                let _ = socket.read(&mut request);
+                std::thread::sleep(hold);
+                let _ = socket.write_all(reply);
+            }
+        });
+        port
+    }
+
+    fn client() -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_millis(300))
+            .build()
+            .unwrap()
+    }
+
+    /// The engine's own text for `e`, as its Display gives it, read back as
+    /// text: what a reader that gave up reports ("No audio for …: <text>")
+    fn as_text(e: reqwest::Error) -> (ErrorCode, String) {
+        let text = RadioError::Network(e).to_string();
+        let gave_up = RadioError::Stream(format!("No audio for 1 min: {text}"));
+        let (code, _, _) = code_of(gave_up);
+        (code, text)
+    }
+
+    #[test]
+    fn the_engine_network_texts_keep_their_codes() {
+        // Refused: nothing listens on a port just freed
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let refused = client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .unwrap_err();
+        let (code, text) = as_text(refused);
+        assert!(text.starts_with("Can't connect to "), "{text}");
+        assert_eq!(code, ErrorCode::Connect, "{text}");
+
+        // No answer in time
+        let port = one_shot_server(b"", std::time::Duration::from_secs(2));
+        let slow = client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .unwrap_err();
+        let (code, text) = as_text(slow);
+        assert!(text.contains("timed out"), "{text}");
+        assert_eq!(code, ErrorCode::Timeout, "{text}");
+
+        // An answer that can't be read
+        let port = one_shot_server(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\nConnection: close\r\n\r\nabc",
+            std::time::Duration::ZERO,
+        );
+        let unreadable = client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .unwrap()
+            .json::<serde_json::Value>()
+            .unwrap_err();
+        let (code, text) = as_text(unreadable);
+        assert!(text.starts_with("Can't read the server"), "{text}");
+        assert_eq!(code, ErrorCode::StreamFailed, "{text}");
+
+        // The connection drops before an answer
+        let port = one_shot_server(b"", std::time::Duration::ZERO);
+        let dropped = client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .unwrap_err();
+        let (code, text) = as_text(dropped);
+        assert!(text.starts_with("Can't reach the server ("), "{text}");
+        assert_eq!(code, ErrorCode::StreamFailed, "{text}");
+
+        // Not an address at all
+        let invalid = client().get("http://").send().unwrap_err();
+        let (code, text) = as_text(invalid);
+        assert!(text.starts_with("Can't open "), "{text}");
+        assert_eq!(code, ErrorCode::StreamFailed, "{text}");
+    }
+
+    #[test]
+    fn the_engine_texts_are_its_display() {
+        // Display no longer adds "Stream error: ", so text and message agree
+        for err in [
+            RadioError::Stream("No variants in master playlist".to_string()),
+            RadioError::Decode("Unsupported codec: AC-3".to_string()),
+            RadioError::Timeout("Timeout waiting for stream data".to_string()),
+        ] {
+            let text = err.to_string();
+            let (code, _, message) = code_of(err);
+            assert_eq!(message, text);
+            assert_eq!(from_text(text.clone()).code, code, "{text}");
         }
     }
 

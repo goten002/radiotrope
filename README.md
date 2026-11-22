@@ -296,7 +296,7 @@ Run `radiotrope-probe --help` for the timeout, parallel jobs and silence level.
 | 0 | Up |
 | 1 | Degraded: silent, slower than real time, stalling, many decode errors, or ended |
 | 2 | Down, with an error code such as `dns`, `connect`, `http_status`, `web_page` or `timeout` |
-| 3 | The check could not run |
+| 3 | The check can't run |
 
 With several stations the worst one counts, which suits cron, systemd timers,
 Task Scheduler and Nagios-style monitors. On Linux it needs the ALSA runtime
