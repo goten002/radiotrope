@@ -4,6 +4,7 @@
 
 mod app;
 mod args;
+mod context;
 mod control;
 #[cfg(any(test, feature = "ui-snapshots"))]
 mod headless;
@@ -67,6 +68,7 @@ use app::shown_station::ShownStation;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
 use args::Args;
+use context::lock;
 
 /// Our crates' messages from info up; other libraries' only when they fail
 const DEFAULT_LOG: &str = "error,radiotrope=info";
@@ -167,7 +169,7 @@ fn main() {
     let favorites_saver = {
         let favorites = favorites.clone();
         DelayedSave::start("favorites-save", FAVORITES_SAVE_DELAY, move || {
-            let mut favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+            let mut favs = lock(&favorites);
             if let Err(e) = favs.save() {
                 eprintln!("Failed to save favorites: {e}");
             }
@@ -199,7 +201,7 @@ fn main() {
         .take()
         .filter(|name| radiotrope::audio::find_preset(name).is_some());
     {
-        let mut state = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut state = lock(&shared_state);
         state.volume = settings.volume;
         state.is_muted = settings.muted;
         state.eq_gains = settings.eq_gains;
@@ -447,7 +449,7 @@ fn main() {
         }
         // Check if it's favorited
         {
-            let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+            let favs = lock(&favorites);
             ui.set_is_station_favorited(favs.is_favorite(&station.url));
         }
         // Try to load cached logo
@@ -482,7 +484,7 @@ fn main() {
         }
         // Update shared state so controller knows about the last station
         {
-            let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = lock(&shared_state);
             s.station_name = Some(station.name.clone());
             s.station_url = Some(station.url.clone());
             s.station_logo_url = station.logo_url.clone();
@@ -582,10 +584,7 @@ fn main() {
     let mute_tx = ui_tx.clone();
     let mute_state = shared_state.clone();
     ui.on_mute_clicked(move || {
-        let is_muted = mute_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_muted;
+        let is_muted = lock(&mute_state).is_muted;
         if is_muted {
             mute_tx.send(app::state::AppCommand::Unmute);
         } else {
@@ -607,9 +606,7 @@ fn main() {
             }
             // A stream without a name shows as "Radiotrope"; it is saved
             // under its address instead
-            let name = state
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+            let name = lock(&state)
                 .station_name
                 .clone()
                 .filter(|name| !name.is_empty())
@@ -617,7 +614,7 @@ fn main() {
             let logo_url = ui.get_station_logo_url().to_string();
             let country = ui.get_station_country().to_string();
 
-            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = lock(&favs);
             if f.is_favorite(&url) {
                 let _ = f.remove_by_url(&url);
             } else {
@@ -687,7 +684,7 @@ fn main() {
         ui.on_step_favorite(move |forward| {
             let Some(ui) = ui_weak.upgrade() else { return };
             let playing_url = {
-                let state = state.lock().unwrap_or_else(|e| e.into_inner());
+                let state = lock(&state);
                 state
                     .station_url
                     .clone()
@@ -710,7 +707,7 @@ fn main() {
         let favs = favorites.clone();
         let ui_weak = ui.as_weak();
         ui.on_reset_favorite_stats(move |id| {
-            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = lock(&favs);
             // What another player saved since is taken in first, and then
             // the poll redraws the whole list
             let took_in = f.reload_if_changed();
@@ -722,11 +719,7 @@ fn main() {
                 note_favorites_shown(&f);
             }
             let _ = f.save();
-            if let Some(map) = SESSION_LISTEN
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .as_mut()
-            {
+            if let Some(map) = lock(&SESSION_LISTEN).as_mut() {
                 map.remove(id.as_str());
             }
             if let Some(ui) = ui_weak.upgrade() {
@@ -764,7 +757,7 @@ fn main() {
 
             // A failed update (another favorite has the new URL) changes
             // nothing; the dialog stays open and shows why
-            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = lock(&favs);
             let old_fav = f.get(&id).cloned();
             if f.update(&id, update).is_err() {
                 return if f.get_id_for_url(&url) != id && f.is_favorite(&url) {
@@ -799,7 +792,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         ui.on_delete_favorite(move |station| {
             let id = station.id.to_string();
-            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = lock(&favs);
             let _ = f.remove(&id);
             let _ = f.save();
             drop(f);
@@ -822,7 +815,7 @@ fn main() {
         let ui_weak = ui.as_weak();
         ui.on_move_favorite(move |station, to_top| {
             {
-                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                let mut f = lock(&favs);
                 if f.move_to_edge(&station.id, to_top).is_err() {
                     return;
                 }
@@ -844,7 +837,7 @@ fn main() {
 
             // Update data model
             {
-                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                let mut f = lock(&favs);
                 let mut sorted: Vec<String> = f
                     .sorted(FavoriteSort::Manual)
                     .iter()
@@ -897,7 +890,7 @@ fn main() {
             std::thread::Builder::new()
                 .name("fav-save".into())
                 .spawn(move || {
-                    let mut f = favs_bg.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut f = lock(&favs_bg);
                     let _ = f.save();
                 })
                 .ok();
@@ -985,7 +978,7 @@ fn main() {
                 color.green(),
                 color.blue()
             );
-            let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = lock(&state);
             s.accent_color = Some(hex);
         });
     }
@@ -1091,7 +1084,7 @@ fn main() {
             // The offset moves on only once the page is in the list, so a
             // list put aside meanwhile keeps the offset of the rows it holds
             let (query, offset) = {
-                let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let s = lock(&state);
                 (s.0.clone(), s.1 + SEARCH_PAGE_SIZE)
             };
             let my_gen = gen.load(Ordering::Relaxed);
@@ -1114,7 +1107,7 @@ fn main() {
                         ui.set_search_loading_more(false);
                         match results {
                             Ok(results) => {
-                                state.lock().unwrap_or_else(|e| e.into_inner()).1 = offset;
+                                lock(&state).1 = offset;
                                 show_browse_results(&ui, results, true, &favs, &row_logos)
                             }
                             // The offset stayed, so the retry asks for this page again
@@ -1140,7 +1133,7 @@ fn main() {
             }
             ui.set_search_error(Default::default());
             if ui.get_search_results().row_count() == 0 {
-                let query = state.lock().unwrap_or_else(|e| e.into_inner()).0.clone();
+                let query = lock(&state).0.clone();
                 start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
             } else {
                 ui.set_search_loading_more(true);
@@ -1157,7 +1150,7 @@ fn main() {
         let row_logos = row_logos.clone();
         ui.on_toggle_browse_favorite(move |item| {
             let Some(ui) = ui_weak.upgrade() else { return };
-            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = lock(&favs);
             let existing = f
                 .find_match(&item.url, Some(item.provider_id.as_str()))
                 .map(|fav| fav.url().to_string());
@@ -1229,7 +1222,7 @@ fn main() {
                 } else {
                     ImportMode::Add
                 };
-                let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+                let mut f = lock(&favs);
                 let done = f
                     .import_list(mode, &list, control::MAX_FAVORITES, false)
                     .and_then(|outcome| f.save().map(|_| outcome));
@@ -1496,7 +1489,7 @@ fn main() {
             drop(s);
             update_stats_ui(&ui, &stats_copy);
             let (leveler, hum, hiss) = {
-                let s = state.lock().unwrap_or_else(|e| e.into_inner());
+                let s = lock(&state);
                 (
                     leveler_text(
                         s.match_volume,
@@ -1973,7 +1966,7 @@ fn migrate_logo_ids(
 ) {
     use radiotrope_app::data::types::{legacy_url_to_id, url_to_id};
     let urls: Vec<String> = {
-        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+        let favs = lock(favorites);
         favs.sorted(FavoriteSort::Manual)
             .into_iter()
             .map(|f| f.url().to_string())
@@ -2015,13 +2008,8 @@ fn prune_caches_daily(
         if !favorites_loaded {
             return;
         }
-        let favs: Vec<radiotrope_app::data::types::Favorite> = favorites
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .all()
-            .into_iter()
-            .cloned()
-            .collect();
+        let favs: Vec<radiotrope_app::data::types::Favorite> =
+            lock(&favorites).all().into_iter().cloned().collect();
         // Download again the favorite logos that are out of date (a
         // month old, or from another URL); a failed one keeps the old
         let stale: Vec<_> = favs
@@ -2035,11 +2023,7 @@ fn prune_caches_daily(
         let mut valid: std::collections::HashSet<String> = favs.iter().map(|f| f.id()).collect();
         // The station in the player keeps its logo even when it isn't a
         // favorite
-        let playing = shared_state
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .station_url
-            .clone();
+        let playing = lock(&shared_state).station_url.clone();
         valid.extend(playing.map(|url| radiotrope_app::data::types::url_to_id(&url)));
         let removed = logo_service
             .cache()
@@ -2817,7 +2801,7 @@ fn setup_recording(
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
             let (recording, setup) = {
-                let s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+                let s = lock(&shared_state);
                 (s.recording.is_some(), s.recording_setup.clone())
             };
             if recording {
@@ -2986,10 +2970,7 @@ fn save_recording_settings(
 ) {
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
     change(&mut settings);
-    state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .recording_setup = app::state::RecordingSetup::from_settings(&settings);
+    lock(state).recording_setup = app::state::RecordingSetup::from_settings(&settings);
     if let Err(e) = settings.save() {
         eprintln!("Failed to save recording settings: {e}");
     }
@@ -3132,10 +3113,7 @@ fn explorer_path(dir: &std::path::Path) -> std::ffi::OsString {
 fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     // A copy: the controller and agents aren't kept waiting on the state
     // while the file is read and written
-    let s = shared_state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .clone();
+    let s = lock(shared_state).clone();
     write_settings(&window_settings(&s, ui));
 }
 
@@ -3328,7 +3306,7 @@ fn play_station_with_metadata(
         },
         is_favorite,
     ) = {
-        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+        let favs = lock(favorites);
         let play = favs.resolve_play(req);
         let is_favorite = favs.is_favorite(&play.url);
         (play, is_favorite)
@@ -3339,7 +3317,7 @@ fn play_station_with_metadata(
     // The first click acts at once, and another station always switches.
     {
         let now = Instant::now();
-        let mut last = LAST_PLAY_CLICK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = lock(&LAST_PLAY_CLICK);
         let guard =
             Duration::from_millis(ui.global::<Defaults>().get_repeat_click_guard().max(0) as u64);
         let repeat = last
@@ -3374,10 +3352,7 @@ fn play_station_with_metadata(
     // The controller takes up the Play only after stopping the old
     // station; the poll shows this one as starting until then. Its number
     // is read before the Play goes out, which may be taken at once.
-    let play_seq = shared_state
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .play_seq;
+    let play_seq = lock(shared_state).play_seq;
     PENDING_PICK.with(|p| {
         p.borrow_mut()
             .pick(play_seq, &url, name.clone(), Instant::now())
@@ -3405,7 +3380,7 @@ fn play_station_with_metadata(
 
     // Save settings (persists last_station, volume, eq, etc.)
     {
-        let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = lock(shared_state);
         s.station_url = Some(url.clone());
         s.station_name = name.clone();
         s.station_logo_url = logo_url.clone();
@@ -3681,7 +3656,7 @@ fn start_browse(
     favs: &Arc<Mutex<FavoritesManager>>,
     query: BrowseQuery,
 ) {
-    *state.lock().unwrap_or_else(|e| e.into_inner()) = (query.clone(), 0);
+    *lock(state) = (query.clone(), 0);
     let my_gen = gen.fetch_add(1, Ordering::Relaxed) + 1;
     // Clear old results immediately
     if let Some(ui) = ui_weak.upgrade() {
@@ -3728,7 +3703,7 @@ fn show_browse_results(
     let mut new_items: Vec<BrowseStation> =
         results.stations.iter().map(station_to_browse).collect();
     {
-        let f = favs.lock().unwrap_or_else(|e| e.into_inner());
+        let f = lock(favs);
         for item in &mut new_items {
             item.is_favorite = browse_is_favorite(&f, item);
         }
@@ -3832,9 +3807,7 @@ static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 static SESSION_LISTEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
 fn session_listen_secs(id: &str) -> u64 {
-    SESSION_LISTEN
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    lock(&SESSION_LISTEN)
         .as_ref()
         .and_then(|m| m.get(id).copied())
         .unwrap_or(0)
@@ -3911,13 +3884,11 @@ fn add_listening(
     secs: u64,
     new_play: bool,
 ) {
-    let mut favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+    let mut favs = lock(favorites);
     let Some(id) = favs.add_listening(url, secs, new_play).map(|f| f.id()) else {
         return;
     };
-    *SESSION_LISTEN
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
+    *lock(&SESSION_LISTEN)
         .get_or_insert_with(HashMap::new)
         .entry(id)
         .or_default() += secs;
@@ -4159,7 +4130,7 @@ fn show_edited_favorite(
         ui.set_station_country(country.into());
         ui.set_station_url(url.into());
         // Also update shared_state so the 200ms poll timer doesn't overwrite
-        let mut s = shared_state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut s = lock(shared_state);
         s.station_name = Some(name.to_string());
         s.station_url = Some(url.to_string());
         s.station_logo_url = Some(logo_url.to_string()).filter(|l| !l.is_empty());
@@ -4349,10 +4320,7 @@ fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<FavoritesManager>
         let Some(file) = save.await else { return };
         let Some(ui) = ui_weak.upgrade() else { return };
         let path = file.path().to_path_buf();
-        let saved = favs
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .export_to(&path);
+        let saved = lock(&favs).export_to(&path);
         match saved {
             Ok(count) => show_favorites_file_message(
                 &ui,
@@ -4410,7 +4378,7 @@ fn import_favorites(
             }
         };
         let previews = {
-            let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
+            let mut f = lock(&favs);
             [ImportMode::Add, ImportMode::Replace].map(|mode| {
                 f.import_list(mode, &list, control::MAX_FAVORITES, true)
                     .map(|o| import_preview_text(mode, &o))
@@ -4467,7 +4435,7 @@ fn refresh_favorites(
         Vec<radiotrope_app::data::types::Favorite>,
         Vec<FavoriteStation>,
     ) = {
-        let favs = favorites.lock().unwrap_or_else(|e| e.into_inner());
+        let favs = lock(favorites);
         mark_browse_favorites(ui, &favs);
         note_favorites_shown(&favs);
         favs.sorted(FavoriteSort::Manual)
