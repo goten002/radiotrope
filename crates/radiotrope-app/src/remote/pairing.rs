@@ -7,25 +7,52 @@
 //!
 //! Code: a phone asks to pair; the player shows a code, and the phone sends
 //! back what the user typed. A code works for [`CODE_LIFETIME`] and takes
-//! [`CODE_TRIES`] wrong guesses, then the player shows a new one; after
-//! [`MAX_FAILED_PAIRINGS`] codes guessed wrong within
-//! [`FAILED_PAIRING_WINDOW`], pairing stops until the user opens the Remote
-//! Control dialog. One pairing runs at a time. Nothing here touches the
-//! clock or the disk: callers pass the time in, so tests can move it.
+//! [`CODE_TRIES`] wrong guesses, then the player shows a new one. Every
+//! wrong guess counts, whichever code or pairing it was for: after
+//! [`MAX_WRONG_GUESSES`] of them within [`FAILED_PAIRING_WINDOW`] (as many
+//! as [`MAX_FAILED_PAIRINGS`] codes take), or [`MAX_STARTS`] pairings
+//! started without one working, pairing by code stops until the user opens
+//! the Remote Control dialog. It also stops after [`MAX_WRONG_GUESSES_EVER`]
+//! wrong guesses however far apart, counted since the dialog was last
+//! opened or a code last worked. So asking for a new code, waiting for one
+//! to run out, or guessing slowly gives no more guesses. A QR code still
+//! pairs then. One
+//! pairing runs at a time. Nothing here touches the clock or the disk:
+//! callers pass the time in, so tests can move it.
 
 use std::time::{Duration, Instant};
 
 use radiotrope_app::config::remote::{
     CODE_LIFETIME, CODE_TRIES, FAILED_PAIRING_WINDOW, MAX_FAILED_PAIRINGS,
 };
+use radiotrope_app::data::agent_token;
 use radiotrope_app::data::remote::{device_name, random_hex};
+
+/// Wrong guesses allowed within [`FAILED_PAIRING_WINDOW`], over every code
+/// and pairing, before pairing by code stops
+pub const MAX_WRONG_GUESSES: usize = CODE_TRIES as usize * MAX_FAILED_PAIRINGS;
+
+/// Wrong guesses allowed however far apart, since the user last opened the
+/// Remote Control dialog or a code last worked: guessing slowly, under
+/// [`MAX_WRONG_GUESSES`] a window, stops here (30 guesses find a 4-digit
+/// code 3 times in 1000)
+pub const MAX_WRONG_GUESSES_EVER: usize = 30;
+
+/// Pairings a phone may start within [`FAILED_PAIRING_WINDOW`] without one
+/// working, before pairing by code stops: each shows a code window on the
+/// player
+pub const MAX_STARTS: usize = 10;
 
 /// The pairing in progress, if any, and what failed lately
 #[derive(Default)]
 pub struct Pairing {
     pending: Option<Pending>,
-    /// When codes were last used up by wrong guesses
+    /// When wrong codes were sent lately
     failures: Vec<Instant>,
+    /// Wrong codes sent since the dialog was opened or a code worked
+    wrong_ever: usize,
+    /// When pairings were started lately, since the last that worked
+    starts: Vec<Instant>,
     /// Too many failures: no pairing until [`Pairing::unlock`]
     locked: bool,
     /// The QR code shown, if any
@@ -93,7 +120,15 @@ impl Pairing {
                 return Err(StartError::Busy);
             }
         }
+        self.starts
+            .retain(|at| now.saturating_duration_since(*at) < FAILED_PAIRING_WINDOW);
+        if self.starts.len() >= MAX_STARTS {
+            self.locked = true;
+            self.pending = None;
+            return Err(StartError::Locked);
+        }
         let id = random_hex(8).map_err(|_| StartError::Busy)?;
+        self.starts.push(now);
         self.pending = Some(Pending {
             id: id.clone(),
             code: new_code(),
@@ -119,9 +154,22 @@ impl Pairing {
         let Some(p) = self.live(now).filter(|p| p.id == id) else {
             return Err(CheckError::NoPairing);
         };
-        if p.code == code.trim() {
+        if agent_token::matches(&p.code, code.trim()) {
             let p = self.pending.take().expect("checked above");
+            self.starts.clear();
+            self.wrong_ever = 0;
             return Ok((p.device_id, p.device_name));
+        }
+        // Every wrong guess counts, so a new pairing or a new code never
+        // gives more of them
+        self.failures
+            .retain(|at| now.saturating_duration_since(*at) < FAILED_PAIRING_WINDOW);
+        self.failures.push(now);
+        self.wrong_ever += 1;
+        if self.failures.len() >= MAX_WRONG_GUESSES || self.wrong_ever >= MAX_WRONG_GUESSES_EVER {
+            self.locked = true;
+            self.pending = None;
+            return Err(CheckError::Locked);
         }
         let p = self.pending.as_mut().expect("checked above");
         p.tries_left -= 1;
@@ -130,16 +178,7 @@ impl Pairing {
                 tries_left: p.tries_left,
             });
         }
-        // Used up: count it, then a new code or a stop
-        self.failures
-            .retain(|at| now.saturating_duration_since(*at) < FAILED_PAIRING_WINDOW);
-        self.failures.push(now);
-        if self.failures.len() >= MAX_FAILED_PAIRINGS {
-            self.locked = true;
-            self.pending = None;
-            return Err(CheckError::Locked);
-        }
-        let p = self.pending.as_mut().expect("checked above");
+        // Used up: a new code
         p.code = new_code();
         p.tries_left = CODE_TRIES;
         p.expires = now + CODE_LIFETIME;
@@ -191,6 +230,8 @@ impl Pairing {
     pub fn unlock(&mut self) {
         self.locked = false;
         self.failures.clear();
+        self.wrong_ever = 0;
+        self.starts.clear();
     }
 
     #[cfg(test)]
@@ -304,6 +345,96 @@ mod tests {
             now += FAILED_PAIRING_WINDOW;
         }
         assert!(!p.is_locked());
+    }
+
+    #[test]
+    fn asking_for_a_new_code_gives_no_more_guesses() {
+        let now = Instant::now();
+        let mut p = Pairing::default();
+        // Two guesses, then a new pairing before the code is used up
+        let mut guesses = 0;
+        let stopped = 'guessing: loop {
+            let id = match p.start("phone", "Pixel", now) {
+                Ok(id) => id,
+                Err(e) => break 'guessing e,
+            };
+            for _ in 0..CODE_TRIES - 1 {
+                let c = code(&p, now);
+                guesses += 1;
+                if p.check(&id, &wrong(&c), now) == Err(CheckError::Locked) {
+                    break 'guessing StartError::Locked;
+                }
+            }
+            assert!(guesses < 100, "guessing never stops");
+        };
+        assert_eq!(stopped, StartError::Locked);
+        assert_eq!(guesses, MAX_WRONG_GUESSES);
+        assert!(p.is_locked());
+        assert!(p.shown(now).is_none());
+    }
+
+    #[test]
+    fn guessing_slowly_stops_too() {
+        let mut now = Instant::now();
+        let mut p = Pairing::default();
+        let mut guesses = 0;
+        // One guess a code, each left to run out: never many in a window
+        while !p.is_locked() {
+            let id = p.start("phone", "Pixel", now).unwrap();
+            let c = code(&p, now);
+            let _ = p.check(&id, &wrong(&c), now);
+            guesses += 1;
+            now += CODE_LIFETIME;
+            assert!(guesses <= MAX_WRONG_GUESSES_EVER, "guessing never stops");
+        }
+        assert_eq!(guesses, MAX_WRONG_GUESSES_EVER);
+        assert_eq!(p.start("phone", "Pixel", now), Err(StartError::Locked));
+
+        // A code that works in between: the user is there, count again
+        let mut p = Pairing::default();
+        for _ in 0..3 {
+            for _ in 0..MAX_WRONG_GUESSES_EVER - 1 {
+                let id = p.start("phone", "Pixel", now).unwrap();
+                let c = code(&p, now);
+                let _ = p.check(&id, &wrong(&c), now);
+                now += CODE_LIFETIME;
+            }
+            let id = p.start("phone", "Pixel", now).unwrap();
+            let c = code(&p, now);
+            assert!(p.check(&id, &c, now).is_ok());
+        }
+        assert!(!p.is_locked());
+    }
+
+    #[test]
+    fn pairings_started_over_and_over_stop_pairing() {
+        let now = Instant::now();
+        let mut p = Pairing::default();
+        for _ in 0..MAX_STARTS {
+            assert!(p.start("phone", "Pixel", now).is_ok());
+        }
+        assert_eq!(p.start("phone", "Pixel", now), Err(StartError::Locked));
+        assert!(p.shown(now).is_none(), "no code window is left open");
+        // A QR code the user shows still pairs
+        let secret = p.start_qr(now).unwrap();
+        assert!(p.take_qr(&secret, now));
+        p.unlock();
+        assert!(p.start("phone", "Pixel", now).is_ok());
+
+        // Pairings that work don't add up
+        let mut p = Pairing::default();
+        for _ in 0..MAX_STARTS * 2 {
+            let id = p.start("phone", "Pixel", now).unwrap();
+            let c = code(&p, now);
+            assert!(p.check(&id, &c, now).is_ok());
+        }
+        // Nor do ones from long ago
+        let mut p = Pairing::default();
+        let mut later = now;
+        for _ in 0..MAX_STARTS * 2 {
+            assert!(p.start("phone", "Pixel", later).is_ok());
+            later += FAILED_PAIRING_WINDOW / (MAX_STARTS as u32 - 1);
+        }
     }
 
     #[test]
