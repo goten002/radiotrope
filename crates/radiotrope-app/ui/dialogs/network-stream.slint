@@ -6,15 +6,17 @@ import { DialogShell, Field } from "../components.slint";
 export component NetworkStreamDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <string> url: "";
-    // Station details, shown in the player and kept when the stream is
-    // added to favorites with the star (logo and country are optional)
+    // Optional station details, shown in the player and kept when the
+    // stream is added to favorites with the star. Without a name, the
+    // stream's own name is shown.
     in-out property <string> name: "";
     in-out property <string> logo-url: "";
     in-out property <string> country: "";
     // url, name, logo url, country
     callback accepted(string, string, string, string);
 
-    property <bool> can-play: root.name != "" && root.url != "";
+    // Only the address is needed
+    property <bool> can-play: root.url != "";
 
     function reset() {
         root.url = "";
@@ -46,24 +48,24 @@ export component NetworkStreamDialog inherits Rectangle {
         // typed, for when it is opened again
         close-requested => { root.show-dialog = false; }
 
-        // Same fields, in the same order, as Edit Favorite
-        Field {
-            label: "Name";
-            required: true;
-            StyledLineEdit {
-                placeholder-text: "Station name";
-                text <=> root.name;
-                accepted(text) => { root.play(); }
-                init => { self.focus-input(); }
-            }
-        }
-
+        // The address first: it is all a stream needs
         Field {
             label: "Stream URL";
             required: true;
             StyledLineEdit {
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.url;
+                clearable: true;
+                accepted(text) => { root.play(); }
+                init => { self.focus-input(); }
+            }
+        }
+
+        Field {
+            label: "Name";
+            StyledLineEdit {
+                placeholder-text: "The stream's own name if left empty";
+                text <=> root.name;
                 clearable: true;
                 accepted(text) => { root.play(); }
             }
