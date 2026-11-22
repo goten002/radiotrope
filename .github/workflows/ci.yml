@@ -189,9 +189,10 @@ jobs:
       - run: cargo fmt --check
 
   # The UI snapshot tool, which only the `ui-snapshots` feature builds: lint
-  # it, run the theme contrast test with it, and render every screen in the
-  # dark theme (headless, no audio or network). The pictures are kept with
-  # the run as the "ui-snapshots-dark" artifact, to look at on a PR.
+  # it, run the app's tests with it (the headless dialog and keyboard tests
+  # need it), and render every screen in the dark theme (headless, no audio
+  # or network). The pictures are kept with the run as the
+  # "ui-snapshots-dark" artifact, to look at on a PR.
   snapshots:
     name: UI snapshots
     runs-on: ubuntu-latest
@@ -206,8 +207,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
       - name: cargo clippy (ui-snapshots)
         run: cargo clippy -p radiotrope-app --features ui-snapshots --message-format=short -- -D warnings
-      - name: Theme contrast
-        run: cargo test -p radiotrope-app --features ui-snapshots --test theme_contrast
+      - name: cargo test (ui-snapshots)
+        run: cargo test -p radiotrope-app --features ui-snapshots
       - name: Render the screens
         run: |
           env -u DISPLAY -u WAYLAND_DISPLAY cargo run -p radiotrope-app --features ui-snapshots \
@@ -222,27 +223,15 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  # Checks on the Slint sources that the compiler doesn't make: every
-  # executable scripts/lint-* runs from the repository root and fails the
-  # job by exiting non-zero (the accessibility lint, for one)
+  # Checks on the Slint sources that the compiler doesn't make: controls
+  # need an accessible role, images a role or a label. Stale lines in
+  # scripts/ui-semantics-allow.txt fail it too, so the list stays honest.
   ui-lint:
     name: UI lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: scripts/lint-*
-        shell: bash
-        run: |
-          shopt -s nullglob
-          found=0
-          for script in scripts/lint-*; do
-            [ -f "$script" ] && [ -x "$script" ] || continue
-            found=1
-            echo "::group::$script"
-            "./$script"
-            echo "::endgroup::"
-          done
-          [ "$found" = 1 ] || echo "No scripts/lint-* yet"
+      - run: python3 scripts/lint-ui-semantics.py
 
   # Windows is a release target: lint the Windows-only code and run the
   # tests there (MSVC, with CMake for the bundled libopus)
