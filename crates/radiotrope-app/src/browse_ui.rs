@@ -1,5 +1,5 @@
 //! The Search Stations window: the directory's stations, the country and
-//! genre pickers, and the flags
+//! genre filters' lists, and the flags
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -21,7 +21,7 @@ use crate::player_ui::play_station_with_metadata;
 use crate::{row_logos, App, BrowseStation, FilterEntry};
 
 /// Wire the Search Stations window: searching and paging, the rows'
-/// logos, the star and Play on a row, and the country and genre pickers
+/// logos, the star and Play on a row, and the country and genre filters
 pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) {
     let (favorites, logo_service) = (&ctx.favorites, &ctx.logos);
     // Generation counter for browse logo fetches (to cancel stale requests)
@@ -150,11 +150,12 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
             let mut f = lock(&ctx.favorites);
             let existing = f
                 .find_match(&item.url, Some(item.provider_id.as_str()))
-                .map(|fav| fav.url().to_string());
+                .map(|fav| fav.id());
+            let mut removed = None;
             match existing {
-                Some(url) => {
-                    let _ = f.remove_by_url(&url);
-                }
+                // One click removes; the Undo offered for a favorite
+                // removed from the list puts it back
+                Some(id) => removed = crate::favorites_ui::remove_keeping_place(&mut f, &id),
                 None => {
                     use radiotrope_app::data::types::Favorite;
                     let mut fav = Favorite::new(item.name.as_str(), item.url.as_str())
@@ -179,6 +180,13 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                         }
                     }
                     let _ = f.add(fav);
+                    // Starred again by hand: its Undo has nothing left to do
+                    crate::favorites_ui::forget_undo_of(&ui, |removed| {
+                        removed.url() == item.url.as_str()
+                            || (!item.provider_id.is_empty()
+                                && removed.station.provider_id.as_deref()
+                                    == Some(item.provider_id.as_str()))
+                    });
                 }
             }
             let current = ui.get_station_url();
@@ -186,13 +194,21 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
             drop(f);
             crate::favorites_ui::save_favorites();
             refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
+            crate::favorites_ui::offer_undo(&ui, removed);
         });
     }
 
-    // The countries or genres the station browser's filter picker lists
+    // A filter's list opens: the countries or genres. Once loaded they
+    // show at once, and the directory is asked again behind them.
     {
         let ui_weak = ui.as_weak();
         ui.on_load_filter_entries(move |kind| {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            if !show_filter_entries(&ui) {
+                ui.set_filter_entries(ModelRc::default());
+                ui.set_filter_entries_error(Default::default());
+                ui.set_filter_entries_loading(true);
+            }
             let ui_weak = ui_weak.clone();
             let kind = kind.to_string();
             std::thread::Builder::new()
@@ -201,39 +217,33 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                     let results = browse_directory().and_then(|p| p.browse_categories());
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
-                        // The picker moved on to another kind meanwhile
-                        if ui.get_filter_kind() != kind.as_str() {
-                            return;
-                        }
                         match results {
                             Ok(categories) => {
-                                let entries = filter_entries(&kind, categories);
-                                ALL_FILTER_ENTRIES.with(|all| *all.borrow_mut() = entries);
-                                show_filter_entries(&ui, &ui.get_filter_entries_text());
-                                ui.set_filter_entries_error(Default::default());
+                                // One answer has both lists
+                                for kind in ["country", "genre"] {
+                                    keep_filter_entries(kind, filter_entries(kind, &categories));
+                                }
+                                show_filter_entries(&ui);
                             }
+                            // Another list is open by now, or an older
+                            // answer is on screen: it stays
                             Err(e) => {
-                                // The same words as the search window
-                                let problem = ServiceProblem::of(&e);
-                                ui.set_filter_entries_error(problem.message().into());
+                                if ui.get_filter_kind() == kind.as_str()
+                                    && ui.get_filter_entries_loading()
+                                {
+                                    // The same words as the search window
+                                    let problem = ServiceProblem::of(&e);
+                                    ui.set_filter_entries_error(problem.message().into());
+                                    ui.set_filter_entries_loading(false);
+                                }
                             }
                         }
-                        ui.set_filter_entries_loading(false);
                     });
                 })
                 .ok();
         });
     }
-
-    // Narrow the filter picker's list by name
-    {
-        let ctx = ctx.clone();
-        ui.on_filter_filter_entries(move |text| {
-            if let Some(ui) = ctx.ui.upgrade() {
-                show_filter_entries(&ui, &text);
-            }
-        });
-    }
+    install_filter(ui);
 
     // play-station callback
     {
@@ -430,6 +440,7 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         url: s.url.as_str().into(),
         logo_url: s.logo_url.as_deref().unwrap_or("").into(),
         country: s.country.as_deref().unwrap_or("").into(),
+        genres: genre_names(s).into(),
         // radio-browser said "UNKNOWN" when it had no codec; show no badge
         codec: s
             .codec
@@ -441,6 +452,23 @@ fn station_to_browse(s: &Station) -> BrowseStation {
         provider_id: s.provider_id.as_deref().unwrap_or("").into(),
         is_favorite: false,
     }
+}
+
+/// How many genres a row names
+const ROW_GENRES: usize = 3;
+
+/// A station's genres for its row, by name ("Blues, Jazz"): the first few,
+/// A to Z (the station keeps them in no order)
+fn genre_names(station: &Station) -> String {
+    let mut names: Vec<&str> = station
+        .genres
+        .iter()
+        .map(|genre| genre.trim())
+        .filter(|genre| !genre.is_empty())
+        .collect();
+    names.sort_by_key(|name| name.to_lowercase());
+    names.truncate(ROW_GENRES);
+    names.join(", ")
 }
 
 /// A search result is a favorite by URL or by the provider's station ID
@@ -473,24 +501,26 @@ thread_local! {
 }
 
 thread_local! {
-    /// Every entry of the kind the filter picker loaded last; it shows a
-    /// filtered copy
-    static ALL_FILTER_ENTRIES: std::cell::RefCell<Vec<FilterEntry>> =
-        const { std::cell::RefCell::new(Vec::new()) };
+    /// The directory's countries and genres, by kind ("country", "genre"),
+    /// once loaded; a filter's list shows the ones that match its text
+    static ALL_FILTER_ENTRIES: std::cell::RefCell<HashMap<String, Vec<FilterEntry>>> =
+        std::cell::RefCell::new(HashMap::new());
 }
 
 /// The directory's countries or genres (`kind`: "country" or "genre") as
-/// filter picker entries, A to Z
+/// filter entries, A to Z. Each has the name to show (the directory's own
+/// for a genre, the English one for a country code) and the code to ask
+/// the directory for (the genre's slug, the country's ISO code).
 fn filter_entries(
     kind: &str,
-    categories: Vec<radiotrope_app::providers::types::Category>,
+    categories: &[radiotrope_app::providers::types::Category],
 ) -> Vec<FilterEntry> {
     let wanted = match kind {
         "genre" => CategoryType::Genre,
         _ => CategoryType::Country,
     };
     let mut entries: Vec<FilterEntry> = categories
-        .into_iter()
+        .iter()
         .filter(|c| c.category_type == wanted)
         .map(|c| {
             let code = match wanted {
@@ -503,8 +533,8 @@ fn filter_entries(
                 } else {
                     Default::default()
                 },
+                name: filter_name(wanted, &c.name, &code).into(),
                 code: code.into(),
-                name: c.name.as_str().into(),
                 station_count: c.station_count.unwrap_or(0) as i32,
             }
         })
@@ -515,18 +545,98 @@ fn filter_entries(
     entries
 }
 
-/// Show the filter picker entries whose name contains `filter`
-/// (case-insensitive)
-fn show_filter_entries(ui: &App, filter: &str) {
-    let filter = filter.trim().to_lowercase();
-    let entries: Vec<FilterEntry> = ALL_FILTER_ENTRIES.with(|all| {
-        all.borrow()
-            .iter()
-            .filter(|e| filter.is_empty() || e.name.to_lowercase().contains(&filter))
-            .cloned()
-            .collect()
+/// The name a filter entry shows. The directory names its genres ("Hip
+/// Hop" for `hip-hop`) and the country table names the codes; should one
+/// come without a name (empty, or the slug or code itself), a genre gets a
+/// readable one made from its slug and a country keeps its code.
+fn filter_name(kind: CategoryType, name: &str, code: &str) -> String {
+    let name = name.trim();
+    if kind == CategoryType::Genre && (name.is_empty() || name == code) {
+        return name_from_slug(code);
+    }
+    name.to_string()
+}
+
+/// "hip-hop" -> "Hip Hop": a genre's slug as a name, for one the directory
+/// gave no name
+fn name_from_slug(slug: &str) -> String {
+    slug.split(['-', '_'])
+        .filter(|word| !word.is_empty())
+        .map(|word| {
+            let mut letters = word.chars();
+            match letters.next() {
+                // "and" stays small inside a name ("Drum and Bass")
+                _ if word == "and" => word.to_string(),
+                Some(first) => first.to_uppercase().chain(letters).collect(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Keep a kind's entries for its filter's list
+pub(crate) fn keep_filter_entries(kind: &str, entries: Vec<FilterEntry>) {
+    ALL_FILTER_ENTRIES.with_borrow_mut(|all| all.insert(kind.to_string(), entries));
+}
+
+/// Narrow the open filter list as its text box is typed in
+pub(crate) fn install_filter(ui: &App) {
+    let ui_weak = ui.as_weak();
+    ui.on_filter_filter_entries(move |_| {
+        if let Some(ui) = ui_weak.upgrade() {
+            show_filter_entries(&ui);
+        }
     });
+}
+
+/// Show the open filter list's entries that match its text box, best match
+/// first. False while that kind has not been loaded.
+pub(crate) fn show_filter_entries(ui: &App) -> bool {
+    let kind = ui.get_filter_kind();
+    let text = ui.get_filter_entries_text();
+    let entries = ALL_FILTER_ENTRIES.with_borrow(|all| {
+        all.get(kind.as_str())
+            .map(|all| matching_entries(all, &text))
+    });
+    let Some(entries) = entries else { return false };
     ui.set_filter_entries(ModelRc::from(std::rc::Rc::new(VecModel::from(entries))));
+    ui.set_filter_entries_error(Default::default());
+    ui.set_filter_entries_loading(false);
+    true
+}
+
+/// The entries a typed text finds, whatever the case: names that start
+/// with it first, then names with a word that starts with it, then names
+/// that have it anywhere, each group A to Z as the list is. A country is
+/// also found by its code ("gb"). Nothing typed finds everything.
+fn matching_entries(all: &[FilterEntry], text: &str) -> Vec<FilterEntry> {
+    let needle = text.trim().to_lowercase();
+    if needle.is_empty() {
+        return all.to_vec();
+    }
+    let rank = |entry: &FilterEntry| -> Option<u8> {
+        let name = entry.name.to_lowercase();
+        if name.starts_with(&needle) || entry.code.to_lowercase() == needle {
+            Some(0)
+        } else if name
+            .split(|c: char| !c.is_alphanumeric())
+            .any(|word| word.starts_with(&needle))
+        {
+            Some(1)
+        } else if name.contains(&needle) {
+            Some(2)
+        } else {
+            None
+        }
+    };
+    let mut found: Vec<(u8, &FilterEntry)> = all
+        .iter()
+        .filter_map(|entry| rank(entry).map(|rank| (rank, entry)))
+        .collect();
+    // Stable: each rank keeps the list's order
+    found.sort_by_key(|(rank, _)| *rank);
+    found.into_iter().map(|(_, entry)| entry.clone()).collect()
 }
 
 /// Flag image for a country (an empty image if there is no flag for it)
@@ -578,13 +688,13 @@ mod tests {
             ]
         };
 
-        let genres = filter_entries("genre", categories());
+        let genres = filter_entries("genre", &categories());
         let names: Vec<_> = genres.iter().map(|e| e.name.to_string()).collect();
         assert_eq!(names, ["Ambient", "Rock"], "A to Z");
         assert_eq!(genres[1].code, "rock", "the slug");
         assert_eq!(genres[1].station_count, 9);
 
-        let countries = filter_entries("country", categories());
+        let countries = filter_entries("country", &categories());
         assert_eq!(countries.len(), 1);
         assert_eq!(
             (countries[0].name.as_str(), countries[0].code.as_str()),
@@ -592,9 +702,93 @@ mod tests {
         );
 
         // Languages aren't a filter
-        assert!(filter_entries("genre", categories())
+        assert!(filter_entries("genre", &categories())
             .iter()
             .all(|e| e.name != "Greek"));
+    }
+
+    fn entry(name: &str, code: &str) -> FilterEntry {
+        FilterEntry {
+            name: name.into(),
+            code: code.into(),
+            station_count: 1,
+            flag: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_genre_shows_its_name_and_is_asked_for_by_its_slug() {
+        use radiotrope_app::providers::types::Category;
+        let genres = filter_entries(
+            "genre",
+            &[
+                Category::new("hip-hop", "Hip Hop", CategoryType::Genre),
+                Category::new("r-and-b", "R&B", CategoryType::Genre),
+                // Should the directory ever send a genre without a name
+                Category::new("drum-and-bass", "drum-and-bass", CategoryType::Genre),
+                Category::new("lo-fi", "", CategoryType::Genre),
+            ],
+        );
+        let shown: Vec<_> = genres
+            .iter()
+            .map(|e| (e.name.as_str(), e.code.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("Drum and Bass", "drum-and-bass"),
+                ("Hip Hop", "hip-hop"),
+                ("Lo Fi", "lo-fi"),
+                ("R&B", "r-and-b"),
+            ]
+        );
+        assert_eq!(name_from_slug("hip-hop"), "Hip Hop");
+        assert_eq!(name_from_slug("jazz"), "Jazz");
+    }
+
+    #[test]
+    fn typing_finds_names_that_start_with_it_first() {
+        let all = [
+            entry("Reunion", "RE"),
+            entry("Tunisia", "TN"),
+            entry("United Arab Emirates", "AE"),
+            entry("United Kingdom", "GB"),
+            entry("United States", "US"),
+        ];
+        let names = |text: &str| -> Vec<String> {
+            matching_entries(&all, text)
+                .iter()
+                .map(|e| e.name.to_string())
+                .collect()
+        };
+        assert_eq!(names("").len(), 5, "nothing typed finds everything");
+        assert_eq!(
+            names(" UNI "),
+            [
+                "United Arab Emirates",
+                "United Kingdom",
+                "United States",
+                "Reunion",
+                "Tunisia"
+            ]
+        );
+        // A later word that starts with it comes before a match inside one
+        assert_eq!(names("k"), ["United Kingdom"]);
+        assert_eq!(names("ar"), ["United Arab Emirates"]);
+        assert_eq!(names("united k"), ["United Kingdom"]);
+        // A country by its code
+        assert_eq!(names("gb"), ["United Kingdom"]);
+        assert!(names("atlantis").is_empty());
+    }
+
+    #[test]
+    fn a_row_names_a_few_genres_in_a_steady_order() {
+        let mut station = Station::new("Jazz FM", "http://jazz.test");
+        assert_eq!(station_to_browse(&station).genres, "");
+        station.genres = ["Soul", "Jazz", "Hip Hop", "Blues"]
+            .map(String::from)
+            .into();
+        assert_eq!(station_to_browse(&station).genres, "Blues, Hip Hop, Jazz");
     }
 
     #[test]

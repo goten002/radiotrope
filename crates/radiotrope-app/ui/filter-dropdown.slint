@@ -1,0 +1,546 @@
+// A searchable dropdown: a field that shows the country or genre the
+// station search is narrowed to, and under it a list to choose from, with
+// a text box that narrows the list as you type.
+
+import { Theme } from "defaults.slint";
+import { Icon, FocusRing, ButtonKeys, PopupCard, PopupBounds, StatusPanel, ChipVariant } from "components.slint";
+import { KeyListCursor } from "key-list.slint";
+import { StyledLineEdit } from "styled-line-edit.slint";
+import { ScrollBar } from "scroll-bar.slint";
+
+// A country or genre the station search can be narrowed to
+export struct FilterEntry {
+    name: string,
+    // What the directory is asked for: a country's ISO 3166-1 code or a
+    // genre's slug. Empty for "Any".
+    code: string,
+    station-count: int,
+    // Countries only
+    flag: image,
+}
+
+// One entry, styled like the shared ChoiceRow: regular text, and a check in
+// a fixed slot on the right for the entry in force. Countries keep a flag
+// slot so the names line up. Not a Tab stop: the list has one, which
+// stands for the active row.
+component FilterRow inherits Rectangle {
+    in property <string> name;
+    in property <int> station-count;
+    in property <image> flag;
+    in property <bool> show-flag;
+    // The entry in force
+    in property <bool> selected;
+    // The keyboard's row: the list's active one, or the one Enter in the
+    // text box picks
+    in property <bool> key-active;
+    in property <int> row-index;
+    in property <int> row-count;
+    callback clicked();
+
+    height: Theme.control-button;
+    border-radius: Theme.radius-sm;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover || root.key-active ? Theme.hover-bg
+        : root.selected ? Theme.selected-bg : transparent;
+    animate background { duration: Theme.fast; }
+
+    accessible-role: list-item;
+    accessible-label: root.name;
+    accessible-description: root.station-count == 1 ? "1 station"
+        : root.station-count > 0 ? "\{root.station-count} stations" : "";
+    accessible-item-index: root.row-index;
+    accessible-item-count: root.row-count;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+        mouse-cursor: pointer;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-8;
+        padding-right: Theme.space-8;
+        spacing: Theme.space-8;
+        alignment: stretch;
+
+        // Flag slot keeps country names aligned even when one has no flag
+        if root.show-flag: Rectangle {
+            width: 20px;
+
+            if root.flag.width > 0: Image {
+                source: root.flag;
+                width: 20px;
+                height: 15px;
+                image-fit: contain;
+                // Decoration: the name beside it says the country
+                accessible-role: none;
+            }
+        }
+
+        Text {
+            text: root.name;
+            color: Theme.text-primary;
+            font-size: Theme.font-base;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            // The row says the name and the count in one description
+            accessible-role: none;
+        }
+
+        Text {
+            text: root.station-count > 0 ? "\{root.station-count}" : "";
+            // Tertiary text drops under 4.5:1 on a hovered or selected row
+            color: touch.has-hover || touch.pressed || root.key-active || root.selected
+                ? Theme.text-secondary : Theme.text-tertiary;
+            font-size: Theme.font-sm;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            accessible-role: none;
+        }
+
+        Rectangle {
+            width: Theme.icon-sm;
+
+            if root.selected: Icon {
+                width: Theme.icon-sm;
+                height: self.width;
+                source: @image-url("icons/tick.svg");
+                colorize: Theme.selection-mark;
+            }
+        }
+    }
+}
+
+// The field: "Any country" or the one chosen, with a ✕ to clear it. Enter,
+// Space, an arrow or a click opens the list under it. In the list, typing
+// narrows it and Enter picks the first match; Down goes into the rows (the
+// arrows, Page Up / Page Down, Home / End, then Enter or Space); Esc or a
+// click elsewhere closes the list and changes nothing.
+//
+// The list's rows, its loading and error states and the typed text belong
+// to whoever fills it (one list is open at a time, so the filters share
+// them): `opening` asks for the rows, `filter-entries` for the ones that
+// match the text.
+export component FilterDropdown inherits Rectangle {
+    // What it filters by, for screen readers: "Country"
+    in property <string> name;
+    // "Any country" when nothing is chosen
+    in property <string> any-label;
+    // "countries": "Loading countries…"
+    in property <string> plural;
+    // The list's name for screen readers: "Countries"
+    in property <string> list-label;
+    // The chosen entry's name (empty for Any), code and flag
+    in property <string> value;
+    in property <string> selected-code;
+    in property <image> flag;
+    // Rows have a flag slot
+    in property <bool> show-flags;
+    // The rows that match the typed text
+    in property <[FilterEntry]> entries;
+    in property <bool> loading;
+    in property <string> error;
+    in-out property <string> filter-text;
+    // Where the list may be drawn: the dialog's `popup-bounds`
+    in property <PopupBounds> popup-bounds;
+    // Open the list (the snapshot tool)
+    in property <bool> show-popup;
+    out property <bool> open: popup.is-open;
+
+    // The list is about to open: fill it
+    callback opening();
+    // Show only the entries that match the text
+    callback filter-entries(string);
+    // Ask for the entries again after a failure
+    callback retry();
+    // An entry was picked (empty code: Any)
+    callback picked(FilterEntry);
+    // The ✕ on the field
+    callback cleared();
+
+    property <bool> active: root.value != "";
+    property <length> row-height: Theme.control-button;
+    // "Any" leads the list while nothing is typed
+    property <bool> any-row: root.filter-text == "";
+    property <int> row-count: root.entries.length + (root.any-row ? 1 : 0);
+    property <bool> failed: root.error != "" && !root.loading;
+    property <bool> listing: !root.loading && root.error == "" && root.row-count > 0;
+    // Something is typed and matches: Enter in the text box picks the
+    // first row, which shows as the keyboard's
+    property <bool> first-match: root.listing && root.filter-text != "";
+    // The keyboard's row in the list (-1: none yet), and requests to give
+    // the list the focus
+    property <int> active-row: -1;
+    property <int> focus-list-request;
+    // The typed text or the list changed: the rows are other ones now
+    changed filter-text => { root.active-row = -1; }
+    changed row-count => { root.active-row = -1; }
+
+    changed show-popup => {
+        if root.show-popup {
+            root.open-list();
+        } else if root.open {
+            popup.close();
+        }
+    }
+
+    function open-list() {
+        if !root.open {
+            root.active-row = -1;
+            root.opening();
+            keys.focus();
+            popup.show();
+        }
+    }
+
+    function pick(entry: FilterEntry) {
+        popup.close();
+        root.picked(entry);
+    }
+
+    function pick-row(row: int) {
+        if root.any-row && row == 0 {
+            root.pick({ name: "", code: "", station-count: 0 });
+        } else {
+            root.pick(root.entries[row - (root.any-row ? 1 : 0)]);
+        }
+    }
+
+    height: Theme.control-field;
+    min-width: 0;
+    preferred-width: 0;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-sm;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover || root.open ? Theme.hover-bg : Theme.elevated;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent-graphic : Theme.field-border;
+    animate background, border-color { duration: Theme.fast; }
+    forward-focus: keys;
+
+    accessible-role: combobox;
+    accessible-label: root.name;
+    accessible-value: root.active ? root.value : root.any-label;
+    accessible-expandable: true;
+    accessible-expanded: root.open;
+    accessible-action-default => { root.open-list(); }
+    accessible-action-expand => { root.open-list(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.open-list(); }
+    }
+
+    keys := ButtonKeys {
+        activated => { root.open-list(); }
+        capture-key-pressed(event) => {
+            if (event.text == Key.UpArrow || event.text == Key.DownArrow)
+                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                root.open-list();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: root.active ? Theme.space-6 : 10px;
+        spacing: Theme.space-6;
+
+        if root.active && root.flag.width > 0: VerticalLayout {
+            alignment: center;
+
+            Image {
+                source: root.flag;
+                width: 18px;
+                height: 13px;
+                image-fit: contain;
+                // Decoration: the name beside it says the country
+                accessible-role: none;
+            }
+        }
+
+        Text {
+            text: root.active ? root.value : root.any-label;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            font-size: Theme.font-base;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+            overflow: elide;
+            accessible-role: none;
+        }
+
+        // Clear the filter
+        if root.active: Rectangle {
+            width: 24px;
+            height: 24px;
+            y: (parent.height - self.height) / 2;
+            border-radius: self.height / 2;
+            background: clear-touch.pressed ? Theme.pressed-bg
+                : clear-touch.has-hover ? Theme.hover-bg : transparent;
+            accessible-role: button;
+            accessible-label: "Clear \{root.value}";
+            accessible-action-default => { root.cleared(); }
+
+            clear-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.cleared(); }
+            }
+
+            // It goes away once the filter is cleared: the focus moves to
+            // the filter itself first, so it stays in the dialog
+            clear-keys := ButtonKeys {
+                activated => {
+                    keys.focus();
+                    root.cleared();
+                }
+            }
+
+            if clear-keys.has-focus: FocusRing {
+                radius: parent.border-radius;
+                offset: 0px;
+            }
+
+            Icon {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
+                source: @image-url("icons/xmark.svg");
+                colorize: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+            }
+        }
+
+        // The arrow turns while the list is open
+        VerticalLayout {
+            alignment: center;
+
+            Icon {
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
+                source: @image-url("icons/chevron-down.svg");
+                colorize: Theme.text-secondary;
+                rotation: root.open ? 180deg : 0deg;
+                animate rotation { duration: Theme.fast; }
+            }
+        }
+    }
+
+    // The list hangs under the field, at least as wide as it, and shows
+    // whole rows: up to eight, fewer when the window is short
+    property <bool> window-limits: root.popup-bounds.window-bottom > root.popup-bounds.window-top;
+    property <length> limit-bottom: root.window-limits ? root.popup-bounds.window-bottom : root.popup-bounds.bottom;
+    property <length> below: root.limit-bottom - root.absolute-position.y - root.height - Theme.space-2;
+    // The text box and the space around it and the list
+    property <length> chrome: Theme.control-field + 3 * Theme.space-6;
+    property <int> max-rows: clamp(floor((root.below - root.chrome - 2 * Theme.space-4) / root.row-height), 3, 8);
+    // More rows than show: the list scrolls, and leaves room for its bar
+    property <bool> scrolls: root.row-count > root.max-rows;
+    property <length> body-height: root.listing
+            ? min(root.row-count, root.max-rows) * root.row-height + 2 * Theme.space-4
+        : root.failed ? 176px : 112px;
+    property <length> popup-width: min(max(root.width, 280px),
+        root.popup-bounds.right - root.popup-bounds.left);
+
+    popup := PopupWindow {
+        x: clamp(root.absolute-position.x, root.popup-bounds.left,
+            root.popup-bounds.right - root.popup-width) - root.absolute-position.x;
+        y: root.height + Theme.space-2;
+        width: root.popup-width;
+        // A popup keeps the size it opened with: it is as tall as the
+        // list gets, and the card in it follows the rows
+        height: root.chrome + max(176px, root.max-rows * root.row-height + 2 * Theme.space-4);
+        close-policy: close-on-click-outside;
+
+        PopupCard {
+            y: 0;
+            height: root.chrome + root.body-height;
+
+            FocusScope {
+                focus-on-tab-navigation: false;
+                focus-on-click: false;
+
+                // Down from the text box goes into the list
+                capture-key-pressed(event) => {
+                    if event.text == Key.DownArrow && filter-input.has-focus && root.listing
+                        && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+                        root.focus-list-request += 1;
+                        return accept;
+                    }
+                    return reject;
+                }
+                // Esc closes the list only: the dialog stays
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        popup.close();
+                        return accept;
+                    }
+                    return reject;
+                }
+
+                VerticalLayout {
+                    padding: Theme.space-6;
+                    spacing: Theme.space-6;
+
+                    filter-input := StyledLineEdit {
+                        label: "Filter \{root.plural}";
+                        placeholder-text: "Type to filter";
+                        clearable: true;
+                        init => { self.focus-input(); }
+                        text <=> root.filter-text;
+                        edited(text) => { root.filter-entries(text); }
+                        cleared => { root.filter-entries(""); }
+                        accepted(text) => {
+                            if root.first-match {
+                                root.pick(root.entries[0]);
+                            }
+                        }
+                    }
+
+                    Rectangle {
+                        height: root.body-height;
+                        clip: true;
+
+                        if root.loading: StatusPanel {
+                            width: parent.width;
+                            height: parent.height;
+                            busy: true;
+                            title: "Loading \{root.plural}…";
+                        }
+
+                        // Error state, with a way to ask again
+                        if root.failed: StatusPanel {
+                            width: parent.width;
+                            height: parent.height;
+                            variant: ChipVariant.danger;
+                            title: "Can't load \{root.plural}";
+                            message: root.error;
+                            action-label: "Try Again";
+                            action => {
+                                // The button goes away while it loads: the
+                                // text box takes the focus, so Esc still
+                                // closes the list
+                                filter-input.focus-input();
+                                root.retry();
+                            }
+                        }
+
+                        // No match for the text
+                        if !root.loading && root.error == "" && root.row-count == 0: StatusPanel {
+                            width: parent.width;
+                            height: parent.height;
+                            icon: @image-url("icons/magnifying-glass.svg");
+                            title: "No \{root.plural} match \"\{root.filter-text}\"";
+                        }
+
+                        // The list, with Any first while nothing is typed:
+                        // one Tab stop. Up on the first row goes back to
+                        // the text box.
+                        if root.listing: Rectangle {
+                            accessible-role: AccessibleRole.list;
+                            accessible-label: root.list-label;
+
+                            property <int> focus-request: root.focus-list-request;
+                            changed focus-request => { cursor.focus(); }
+
+                            entry-flick := Flickable {
+                                width: parent.width;
+                                content-width: self.width;
+                                content-height: root.row-count * root.row-height + 2 * Theme.space-4;
+
+                                // Scroll just far enough to show the row
+                                function reveal(row: int) {
+                                    let top = row * root.row-height;
+                                    let shown = -self.content-y;
+                                    let target = top < shown ? top
+                                        : top + root.row-height + 2 * Theme.space-4 > shown + self.height
+                                            ? top + root.row-height + 2 * Theme.space-4 - self.height
+                                        : shown;
+                                    self.content-y = -clamp(target, 0px, max(0px, self.content-height - self.height));
+                                }
+
+                                entry-layout := VerticalLayout {
+                                    width: entry-flick.width;
+                                    padding: Theme.space-4;
+                                    padding-right: root.scrolls ? Theme.space-12 : Theme.space-4;
+
+                                    if root.any-row: FilterRow {
+                                        name: root.any-label;
+                                        show-flag: root.show-flags;
+                                        selected: root.selected-code == "";
+                                        key-active: cursor.has-focus && root.active-row == 0;
+                                        row-index: 0;
+                                        row-count: root.row-count;
+                                        clicked => { root.pick-row(0); }
+                                    }
+
+                                    for entry[index] in root.entries: FilterRow {
+                                        property <int> list-row: index + (root.any-row ? 1 : 0);
+                                        name: entry.name;
+                                        station-count: entry.station-count;
+                                        flag: entry.flag;
+                                        show-flag: root.show-flags;
+                                        selected: entry.code == root.selected-code;
+                                        key-active: cursor.has-focus ? root.active-row == self.list-row
+                                            : root.first-match && index == 0;
+                                        row-index: self.list-row;
+                                        row-count: root.row-count;
+                                        clicked => { root.pick(entry); }
+                                    }
+                                }
+
+                                // The list's one Tab stop, over the active row
+                                cursor := KeyListCursor {
+                                    property <bool> on-any: root.any-row && root.active-row == 0;
+                                    property <FilterEntry> entry: root.entries[root.active-row - (root.any-row ? 1 : 0)];
+                                    x: Theme.space-4;
+                                    y: Theme.space-4 + max(0, root.active-row) * root.row-height;
+                                    width: entry-layout.width - Theme.space-4
+                                        - (root.scrolls ? Theme.space-12 : Theme.space-4);
+                                    height: root.row-height;
+                                    count: root.row-count;
+                                    active: root.active-row;
+                                    // Come in on the first row in view; the
+                                    // first match is the text box's already,
+                                    // so Down goes on to the second
+                                    start: root.first-match ? min(1, root.row-count - 1)
+                                        : ceil(-entry-flick.content-y / root.row-height);
+                                    page: max(1, floor(entry-flick.height / root.row-height) - 1);
+                                    item-label: self.on-any ? root.any-label : self.entry.name;
+                                    item-description: self.on-any ? ""
+                                        : self.entry.station-count == 1 ? "1 station"
+                                        : self.entry.station-count > 0 ? "\{self.entry.station-count} stations" : "";
+                                    item-selected: self.on-any ? root.selected-code == ""
+                                        : self.entry.code == root.selected-code;
+                                    move-to(row) => {
+                                        root.active-row = row;
+                                        entry-flick.reveal(row);
+                                    }
+                                    activated(row) => { root.pick-row(row); }
+                                    left-at-top => { filter-input.focus-input(); }
+                                }
+                            }
+
+                            scroll := ScrollBar {
+                                x: parent.width - self.width - Theme.space-2;
+                                y: Theme.space-4;
+                                height: parent.height - 2 * Theme.space-4;
+                                viewport-height: entry-flick.height;
+                                content-height: entry-flick.content-height;
+                                content-y <=> entry-flick.content-y;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,8 +1,9 @@
 import { DesktopShortcuts, ShortcutAction } from "../shortcuts.slint";
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Icon, ButtonKeys, FocusRing, Motion, StatusPanel, ChipVariant } from "../components.slint";
+import { DialogShell, Icon, IconButton, ButtonKeys, FocusRing, Motion, PopupCard, StatusPanel, ChipVariant } from "../components.slint";
 import { StationState, StationRowSurface, StationLogo, StationStateMark } from "../station-row.slint";
 import { KeyListCursor } from "../key-list.slint";
+import { FilterDropdown, FilterEntry } from "../filter-dropdown.slint";
 import { RecordingGuard } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
@@ -13,6 +14,8 @@ export struct BrowseStation {
     url: string,
     logo-url: string,
     country: string,
+    // The genres' names, joined ("Jazz, Blues")
+    genres: string,
     codec: string,
     bitrate: int,
     // Provider's station ID, used to recognize favorites with a different URL
@@ -25,14 +28,15 @@ export struct BrowseStation {
 // Tab stop: the list has one, which stands for the active row.
 component StationRow inherits Rectangle {
     in property <string> name;
-    in property <string> country;
+    // Where it is and what it plays: "United Kingdom · Jazz, Blues"
+    in property <string> detail;
     in property <string> codec;
     in property <int> bitrate;
     in property <image> logo-image;
     in property <bool> has-logo;
     // What the player is doing with this station
     in property <StationState> state;
-    // Status line shown instead of the country while loading or failed
+    // Status line shown instead of the detail while loading or failed
     in property <string> status;
     in property <bool> is-favorite;
     // The keyboard's row, while the list has the focus
@@ -86,7 +90,7 @@ component StationRow inherits Rectangle {
             }
         }
 
-        // Station name + country
+        // Station name + country and genres
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
@@ -116,7 +120,7 @@ component StationRow inherits Rectangle {
             Text {
                 text: root.armed ? RecordingGuard.text
                     : (root.state == StationState.loading || root.state == StationState.failed) && root.status != ""
-                    ? root.status : root.country;
+                    ? root.status : root.detail;
                 color: root.armed || root.state == StationState.failed ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 font-weight: root.armed ? Theme.weight-semibold : Theme.weight-regular;
@@ -209,42 +213,56 @@ component StationRow inherits Rectangle {
     }
 }
 
-// A filter under the search box: "Any country" or the one chosen, with a
-// ✕ to clear it. Clicking it opens the list to choose from. It has the
-// search field's height and shape, and both filters share the row equally,
-// so a long value elides rather than moving the other one.
-component FilterChip inherits Rectangle {
-    // What it filters by, for screen readers: "Country"
-    in property <string> name;
-    // "Any country" and the like when nothing is chosen
-    in property <string> any-label;
-    // The chosen value, empty for Any
-    in property <string> value;
-    in property <image> flag;
+// Shows or hides the filters under the search box: a square button beside
+// it, held down while they show, with a dot once a filter is set. Resting
+// the pointer on it (or reaching it with Tab) names it in a bubble.
+component FilterToggle inherits Rectangle {
+    // The filters show
+    in property <bool> shown;
+    // A filter is set
+    in property <bool> filtered;
+    // The filters set, for the bubble and screen readers: "United Kingdom, Jazz"
+    in property <string> summary;
+    out property <bool> has-focus: keys.has-focus;
     callback clicked();
-    callback cleared();
 
-    property <bool> active: root.value != "";
+    property <bool> bubble-ready;
 
+    width: Theme.control-field;
     height: Theme.control-field;
-    min-width: 0;
-    preferred-width: 0;
-    horizontal-stretch: 1;
     border-radius: Theme.radius-sm;
-    background: touch.pressed ? Theme.pressed-bg
-        : touch.has-hover ? Theme.hover-bg : Theme.elevated;
     border-width: 1px;
-    border-color: root.active ? Theme.accent-graphic : Theme.field-border;
+    border-color: root.shown ? Theme.accent-graphic : Theme.field-border;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg
+        : root.shown ? Theme.selected-bg : Theme.elevated;
     animate background, border-color { duration: Theme.fast; }
     forward-focus: keys;
 
     accessible-role: button;
-    accessible-label: "\{root.name}: \{root.active ? root.value : "any"}";
+    accessible-label: "Filters";
+    accessible-description: root.filtered ? root.summary : "";
+    accessible-checkable: true;
+    accessible-checked: root.shown;
     accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => {
+            root.bubble-ready = false;
+            root.clicked();
+        }
+        changed has-hover => {
+            if !self.has-hover {
+                root.bubble-ready = false;
+            }
+        }
+    }
+
+    Timer {
+        interval: Defaults.hover-delay;
+        running: touch.has-hover && !root.bubble-ready;
+        triggered => { root.bubble-ready = true; }
     }
 
     keys := ButtonKeys {
@@ -255,90 +273,104 @@ component FilterChip inherits Rectangle {
         radius: root.border-radius;
     }
 
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: root.active ? Theme.space-6 : 10px;
-        spacing: Theme.space-6;
+    Icon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: Theme.icon-md;
+        height: Theme.icon-md;
+        source: @image-url("../icons/filter.svg");
+        colorize: root.shown || root.filtered ? Theme.selection-mark
+            : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        animate colorize { duration: Theme.fast; }
+    }
 
-        if root.active && root.flag.width > 0: VerticalLayout {
-            alignment: center;
+    // A filter is set: a dot on the corner, ringed so it reads on the edge
+    if root.filtered: Rectangle {
+        x: parent.width - self.width + 3px;
+        y: -3px;
+        width: 10px;
+        height: 10px;
+        border-radius: self.height / 2;
+        background: Theme.accent-graphic;
+        border-width: 1.5px;
+        border-color: Theme.card;
+    }
 
-            Image {
-                source: root.flag;
-                width: 18px;
-                height: 13px;
-                image-fit: contain;
-                // Decoration: the name beside it says the country
-                accessible-role: none;
-            }
-        }
+    PopupCard {
+        property <bool> wanted: (touch.has-hover && root.bubble-ready) || keys.has-focus;
+        visible: self.opacity > 0;
+        opacity: self.wanted ? 1 : 0;
+        // Beside the button, over the end of the search field: the rows
+        // under this one are drawn after it, and would cover a bubble below
+        x: -self.width - Theme.space-6;
+        y: (root.height - self.height) / 2;
+        width: bubble-text.preferred-width + 2 * Theme.space-8;
+        height: Theme.row-menu;
+        // The button says it
+        accessible-role: none;
 
-        Text {
-            text: root.active ? root.value : root.any-label;
-            color: root.active ? Theme.text-primary : Theme.text-secondary;
-            font-size: Theme.font-base;
+        bubble-text := Text {
+            text: root.filtered ? "Filters: \{root.summary}" : "Filters";
+            color: Theme.text-primary;
+            font-size: Theme.font-md;
+            horizontal-alignment: center;
             vertical-alignment: center;
-            horizontal-stretch: 1;
-            overflow: elide;
             accessible-role: none;
-        }
-
-        if !root.active: VerticalLayout {
-            alignment: center;
-
-            Icon {
-                width: Theme.icon-sm;
-                height: Theme.icon-sm;
-                source: @image-url("../icons/chevron-down.svg");
-                colorize: Theme.text-secondary;
-            }
-        }
-
-        // Clear the filter
-        if root.active: Rectangle {
-            width: 24px;
-            height: 24px;
-            y: (parent.height - self.height) / 2;
-            border-radius: self.height / 2;
-            background: clear-touch.pressed ? Theme.pressed-bg
-                : clear-touch.has-hover ? Theme.hover-bg : transparent;
-            accessible-role: button;
-            accessible-label: "Clear \{root.value}";
-            accessible-action-default => { root.cleared(); }
-
-            clear-touch := TouchArea {
-                mouse-cursor: pointer;
-                clicked => { root.cleared(); }
-            }
-
-            // It goes away once the filter is cleared: the focus moves to
-            // the filter itself first, so it stays in the dialog
-            clear-keys := ButtonKeys {
-                activated => {
-                    keys.focus();
-                    root.cleared();
-                }
-            }
-
-            if clear-keys.has-focus: FocusRing {
-                radius: parent.border-radius;
-                offset: 0px;
-            }
-
-            Icon {
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                width: Theme.icon-sm;
-                height: Theme.icon-sm;
-                source: @image-url("../icons/xmark.svg");
-                colorize: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-            }
         }
     }
 }
 
+// The quiet action of the Undo offer, as under the favorites list: accent
+// text, underlined while hovered or focused
+component TextButton inherits Rectangle {
+    in property <string> label;
+    out property <bool> has-focus: keys.has-focus;
+    callback clicked();
+
+    height: Theme.row-menu;
+    width: text.preferred-width + 2 * Theme.space-8;
+    border-radius: Theme.radius-sm;
+    forward-focus: keys;
+
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    text := Text {
+        text: root.label;
+        color: Theme.accent-text;
+        font-size: Theme.font-base;
+        font-weight: Theme.weight-semibold;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    if touch.has-hover || keys.has-focus: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height + text.preferred-height) / 2 - 1px;
+        width: text.preferred-width;
+        height: 1px;
+        background: Theme.accent-text;
+    }
+
+    keys := ButtonKeys {
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
+}
+
 export component StationBrowserDialog inherits Rectangle {
-    in property <bool> search-shortcut-enabled;
+    // Opens a filter's list (the snapshot tool)
+    in property <string> snapshot-overlay;
     in-out property <bool> show-dialog: false;
     in-out property <bool> search-loading: false;
     in-out property <bool> search-loading-more: false;
@@ -360,6 +392,24 @@ export component StationBrowserDialog inherits Rectangle {
     // The directory's slug
     in-out property <string> genre-code: "";
     property <bool> filtered: root.country-code != "" || root.genre-code != "";
+    // The filters set, by name: "United Kingdom, Jazz"
+    property <string> filter-summary: root.join(root.country-name, root.genre-name);
+    // The filters show under the search box (the button beside it)
+    in-out property <bool> filters-shown: false;
+    // The filter list opened last ("country" or "genre"): its rows that
+    // match the typed text, and whether they are loading or failed. One
+    // list is open at a time, so both filters use these.
+    in-out property <string> filter-kind: "";
+    in-out property <[FilterEntry]> filter-entries: [];
+    in-out property <string> filter-text: "";
+    in-out property <bool> filter-loading: false;
+    in-out property <string> filter-error: "";
+    // A favorite was just removed: its Undo is offered here too
+    in property <bool> can-undo;
+    callback undo-requested();
+    callback undo-dismissed();
+    // The Undo offer has the focus
+    property <bool> undo-focused;
     // Current playback, so the row of the station being played shows its
     // state even while the dialog hides the player
     in property <string> playing-url;
@@ -389,6 +439,7 @@ export component StationBrowserDialog inherits Rectangle {
         if !self.show-dialog {
             root.picked = "";
             root.armed = "";
+            root.undo-focused = false;
             root.closed();
         }
     }
@@ -413,9 +464,11 @@ export component StationBrowserDialog inherits Rectangle {
     // Search by name within the filters (query, country code, genre slug);
     // with nothing given, the most played stations
     callback search-stations(string, string, string);
-    // Open the list of countries or genres ("country", "genre") to choose a
-    // filter from
-    callback pick-filter(string);
+    // A filter's list opens: fill it with the countries or genres
+    // ("country", "genre")
+    callback load-filter-entries(string);
+    // Show only the entries of the open list that match the text
+    callback filter-filter-entries(string);
     callback load-more();
     // Try the failed request again (the first page, or the next one)
     callback retry();
@@ -477,17 +530,57 @@ export component StationBrowserDialog inherits Rectangle {
         return a == "" ? b : b == "" ? a : "\{a}, \{b}";
     }
 
+    // Two parts of a status line
+    pure function dot(a: string, b: string) -> string {
+        return a == "" ? b : b == "" ? a : "\{a} · \{b}";
+    }
+
+    function open-filter(kind: string) {
+        root.filter-kind = kind;
+        root.filter-text = "";
+        root.load-filter-entries(kind);
+    }
+
+    function reset-filters() {
+        root.country-name = "";
+        root.country-code = "";
+        root.genre-name = "";
+        root.genre-code = "";
+        root.run-search();
+    }
+
+    // The snapshot tool's states of the dialog
+    public function stage(detail: string) {
+        root.search-query = detail == "empty" ? "no such station" : "jazz";
+        if detail == "filtered" || detail == "filtered-shown" || detail == "next-loading"
+            || detail == "next-error" {
+            root.country-code = "GB";
+            root.country-name = "United Kingdom";
+            root.genre-code = "jazz";
+            root.genre-name = "Jazz";
+        }
+        root.filters-shown = detail == "filters" || detail == "filtered-shown"
+            || detail == "filter-country" || detail == "filter-genre" || detail == "filter-keys"
+            || detail == "filter-loading" || detail == "filter-error" || detail == "filter-no-match";
+        root.show-dialog = true;
+    }
+
     // A result in one sentence for screen readers: its status or country,
-    // the codec, the bitrate, and whether it is a favorite
+    // the genres, the codec, the bitrate, and whether it is a favorite
     pure function describe(station: BrowseStation, state: StationState) -> string {
-        return root.join(root.join(root.join(root.join(
+        return root.join(root.join(root.join(root.join(root.join(
             root.armed != "" && root.armed == root.key-of(station) ? RecordingGuard.spoken : "",
             (state == StationState.loading || state == StationState.failed) && root.play-status != ""
                 ? root.play-status
                 : state == StationState.playing ? root.join("Playing", station.country) : station.country),
+            station.genres),
             station.codec),
             station.bitrate > 0 ? "\{station.bitrate} kbps" : ""),
             station.is-favorite ? "in favorites" : "");
+    }
+
+    function take-undo() {
+        root.undo-requested();
     }
 
     // Search again with the query on screen, for a filter just changed
@@ -504,7 +597,7 @@ export component StationBrowserDialog inherits Rectangle {
         root.search-stations(root.search-query, root.country-code, root.genre-code);
     }
 
-    if show-dialog: DialogShell {
+    if show-dialog: shell := DialogShell {
         title: "Search Stations";
         subtitle: "From the Radiotrope station directory";
         card-width: Defaults.station-browser-width;
@@ -512,9 +605,16 @@ export component StationBrowserDialog inherits Rectangle {
         auto-focus: false;
         close-requested => { root.show-dialog = false; }
         capture-key(event) => {
-            if DesktopShortcuts.enabled && root.search-shortcut-enabled
-                && DesktopShortcuts.match-key(event) == ShortcutAction.search {
+            if DesktopShortcuts.enabled && DesktopShortcuts.match-key(event) == ShortcutAction.search {
                 search-input.focus-input();
+                return accept;
+            }
+            // While the Undo of a favorite just removed is offered, its
+            // shortcut takes it (the offer is on screen, so it is what the
+            // key means, also in the search box)
+            if root.can-undo && DesktopShortcuts.enabled
+                && DesktopShortcuts.match-key(event) == ShortcutAction.undo-remove {
+                root.take-undo();
                 return accept;
             }
             // Down from the search field goes into the results
@@ -526,7 +626,8 @@ export component StationBrowserDialog inherits Rectangle {
             return reject;
         }
 
-        // Search input: field and button share one height
+        // Search input: the field, the filters' button and Search share
+        // one height
         HorizontalLayout {
             spacing: Theme.space-8;
             height: Theme.control-field;
@@ -537,6 +638,15 @@ export component StationBrowserDialog inherits Rectangle {
                 init => { self.focus-input(); }
                 property <int> focus-request: root.focus-search-request;
                 changed focus-request => { self.focus-input(); }
+                // The Undo offer went away (taken, dismissed or timed out)
+                // while it had the focus: keep it in the dialog
+                property <bool> undo-offered: root.can-undo;
+                changed undo-offered => {
+                    if !self.undo-offered && root.undo-focused {
+                        root.undo-focused = false;
+                        self.focus-input();
+                    }
+                }
                 label: "Search by station name";
                 placeholder-text: "Search by station name";
                 text <=> root.search-query;
@@ -558,6 +668,21 @@ export component StationBrowserDialog inherits Rectangle {
                 }
             }
 
+            filter-toggle := FilterToggle {
+                shown: root.filters-shown;
+                filtered: root.filtered;
+                summary: root.filter-summary;
+                clicked => {
+                    // The filters go away: if one of them had the focus,
+                    // the search field takes it, so Esc still closes the
+                    // dialog
+                    if root.filters-shown && !self.has-focus && !search-input.has-focus {
+                        search-input.focus-input();
+                    }
+                    root.filters-shown = !root.filters-shown;
+                }
+            }
+
             AccentButton {
                 label: "Search";
                 height: Theme.control-field;
@@ -570,17 +695,38 @@ export component StationBrowserDialog inherits Rectangle {
             }
         }
 
-        // Filters: country and genre, as tall as the search field
-        HorizontalLayout {
+        // Filters: country and genre, as tall as the search field; each
+        // opens a list to choose from, narrowed by typing
+        if root.filters-shown: HorizontalLayout {
             spacing: Theme.space-8;
             height: Theme.control-field;
 
-            FilterChip {
+            FilterDropdown {
                 name: "Country";
                 any-label: "Any country";
+                plural: "countries";
+                list-label: "Countries";
                 value: root.country-name;
+                selected-code: root.country-code;
                 flag: root.country-flag;
-                clicked => { root.pick-filter("country"); }
+                show-flags: true;
+                entries: root.filter-entries;
+                loading: root.filter-loading;
+                error: root.filter-error;
+                filter-text <=> root.filter-text;
+                popup-bounds: shell.popup-bounds;
+                show-popup: root.snapshot-overlay == "filter-country" || root.snapshot-overlay == "filter-keys"
+                    || root.snapshot-overlay == "filter-loading" || root.snapshot-overlay == "filter-error"
+                    || root.snapshot-overlay == "filter-no-match";
+                opening => { root.open-filter("country"); }
+                filter-entries(text) => { root.filter-filter-entries(text); }
+                retry => { root.load-filter-entries("country"); }
+                picked(entry) => {
+                    root.country-name = entry.name;
+                    root.country-code = entry.code;
+                    root.country-flag = entry.flag;
+                    root.run-search();
+                }
                 cleared => {
                     root.country-name = "";
                     root.country-code = "";
@@ -588,11 +734,27 @@ export component StationBrowserDialog inherits Rectangle {
                 }
             }
 
-            FilterChip {
+            FilterDropdown {
                 name: "Genre";
                 any-label: "Any genre";
+                plural: "genres";
+                list-label: "Genres";
                 value: root.genre-name;
-                clicked => { root.pick-filter("genre"); }
+                selected-code: root.genre-code;
+                entries: root.filter-entries;
+                loading: root.filter-loading;
+                error: root.filter-error;
+                filter-text <=> root.filter-text;
+                popup-bounds: shell.popup-bounds;
+                show-popup: root.snapshot-overlay == "filter-genre";
+                opening => { root.open-filter("genre"); }
+                filter-entries(text) => { root.filter-filter-entries(text); }
+                retry => { root.load-filter-entries("genre"); }
+                picked(entry) => {
+                    root.genre-name = entry.name;
+                    root.genre-code = entry.code;
+                    root.run-search();
+                }
                 cleared => {
                     root.genre-name = "";
                     root.genre-code = "";
@@ -606,13 +768,7 @@ export component StationBrowserDialog inherits Rectangle {
                 icon: @image-url("../icons/reset.svg");
                 height: Theme.control-field;
                 enabled: root.filtered;
-                clicked => {
-                    root.country-name = "";
-                    root.country-code = "";
-                    root.genre-name = "";
-                    root.genre-code = "";
-                    root.run-search();
-                }
+                clicked => { root.reset-filters(); }
             }
         }
 
@@ -696,6 +852,14 @@ export component StationBrowserDialog inherits Rectangle {
                 title: "No stations found";
                 message: root.filtered ? "Try removing a filter."
                     : root.shown-query != "" ? "Check the spelling or try another name." : "";
+                // The filters may be hidden: the way out is here too
+                action-label: root.filtered ? "Reset Filters" : "";
+                action => {
+                    // The button goes away while it loads: keep the focus
+                    // in the dialog so Esc still closes it
+                    search-input.focus-input();
+                    root.reset-filters();
+                }
             }
 
             // Results list: one Tab stop. The arrows, Page Up / Page Down
@@ -756,7 +920,7 @@ export component StationBrowserDialog inherits Rectangle {
                             y: Theme.space-4 + self.idx * rows.row-height;
                             width: rows.width - 2 * Theme.space-4;
                             name: station.name;
-                            country: station.country;
+                            detail: root.dot(station.country, station.genres);
                             codec: station.codec;
                             bitrate: station.bitrate;
                             logo-image: self.idx < root.browse-logos.length ? root.browse-logos[self.idx] : @image-url("");
@@ -859,6 +1023,57 @@ export component StationBrowserDialog inherits Rectangle {
                     content-y <=> results-flick.content-y;
                 }
             }
+
+            // A favorite was just removed (un-starred here, or in the main
+            // window a moment ago): the same offer as under the favorites
+            // list, over the bottom of the results, for as long as there
+            if root.can-undo: PopupCard {
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - Theme.space-12;
+                width: min(undo-row.preferred-width, parent.width - 2 * Theme.space-12);
+                height: Theme.control-button + 2 * Theme.space-4;
+                accessible-role: none;
+
+                undo-row := HorizontalLayout {
+                    padding-left: Theme.space-12;
+                    padding-right: Theme.space-4;
+                    spacing: Theme.space-4;
+
+                    Text {
+                        text: "Removed from Favorites";
+                        color: Theme.text-primary;
+                        font-size: Theme.font-md;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        // Said when it appears
+                        accessible-live-region: polite;
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        undo-button := TextButton {
+                            label: "Undo";
+                            changed has-focus => {
+                                root.undo-focused = self.has-focus || undo-dismiss.has-focus;
+                            }
+                            clicked => { root.take-undo(); }
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        undo-dismiss := IconButton {
+                            icon: @image-url("../icons/xmark.svg");
+                            icon-size: Theme.icon-sm;
+                            label: "Dismiss";
+                            changed has-focus => {
+                                root.undo-focused = self.has-focus || undo-button.has-focus;
+                            }
+                            clicked => { root.undo-dismissed(); }
+                        }
+                    }
+                }
+            }
         }
 
         // Footer: how many stations, and a failed next page with its retry.
@@ -869,10 +1084,13 @@ export component StationBrowserDialog inherits Rectangle {
             alignment: stretch;
             spacing: Theme.space-8;
 
+            // How many, and the filters they are within (which may be hidden)
             Text {
-                text: root.search-results.length == 0 ? ""
-                    : root.search-results.length == 1 ? "1 station"
-                    : "\{root.search-results.length} stations";
+                text: root.dot(root.search-results.length == 0 ? ""
+                        : root.search-results.length == 1 ? "1 station"
+                        : "\{root.search-results.length} stations",
+                    root.filtered ? "Filters: \{root.filter-summary}" : "");
+                overflow: elide;
                 color: Theme.text-secondary;
                 font-size: Theme.font-sm;
                 vertical-alignment: center;
