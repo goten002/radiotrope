@@ -18,29 +18,22 @@ use std::time::SystemTime;
 /// - Windows: `C:\Users\<User>\AppData\Local\radiotrope\cache\`
 pub fn cache_dir() -> Result<PathBuf> {
     dirs::cache_dir().map(|p| p.join(NAME)).ok_or_else(|| {
-        AppError::Config(
-            "Could not determine cache directory. HOME environment variable may not be set."
-                .to_string(),
-        )
+        AppError::Config("Can't find the cache folder. Check that HOME is set.".to_string())
     })
 }
 
 /// Ensure the cache directory exists
 pub fn ensure_cache_dir() -> Result<PathBuf> {
     let dir = cache_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| {
-        AppError::Config(format!("Failed to create cache directory {:?}: {}", dir, e))
-    })?;
+    fs::create_dir_all(&dir)
+        .map_err(|e| AppError::Config(format!("Can't create cache directory {:?}: {}", dir, e)))?;
     Ok(dir)
 }
 
 /// Get the application config directory path
 pub fn config_dir() -> Result<PathBuf> {
     dirs::config_dir().map(|p| p.join(NAME)).ok_or_else(|| {
-        AppError::Config(
-            "Could not determine config directory. HOME environment variable may not be set."
-                .to_string(),
-        )
+        AppError::Config("Can't find the settings folder. Check that HOME is set.".to_string())
     })
 }
 
@@ -67,16 +60,16 @@ pub(super) fn create_dir_if_needed(path: &Path) -> Result<()> {
         Err(e) => {
             let msg = match e.kind() {
                 ErrorKind::PermissionDenied => {
-                    format!("Permission denied: cannot create directory {:?}", path)
+                    format!("Can't create directory {:?}: permission denied", path)
                 }
                 ErrorKind::NotFound => {
                     format!(
-                        "Cannot create directory {:?}: parent path does not exist",
+                        "Can't create directory {:?}: parent path does not exist",
                         path
                     )
                 }
                 _ => {
-                    format!("Failed to create directory {:?}: {}", path, e)
+                    format!("Can't create directory {:?}: {}", path, e)
                 }
             };
             Err(AppError::Config(msg))
@@ -122,13 +115,10 @@ fn read_file(path: &Path) -> Result<Option<String>> {
         Err(e) => match e.kind() {
             ErrorKind::NotFound => Ok(None),
             ErrorKind::PermissionDenied => Err(AppError::Config(format!(
-                "Permission denied: cannot read {:?}",
+                "Can't read {:?}: permission denied",
                 path
             ))),
-            _ => Err(AppError::Config(format!(
-                "Failed to read {:?}: {}",
-                path, e
-            ))),
+            _ => Err(AppError::Config(format!("Can't read {:?}: {}", path, e))),
         },
     }
 }
@@ -197,19 +187,16 @@ fn write_file(path: &Path, content: &str) -> Result<FileStamp> {
     result.map_err(|e| {
         let msg = match e.kind() {
             ErrorKind::PermissionDenied => {
-                format!("Permission denied: cannot write to {:?}", path)
+                format!("Can't write to {:?}: permission denied", path)
             }
             ErrorKind::NotFound => {
-                format!(
-                    "Cannot write to {:?}: parent directory does not exist",
-                    path
-                )
+                format!("Can't write to {:?}: parent directory does not exist", path)
             }
             ErrorKind::ReadOnlyFilesystem => {
-                format!("Cannot write to {:?}: filesystem is read-only", path)
+                format!("Can't write to {:?}: filesystem is read-only", path)
             }
             _ => {
-                format!("Failed to write to {:?}: {}", path, e)
+                format!("Can't write to {:?}: {}", path, e)
             }
         };
         AppError::Config(msg)
@@ -307,7 +294,7 @@ pub fn parse_file<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
     }
 
     let data = serde_json::from_str(&content)
-        .map_err(|e| AppError::Config(format!("Failed to parse {:?}: {}", path, e)))?;
+        .map_err(|e| AppError::Config(format!("Can't parse {:?}: {}", path, e)))?;
 
     Ok(Some(data))
 }
@@ -327,10 +314,7 @@ pub fn load_from<T: DeserializeOwned>(path: &Path) -> Result<Option<T>> {
         Some(content) if content.trim().is_empty() => None,
         Some(content) => match serde_json::from_str(&content) {
             Ok(data) => return Ok(Some(data)),
-            Err(e) => Some(AppError::Config(format!(
-                "Failed to parse {:?}: {}",
-                path, e
-            ))),
+            Err(e) => Some(AppError::Config(format!("Can't parse {:?}: {}", path, e))),
         },
     };
 
@@ -368,7 +352,7 @@ pub fn save_to_stamped<T: Serialize>(path: &Path, data: &T) -> Result<FileStamp>
     }
 
     let content = serde_json::to_string_pretty(data)
-        .map_err(|e| AppError::Config(format!("Failed to serialize data: {}", e)))?;
+        .map_err(|e| AppError::Config(format!("Can't serialize data: {}", e)))?;
 
     write_file(path, &content)
 }
@@ -381,13 +365,10 @@ pub fn delete_at(path: &Path) -> Result<()> {
             match e.kind() {
                 ErrorKind::NotFound => Ok(()), // Already gone, that's fine
                 ErrorKind::PermissionDenied => Err(AppError::Config(format!(
-                    "Permission denied: cannot delete {:?}",
+                    "Can't delete {:?}: permission denied",
                     path
                 ))),
-                _ => Err(AppError::Config(format!(
-                    "Failed to delete {:?}: {}",
-                    path, e
-                ))),
+                _ => Err(AppError::Config(format!("Can't delete {:?}: {}", path, e))),
             }
         }
     }

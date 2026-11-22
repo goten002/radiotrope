@@ -22,6 +22,9 @@ pub enum AgentApp {
     ClaudeDesktop,
 }
 
+/// Where Cursor reads the line from
+const CURSOR_NOTE: &str = "Paste into ~/.cursor/mcp.json, or .cursor/mcp.json in a project.";
+
 impl AgentApp {
     /// In the order the dialog lists them
     pub const ALL: [AgentApp; 6] = [
@@ -71,10 +74,9 @@ impl AgentApp {
     /// Help shown next to the line for this computer, if any
     pub fn local_note(self) -> &'static str {
         match self {
-            AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
+            AgentApp::Cursor => CURSOR_NOTE,
             AgentApp::ClaudeDesktop => {
-                "Add to claude_desktop_config.json (Settings > Developer > Edit Config), \
-                 then restart Claude Desktop."
+                "In Claude Desktop, paste into Settings > Developer > Edit Config, then restart it."
             }
             _ => "",
         }
@@ -85,10 +87,9 @@ impl AgentApp {
     pub fn network_note(self, token: bool) -> &'static str {
         match self {
             AgentApp::Codex if token => {
-                "Codex reads the token from the RADIOTROPE_TOKEN environment variable: \
-                 set it to the token above."
+                "Set the RADIOTROPE_TOKEN environment variable to the token above."
             }
-            AgentApp::Cursor => "Add to ~/.cursor/mcp.json (or .cursor/mcp.json in a project).",
+            AgentApp::Cursor => CURSOR_NOTE,
             _ => "",
         }
     }

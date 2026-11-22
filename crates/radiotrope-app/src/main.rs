@@ -31,7 +31,7 @@ use clap::Parser;
 use crossbeam_channel::bounded;
 use slint::{Model, ModelRc, SharedPixelBuffer, VecModel};
 
-use radiotrope::audio::health::HealthState;
+use radiotrope::audio::health::{FailureReason, HealthState};
 use radiotrope::audio::{
     AudioAnalysis, HissLevel, LevelPhase, LevelTarget, PlaybackState, SharedStats, StreamStats,
 };
@@ -51,6 +51,7 @@ use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::providers::types::{CategoryType, SearchResults, StationFilter};
 use radiotrope_app::providers::{RadiotropeProvider, StationProvider};
+use radiotrope_app::text::{self, status, MISSING, SEPARATOR};
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
 use app::controller::AppController;
@@ -768,11 +769,12 @@ fn main() {
             // nothing; the dialog stays open and shows why
             let mut f = favs.lock().unwrap_or_else(|e| e.into_inner());
             let old_fav = f.get(&id).cloned();
-            if let Err(e) = f.update(&id, update) {
+            if f.update(&id, update).is_err() {
                 return if f.get_id_for_url(&url) != id && f.is_favorite(&url) {
                     "Another favorite already has this stream URL".into()
                 } else {
-                    e.to_string().into()
+                    // The only other failure: the favorite is gone
+                    "Can't save: this favorite was removed. Close and try again.".into()
                 };
             }
             let _ = f.save();
@@ -1639,7 +1641,7 @@ fn main() {
             let mut codec_info: slint::SharedString = format_codec_line(&s).into();
             let mut status_text: slint::SharedString = s.status_text.as_ref().into();
             let mut is_error = s.is_error;
-            let mut is_loading = s.is_resolving || s.status_text == "Connecting...";
+            let mut is_loading = s.is_resolving || s.status_text == status::CONNECTING;
             let mut is_playing = s.playback == PlaybackState::Playing;
             let alarm_beep = s.alarm_beep;
             let mut now_playing: slint::SharedString = if !s.title.is_empty() {
@@ -2369,7 +2371,7 @@ fn setup_wifi(ui: &App) {
         let ui_weak = ui.as_weak();
         ui.on_wifi_connect_requested(move |path, password| {
             if let Some(ui) = ui_weak.upgrade() {
-                ui.set_wifi_connection_status("Connecting...".into());
+                ui.set_wifi_connection_status(status::CONNECTING.into());
             }
             let passphrase = (!password.is_empty()).then(|| password.to_string());
             manager.send(WifiCommand::Connect {
@@ -2756,7 +2758,7 @@ fn show_listen_choices(
         let ip = saved
             .map(|ip| ip.to_string())
             .unwrap_or_else(|| address.clone());
-        labels.push(format!("{ip} (not found)").into());
+        labels.push(format!("{ip} (not available)").into());
         choices.push(ListenChoice {
             ip: saved.unwrap_or(Ipv4Addr::LOCALHOST.into()),
             interface: settings.mcp_interface.clone(),
@@ -2902,7 +2904,7 @@ fn setup_recording(
                     }
                 });
             if let Err(e) = spawned {
-                ui.set_recording_folder_error(format!("Cannot open the folder: {e}").into());
+                ui.set_recording_folder_error(format!("Can't open the folder: {e}").into());
             }
         }
     });
@@ -2921,11 +2923,11 @@ fn setup_recording(
 fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, path: &str) {
     let path = std::path::PathBuf::from(path.trim());
     if path.as_os_str().is_empty() {
-        ui.set_recording_folder_error("Enter a folder, or use Restore Default.".into());
+        ui.set_recording_folder_error("Enter a folder, or press Restore Default".into());
         return;
     }
     if !path.is_absolute() {
-        ui.set_recording_folder_error("Enter a full path to a folder.".into());
+        ui.set_recording_folder_error("Enter the folder's full path".into());
         return;
     }
     let check = new_folder_check();
@@ -2950,7 +2952,7 @@ fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, path: &str)
             });
         });
     if let Err(e) = spawned {
-        ui.set_recording_folder_error(format!("Cannot check the folder: {e}").into());
+        ui.set_recording_folder_error(format!("Can't check the folder: {e}").into());
     }
 }
 
@@ -3030,13 +3032,7 @@ fn show_recording_state(
     ui.set_is_recording(recording.is_some());
     ui.set_can_record(is_playing);
     if let Some(rec) = recording {
-        let secs = rec.duration.as_secs();
-        let time = if secs >= 3600 {
-            format!("{}:{:02}:{:02}", secs / 3600, secs / 60 % 60, secs % 60)
-        } else {
-            format!("{}:{:02}", secs / 60, secs % 60)
-        };
-        ui.set_recording_text(time.into());
+        ui.set_recording_text(text::clock(rec.duration.as_secs()).into());
         ui.set_recording_size(format_bytes(rec.bytes).into());
     }
 
@@ -3459,27 +3455,31 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
     let (codec, bitrate, sample_rate, channels) = if let Some(ref ci) = s.codec_info {
         let codec_str = match s.stream_type {
             Some(StreamType::Hls) => format!("{} (HLS)", ci.codec_name),
-            Some(StreamType::Direct) => format!("{} (ICY)", ci.codec_name),
-            None => ci.codec_name.clone(),
+            Some(StreamType::Direct) | None => ci.codec_name.clone(),
         };
         let br = ci
             .bitrate
             .map(|b| format!("{b} kbps"))
-            .unwrap_or_else(|| "--".into());
+            .unwrap_or_else(|| MISSING.into());
         let sr = if ci.sample_rate > 0 {
-            format!("{} Hz", ci.sample_rate)
+            text::sample_rate(ci.sample_rate)
         } else {
-            "--".into()
+            MISSING.into()
         };
         let ch = match ci.channels {
-            0 => "--".into(),
+            0 => MISSING.into(),
             1 => "Mono".into(),
             2 => "Stereo".into(),
             n => format!("{n} ch"),
         };
         (codec_str, br, sr, ch)
     } else {
-        ("--".into(), "--".into(), "--".into(), "--".into())
+        (
+            MISSING.into(),
+            MISSING.into(),
+            MISSING.into(),
+            MISSING.into(),
+        )
     };
     ui.set_stat_codec(codec.into());
     ui.set_stat_bitrate(bitrate.into());
@@ -3491,7 +3491,7 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
     let segments_str = if s.segments_downloaded > 0 {
         format_number(s.segments_downloaded)
     } else {
-        "--".into()
+        MISSING.into()
     };
     ui.set_stat_segments(segments_str.into());
     ui.set_stat_throughput(format!("{:.0} kbps", s.throughput_kbps).into());
@@ -3507,7 +3507,7 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
 
 /// Statistics dialog with nothing playing
 fn clear_stats_ui(ui: &App) {
-    ui.set_stat_health("Stopped".into());
+    ui.set_stat_health(status::STOPPED.into());
     for set in [
         App::set_stat_playtime,
         App::set_stat_codec,
@@ -3526,13 +3526,13 @@ fn clear_stats_ui(ui: &App) {
         App::set_stat_hum,
         App::set_stat_hiss,
     ] {
-        set(ui, "--".into());
+        set(ui, MISSING.into());
     }
 }
 
 /// The Volume Leveler on the Statistics dialog: what it does to the
 /// station playing ("−6.5 dB"), "Learning" while it measures a station
-/// heard for the first time, "Off", or "--" before the station's audio
+/// heard for the first time, "Off", or "—" before the station's audio
 fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
     if !on {
         return "Off".into();
@@ -3540,7 +3540,7 @@ fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
     match readout {
         Some((LevelPhase::Learning, _)) => "Learning".into(),
         Some((LevelPhase::Settled, gain_db)) => level_text(gain_db),
-        _ => "--".into(),
+        _ => MISSING.into(),
     }
 }
 
@@ -3567,25 +3567,25 @@ fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
 /// Stream status shown on the Statistics dialog's first tile
 fn format_health(state: &HealthState) -> String {
     match state {
-        HealthState::WaitingForAudio => "Connecting".into(),
-        HealthState::Healthy => "OK".into(),
+        HealthState::WaitingForAudio => status::CONNECTING.into(),
+        HealthState::Healthy => status::PLAYING.into(),
         HealthState::Stalled => "Stalled".into(),
-        HealthState::Failed(reason) => format!("Failed ({reason:?})"),
+        HealthState::Failed(reason) => {
+            let why = match reason {
+                FailureReason::NoAudioOutput => "no audio",
+                FailureReason::StreamStall => "stopped sending",
+                FailureReason::ProbeFailed => "unknown format",
+            };
+            format!("Failed{SEPARATOR}{why}")
+        }
     }
 }
 
+/// How long the station has played: "4:05", "1:02:03", or "—"
 fn format_playtime(started: Option<Instant>) -> String {
-    let Some(t) = started else {
-        return "--".into();
-    };
-    let secs = t.elapsed().as_secs();
-    let m = secs / 60;
-    let s = secs % 60;
-    if m >= 60 {
-        let h = m / 60;
-        format!("{h:02}:{:02}:{s:02}", m % 60)
-    } else {
-        format!("{m:02}:{s:02}")
+    match started {
+        Some(t) => text::clock(t.elapsed().as_secs()),
+        None => MISSING.into(),
     }
 }
 
@@ -3958,16 +3958,10 @@ fn update_favorite_stats(ui: &App, favs: &FavoritesManager) {
     }
 }
 
-/// Total listening time for a favorites row: "3 h 25 m", "40 m", "<1 m",
-/// or empty when never played
+/// Total listening time for a favorites row: "3 h 25 min", "40 min",
+/// "<1 min", or empty when never played
 fn format_listen_time(secs: u64) -> String {
-    let mins = secs / 60;
-    match mins {
-        _ if secs == 0 => String::new(),
-        0 => "<1 m".into(),
-        1..=59 => format!("{mins} m"),
-        _ => format!("{} h {} m", mins / 60, mins % 60),
-    }
+    text::minutes(secs)
 }
 
 /// When a favorite was last played, relative to now: "Just now",
@@ -4314,7 +4308,7 @@ fn import_preview_text(mode: ImportMode, o: &ImportOutcome) -> String {
     }
     if o.over_cap > 0 {
         text += &format!(
-            "; {} don't fit ({} favorites at most)",
+            ". {} don't fit ({} favorites at most)",
             o.over_cap,
             control::MAX_FAVORITES
         );
@@ -4364,7 +4358,7 @@ fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<FavoritesManager>
             Ok(count) => show_favorites_file_message(
                 &ui,
                 "Export Favorites",
-                &format!("Saved {count} favorites. Open the file with Import Favorites."),
+                &format!("Saved {count} favorites. To restore them, use Import Favorites."),
                 &path.display().to_string(),
                 false,
             ),
@@ -4543,10 +4537,10 @@ fn refresh_favorites(
 const UNNAMED_STATION: &str = "Radiotrope";
 
 /// The status of a station that is starting (as the controller sets it)
-const STARTING_STATUS: &str = "Resolving...";
+const STARTING_STATUS: &str = status::CONNECTING;
 
 /// The codec line of a station not playing yet
-const AWAITING_STREAM: &str = "Awaiting stream";
+const AWAITING_STREAM: &str = "Waiting for stream";
 
 /// The filters as the Filters dialog shows them
 struct FilterSettings {
@@ -4583,14 +4577,7 @@ fn show_filters(ui: &App, f: &FilterSettings) {
 
 /// "−6.5 dB": what the Volume Leveler does to the station, to half a dB
 fn level_text(gain_db: f32) -> String {
-    let rounded = (gain_db * 2.0).round() / 2.0;
-    if rounded.abs() < 0.25 {
-        "0 dB".to_string()
-    } else if rounded < 0.0 {
-        format!("\u{2212}{:.1} dB", -rounded)
-    } else {
-        format!("+{:.1} dB", rounded)
-    }
+    text::signed_db((gain_db * 2.0).round() / 2.0, 1)
 }
 
 fn format_codec_line(s: &AppSnapshot) -> String {
@@ -4607,7 +4594,7 @@ fn format_codec_line(s: &AppSnapshot) -> String {
         parts.push(format!("{} kbps", br));
     }
     if s.sample_rate > 0 {
-        parts.push(format!("{} Hz", s.sample_rate));
+        parts.push(text::sample_rate(s.sample_rate));
     }
     if s.channels > 0 {
         parts.push(match s.channels {
@@ -4616,7 +4603,7 @@ fn format_codec_line(s: &AppSnapshot) -> String {
             n => format!("{} ch", n),
         });
     }
-    parts.join(" \u{2022} ")
+    parts.join(SEPARATOR)
 }
 
 #[cfg(test)]
@@ -4641,8 +4628,46 @@ mod tests {
             leveler_text(true, Some((LevelPhase::Settled, -6.4))),
             "\u{2212}6.5 dB"
         );
-        assert_eq!(leveler_text(true, Some((LevelPhase::None, 0.0))), "--");
-        assert_eq!(leveler_text(true, None), "--");
+        assert_eq!(
+            leveler_text(true, Some((LevelPhase::None, 0.0))),
+            "\u{2014}"
+        );
+        assert_eq!(leveler_text(true, None), "\u{2014}");
+    }
+
+    #[test]
+    fn health_uses_the_playback_words() {
+        assert_eq!(
+            format_health(&HealthState::WaitingForAudio),
+            "Connecting\u{2026}"
+        );
+        assert_eq!(format_health(&HealthState::Healthy), "Playing");
+        assert_eq!(
+            format_health(&HealthState::Failed(FailureReason::NoAudioOutput)),
+            "Failed \u{b7} no audio"
+        );
+        assert!(!format_health(&HealthState::Failed(FailureReason::ProbeFailed)).contains('('));
+        assert_eq!(format_playtime(None), "\u{2014}");
+    }
+
+    #[test]
+    fn codec_line_joins_with_middle_dots() {
+        let mut s = AppSnapshot::default();
+        assert_eq!(format_codec_line(&s), "Waiting for stream");
+        s.codec_name = "MP3".into();
+        s.bitrate = Some(128);
+        s.sample_rate = 44_100;
+        s.channels = 2;
+        assert_eq!(
+            format_codec_line(&s),
+            "MP3 \u{b7} 128 kbps \u{b7} 44.1 kHz \u{b7} Stereo"
+        );
+    }
+
+    #[test]
+    fn listening_time_says_min() {
+        assert_eq!(format_listen_time(40 * 60), "40 min");
+        assert_eq!(format_listen_time(3 * 3600 + 25 * 60), "3 h 25 min");
     }
 
     #[test]

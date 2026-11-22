@@ -246,15 +246,14 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
-fn address_note() -> String {
+/// The address bubble: what to do when a phone doesn't find the player
+pub(crate) fn address_note() -> String {
     let firewall = if cfg!(windows) {
-        "Windows may ask to allow Radiotrope on private networks: allow it."
+        " If Windows asks, allow private networks.".to_string()
     } else {
-        "A firewall must let phones reach this port."
+        format!(" Your firewall must allow port {PORT}.")
     };
-    format!(
-        "Phones on this network find the player by themselves. If one doesn't, add the player in the app by this address. Radiotrope listens on port {PORT}. {firewall}"
-    )
+    format!("If a phone doesn't find the player, type this address in the app.{firewall}")
 }
 
 #[cfg(test)]

@@ -153,11 +153,11 @@ fn map_error(e: zbus::Error, asked_for_passphrase: bool) -> WifiError {
                     message
                         .clone()
                         .filter(|m| !m.is_empty())
-                        .unwrap_or_else(|| format!("Wi-Fi error: {short}")),
+                        .unwrap_or_else(|| format!("Can't connect ({short})")),
                 ),
             }
         }
-        _ => WifiError::Other(format!("Wi-Fi error: {e}")),
+        _ => WifiError::Other(format!("Can't reach the Wi-Fi service: {e}")),
     }
 }
 

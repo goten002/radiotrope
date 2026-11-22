@@ -71,8 +71,20 @@ const BINDINGS: &[Binding] = &[
         Keys::Text(" "),
     ),
     Binding::new(Mute, "Playback", "Mute or unmute", "M", Keys::Text("m")),
-    Binding::new(VolumeUp, "Playback", "Volume up", "+ / =", Keys::Text("+=")),
-    Binding::new(VolumeDown, "Playback", "Volume down", "-", Keys::Text("-")),
+    Binding::new(
+        VolumeUp,
+        "Playback",
+        "Turn volume up",
+        "+ / =",
+        Keys::Text("+="),
+    ),
+    Binding::new(
+        VolumeDown,
+        "Playback",
+        "Turn volume down",
+        "-",
+        Keys::Text("-"),
+    ),
     Binding::new(
         Record,
         "Playback",
@@ -97,7 +109,7 @@ const BINDINGS: &[Binding] = &[
     Binding::new(
         ToggleFavorite,
         "Favorites",
-        "Add or remove loaded favorite",
+        "Add or remove the current station from Favorites",
         "F",
         Keys::Text("f"),
     ),
@@ -105,7 +117,7 @@ const BINDINGS: &[Binding] = &[
     Binding::control(
         NetworkStream,
         "Stations",
-        "Play a stream address",
+        "Open network stream",
         "Ctrl+O",
         "o",
     ),
@@ -148,7 +160,7 @@ const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, &str)] = &[
         FavoriteMenu,
         Key::Menu,
         "Shift+F10 / Menu key",
-        "Open the highlighted or focused favorite’s actions",
+        "Open the highlighted or focused favorite's actions",
     ),
     (
         FavoriteClear,
@@ -270,8 +282,8 @@ pub fn install(ui: &App) {
         }
         match group {
             "Playback" => add(
-                "Adjust focused volume slider or EQ fader",
-                "Arrows / Page Up / Page Down / Home / End",
+                "Adjust the focused volume slider or EQ fader",
+                "Arrow keys / Page Up / Page Down / Home / End",
             ),
             "Favorites" => {
                 for &(_, _, keys, description) in FAVORITE_KEYS {
@@ -282,11 +294,11 @@ pub fn install(ui: &App) {
             }
             "Dialogs" => {
                 add("Move focus forward or backward", "Tab / Shift+Tab");
-                add("Activate focused button or row", "Enter / Space");
-                add("Close dialog or popup", "Esc");
+                add("Activate the focused button or row", "Enter / Space");
+                add("Close the dialog or popup", "Esc");
                 add(
                     "Scroll this dialog",
-                    "Up / Down / Page Up / Page Down / Home / End",
+                    "↑ / ↓ / Page Up / Page Down / Home / End",
                 );
             }
             _ => {}
