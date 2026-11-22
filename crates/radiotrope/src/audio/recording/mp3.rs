@@ -166,7 +166,7 @@ impl Lame {
         lame_tag: bool,
     ) -> Result<Self, String> {
         let mono = channels == 1;
-        let mut builder = Builder::new().ok_or("Could not create the MP3 encoder")?;
+        let mut builder = Builder::new().ok_or("Can't create the MP3 encoder")?;
         builder
             .set_sample_rate(sample_rate)
             .map_err(|e| format!("MP3 encoder: {e}"))?;

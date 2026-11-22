@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Favorites data file name
 const FAVORITES_FILE: &str = "favorites.json";
@@ -50,6 +50,10 @@ pub struct PlayMetadata {
 /// The favorites as they were before the last list taken in, in the
 /// favorites file's folder, for [`FavoritesManager::undo_import`]
 pub const BEFORE_IMPORT_FILE: &str = "favorites.before-import.json";
+
+/// How long [`BEFORE_IMPORT_FILE`] is kept. The desktop no longer offers
+/// Undo Import, so after this the old list is only clutter.
+const BEFORE_IMPORT_KEPT: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// How a list of favorites from elsewhere (another player, a file) is
 /// taken in
@@ -174,8 +178,16 @@ impl FavoritesManager {
     }
 
     /// Load favorites from default storage location
+    ///
+    /// Also tidies the settings folder once per run (see [`tidy_folder`]).
     pub fn load() -> Result<Self> {
         let path = storage::data_path(FAVORITES_FILE)?;
+        static TIDIED: std::sync::Once = std::sync::Once::new();
+        if let Some(dir) = path.parent() {
+            TIDIED.call_once(|| {
+                tidy_folder(dir, SystemTime::now());
+            });
+        }
         Self::load_from(&path)
     }
 
@@ -1108,29 +1120,65 @@ fn stats_path_for(path: &Path) -> PathBuf {
     path.with_file_name(STATS_FILE)
 }
 
-fn lock_for_save(path: &Path) -> Result<File> {
+/// Remove what nobody reads again from the favorites folder `dir`: what
+/// [`storage::tidy_folder`] removes, and [`BEFORE_IMPORT_FILE`] (with its
+/// backup) once it is 30 days old. `now` is the current time.
+pub fn tidy_folder(dir: &Path, now: SystemTime) -> usize {
+    let mut removed = storage::tidy_folder(dir, now);
+    let before_import = dir.join(BEFORE_IMPORT_FILE);
+    let age = std::fs::metadata(&before_import)
+        .and_then(|m| m.modified())
+        .map(|m| now.duration_since(m).unwrap_or_default());
+    if age.is_ok_and(|age| age > BEFORE_IMPORT_KEPT) {
+        for path in [storage::backup_path(&before_import), before_import] {
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+        }
+    }
+    removed
+}
+
+/// Take the favorites folder's lock for a save. `None` when the file
+/// system can't lock files (some network shares and FUSE mounts): the save
+/// goes ahead without it, and the merge on save still keeps what another
+/// player saved meanwhile.
+fn lock_for_save(path: &Path) -> Result<Option<File>> {
     // Keep the lock file in place across saves. The data files are replaced
     // on rename, and even custom favorites filenames share stats in a folder.
     let path = path.with_file_name("favorites.json.lock");
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         storage::create_dir_if_needed(parent)?;
     }
-    let lock = OpenOptions::new()
+    let lock = match OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(&path)
-        .map_err(|e| {
-            AppError::Config(format!(
-                "Can't open the favorites lock {}: {e}",
-                path.display()
-            ))
-        })?;
+    {
+        Ok(lock) => lock,
+        // A folder that can't hold the lock file can't hold the save either:
+        // the write says why
+        Err(e) => {
+            no_lock_here(&path, &e);
+            return Ok(None);
+        }
+    };
+    wait_for_lock(lock, &path, File::try_lock)
+}
+
+/// Lock `lock` with `try_lock`, waiting up to 3 s while another process
+/// holds it
+fn wait_for_lock(
+    lock: File,
+    path: &Path,
+    mut try_lock: impl FnMut(&File) -> std::result::Result<(), TryLockError>,
+) -> Result<Option<File>> {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
-        match lock.try_lock() {
-            Ok(()) => return Ok(lock),
+        match try_lock(&lock) {
+            Ok(()) => return Ok(Some(lock)),
             Err(TryLockError::WouldBlock) => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
@@ -1142,12 +1190,21 @@ fn lock_for_save(path: &Path) -> Result<File> {
                 std::thread::sleep(remaining.min(Duration::from_millis(25)));
             }
             Err(TryLockError::Error(e)) => {
-                return Err(AppError::Config(format!(
-                    "Can't lock the favorites {}: {e}",
-                    path.display()
-                )));
+                no_lock_here(path, &e);
+                return Ok(None);
             }
         }
+    }
+}
+
+/// Log, once per run, that favorites are saved without the lock
+fn no_lock_here(path: &Path, e: &std::io::Error) {
+    static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!(
+            "Favorites: can't lock {}, saving without the lock: {e}",
+            path.display()
+        );
     }
 }
 
@@ -1817,7 +1874,9 @@ mod tests {
         }
 
         // Queue both saves behind an independent holder of the same lock.
-        let lock = lock_for_save(&path).unwrap();
+        let lock = lock_for_save(&path)
+            .unwrap()
+            .expect("the test folder can lock");
         let start = Barrier::new(3);
         let (done, results) = mpsc::channel();
         std::thread::scope(|scope| {
@@ -1858,7 +1917,9 @@ mod tests {
     fn lock_contention_times_out_and_leaves_the_changes_pending() {
         let (path, mut writer, _) = two_players(&["http://a.test"]);
         writer.add_listening("http://a.test", 60, true).unwrap();
-        let lock = lock_for_save(&path).unwrap();
+        let lock = lock_for_save(&path)
+            .unwrap()
+            .expect("the test folder can lock");
 
         let error = writer.save_to(&path).unwrap_err().to_string();
         assert!(
@@ -2261,5 +2322,52 @@ mod tests {
         fs::write(&file, "not json").unwrap();
         assert!(read_list(&file).is_err());
         remove_files(&path);
+    }
+
+    #[test]
+    fn a_file_system_without_locks_saves_without_the_lock() {
+        let (path, _, _) = two_players(&[]);
+        let lock_path = path.with_file_name("favorites.json.lock");
+        let lock = File::create(&lock_path).unwrap();
+        let unsupported = |_: &File| {
+            Err(TryLockError::Error(std::io::Error::from(
+                std::io::ErrorKind::Unsupported,
+            )))
+        };
+        // No error, so the save goes ahead; no lock to hold
+        let held = wait_for_lock(lock, &lock_path, unsupported).unwrap();
+        assert!(held.is_none());
+        remove_files(&path);
+    }
+
+    #[test]
+    fn a_held_lock_still_times_out() {
+        let (path, _, _) = two_players(&[]);
+        let lock_path = path.with_file_name("favorites.json.lock");
+        let lock = File::create(&lock_path).unwrap();
+        let busy = |_: &File| Err(TryLockError::WouldBlock);
+        let error = wait_for_lock(lock, &lock_path, busy).unwrap_err();
+        assert!(error.to_string().contains("Timed out"), "{error}");
+        remove_files(&path);
+    }
+
+    #[test]
+    fn tidying_drops_the_list_from_before_an_import_after_30_days() {
+        let path = temp_path();
+        let dir = path.parent().unwrap();
+        let before = dir.join(BEFORE_IMPORT_FILE);
+        fs::write(&before, "{}").unwrap();
+        fs::write(storage::backup_path(&before), "{}").unwrap();
+        fs::write(&path, "{}").unwrap();
+
+        let day = Duration::from_secs(24 * 60 * 60);
+        assert_eq!(tidy_folder(dir, SystemTime::now() + 29 * day), 0);
+        assert!(before.is_file());
+
+        assert_eq!(tidy_folder(dir, SystemTime::now() + 31 * day), 2);
+        assert!(!before.exists());
+        assert!(!storage::backup_path(&before).exists());
+        assert!(path.is_file(), "the favorites stay");
+        let _ = fs::remove_dir_all(dir);
     }
 }

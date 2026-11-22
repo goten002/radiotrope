@@ -43,7 +43,7 @@ impl Encoder {
             )
         };
         if ptr.is_null() || err != ffi::OPUS_OK {
-            return Err(format!("Could not create the Opus encoder ({err})"));
+            return Err(format!("Can't create the Opus encoder ({err})"));
         }
         let enc = Self(ptr);
         let bitrate = (kbps.clamp(MIN_KBPS, MAX_KBPS) * 1000) as i32;

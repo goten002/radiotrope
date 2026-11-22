@@ -269,7 +269,7 @@ impl Control {
         let control = self.clone();
         tokio::task::spawn_blocking(move || control.find_station(&id))
             .await
-            .map_err(|e| Error::Failed(format!("Lookup failed: {e}")))?
+            .map_err(|e| Error::Failed(format!("Can't look up the station: {e}")))?
     }
 
     /// A favorite's URL, name, logo and country, to play it
@@ -360,7 +360,7 @@ impl Control {
                 }
             }
             if let Some(e) = failed.filter(|_| stations.is_empty()) {
-                return Err(Error::Failed(format!("Search failed: {e}")));
+                return Err(Error::Failed(format!("Can't search: {e}")));
             }
             let favorites = control.favorites();
             let stations = stations
@@ -375,7 +375,7 @@ impl Control {
             Ok(SearchPage { stations, has_more })
         })
         .await
-        .map_err(|e| Error::Failed(format!("Search failed: {e}")))?
+        .map_err(|e| Error::Failed(format!("Can't search: {e}")))?
     }
 
     /// The directory's genres, countries or languages: those whose name
@@ -399,12 +399,14 @@ impl Control {
                 }
             }
             match failed {
-                Some(e) if all.is_empty() => Err(Error::Failed(format!("Listing failed: {e}"))),
+                Some(e) if all.is_empty() => {
+                    Err(Error::Failed(format!("Can't load the list: {e}")))
+                }
                 _ => Ok(all),
             }
         })
         .await
-        .map_err(|e| Error::Failed(format!("Listing failed: {e}")))??;
+        .map_err(|e| Error::Failed(format!("Can't load the list: {e}")))??;
 
         let filter = filter
             .map(|f| f.trim().to_lowercase())
@@ -469,7 +471,7 @@ impl Control {
             if !preview && outcome.changes() {
                 control
                     .save_favorites(favorites)
-                    .map_err(|e| Error::Failed(format!("Failed to save: {e}")))?;
+                    .map_err(|e| Error::Failed(format!("Can't save: {e}")))?;
             }
             Ok((outcome, favorites.can_undo_import()))
         })
@@ -488,7 +490,7 @@ impl Control {
                 .map_err(|e| Error::Failed(e.to_string()))?;
             control
                 .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Failed to save: {e}")))?;
+                .map_err(|e| Error::Failed(format!("Can't save: {e}")))?;
             Ok(Some(count))
         })
         .await?
@@ -529,7 +531,7 @@ impl Control {
                 .map_err(|e| Error::Failed(e.to_string()))?;
             control
                 .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Failed to save: {e}")))
+                .map_err(|e| Error::Failed(format!("Can't save: {e}")))
         })
         .await?
     }
@@ -545,7 +547,7 @@ impl Control {
                 .map_err(|e| Error::Failed(e.to_string()))?;
             control
                 .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Removed but failed to save: {e}")))?;
+                .map_err(|e| Error::Failed(format!("Removed, but can't save: {e}")))?;
             Ok(removed)
         })
         .await?
@@ -579,7 +581,7 @@ impl Control {
             }
             control
                 .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Changed but failed to save: {e}")))?;
+                .map_err(|e| Error::Failed(format!("Changed, but can't save: {e}")))?;
             let new = favorites
                 .get(&url_to_id(&edit.url))
                 .cloned()
@@ -614,7 +616,7 @@ impl Control {
                 .map_err(|e| Error::Failed(e.to_string()))?;
             control
                 .save_favorites(favorites)
-                .map_err(|e| Error::Failed(format!("Reordered but failed to save: {e}")))
+                .map_err(|e| Error::Failed(format!("Reordered, but can't save: {e}")))
         })
         .await?
     }
@@ -906,7 +908,7 @@ impl Control {
         }
         let registry = Arc::new(
             ProviderRegistry::with_defaults()
-                .map_err(|e| Error::Failed(format!("Failed to initialize provider: {e}")))?,
+                .map_err(|e| Error::Failed(format!("Can't start the station directory: {e}")))?,
         );
         *providers = Some(registry.clone());
         Ok(registry)
@@ -927,7 +929,7 @@ impl Control {
             }
         }
         Err(match failed {
-            Some(e) => Error::Failed(format!("Lookup failed: {e}")),
+            Some(e) => Error::Failed(format!("Can't look up the station: {e}")),
             None => Error::NoStation(id.to_string()),
         })
     }

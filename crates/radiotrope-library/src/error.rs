@@ -67,13 +67,7 @@ impl ServiceProblem {
         let AppError::Engine(RadioError::Network(re)) = e else {
             return Self::Other(e.to_string());
         };
-        let mut chain = String::new();
-        let mut source: Option<&dyn std::error::Error> = Some(re);
-        while let Some(s) = source {
-            chain.push_str(&s.to_string().to_lowercase());
-            chain.push('\n');
-            source = s.source();
-        }
+        let chain = radiotrope::error::error_chain(re);
         Self::classify(
             re.is_timeout(),
             re.is_connect(),
@@ -84,14 +78,6 @@ impl ServiceProblem {
     }
 
     fn classify(timeout: bool, connect: bool, status: Option<u16>, chain: &str) -> Option<Self> {
-        // Name lookup failures read differently on each system
-        const LOOKUP_FAILED: [&str; 5] = [
-            "dns error",
-            "failed to lookup address",
-            "name or service not known",
-            "temporary failure in name resolution",
-            "no such host is known",
-        ];
         if let Some(code) = status {
             return Some(match code {
                 429 => Self::Busy,
@@ -103,7 +89,7 @@ impl ServiceProblem {
         if timeout {
             return Some(Self::TimedOut);
         }
-        if LOOKUP_FAILED.iter().any(|m| chain.contains(m)) {
+        if radiotrope::error::is_lookup_failure(chain) {
             return Some(Self::Offline);
         }
         connect.then_some(Self::Unreachable)
