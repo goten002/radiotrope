@@ -1056,7 +1056,9 @@ mod tests {
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 for _ in 0..10 {
-                    Settings::update_at(&path, |s| s.sleep_minutes += 1).1.unwrap();
+                    Settings::update_at(&path, |s| s.sleep_minutes += 1)
+                        .1
+                        .unwrap();
                 }
             });
             scope.spawn(|| {
@@ -1079,7 +1081,9 @@ mod tests {
     #[test]
     fn an_update_waits_for_another_players_and_gives_up_without_saving() {
         let path = temp_path();
-        Settings::update_at(&path, |s| s.sleep_minutes = 20).1.unwrap();
+        Settings::update_at(&path, |s| s.sleep_minutes = 20)
+            .1
+            .unwrap();
         let held = lock_for_update(&path)
             .unwrap()
             .expect("the test folder can lock");
@@ -1091,7 +1095,9 @@ mod tests {
         assert_eq!(Settings::load_from(&path).unwrap().sleep_minutes, 20);
 
         drop(held);
-        Settings::update_at(&path, |s| s.sleep_minutes = 75).1.unwrap();
+        Settings::update_at(&path, |s| s.sleep_minutes = 75)
+            .1
+            .unwrap();
         assert_eq!(Settings::load_from(&path).unwrap().sleep_minutes, 75);
     }
 

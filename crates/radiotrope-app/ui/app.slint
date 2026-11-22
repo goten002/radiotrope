@@ -214,6 +214,9 @@ export component App inherits Window {
     in-out property <string> recording-text;
     in-out property <string> recording-size;
     in-out property <string> recording-notice;
+    // A save of the favorites or settings that failed ("Can't save
+    // favorites: permission denied"); empty once a save works
+    in property <string> save-error;
     in-out property <bool> recording-notice-error;
     in-out property <string> recording-folder <=> recording-dialog.folder;
     in-out property <string> recording-default-folder <=> recording-dialog.default-folder;
