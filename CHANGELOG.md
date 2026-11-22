@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - `radiotrope-probe` names itself to stations as `RadiotropeProbe/<version>`, and a program using it as a library can set its own User-Agent with `set_user_agent`.
 
 ### Changed
+- Search Stations has Country and Genre filters under the search box, combinable with a name search, and Reset filters to clear them. Stations > By Country is gone: pick a country in the filters instead.
 - Station search uses Radiotrope's own directory at api.radiotrope.app instead of radio-browser.info: typo-tolerant name search, countries, genres and languages, 256 px logos, and plays counted for its popular list. The Browse, phone Search and agent search all use it. Votes, trending and bitrate orders are gone (the phone's are treated as Most played); codec and bitrate filters for agents are checked on each page. Favorites saved from radio-browser keep playing as before.
 - Licence: GPL-3.0-or-later (was MIT).
 - Favorites, settings and the agent token are saved atomically with a backup, and one bad favorite no longer loses the whole file.

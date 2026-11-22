@@ -46,7 +46,7 @@ use radiotrope_app::data::types::{FavoriteSort, Station};
 use radiotrope_app::error::ServiceProblem;
 use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
-use radiotrope_app::providers::types::{Category, CategoryType, SearchResults};
+use radiotrope_app::providers::types::{CategoryType, SearchResults, StationFilter};
 use radiotrope_app::providers::{RadiotropeProvider, StationProvider};
 use radiotrope_app::visual::{self, gate, logo_palette, LevelSmoother};
 
@@ -945,7 +945,7 @@ fn main() {
     schedule_ui::setup(&ui, &settings, ui_tx.clone(), shared_state.clone());
 
     // What the station browser shows, and how far "Load More" has paged
-    let browse_state = Arc::new(Mutex::new((BrowseQuery::Top, 0usize)));
+    let browse_state = Arc::new(Mutex::new((BrowseQuery::default(), 0usize)));
 
     // Logos of the browser rows on screen, kept small on disk
     let browse_logos = Arc::new(BrowseLogos::open());
@@ -999,49 +999,19 @@ fn main() {
         });
     }
 
-    // search-stations callback (an empty query shows the top stations)
+    // search-stations callback: a name query within the filters (nothing
+    // given shows the most played stations)
     {
         let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let row_logos = row_logos.clone();
         let favs = favorites.clone();
-        ui.on_search_stations(move |query| {
-            let query = query.trim();
-            let query = if query.is_empty() {
-                BrowseQuery::Top
-            } else {
-                BrowseQuery::Search(query.to_string())
-            };
-            start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
-        });
-    }
-
-    // load-top-stations callback
-    {
-        let ui_weak = ui.as_weak();
-        let state = browse_state.clone();
-        let gen = browse_logo_gen.clone();
-        let row_logos = row_logos.clone();
-        let favs = favorites.clone();
-        ui.on_load_top_stations(move || {
-            start_browse(&ui_weak, &state, &gen, &row_logos, &favs, BrowseQuery::Top);
-        });
-    }
-
-    // browse-country callback (an empty query lists the whole country)
-    {
-        let ui_weak = ui.as_weak();
-        let state = browse_state.clone();
-        let gen = browse_logo_gen.clone();
-        let row_logos = row_logos.clone();
-        let favs = favorites.clone();
-        ui.on_browse_country(move |name, code, query| {
-            let category = Category::new(name.as_str(), name.as_str(), CategoryType::Country)
-                .with_code(Some(code.to_string()).filter(|c| !c.is_empty()));
-            let query = BrowseQuery::Category {
-                category,
-                query: query.trim().to_string(),
+        ui.on_search_stations(move |query, country, genre| {
+            let query = BrowseQuery {
+                name: query.trim().to_string(),
+                country: country.to_string(),
+                genre: genre.to_string(),
             };
             start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
         });
@@ -1219,124 +1189,46 @@ fn main() {
         }
     }
 
-    // Keep each browser mode's list (search, and the last country) while
-    // the other is shown, so reopening either finds it as it was left
-    {
-        let stash: std::rc::Rc<std::cell::RefCell<HashMap<String, BrowseStash>>> =
-            Default::default();
-        {
-            let ui_weak = ui.as_weak();
-            let stash = stash.clone();
-            let state = browse_state.clone();
-            let row_logos = row_logos.clone();
-            ui.on_stash_browse(move || {
-                let Some(ui) = ui_weak.upgrade() else { return };
-                // Nothing worth keeping while it loads or after an error
-                if ui.get_search_loading() || ui.get_search_results().row_count() == 0 {
-                    return;
-                }
-                let (query, offset) = state.lock().unwrap_or_else(|e| e.into_inner()).clone();
-                // The list is kept without logos; they load again when shown
-                row_logos.release(&ui);
-                stash.borrow_mut().insert(
-                    ui.get_browse_mode().to_string(),
-                    BrowseStash {
-                        country: ui.get_browse_country_name().to_string(),
-                        query,
-                        offset,
-                        results: ui.get_search_results(),
-                        logos: ui.get_browse_logos(),
-                        has_more: ui.get_has_more(),
-                        typed: ui.get_browse_typed(),
-                        shown: ui.get_browse_shown(),
-                        scroll: ui.get_browse_scroll(),
-                    },
-                );
-            });
-        }
-        {
-            let ui_weak = ui.as_weak();
-            let state = browse_state.clone();
-            let gen = browse_logo_gen.clone();
-            let favs = favorites.clone();
-            let row_logos = row_logos.clone();
-            ui.on_restore_browse(move |mode, country| {
-                let Some(ui) = ui_weak.upgrade() else {
-                    return false;
-                };
-                let kept = stash.borrow().get(mode.as_str()).cloned();
-                let Some(kept) =
-                    kept.filter(|k| mode != "country" || k.country == country.as_str())
-                else {
-                    return false;
-                };
-                // Drop replies still on their way for the list being hidden
-                gen.fetch_add(1, Ordering::Relaxed);
-                *state.lock().unwrap_or_else(|e| e.into_inner()) = (kept.query, kept.offset);
-                ui.set_browse_mode(mode);
-                ui.set_search_results(kept.results);
-                ui.set_browse_logos(kept.logos.clone());
-                ui.set_has_more(kept.has_more);
-                ui.set_search_error(Default::default());
-                ui.set_search_loading(false);
-                ui.set_search_loading_more(false);
-                ui.set_browse_typed(kept.typed);
-                ui.set_browse_shown(kept.shown);
-                ui.set_browse_scroll(kept.scroll);
-                mark_browse_favorites(&ui, &favs.lock().unwrap_or_else(|e| e.into_inner()));
-                row_logos.refresh(&ui);
-                true
-            });
-        }
-    }
-
-    // load-countries callback
+    // The countries or genres the station browser's filter picker lists
     {
         let ui_weak = ui.as_weak();
-        ui.on_load_countries(move || {
+        ui.on_load_filter_entries(move |kind| {
             let ui_weak = ui_weak.clone();
+            let kind = kind.to_string();
             std::thread::Builder::new()
-                .name("load-countries".into())
+                .name("load-filters".into())
                 .spawn(move || {
-                    let results = RadiotropeProvider::new().and_then(|p| p.browse_categories());
+                    let results = browse_directory().and_then(|p| p.browse_categories());
                     let _ = slint::invoke_from_event_loop(move || {
                         let Some(ui) = ui_weak.upgrade() else { return };
+                        // The picker moved on to another kind meanwhile
+                        if ui.get_filter_kind() != kind.as_str() {
+                            return;
+                        }
                         match results {
                             Ok(categories) => {
-                                let mut countries: Vec<CountryEntry> = categories
-                                    .into_iter()
-                                    .filter(|c| c.category_type == CategoryType::Country)
-                                    .map(|c| CountryEntry {
-                                        flag: flag_image(c.code.as_deref(), Some(&c.name)),
-                                        code: c.code.as_deref().unwrap_or("").into(),
-                                        name: c.name.as_str().into(),
-                                        station_count: c.station_count.unwrap_or(0) as i32,
-                                    })
-                                    .collect();
-                                countries.sort_by(|a, b| {
-                                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                                });
-                                ALL_COUNTRIES.with(|all| *all.borrow_mut() = countries);
-                                show_countries(&ui, &ui.get_country_filter());
-                                ui.set_country_error(Default::default());
+                                let entries = filter_entries(&kind, categories);
+                                ALL_FILTER_ENTRIES.with(|all| *all.borrow_mut() = entries);
+                                show_filter_entries(&ui, &ui.get_filter_entries_text());
+                                ui.set_filter_entries_error(Default::default());
                             }
                             Err(e) => {
-                                ui.set_country_error(format!("{e}").into());
+                                ui.set_filter_entries_error(format!("{e}").into());
                             }
                         }
-                        ui.set_country_loading(false);
+                        ui.set_filter_entries_loading(false);
                     });
                 })
                 .ok();
         });
     }
 
-    // filter-countries callback
+    // Narrow the filter picker's list by name
     {
         let ui_weak = ui.as_weak();
-        ui.on_filter_countries(move |text| {
+        ui.on_filter_filter_entries(move |text| {
             if let Some(ui) = ui_weak.upgrade() {
-                show_countries(&ui, &text);
+                show_filter_entries(&ui, &text);
             }
         });
     }
@@ -3654,15 +3546,28 @@ fn format_number(n: u64) -> String {
     }
 }
 
-/// What the station browser is listing
-#[derive(Clone)]
-enum BrowseQuery {
-    /// Most played stations
-    Top,
-    /// Stations whose name matches
-    Search(String),
-    /// Stations in a category, optionally filtered by name
-    Category { category: Category, query: String },
+/// What the station browser is listing: stations whose name matches,
+/// within the filters. Each part may be empty; all empty lists the most
+/// played stations.
+#[derive(Clone, Default)]
+struct BrowseQuery {
+    name: String,
+    /// ISO 3166-1 code
+    country: String,
+    /// The directory's genre slug
+    genre: String,
+}
+
+impl BrowseQuery {
+    fn filter(&self) -> StationFilter {
+        let given = |v: &str| Some(v.to_string()).filter(|v| !v.is_empty());
+        StationFilter {
+            name: given(&self.name),
+            country: given(&self.country),
+            genre: given(&self.genre),
+            ..Default::default()
+        }
+    }
 }
 
 /// Fetch one page of browser results from the Radiotrope directory
@@ -3670,15 +3575,7 @@ fn fetch_browse_page(
     query: &BrowseQuery,
     offset: usize,
 ) -> radiotrope_app::error::Result<SearchResults> {
-    let directory = browse_directory()?;
-    match query {
-        // Every station, most played first
-        BrowseQuery::Top => directory.search("", SEARCH_PAGE_SIZE, offset),
-        BrowseQuery::Search(q) => directory.search(q, SEARCH_PAGE_SIZE, offset),
-        BrowseQuery::Category { category, query } => {
-            directory.search_category(category, query, SEARCH_PAGE_SIZE, offset)
-        }
-    }
+    browse_directory()?.search_filtered(&query.filter(), SEARCH_PAGE_SIZE, offset)
 }
 
 /// The directory the station browser lists, made once: it remembers where
@@ -3708,21 +3605,6 @@ fn report_browse_play(item: &BrowseStation) {
         .spawn(move || {
             let _ = browse_directory().and_then(|d| d.report_click(&station));
         });
-}
-
-/// A station browser list put aside while the other mode is shown
-#[derive(Clone)]
-struct BrowseStash {
-    // Country name (country mode)
-    country: String,
-    query: BrowseQuery,
-    offset: usize,
-    results: ModelRc<BrowseStation>,
-    logos: ModelRc<slint::Image>,
-    has_more: bool,
-    typed: slint::SharedString,
-    shown: slint::SharedString,
-    scroll: f32,
 }
 
 /// Replace the browser list with the first page of `query`, fetched in the
@@ -4063,22 +3945,60 @@ thread_local! {
 }
 
 thread_local! {
-    /// Every country from the last load; the picker shows a filtered copy
-    static ALL_COUNTRIES: std::cell::RefCell<Vec<CountryEntry>> =
+    /// Every entry of the kind the filter picker loaded last; it shows a
+    /// filtered copy
+    static ALL_FILTER_ENTRIES: std::cell::RefCell<Vec<FilterEntry>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// Show the countries whose name contains `filter` (case-insensitive)
-fn show_countries(ui: &App, filter: &str) {
+/// The directory's countries or genres (`kind`: "country" or "genre") as
+/// filter picker entries, A to Z
+fn filter_entries(
+    kind: &str,
+    categories: Vec<radiotrope_app::providers::types::Category>,
+) -> Vec<FilterEntry> {
+    let wanted = match kind {
+        "genre" => CategoryType::Genre,
+        _ => CategoryType::Country,
+    };
+    let mut entries: Vec<FilterEntry> = categories
+        .into_iter()
+        .filter(|c| c.category_type == wanted)
+        .map(|c| {
+            let code = match wanted {
+                CategoryType::Country => c.code.clone().unwrap_or_default(),
+                _ => c.id.clone(),
+            };
+            FilterEntry {
+                flag: if wanted == CategoryType::Country {
+                    flag_image(c.code.as_deref(), Some(&c.name))
+                } else {
+                    Default::default()
+                },
+                code: code.into(),
+                name: c.name.as_str().into(),
+                station_count: c.station_count.unwrap_or(0) as i32,
+            }
+        })
+        // One the directory can't be asked for is no use as a filter
+        .filter(|e| !e.code.is_empty())
+        .collect();
+    entries.sort_by_key(|e| e.name.to_lowercase());
+    entries
+}
+
+/// Show the filter picker entries whose name contains `filter`
+/// (case-insensitive)
+fn show_filter_entries(ui: &App, filter: &str) {
     let filter = filter.trim().to_lowercase();
-    let countries: Vec<CountryEntry> = ALL_COUNTRIES.with(|all| {
+    let entries: Vec<FilterEntry> = ALL_FILTER_ENTRIES.with(|all| {
         all.borrow()
             .iter()
-            .filter(|c| filter.is_empty() || c.name.to_lowercase().contains(&filter))
+            .filter(|e| filter.is_empty() || e.name.to_lowercase().contains(&filter))
             .cloned()
             .collect()
     });
-    ui.set_countries(ModelRc::from(std::rc::Rc::new(VecModel::from(countries))));
+    ui.set_filter_entries(ModelRc::from(std::rc::Rc::new(VecModel::from(entries))));
 }
 
 /// Flag image for a country (an empty image if there is no flag for it)
@@ -4677,5 +4597,54 @@ mod tests {
         );
         assert_eq!(path(r"\\nas\music/Radiotrope"), r"\\nas\music\Radiotrope");
         assert_eq!(path(r"D:\Recordings"), r"D:\Recordings");
+    }
+
+    #[test]
+    fn filter_entries_take_the_kind_asked_for_with_the_code_the_directory_wants() {
+        use radiotrope_app::providers::types::Category;
+        let categories = || {
+            vec![
+                Category::new("rock", "Rock", CategoryType::Genre).with_station_count(9),
+                Category::new("ambient", "Ambient", CategoryType::Genre),
+                Category::new("GR", "Greece", CategoryType::Country)
+                    .with_code(Some("GR".into()))
+                    .with_station_count(4),
+                // No code: the directory can't be asked for it
+                Category::new("Atlantis", "Atlantis", CategoryType::Country),
+                Category::new("ell", "Greek", CategoryType::Language),
+            ]
+        };
+
+        let genres = filter_entries("genre", categories());
+        let names: Vec<_> = genres.iter().map(|e| e.name.to_string()).collect();
+        assert_eq!(names, ["Ambient", "Rock"], "A to Z");
+        assert_eq!(genres[1].code, "rock", "the slug");
+        assert_eq!(genres[1].station_count, 9);
+
+        let countries = filter_entries("country", categories());
+        assert_eq!(countries.len(), 1);
+        assert_eq!(
+            (countries[0].name.as_str(), countries[0].code.as_str()),
+            ("Greece", "GR")
+        );
+
+        // Languages aren't a filter
+        assert!(filter_entries("genre", categories())
+            .iter()
+            .all(|e| e.name != "Greek"));
+    }
+
+    #[test]
+    fn a_browse_query_asks_only_for_what_is_given() {
+        assert_eq!(BrowseQuery::default().filter(), StationFilter::default());
+        let query = BrowseQuery {
+            name: "kiss".into(),
+            country: "GR".into(),
+            ..Default::default()
+        };
+        let filter = query.filter();
+        assert_eq!(filter.name.as_deref(), Some("kiss"));
+        assert_eq!(filter.country.as_deref(), Some("GR"));
+        assert_eq!(filter.genre, None);
     }
 }
