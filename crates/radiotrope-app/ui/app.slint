@@ -29,7 +29,9 @@ import { VizData, VizStyle } from "visualization.slint";
 export { AboutInfo, StatsData, StreamHealth, Defaults, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
 
 export component App inherits Window {
-    title: "Radiotrope";
+    // The station in the taskbar and window lists while one is loaded
+    title: root.station-url != "" && root.station-name != ""
+        ? root.station-name + " · Radiotrope" : "Radiotrope";
 
     // Headless capture drives the same dialogs and popups as the live app.
     in property <bool> snapshot-mode;
@@ -485,6 +487,15 @@ export component App inherits Window {
         shortcuts := FocusScope {
             // Not a Tab stop itself: Tab goes round the controls only
             focus-on-tab-navigation: false;
+            // Behind an open dialog no key acts on the window: if the focus
+            // ever slips out of the dialog, Space and Enter can't press an
+            // unseen button. Tab still moves, so the focus can get back.
+            capture-key-pressed(event) => {
+                if root.dialog-open && event.text != Key.Tab && event.text != Key.Backtab {
+                    return accept;
+                }
+                return reject;
+            }
             key-pressed(event) => {
                 if root.dialog-open {
                     return reject;
@@ -542,6 +553,8 @@ export component App inherits Window {
                 // soft accent glow from the left running through both
                 Rectangle {
                     background: Theme.panel;
+                    accessible-role: banner;
+                    accessible-label: "Now playing";
 
                     Rectangle {
                         visible: Theme.panel-gradient;
@@ -626,9 +639,13 @@ export component App inherits Window {
                     playback := Playback {
                         station-name: root.station-name;
                         codec-info: root.codec-info;
+                        station-country: root.station-country;
                         status-text: root.status-text;
                         playtime: StatsData.playtime;
+                        is-playing: root.is-playing;
                         is-loading: root.is-loading;
+                        enabled: !root.dialog-open;
+                        snapshot-overlay: root.snapshot-overlay;
                         is-error: root.is-error;
                         station-logo: root.current-logo;
                         is-station-favorited: root.is-station-favorited;
@@ -640,6 +657,11 @@ export component App inherits Window {
                         recording-notice-error: root.recording-notice-error;
                         can-open-recordings: Platform.has-file-manager;
                         open-recordings-folder => { root.open-recordings-folder(); }
+                        stop-recording => {
+                            if root.is-recording {
+                                root.toggle-recording();
+                            }
+                        }
                         sleep-left: root.sleep-active ? root.sleep-left : "";
                         schedule-label: root.schedule-label;
                         schedule-label-bell: root.schedule-label-bell;
@@ -652,6 +674,8 @@ export component App inherits Window {
                     }
                 }
                 favorites := Favorites {
+                    accessible-role: main;
+                    accessible-label: "Favorites";
                     snapshot-menu: root.snapshot-favorite-menu;
                     locate-favorite(model, highlight, playing, action, page) => {
                         return root.locate-favorite(model, highlight, playing, action, page);
@@ -676,7 +700,13 @@ export component App inherits Window {
                     favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
                 }
                 controls := Controls {
+                    accessible-role: content-info;
+                    accessible-label: "Playback controls";
                     snapshot-overlay: root.snapshot-overlay;
+                    enabled: !root.dialog-open;
+                    is-recording: root.is-recording;
+                    can-toggle-recording: root.can-toggle-recording;
+                    toggle-recording => { root.toggle-recording(); }
                     is-playing: root.is-playing;
                     is-loading: root.is-loading;
                     has-station: root.station-url != "";

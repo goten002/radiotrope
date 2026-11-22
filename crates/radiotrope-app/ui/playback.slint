@@ -5,9 +5,12 @@ import { Chip, ChipVariant, IconButton, Icon } from "components.slint";
 export component Playback inherits Rectangle {
     in property <string> station-name;
     in property <string> codec-info;
+    // Shown in the codec line's place while there is no live codec info
+    in property <string> station-country;
     in property <string> status-text;
     // Time on the current station, shown in the chip while playing
     in property <string> playtime;
+    in property <bool> is-playing;
     in property <bool> is-loading;
     in property <bool> is-error;
     in property <image> station-logo;
@@ -24,6 +27,8 @@ export component Playback inherits Rectangle {
     // A "Saved ..." notice opens the recordings folder when clicked
     in property <bool> can-open-recordings;
     callback open-recordings-folder();
+    // The REC chip stops the recording on a second press
+    callback stop-recording();
     // Time left on the Sleep Timer, "23:12" ("" when none runs)
     in property <string> sleep-left;
     // The Scheduler's label around an entry's start ("" when none), and
@@ -39,8 +44,27 @@ export component Playback inherits Rectangle {
     in-out property <string> viz-mode: "wave";
     // Off (View > Visualizer), the tile is left out of the header
     in-out property <bool> show-visualizer: true;
+    // Off while a dialog is open: the visualizer tile leaves the Tab order
+    // (the window ignores keys behind a dialog; see app.slint)
+    in property <bool> enabled: true;
+
+    // Headless capture: "recording-confirm" arms the REC chip, "viz-name"
+    // shows the visualizer style's name
+    in property <string> snapshot-overlay;
 
     property <image> empty-image;
+    // The REC chip was pressed once and waits for a second press to stop
+    property <bool> confirm-stop-recording: false;
+    changed is-recording => { root.confirm-stop-recording = false; }
+    property <bool> stop-armed: root.is-recording
+        && (root.confirm-stop-recording || root.snapshot-overlay == "recording-confirm");
+
+    // Disarms the REC chip when no second press follows
+    disarm-timer := Timer {
+        interval: 4s;
+        running: root.confirm-stop-recording;
+        triggered => { root.confirm-stop-recording = false; }
+    }
 
     height: 108px;
     // No background of its own: it sits on the header (app.slint), which
@@ -79,6 +103,8 @@ export component Playback inherits Rectangle {
                     width: 76px;
                     height: 76px;
                     image-fit: contain;
+                    // Decoration: the station name is the text beside it
+                    accessible-role: none;
                 }
 
                 if root.station-logo.width == 0: Icon {
@@ -106,9 +132,11 @@ export component Playback inherits Rectangle {
                 overflow: elide;
             }
 
+            // The live codec line, or the station's country until there is one
             Text {
-                text: root.codec-info == "" ? " " : root.codec-info;
-                color: Theme.text-secondary;
+                text: root.codec-info != "" ? root.codec-info
+                    : root.station-country != "" ? root.station-country : " ";
+                color: root.codec-info != "" ? Theme.text-secondary : Theme.text-tertiary;
                 font-size: Theme.font-md;
                 overflow: elide;
             }
@@ -116,22 +144,27 @@ export component Playback inherits Rectangle {
             HorizontalLayout {
                 spacing: Theme.space-6;
 
+                // Grey for Ready and Stopped, accent and pulsing while connecting
+                // or playing, red for errors. The state comes from the player's
+                // flags, never from the wording of the status text.
                 Chip {
-                    text: root.status-text == "Playing" && root.playtime != "—" && root.playtime != ""
-                        ? "Playing " + root.playtime : root.status-text;
+                    text: root.is-playing && root.playtime != "—" && root.playtime != ""
+                        ? root.status-text + " " + root.playtime : root.status-text;
                     variant: root.is-error ? ChipVariant.danger
                         : self.pulse ? ChipVariant.accent : ChipVariant.neutral;
                     dot: true;
-                    pulse: root.status-text == "Playing" || root.is-loading;
+                    pulse: !root.is-error && (root.is-playing || root.is-loading);
                     steady: true;
                     // A long error may shorten like the others
                     keep: !root.is-error;
                 }
 
-                // Recording progress, or what happened to the last recording
+                // Recording progress, or what happened to the last recording.
+                // While recording a press asks to confirm, the second stops it.
                 if root.is-recording || root.recording-notice != "": Chip {
-                    text: root.is-recording ? "REC " + root.recording-text : root.recording-notice;
-                    detail: root.is-recording ? root.recording-size : "";
+                    text: root.stop-armed ? "Press Again to Stop"
+                        : root.is-recording ? "REC " + root.recording-text : root.recording-notice;
+                    detail: root.is-recording && !root.stop-armed ? root.recording-size : "";
                     variant: root.is-recording || root.recording-notice-error ? ChipVariant.danger : ChipVariant.neutral;
                     icon: root.is-recording ? empty-image : root.recording-notice-error
                         ? @image-url("icons/circle-alert.svg") : @image-url("icons/record.svg");
@@ -139,8 +172,18 @@ export component Playback inherits Rectangle {
                     pulse: root.is-recording;
                     steady: root.is-recording;
                     keep: root.is-recording;
-                    clickable: !root.is-recording && !root.recording-notice-error && root.can-open-recordings;
-                    clicked => { root.open-recordings-folder(); }
+                    clickable: root.is-recording
+                        || (!root.recording-notice-error && root.can-open-recordings);
+                    clicked => {
+                        if !root.is-recording {
+                            root.open-recordings-folder();
+                        } else if root.confirm-stop-recording {
+                            root.confirm-stop-recording = false;
+                            root.stop-recording();
+                        } else {
+                            root.confirm-stop-recording = true;
+                        }
+                    }
                 }
 
                 if root.sleep-left != "": Chip {
@@ -180,10 +223,14 @@ export component Playback inherits Rectangle {
             IconButton {
                 width: Theme.control-field;
                 height: Theme.control-field;
-                icon: @image-url("icons/star.svg");
+                // Outline when not a favorite, filled when it is, in the same
+                // colour as the star in Search
+                icon: root.is-station-favorited ? @image-url("icons/star.svg")
+                    : @image-url("icons/star-regular.svg");
                 label: root.is-station-favorited ? "Remove from Favorites" : "Add to Favorites";
                 icon-size: Theme.icon-lg;
-                active: root.is-station-favorited;
+                icon-color: root.is-station-favorited ? Theme.selection-mark : Theme.text-secondary;
+                hover-color: root.is-station-favorited ? Theme.selection-mark : Theme.text-primary;
                 clicked => { root.toggle-favorite(); }
             }
         }
@@ -194,6 +241,8 @@ export component Playback inherits Rectangle {
             viz := Visualization {
                 viz-mode <=> root.viz-mode;
                 is-loading: root.is-loading;
+                enabled: root.enabled;
+                snapshot-name: root.snapshot-overlay == "viz-name";
             }
         }
     }

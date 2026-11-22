@@ -162,6 +162,18 @@ const SHOTS: &[Shot] = &[
         "Recording indicator, duration and size.",
     ),
     Shot::new(
+        "main-recording-confirm",
+        "main",
+        "recording-confirm",
+        "REC chip after one press: a second press stops the recording.",
+    ),
+    Shot::new(
+        "main-viz-name",
+        "main",
+        "viz-name",
+        "Visualizer tile showing its style name after a click or on hover.",
+    ),
+    Shot::new(
         "main-sleep-countdown",
         "main",
         "sleep",
@@ -1304,7 +1316,7 @@ fn configure(ui: &App, shot: &Shot) {
                 ui.set_schedule_label_bell(true);
                 ui.set_schedule_label_closable(true);
             }
-            "recording" => {
+            "recording" | "recording-confirm" => {
                 ui.set_is_recording(true);
                 ui.set_recording_text("2:36".into());
                 ui.set_recording_size("3.6 MB".into());
