@@ -294,6 +294,8 @@ export component ScheduleDialog inherits Rectangle {
             : root.edit-id == 0 ? "New Scheduler Entry" : "Edit Scheduler Entry";
         subtitle: root.editing ? "" : "Plays, records or stops at set times";
         card-width: Defaults.schedule-width;
+        // Esc in the editor goes back to the list at once, without a fade
+        close-goes-back: root.editing;
         // The list's footer adds an entry; the editor's saves or goes back
         cancel-label: root.editing ? "Cancel" : "";
         primary-label: root.editing ? "Save" : "Add";
