@@ -14,7 +14,8 @@ use radiotrope_app::text;
 use crate::browse_ui::mark_browse_favorites;
 use crate::context::lock;
 use crate::favorites_ui::session_listen_secs;
-use crate::{logo_image, App, FavoriteStation};
+use crate::player_ui::logo_image;
+use crate::{App, FavoriteStation};
 
 pub(crate) fn favorite_to_slint(
     f: &radiotrope_app::data::types::Favorite,

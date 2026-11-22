@@ -20,10 +20,11 @@ use crate::context::{lock, AppContext};
 use crate::favorites_list::{
     invalidate_logo_image, note_favorites_shown, refresh_favorites, update_favorite_stats,
 };
-use crate::{
-    is_current_station, play_station_with_metadata, set_header_logo, shortcuts, App,
-    FavoriteStation, SHOWN_STATION,
-};
+use crate::player_ui::is_current_station;
+use crate::player_ui::play_station_with_metadata;
+use crate::player_ui::set_header_logo;
+use crate::player_ui::SHOWN_STATION;
+use crate::{shortcuts, App, FavoriteStation};
 
 /// Wire what the favorites list and the header's star do: play, step,
 /// star, edit, remove, move and reorder, and reset a row's figures

@@ -17,7 +17,8 @@ use radiotrope_app::providers::{RadiotropeProvider, StationProvider};
 
 use crate::context::{lock, AppContext};
 use crate::favorites_list::refresh_favorites;
-use crate::{play_station_with_metadata, row_logos, App, BrowseStation, FilterEntry};
+use crate::player_ui::play_station_with_metadata;
+use crate::{row_logos, App, BrowseStation, FilterEntry};
 
 /// Wire the Search Stations window: searching and paging, the rows'
 /// logos, the star and Play on a row, and the country and genre pickers
