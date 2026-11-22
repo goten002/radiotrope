@@ -1,17 +1,18 @@
 //! What the favorites list and the header's star do, and the listening time
 //! credited to the favorite playing
 
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use slint::{ComponentHandle, Model, ModelRc, VecModel};
+use slint::{ComponentHandle, Model, ModelExt, ModelRc, VecModel};
 
 use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::{FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS};
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
-use radiotrope_app::data::types::{FavoriteSort, Station};
+use radiotrope_app::data::types::{Favorite, FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 
 use crate::app::delayed_save::{DelayedSave, SaveErrors, Saved, SAVE_RETRY};
@@ -23,7 +24,7 @@ use crate::favorites_list::{
 };
 use crate::player_ui::{fetch_station_logo, play_station_with_metadata, SHOWN_STATION};
 use crate::window_settings::save_reason;
-use crate::{shortcuts, App, FavoriteStation};
+use crate::{shortcuts, App, FavoriteStation, FavoritesFind};
 
 /// The thread that saves the favorites, once [`start_saver`] started it
 static SAVER: OnceLock<DelayedSave> = OnceLock::new();
@@ -104,10 +105,118 @@ pub(crate) fn save_at_exit(favorites: &Mutex<FavoritesManager>, saver: &DelayedS
     }
 }
 
+/// What Find in favorites looks for: the text typed, without the spaces
+/// around it and whatever the case. Empty finds everything.
+fn find_needle(text: &str) -> String {
+    text.trim().to_lowercase()
+}
+
+/// Whether Find shows a favorite called `name` for a needle of
+/// [`find_needle`]: its name contains it, whatever the case
+fn find_matches(name: &str, needle: &str) -> bool {
+    needle.is_empty() || name.to_lowercase().contains(needle)
+}
+
+/// Give the favorites list its Find: the rows whose name contains the
+/// text, and their logos. The rows stay those of the whole list, so a
+/// figure updated there shows in a found row too.
+pub(crate) fn install_find(ui: &App) {
+    let find = ui.global::<FavoritesFind>();
+    find.on_stations(|stations, text| found_stations(stations, &text));
+    find.on_logos(|stations, logos, text| found_logos(&stations, logos, &text));
+}
+
+/// The rows of `stations` Find shows for `text`, in their order. They
+/// follow the rows they come from: a figure updated there shows here.
+fn found_stations(stations: ModelRc<FavoriteStation>, text: &str) -> ModelRc<FavoriteStation> {
+    let needle = find_needle(text);
+    if needle.is_empty() {
+        return stations;
+    }
+    ModelRc::new(stations.filter(move |station| find_matches(&station.name, &needle)))
+}
+
+/// The logos of the rows [`found_stations`] shows (`logos` has one per
+/// station, in the same order)
+fn found_logos(
+    stations: &ModelRc<FavoriteStation>,
+    logos: ModelRc<slint::Image>,
+    text: &str,
+) -> ModelRc<slint::Image> {
+    let needle = find_needle(text);
+    if needle.is_empty() {
+        return logos;
+    }
+    let found: Vec<slint::Image> = stations
+        .iter()
+        .zip(logos.iter())
+        .filter(|(station, _)| find_matches(&station.name, &needle))
+        .map(|(_, logo)| logo)
+        .collect();
+    ModelRc::new(VecModel::from(found))
+}
+
+/// A favorite just removed, and its place in the list, for Undo
+struct Removed {
+    favorite: Favorite,
+    /// Its row, counted from the top
+    index: usize,
+}
+
+thread_local! {
+    /// The favorite removed last, while its Undo is offered
+    static REMOVED: RefCell<Option<Removed>> = const { RefCell::new(None) };
+    /// Counts the removals: each one offers its Undo anew
+    static UNDO_OFFERS: Cell<i32> = const { Cell::new(0) };
+}
+
+/// Remove the favorite with this id, noting its place in the list
+fn remove_keeping_place(favorites: &mut FavoritesManager, id: &str) -> Option<Removed> {
+    // What another player saved since is taken in first: the place is in
+    // the list as it is now
+    favorites.reload_if_changed();
+    let index = favorites
+        .sorted(FavoriteSort::Manual)
+        .iter()
+        .position(|favorite| favorite.id() == id)?;
+    let favorite = favorites.remove(id).ok()?;
+    Some(Removed { favorite, index })
+}
+
+/// Put a removed favorite back at its old place (the end, when the list
+/// got shorter than that since). False when its stream is a favorite
+/// again already.
+fn put_back(favorites: &mut FavoritesManager, removed: Removed) -> bool {
+    let id = removed.favorite.id();
+    if favorites.add(removed.favorite).is_err() {
+        return false;
+    }
+    let mut ids: Vec<String> = favorites
+        .sorted(FavoriteSort::Manual)
+        .iter()
+        .map(|favorite| favorite.id())
+        .filter(|other| *other != id)
+        .collect();
+    ids.insert(removed.index.min(ids.len()), id);
+    let ids: Vec<&str> = ids.iter().map(String::as_str).collect();
+    favorites.reorder(&ids).is_ok()
+}
+
+/// Offer to put back the favorite just removed: "Removed from Favorites ·
+/// Undo" under the list, for a few seconds
+fn offer_undo(ui: &App, removed: Option<Removed>) {
+    let Some(removed) = removed else { return };
+    REMOVED.set(Some(removed));
+    let offer = UNDO_OFFERS.get().wrapping_add(1).max(1);
+    UNDO_OFFERS.set(offer);
+    ui.set_favorite_undo(offer);
+}
+
 /// Wire what the favorites list and the header's star do: play, step,
 /// star, edit, remove, move and reorder, and reset a row's figures
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     let shared_state = &ctx.state;
+    install_find(ui);
     // A save that failed, for the header to show until one works
     {
         let ui_weak = ui.as_weak();
@@ -135,10 +244,11 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             let country = ui.get_station_country().to_string();
 
             let mut f = lock(&ctx.favorites);
+            let mut removed = None;
             if f.is_favorite(&url) {
-                let _ = f.remove_by_url(&url);
+                let id = f.get_id_for_url(&url);
+                removed = remove_keeping_place(&mut f, &id);
             } else {
-                use radiotrope_app::data::types::Favorite;
                 use std::collections::HashSet;
                 let mut fav = Favorite::new(&name, &url);
                 if !logo_url.is_empty() {
@@ -157,6 +267,31 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             save_favorites();
 
             ui.set_is_station_favorited(is_fav);
+            refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
+            // One click removes; the offer under the list puts it back
+            offer_undo(&ui, removed);
+        });
+    }
+
+    // undo-remove-favorite callback: the favorite removed last goes back
+    // to its place
+    {
+        let ctx = ctx.clone();
+        ui.on_undo_remove_favorite(move || {
+            let Some(ui) = ctx.ui.upgrade() else { return };
+            ui.set_favorite_undo(0);
+            let Some(removed) = REMOVED.take() else {
+                return;
+            };
+            let url = removed.favorite.url().to_string();
+            let back = put_back(&mut lock(&ctx.favorites), removed);
+            if !back {
+                return;
+            }
+            save_favorites();
+            if ui.get_station_url() == url.as_str() {
+                ui.set_is_station_favorited(true);
+            }
             refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
         });
     }
@@ -210,7 +345,10 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 forward,
             );
             if let Some(station) = index.and_then(|index| favorites.row_data(index)) {
-                ui.invoke_play_favorite(station);
+                // While recording, the first press only arms the row
+                if ui.invoke_confirm_switch(station.url.clone()) {
+                    ui.invoke_play_favorite(station);
+                }
             }
         });
     }
@@ -300,7 +438,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
         ui.on_delete_favorite(move |station| {
             let id = station.id.to_string();
             let mut f = lock(&ctx.favorites);
-            let _ = f.remove(&id);
+            let removed = remove_keeping_place(&mut f, &id);
             drop(f);
             save_favorites();
             invalidate_logo_image(&id);
@@ -311,6 +449,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                     ui.set_is_station_favorited(false);
                 }
                 refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
+                offer_undo(&ui, removed);
             }
         });
     }
@@ -602,29 +741,128 @@ pub(crate) fn show_edited_favorite(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use radiotrope_app::data::types::Favorite;
     use std::fs;
 
-    /// A folder of this test's own
-    fn test_dir(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "radiotrope-favorites-ui-{name}-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    fn saved_names(path: &Path) -> Vec<String> {
-        let mut names: Vec<String> = FavoritesManager::load_from(path)
-            .unwrap()
+    fn names(favorites: &FavoritesManager) -> Vec<String> {
+        favorites
             .sorted(FavoriteSort::Manual)
             .iter()
             .map(|f| f.name().to_string())
-            .collect();
-        names.sort();
-        names
+            .collect()
+    }
+
+    fn four_favorites() -> FavoritesManager {
+        let mut favorites = FavoritesManager::new();
+        for name in ["Jazz", "News", "Rock", "Talk"] {
+            favorites
+                .add(Favorite::new(name, &format!("http://{name}.test")))
+                .unwrap();
+        }
+        favorites
+    }
+
+    fn id_of(favorites: &FavoritesManager, name: &str) -> String {
+        favorites.get_id_for_url(&format!("http://{name}.test"))
+    }
+
+    #[test]
+    fn undo_puts_a_removed_favorite_back_in_its_place() {
+        for (name, at) in [("Jazz", 0), ("News", 1), ("Talk", 3)] {
+            let mut favorites = four_favorites();
+            let id = id_of(&favorites, name);
+            let removed = remove_keeping_place(&mut favorites, &id).unwrap();
+            assert_eq!(removed.index, at);
+            assert_eq!(names(&favorites).len(), 3);
+            assert!(put_back(&mut favorites, removed));
+            assert_eq!(names(&favorites), ["Jazz", "News", "Rock", "Talk"]);
+        }
+    }
+
+    #[test]
+    fn undo_after_the_list_changed() {
+        // The list got shorter than the old place: it goes to the end
+        let mut favorites = four_favorites();
+        let talk = id_of(&favorites, "Talk");
+        let removed = remove_keeping_place(&mut favorites, &talk).unwrap();
+        let jazz = id_of(&favorites, "Jazz");
+        favorites.remove(&jazz).unwrap();
+        assert!(put_back(&mut favorites, removed));
+        assert_eq!(names(&favorites), ["News", "Rock", "Talk"]);
+
+        // Added again meanwhile (the star, an agent): nothing to put back
+        let mut favorites = four_favorites();
+        let news = id_of(&favorites, "News");
+        let removed = remove_keeping_place(&mut favorites, &news).unwrap();
+        favorites
+            .add(Favorite::new("News", "http://News.test"))
+            .unwrap();
+        assert!(!put_back(&mut favorites, removed));
+        assert_eq!(names(&favorites), ["Jazz", "Rock", "Talk", "News"]);
+
+        // Not a favorite: nothing is removed
+        assert!(remove_keeping_place(&mut favorites, "no-such-id").is_none());
+    }
+
+    #[test]
+    fn find_matches_names_whatever_the_case() {
+        let needle = find_needle("  RaD ");
+        assert_eq!(needle, "rad");
+        assert!(find_matches("Sundial Radio", &needle));
+        assert!(find_matches("radio verde", &needle));
+        assert!(!find_matches("Harbour Jazz", &needle));
+        assert!(find_matches("Küste Kultur", &find_needle("KÜST")));
+        // Nothing typed (or only spaces) finds everything
+        assert!(find_matches("Harbour Jazz", &find_needle("  ")));
+    }
+
+    #[test]
+    fn find_narrows_the_rows_and_their_logos_together() {
+        let rows = std::rc::Rc::new(VecModel::from(
+            ["Harbour Jazz", "Radio Verde", "Sundial Radio"]
+                .iter()
+                .map(|name| FavoriteStation {
+                    name: (*name).into(),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        ));
+        let stations: ModelRc<FavoriteStation> = rows.clone().into();
+        // One logo per row, told apart by their width
+        let logo = |width| {
+            slint::Image::from_rgb8(slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, 1))
+        };
+        let logos: ModelRc<slint::Image> =
+            ModelRc::new(VecModel::from(vec![logo(1), logo(2), logo(3)]));
+        let shown = |text: &str| -> Vec<String> {
+            found_stations(stations.clone(), text)
+                .iter()
+                .map(|station| station.name.to_string())
+                .collect()
+        };
+        let widths = |text: &str| -> Vec<u32> {
+            found_logos(&stations, logos.clone(), text)
+                .iter()
+                .map(|logo| logo.size().width)
+                .collect()
+        };
+
+        assert_eq!(shown("radio"), ["Radio Verde", "Sundial Radio"]);
+        assert_eq!(widths("radio"), [2, 3]);
+        assert_eq!(shown("JAZZ"), ["Harbour Jazz"]);
+        assert_eq!(widths("JAZZ"), [1]);
+        assert!(shown("no such station").is_empty());
+        assert!(widths("no such station").is_empty());
+        // Nothing typed: the whole list, in its order
+        assert_eq!(shown(" ").len(), 3);
+        assert_eq!(widths("").len(), 3);
+
+        // A found row follows the row it comes from (its figures change
+        // while it plays)
+        let found = found_stations(stations.clone(), "verde");
+        let mut row = rows.row_data(1).unwrap();
+        row.listen_time = "5 min".into();
+        rows.set_row_data(1, row);
+        assert_eq!(found.row_data(0).unwrap().listen_time, "5 min");
     }
 
     #[test]

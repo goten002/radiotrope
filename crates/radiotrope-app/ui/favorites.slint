@@ -1,7 +1,8 @@
 import { ShortcutAction } from "shortcuts.slint";
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { Icon, ButtonKeys, FocusRing, PopupCard, MenuSeparator, ChoiceRow } from "components.slint";
+import { Icon, IconButton, ButtonKeys, FocusRing, PopupCard, MenuSeparator, ChoiceRow, StatusPanel } from "components.slint";
+import { StyledLineEdit } from "styled-line-edit.slint";
 import { AccentButton } from "buttons.slint";
 import { DesktopShortcuts } from "shortcuts.slint";
 import { Platform } from "@platform/wifi.slint";
@@ -21,6 +22,23 @@ export struct FavoriteStation {
     play-count: int,
     // Listening time since the app was opened, empty when none
     session-time: string,
+}
+
+// Find in favorites: the rows whose name contains the text, and their
+// logos (Rust; the list itself stays whole and in order)
+export global FavoritesFind {
+    pure callback stations([FavoriteStation], string) -> [FavoriteStation];
+    pure callback logos([FavoriteStation], [image], string) -> [image];
+}
+
+// Picking another station while recording ends the recording, so the first
+// press only arms the row and says so; a second press within this time
+// switches. Shared by the favorites and the search results.
+export global RecordingGuard {
+    out property <string> text: "Recording will stop · Press Again to Switch";
+    // For screen readers, after the row's own description
+    out property <string> spoken: "recording will stop, press again to switch";
+    out property <duration> confirm-time: 5s;
 }
 
 // A quiet action under a primary button: accent text, underlined while
@@ -116,9 +134,20 @@ component FavoriteRow inherits Rectangle {
     // briefly, so a swipe that starts on the logo still scrolls the list,
     // and open the menu by holding the rest of the row
     in property <bool> hold-to-drag: false;
+    // The logo is a drag handle (off while Find narrows the list)
+    in property <bool> can-drag: true;
+    // Pressed once while recording: the next press switches to it
+    in property <bool> armed: false;
+    // The arrow keys rest on this row: its stats bubble shows as on hover
+    in property <bool> key-stats: false;
+    // It can go one place up or down (not at the edge, not while finding)
+    in property <bool> can-move-up: true;
+    in property <bool> can-move-down: true;
     callback clicked();
     callback edit-clicked();
     callback move-requested(/* to-top */ bool);
+    // One place up (-1) or down (1)
+    callback step-requested(int);
     callback remove-requested();
     callback reset-stats-requested();
     // The stats were tapped on a touch screen: show or hide their bubble
@@ -144,6 +173,69 @@ component FavoriteRow inherits Rectangle {
     property <bool> stats-ready: false;
     // The press on the stats came from a touch screen
     property <bool> stats-touch-press: false;
+    // The arrow keys have rested on the row as long
+    property <bool> key-stats-ready: false;
+    changed key-stats => {
+        if !self.key-stats {
+            self.key-stats-ready = false;
+        }
+    }
+    // The menu's row under the arrow keys (-1: none; 0 Edit, 1 Move Up,
+    // 2 Move Down, 3 Move to Top, 4 Move to Bottom, 5 Reset, 6 Remove)
+    in-out property <int> menu-active: -1;
+    property <bool> can-reset: root.show-stats
+        && (root.play-count > 0 || root.listen-time != "" || root.session-time != "");
+
+    pure function menu-usable(item: int) -> bool {
+        return item == 1 ? root.can-move-up
+            : item == 2 ? root.can-move-down
+            : item == 5 ? root.can-reset : true;
+    }
+
+    // The next usable row from `from` going `step` (1 or -1), around the ends
+    pure function menu-step(from: int, step: int) -> int {
+        let start = from >= 0 ? from : step > 0 ? -1 : 7;
+        let a = mod(start + step + 7, 7);
+        let b = mod(start + 2 * step + 14, 7);
+        let c = mod(start + 3 * step + 21, 7);
+        let d = mod(start + 4 * step + 28, 7);
+        let e = mod(start + 5 * step + 35, 7);
+        let f = mod(start + 6 * step + 42, 7);
+        return root.menu-usable(a) ? a : root.menu-usable(b) ? b : root.menu-usable(c) ? c
+            : root.menu-usable(d) ? d : root.menu-usable(e) ? e : root.menu-usable(f) ? f : from;
+    }
+
+    // A menu row was clicked, or Enter pressed on it. Reset and Remove ask
+    // once more first and keep the menu open meanwhile.
+    function menu-pick(item: int) {
+        if !root.menu-usable(item) {
+            return;
+        }
+        if item == 5 {
+            if root.confirm-reset {
+                root.reset-stats-requested();
+                menu.close();
+            } else {
+                root.confirm-reset = true;
+            }
+        } else if item == 6 {
+            if root.confirm-remove {
+                menu.close();
+                root.remove-requested();
+            } else {
+                root.confirm-remove = true;
+            }
+        } else {
+            menu.close();
+            if item == 0 {
+                root.edit-clicked();
+            } else if item == 1 || item == 2 {
+                root.step-requested(item == 1 ? -1 : 1);
+            } else {
+                root.move-requested(item == 3);
+            }
+        }
+    }
     // The menu is as wide as its longest label needs, bold confirm text
     // included, so asking to confirm doesn't push the text to the edge:
     // card padding, item padding, icon and spacing around the label
@@ -154,6 +246,7 @@ component FavoriteRow inherits Rectangle {
     public function open-menu(x: length, y: length) {
         root.confirm-remove = false;
         root.confirm-reset = false;
+        root.menu-active = -1;
         root.menu-x = clamp(x, 0, root.width - root.menu-width);
         root.menu-y = y;
         menu.show();
@@ -275,10 +368,11 @@ component FavoriteRow inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
             }
 
-            if root.country != "": Text {
-                text: root.country;
-                color: Theme.text-secondary;
+            if root.country != "" || root.armed: Text {
+                text: root.armed ? RecordingGuard.text : root.country;
+                color: root.armed ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
+                font-weight: root.armed ? Theme.weight-semibold : Theme.weight-regular;
                 overflow: elide;
                 accessible-role: none;
             }
@@ -347,10 +441,17 @@ component FavoriteRow inherits Rectangle {
         triggered => { root.stats-ready = true; }
     }
 
+    Timer {
+        interval: Defaults.hover-delay;
+        running: root.key-stats && !root.key-stats-ready;
+        triggered => { root.key-stats-ready = true; }
+    }
+
     // Styled like the Statistics tiles: a caption over the total, and
     // label and value rows beside it
     stats-bubble := PopupCard {
         property <bool> shown: ((stats-touch.has-hover && root.stats-ready)
+                || (root.key-stats && root.key-stats-ready && root.show-stats)
                 || (root.stats-pinned && root.show-stats))
             && !stats-touch.pressed && !root.dragging;
         property <bool> played: root.last-played != "";
@@ -474,64 +575,96 @@ component FavoriteRow inherits Rectangle {
         close-policy: close-on-click-outside;
 
         PopupCard {
-            VerticalLayout {
-                padding: Theme.space-4;
+            // The menu takes the keys while open: the arrows, Home and End
+            // move through the rows that can be used, Enter or Space
+            // presses one, Esc closes
+            FocusScope {
+                focus-on-tab-navigation: false;
+                focus-on-click: false;
+                init => { self.focus(); }
 
-                RowMenuItem {
-                    label: "Edit";
-                    icon: @image-url("icons/edit.svg");
-                    clicked => {
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
                         menu.close();
-                        root.edit-clicked();
+                        return accept;
                     }
-                }
-                RowMenuItem {
-                    label: "Move to Top";
-                    icon: @image-url("icons/move-top.svg");
-                    clicked => {
-                        menu.close();
-                        root.move-requested(true);
+                    if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                        root.menu-active = root.menu-step(root.menu-active, event.text == Key.DownArrow ? 1 : -1);
+                        return accept;
                     }
-                }
-                RowMenuItem {
-                    label: "Move to Bottom";
-                    icon: @image-url("icons/move-bottom.svg");
-                    clicked => {
-                        menu.close();
-                        root.move-requested(false);
+                    if event.text == Key.Home || event.text == Key.End {
+                        root.menu-active = root.menu-step(-1, event.text == Key.Home ? 1 : -1);
+                        return accept;
                     }
-                }
-                // Only while stats are shown, and asks once more first.
-                // Act before closing: inside an `if` the handler stops
-                // once the menu closes
-                if root.show-stats: RowMenuItem {
-                    label: root.confirm-reset ? "Press Again to Reset" : "Reset Listening Stats";
-                    danger-armed: root.confirm-reset;
-                    icon: @image-url("icons/reset.svg");
-                    enabled: root.play-count > 0
-                        || root.listen-time != "" || root.session-time != "";
-                    clicked => {
-                        if root.confirm-reset {
-                            root.reset-stats-requested();
-                            menu.close();
-                        } else {
-                            root.confirm-reset = true;
+                    if event.text == Key.Return || event.text == Key.Space {
+                        if !event.repeat && root.menu-active >= 0 {
+                            root.menu-pick(root.menu-active);
                         }
+                        return accept;
                     }
+                    // Nothing behind the menu takes a key meanwhile
+                    return accept;
                 }
-                MenuSeparator {}
-                // Asks once more before removing
-                RowMenuItem {
-                    label: root.confirm-remove ? "Press Again to Remove" : "Remove from Favorites";
-                    danger-armed: root.confirm-remove;
-                    icon: @image-url("icons/trash.svg");
-                    clicked => {
-                        if root.confirm-remove {
-                            menu.close();
-                            root.remove-requested();
-                        } else {
-                            root.confirm-remove = true;
-                        }
+
+                VerticalLayout {
+                    padding: Theme.space-4;
+
+                    RowMenuItem {
+                        label: "Edit";
+                        icon: @image-url("icons/edit.svg");
+                        highlighted: root.menu-active == 0;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(0); }
+                    }
+                    RowMenuItem {
+                        label: "Move Up";
+                        icon: @image-url("icons/chevron-up.svg");
+                        enabled: root.can-move-up;
+                        highlighted: root.menu-active == 1;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(1); }
+                    }
+                    RowMenuItem {
+                        label: "Move Down";
+                        icon: @image-url("icons/chevron-down.svg");
+                        enabled: root.can-move-down;
+                        highlighted: root.menu-active == 2;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(2); }
+                    }
+                    RowMenuItem {
+                        label: "Move to Top";
+                        icon: @image-url("icons/move-top.svg");
+                        highlighted: root.menu-active == 3;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(3); }
+                    }
+                    RowMenuItem {
+                        label: "Move to Bottom";
+                        icon: @image-url("icons/move-bottom.svg");
+                        highlighted: root.menu-active == 4;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(4); }
+                    }
+                    // Only while stats are shown, and asks once more first
+                    if root.show-stats: RowMenuItem {
+                        label: root.confirm-reset ? "Press Again to Reset" : "Reset Listening Stats";
+                        danger-armed: root.confirm-reset;
+                        icon: @image-url("icons/reset.svg");
+                        enabled: root.can-reset;
+                        highlighted: root.menu-active == 5;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(5); }
+                    }
+                    MenuSeparator {}
+                    // Asks once more before removing
+                    RowMenuItem {
+                        label: root.confirm-remove ? "Press Again to Remove" : "Remove from Favorites";
+                        danger-armed: root.confirm-remove;
+                        icon: @image-url("icons/trash.svg");
+                        highlighted: root.menu-active == 6;
+                        tab-stop: false;
+                        clicked => { root.menu-pick(6); }
                     }
                 }
             }
@@ -558,7 +691,7 @@ component FavoriteRow inherits Rectangle {
     handle := TouchArea {
         x: 0;
         width: 58px;
-        mouse-cursor: root.dragging ? grabbing : grab;
+        mouse-cursor: !root.can-drag ? pointer : root.dragging ? grabbing : grab;
         pointer-event(event) => {
             if event.kind == PointerEventKind.move && event.touch-finger-id == 0 && !self.pressed {
                 root.pointer-moved(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y);
@@ -571,7 +704,9 @@ component FavoriteRow inherits Rectangle {
             }
             if event.kind == PointerEventKind.down {
                 root.dragged = false;
-                if root.hold-to-drag {
+                if !root.can-drag {
+                    // A plain click area meanwhile
+                } else if root.hold-to-drag {
                     hold-timer.running = true;
                 } else {
                     root.handle-held(true);
@@ -593,7 +728,7 @@ component FavoriteRow inherits Rectangle {
                 }
                 return;
             }
-            if self.pressed && (root.dragged || abs(self.mouse-y - self.pressed-y) > 3px) {
+            if root.can-drag && self.pressed && (root.dragged || abs(self.mouse-y - self.pressed-y) > 3px) {
                 root.dragged = true;
                 root.grip-moved(self.absolute-position.y + self.mouse-y, self.pressed-y);
             }
@@ -610,7 +745,10 @@ export component Favorites inherits Rectangle {
     // The empty list's intrinsic size otherwise collapses the headless layout.
     in-out property <length> snapshot-empty-height;
     min-height: root.snapshot-empty-height;
-    max-height: max(fav-layout.max-height, root.snapshot-empty-height);
+    // As tall as the whole list at most, also while Find shows fewer rows
+    max-height: max(2 * RowMetrics.list-padding + max(0px, root.favorites.length * RowMetrics.row-stride
+            - RowMetrics.row-spacing) + find-bar.height,
+        root.snapshot-empty-height);
 
     in-out property <[FavoriteStation]> favorites;
     in-out property <[image]> favorite-logos;
@@ -628,6 +766,42 @@ export component Favorites inherits Rectangle {
     // The favorite whose stats bubble a tap opened (touch screens), or ""
     in-out property <string> pinned-stats-id;
 
+    // A recording is running: picking another station would end it, so
+    // the first press only arms the row (see RecordingGuard)
+    in property <bool> recording;
+    property <string> armed-url;
+    changed recording => {
+        if !self.recording {
+            self.armed-url = "";
+        }
+    }
+
+    // Find in favorites: a field above the list narrows it to the names
+    // containing the text. The rows on screen are `shown`; `favorites`
+    // stays the whole list.
+    out property <bool> find-open;
+    in-out property <string> find-text;
+    property <bool> finding: root.find-text != "";
+    property <[FavoriteStation]> shown: root.finding
+        ? FavoritesFind.stations(root.favorites, root.find-text) : root.favorites;
+    property <[image]> shown-logos: root.finding
+        ? FavoritesFind.logos(root.favorites, root.favorite-logos, root.find-text) : root.favorite-logos;
+
+    // A favorite was just removed and can be put back (0: no; Rust counts
+    // up for each removal, which restarts the time the offer stays)
+    in-out property <int> undo-offer;
+    out property <bool> can-undo: root.undo-offer != 0;
+    property <duration> undo-time: 6s;
+    callback undo-requested();
+    changed undo-offer => {
+        undo-timer.running = self.undo-offer != 0;
+        if self.undo-offer != 0 {
+            undo-timer.restart();
+        }
+    }
+    // The focus was in something that went away: the window takes it
+    callback release-focus();
+
     callback favorite-clicked(FavoriteStation);
     callback favorite-edit-requested(FavoriteStation);
     callback favorite-move-requested(FavoriteStation, /* to-top */ bool);
@@ -642,7 +816,7 @@ export component Favorites inherits Rectangle {
     property <string> highlight-url;
     property <bool> keyboard-highlight;
     property <int> highlight-index: root.highlight-url == "" ? -1
-        : root.locate-favorite(root.favorites, root.highlight-url, "", ShortcutAction.unhandled, 0);
+        : root.locate-favorite(root.shown, root.highlight-url, "", ShortcutAction.unhandled, 0);
     out property <bool> has-highlight: root.highlight-index >= 0;
     in property <string> snapshot-menu;
     property <string> menu-url;
@@ -654,7 +828,7 @@ export component Favorites inherits Rectangle {
         : root.is-playing ? StationState.playing : StationState.none;
     // Where the focus starts in the list: the current station, else the top
     property <int> current-index: root.current-station-url == "" ? -1
-        : root.locate-favorite(root.favorites, root.current-station-url, "", ShortcutAction.unhandled, 0);
+        : root.locate-favorite(root.shown, root.current-station-url, "", ShortcutAction.unhandled, 0);
 
     // A row in one sentence for screen readers: its state, the country,
     // and the listening figures when they are shown
@@ -668,7 +842,9 @@ export component Favorites inherits Rectangle {
             : station.last-played == "" ? "not played yet"
             : station.listen-time != "" ? "listened \{station.listen-time}, last played: \{station.last-played}"
             : "last played: \{station.last-played}";
-        return place != "" && stats != "" ? "\{place}, \{stats}" : place != "" ? place : stats;
+        let row = place != "" && stats != "" ? "\{place}, \{stats}" : place != "" ? place : stats;
+        return station.url != root.armed-url || root.armed-url == "" ? row
+            : row != "" ? "\{RecordingGuard.spoken}, \{row}" : RecordingGuard.spoken;
     }
 
     changed highlight-index => {
@@ -681,13 +857,13 @@ export component Favorites inherits Rectangle {
 
     public function move-highlight(action: ShortcutAction) -> bool {
         let page = max(1, floor(fav-flickable.height / RowMetrics.row-stride));
-        let index = root.locate-favorite(root.favorites, root.highlight-url,
+        let index = root.locate-favorite(root.shown, root.highlight-url,
             root.is-playing ? root.current-station-url : "", action, page);
         if index < 0 {
             return false;
         }
         root.keyboard-highlight = true;
-        root.highlight-url = root.favorites[index].url;
+        root.highlight-url = root.shown[index].url;
         list.reveal(index);
         // The list takes the focus, so a screen reader says the row
         if cursor.enabled && !cursor.has-focus {
@@ -701,14 +877,107 @@ export component Favorites inherits Rectangle {
         root.keyboard-highlight = false;
     }
 
+    // Whether to switch to the station at `url` now. While recording, a
+    // first press on another station only arms its row; the same press
+    // again within RecordingGuard's time switches (and ends the recording).
+    public function confirm-switch(url: string) -> bool {
+        if !root.recording || url == root.current-station-url || url == root.armed-url {
+            root.armed-url = "";
+            arm-timer.running = false;
+            return true;
+        }
+        root.armed-url = url;
+        arm-timer.running = true;
+        arm-timer.restart();
+        // Shown, when the press came from a key that steps through the list
+        let index = root.locate-favorite(root.shown, url, "", ShortcutAction.unhandled, 0);
+        if index >= 0 {
+            list.reveal(index);
+        }
+        return false;
+    }
+
+    arm-timer := Timer {
+        interval: RecordingGuard.confirm-time;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.armed-url = "";
+        }
+    }
+
+    undo-timer := Timer {
+        interval: root.undo-time;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.undo-offer = 0;
+        }
+    }
+
     function activate(station: FavoriteStation) {
         root.pinned-stats-id = "";
-        root.favorite-clicked(station);
+        if root.confirm-switch(station.url) {
+            root.favorite-clicked(station);
+        }
     }
 
     public function play-highlight() {
         if root.has-highlight {
-            root.activate(root.favorites[root.highlight-index]);
+            root.activate(root.shown[root.highlight-index]);
+        }
+    }
+
+    // Move the highlighted favorite one place up (-1) or down (1); not
+    // while Find narrows the list. False when there is nothing to move.
+    public function move-highlighted(step: int) -> bool {
+        if !root.has-highlight || root.finding || root.drag-from-index >= 0 {
+            return false;
+        }
+        let to = root.highlight-index + step;
+        if to >= 0 && to < root.favorites.length {
+            root.keyboard-highlight = true;
+            root.favorites-reordered(root.highlight-index, to);
+        }
+        return true;
+    }
+
+    // Open the Find field (the "/" key), or go back to it
+    public function open-find() {
+        if root.favorites.length > 0 {
+            root.find-open = true;
+            find-field.focus-input();
+            find-field.select-all();
+        }
+    }
+
+    // Close the Find field and show the whole list again; the highlighted
+    // row stays highlighted and in view
+    public function close-find() {
+        let focused = find-field.has-focus;
+        root.find-text = "";
+        root.find-open = false;
+        if focused {
+            root.release-focus();
+        }
+        if root.has-highlight {
+            list.reveal(root.highlight-index);
+        }
+    }
+
+    // Esc in the list: closes Find first, then clears the highlight
+    public function escape() {
+        if root.find-open {
+            root.close-find();
+        } else {
+            root.clear-highlight();
+        }
+    }
+
+    // The favorites changed under an open Find (the last one removed)
+    changed favorites => {
+        if root.favorites.length == 0 && root.find-open {
+            root.close-find();
         }
     }
 
@@ -795,9 +1064,65 @@ export component Favorites inherits Rectangle {
         }
     }
 
+    // Find in favorites: opened by "/", above the list
+    find-bar := FocusScope {
+        // Esc closes it, Down goes into the list; the field types the rest
+        capture-key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return reject;
+            }
+            if event.text == Key.Escape {
+                root.close-find();
+                return accept;
+            }
+            if event.text == Key.DownArrow && root.shown.length > 0 {
+                root.move-highlight(root.has-highlight ? ShortcutAction.unhandled : ShortcutAction.favorite-down);
+                return accept;
+            }
+            return reject;
+        }
+        focus-on-tab-navigation: false;
+        focus-on-click: false;
+        visible: root.find-open;
+        x: 0;
+        y: 0;
+        height: root.find-open ? Theme.control-field + Theme.space-8 : 0px;
+
+        find-field := StyledLineEdit {
+            x: RowMetrics.list-padding;
+            y: Theme.space-8;
+            width: parent.width - RowMetrics.list-padding - 14px;
+            label: "Find in favorites";
+            placeholder-text: "Find in favorites";
+            clearable: true;
+            enabled: root.enabled && root.find-open;
+            text <=> root.find-text;
+            // Enter plays the highlighted match, or the first one
+            accepted => {
+                if root.has-highlight {
+                    root.play-highlight();
+                } else if root.finding && root.shown.length > 0 {
+                    root.activate(root.shown[0]);
+                }
+            }
+        }
+    }
+
+    // Nothing matches the text
+    if root.finding && root.shown.length == 0 && root.favorites.length > 0: StatusPanel {
+        x: 0;
+        y: find-bar.height;
+        width: root.width;
+        height: root.height - self.y;
+        icon: @image-url("icons/magnifying-glass.svg");
+        title: "No favorites match \"\{root.find-text}\"";
+    }
+
     // Favorites list
     list := Rectangle {
-        visible: root.favorites.length > 0;
+        visible: root.shown.length > 0;
+        y: find-bar.height;
+        height: root.height - self.y;
         accessible-role: AccessibleRole.list;
         accessible-label: "Favorites";
 
@@ -840,10 +1165,10 @@ export component Favorites inherits Rectangle {
             root.drag-offset = clamp(
                 clamp(pointer - root.drag-grab-y - home, visible-top, visible-bottom),
                 -idx * RowMetrics.row-stride,
-                (root.favorites.length - 1 - idx) * RowMetrics.row-stride);
+                (root.shown.length - 1 - idx) * RowMetrics.row-stride);
             root.drag-target-index = clamp(
                 idx + round(root.drag-offset / RowMetrics.row-stride),
-                0, root.favorites.length - 1);
+                0, root.shown.length - 1);
         }
 
         // Keeps scrolling while the pointer rests near an edge
@@ -868,7 +1193,7 @@ export component Favorites inherits Rectangle {
                 padding-right: 14px;
                 spacing: RowMetrics.row-spacing;
 
-                for station[idx] in root.favorites: Rectangle {
+                for station[idx] in root.shown: Rectangle {
                     height: RowMetrics.row-height;
                     // The dragged row draws above the others
                     z: root.drag-from-index == idx ? 1 : 0;
@@ -921,14 +1246,19 @@ export component Favorites inherits Rectangle {
                         is-current: station.url == root.current-station-url;
                         state: root.play-state;
                         description: root.describe(station, self.is-current ? root.play-state : StationState.none);
-                        logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
-                        has-logo: idx < root.favorite-logos.length
-                            ? root.favorite-logos[idx].width > 0
+                        logo-image: idx < root.shown-logos.length ? root.shown-logos[idx] : @image-url("");
+                        has-logo: idx < root.shown-logos.length
+                            ? root.shown-logos[idx].width > 0
                             : false;
                         is-drag-source: root.drag-from-index == idx;
                         dragging: root.drag-from-index >= 0;
                         row-index: idx;
-                        row-count: root.favorites.length;
+                        row-count: root.shown.length;
+                        armed: root.armed-url == station.url && root.armed-url != "";
+                        key-stats: self.highlighted && root.keyboard-highlight && cursor.has-focus;
+                        can-move-up: !root.finding && idx > 0;
+                        can-move-down: !root.finding && idx < root.shown.length - 1;
+                        step-requested(step) => { root.favorites-reordered(idx, idx + step); }
                         clicked => { root.activate(station); }
                         listen-time: station.listen-time;
                         last-played: station.last-played;
@@ -940,6 +1270,8 @@ export component Favorites inherits Rectangle {
                             root.pinned-stats-id = root.pinned-stats-id == station.id ? "" : station.id;
                         }
                         hold-to-drag: root.touch-scroll;
+                        // No reordering by drag while Find narrows the list
+                        can-drag: !root.finding;
                         edit-clicked => {
                             root.favorite-edit-requested(station);
                         }
@@ -985,14 +1317,14 @@ export component Favorites inherits Rectangle {
                 y: RowMetrics.list-padding + max(0, root.highlight-index) * RowMetrics.row-stride;
                 width: fav-layout.width - RowMetrics.list-padding - 14px;
                 height: RowMetrics.row-height;
-                enabled: root.enabled && root.favorites.length > 0 && root.drag-from-index < 0;
-                count: root.favorites.length;
+                enabled: root.enabled && root.shown.length > 0 && root.drag-from-index < 0;
+                count: root.shown.length;
                 active: root.highlight-index;
                 start: max(0, root.current-index);
                 page: max(1, floor(fav-flickable.height / RowMetrics.row-stride));
-                item-label: root.favorites[root.highlight-index].name;
-                item-description: root.describe(root.favorites[root.highlight-index],
-                    root.favorites[root.highlight-index].url == root.current-station-url
+                item-label: root.shown[root.highlight-index].name;
+                item-description: root.describe(root.shown[root.highlight-index],
+                    root.shown[root.highlight-index].url == root.current-station-url
                         ? root.play-state : StationState.none);
                 item-selected: root.highlight-url == root.current-station-url;
                 space-activates: self.tab-focus;
@@ -1001,10 +1333,16 @@ export component Favorites inherits Rectangle {
                 ring-offset: Theme.focus-ring-offset;
                 move-to(index) => {
                     root.keyboard-highlight = true;
-                    root.highlight-url = root.favorites[index].url;
+                    root.highlight-url = root.shown[index].url;
                     list.reveal(index);
                 }
                 activated => { root.play-highlight(); }
+                // Up on the first row goes back to the Find field
+                left-at-top => {
+                    if root.find-open {
+                        find-field.focus-input();
+                    }
+                }
                 key(event) => {
                     if root.has-highlight
                         && (event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift)) {
@@ -1023,6 +1361,50 @@ export component Favorites inherits Rectangle {
             viewport-height: fav-flickable.height;
             content-height: fav-flickable.content-height;
             content-y <=> fav-flickable.content-y;
+        }
+    }
+
+    // A favorite was just removed: offer to put it back where it was, for
+    // a few seconds, over the bottom of the list
+    if root.can-undo: PopupCard {
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - Theme.space-12;
+        width: min(undo-row.preferred-width, root.width - 2 * Theme.space-12);
+        height: Theme.control-button + 2 * Theme.space-4;
+        accessible-role: none;
+
+        undo-row := HorizontalLayout {
+            padding-left: Theme.space-12;
+            padding-right: Theme.space-4;
+            spacing: Theme.space-4;
+
+            Text {
+                text: "Removed from Favorites";
+                color: Theme.text-primary;
+                font-size: Theme.font-md;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                TextButton {
+                    label: "Undo";
+                    focusable: root.enabled;
+                    clicked => { root.undo-requested(); }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    icon: @image-url("icons/xmark.svg");
+                    icon-size: Theme.icon-sm;
+                    label: "Dismiss";
+                    enabled: root.enabled;
+                    clicked => { root.undo-offer = 0; }
+                }
+            }
         }
     }
 }

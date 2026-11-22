@@ -75,6 +75,8 @@ const BINDINGS: &[Binding] = &[
     Binding::new(NextFavorite, "N", &[&["N"]], Keys::Text("n")),
     Binding::new(PreviousFavorite, "P", &[&["P"]], Keys::Text("p")),
     Binding::new(ToggleFavorite, "F", &[&["F"]], Keys::Text("f")),
+    Binding::new(FindFavorites, "/", &[&["/"]], Keys::Text("/")),
+    Binding::control(UndoRemove, "Ctrl+Z", &[&[CTRL, "Z"]], "z"),
     Binding::control(Search, "Ctrl+F", &[&[CTRL, "F"]], "f"),
     Binding::control(NetworkStream, "Ctrl+O", &[&[CTRL, "O"]], "o"),
     Binding::control(CloseWindow, "Ctrl+W", &[&[CTRL, "W"]], "w"),
@@ -113,6 +115,12 @@ const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, Caps)] = &[
         &[&["Shift", "F10"], &["Menu"]],
     ),
     (FavoriteClear, Key::Escape, "Esc", &[&["Esc"]]),
+];
+
+// Alt with an arrow moves the highlighted favorite one place
+const MOVE_KEYS: &[(ShortcutAction, Key, &str, Caps)] = &[
+    (FavoriteMoveUp, Key::UpArrow, "Alt+↑", &[&["Alt", "↑"]]),
+    (FavoriteMoveDown, Key::DownArrow, "Alt+↓", &[&["Alt", "↓"]]),
 ];
 
 /// The keys of a dialog row: shortcuts from the tables above, or keys that
@@ -160,8 +168,14 @@ const GROUPS: &[(&str, &[Row])] = &[
                 &[NextFavorite, PreviousFavorite],
             ),
             row("Add or remove the current station", &[ToggleFavorite]),
+            row("Undo removing a favorite", &[UndoRemove]),
+            row("Find in favorites", &[FindFavorites]),
             row("Move through favorites", &[FavoriteUp, FavoriteDown]),
             row("Play the highlighted favorite", &[FavoritePlay]),
+            row(
+                "Move the highlighted favorite",
+                &[FavoriteMoveUp, FavoriteMoveDown],
+            ),
         ],
     ),
     (
@@ -174,6 +188,7 @@ const GROUPS: &[(&str, &[Row])] = &[
     (
         "Window",
         &[
+            keys("Go to the menu bar", &[&["F10"]]),
             row("Close the window", &[CloseWindow]),
             row("Quit Radiotrope", &[Quit]),
             row("Show keyboard shortcuts", &[Help]),
@@ -209,7 +224,7 @@ struct Modifiers {
 }
 
 fn match_key(text: &str, modifiers: Modifiers, repeat: bool, desktop: bool) -> ShortcutAction {
-    if modifiers.alt || modifiers.meta || modifiers.alt_graph {
+    if modifiers.meta || modifiers.alt_graph {
         return Unhandled;
     }
     let mut chars = text.chars();
@@ -217,6 +232,15 @@ fn match_key(text: &str, modifiers: Modifiers, repeat: bool, desktop: bool) -> S
         return Unhandled;
     };
     let key = key.to_ascii_lowercase();
+    if modifiers.alt {
+        if modifiers.control || modifiers.shift {
+            return Unhandled;
+        }
+        return MOVE_KEYS
+            .iter()
+            .find(|(_, named, _, _)| char::from(*named) == key)
+            .map_or(Unhandled, |&(action, _, _, _)| action);
+    }
     if !modifiers.control {
         if modifiers.shift && key == char::from(Key::F10) && !repeat {
             return FavoriteMenu;
@@ -249,8 +273,8 @@ fn match_key(text: &str, modifiers: Modifiers, repeat: bool, desktop: bool) -> S
         .iter()
         .find(|binding| {
             binding.control == modifiers.control
-                // On many layouts, Shift is needed to produce '+'.
-                && (!modifiers.shift || key == '+')
+                // On many layouts, Shift is needed to produce '+' or '/'.
+                && (!modifiers.shift || key == '+' || key == '/')
                 && (!repeat || matches!(binding.action, VolumeUp | VolumeDown))
                 && binding.keys.matches(key)
         })
@@ -265,6 +289,7 @@ fn label(action: ShortcutAction) -> &'static str {
         .or_else(|| {
             FAVORITE_KEYS
                 .iter()
+                .chain(MOVE_KEYS)
                 .find(|(id, _, _, _)| *id == action)
                 .map(|(_, _, label, _)| *label)
         })
@@ -279,6 +304,7 @@ fn caps(action: ShortcutAction) -> Caps {
         .or_else(|| {
             FAVORITE_KEYS
                 .iter()
+                .chain(MOVE_KEYS)
                 .find(|(id, _, _, _)| *id == action)
                 .map(|(_, _, _, caps)| *caps)
         })
@@ -297,6 +323,7 @@ fn spoken_key(cap: &str) -> &str {
         "→" => "Right arrow",
         "+" => "Plus",
         "−" => "Minus",
+        "/" => "Slash",
         _ => cap,
     }
 }
@@ -662,6 +689,10 @@ mod tests {
             (CloseWindow, "Ctrl+W"),
             (Quit, "Ctrl+Q"),
             (Help, "F1"),
+            (FindFavorites, "/"),
+            (UndoRemove, "Ctrl+Z"),
+            (FavoriteMoveUp, "Alt+↑"),
+            (FavoriteMoveDown, "Alt+↓"),
         ] {
             assert_eq!(label(action), expected);
         }
@@ -672,6 +703,7 @@ mod tests {
             .iter()
             .map(|binding| binding.action)
             .chain(FAVORITE_KEYS.iter().map(|&(action, _, _, _)| action))
+            .chain(MOVE_KEYS.iter().map(|&(action, _, _, _)| action))
     }
 
     #[test]
@@ -735,6 +767,90 @@ mod tests {
         assert_eq!(
             dialog_row("Search stations").spoken,
             "Search stations: Control F"
+        );
+    }
+
+    #[test]
+    fn find_undo_and_move_rows() {
+        let row = dialog_row("Find in favorites");
+        assert_eq!(row.alternatives, [&["/"][..]]);
+        assert_eq!(row.spoken, "Find in favorites: Slash");
+
+        let row = dialog_row("Move the highlighted favorite");
+        assert_eq!(row.alternatives, [&["Alt", "↑"][..], &["Alt", "↓"][..]]);
+        assert_eq!(row.separator, "or");
+        assert_eq!(
+            row.spoken,
+            "Move the highlighted favorite: Alt Up arrow or Alt Down arrow"
+        );
+
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            dialog_row("Undo removing a favorite").spoken,
+            "Undo removing a favorite: Control Z"
+        );
+        assert_eq!(
+            dialog_row("Go to the menu bar").spoken,
+            "Go to the menu bar: F10"
+        );
+    }
+
+    #[test]
+    fn alt_arrows_move_the_highlighted_favorite() {
+        let alt = || Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        let up = char::from(Key::UpArrow).to_string();
+        let down = char::from(Key::DownArrow).to_string();
+        // Held down, it keeps moving; and the kiosk has it too
+        for repeat in [false, true] {
+            assert_eq!(match_key(&up, alt(), repeat), FavoriteMoveUp);
+            assert_eq!(match_key(&down, alt(), repeat), FavoriteMoveDown);
+        }
+        assert_eq!(super::match_key(&up, alt(), false, false), FavoriteMoveUp);
+        // Plain arrows still move the highlight, and nothing else takes Alt
+        assert_eq!(match_key(&up, Modifiers::default(), false), FavoriteUp);
+        assert_eq!(
+            match_key(
+                &up,
+                Modifiers {
+                    control: true,
+                    ..alt()
+                },
+                false
+            ),
+            Unhandled
+        );
+        assert_eq!(
+            match_key(
+                &char::from(Key::Home).to_string(),
+                alt(),
+                false
+            ),
+            Unhandled
+        );
+    }
+
+    #[test]
+    fn slash_finds_with_or_without_shift() {
+        assert_eq!(match_key("/", Modifiers::default(), false), FindFavorites);
+        // Layouts that type "/" with Shift (Shift+7)
+        assert_eq!(
+            match_key(
+                "/",
+                Modifiers {
+                    shift: true,
+                    ..Modifiers::default()
+                },
+                false
+            ),
+            FindFavorites
+        );
+        // Not on the kiosk, which has no letter shortcuts
+        assert_eq!(
+            super::match_key("/", Modifiers::default(), false, false),
+            Unhandled
         );
     }
 
