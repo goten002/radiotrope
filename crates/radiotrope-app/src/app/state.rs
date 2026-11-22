@@ -34,6 +34,15 @@ pub enum AppCommand {
         /// not one started just before or after it
         taken: Option<tokio::sync::oneshot::Sender<u64>>,
     },
+    /// Play a station stepped to with Next or Previous: it is the current
+    /// one at once and is connected to a moment later, so stepping past
+    /// stations starts only the last
+    Step {
+        url: String,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    },
     Stop,
     SetVolume(f32),
     Mute,

@@ -80,7 +80,7 @@ fn outage_delay(tries: u32) -> Duration {
 
 impl AppController {
     /// The time the outage's retries go by
-    fn now(&self) -> Instant {
+    pub(super) fn now(&self) -> Instant {
         #[cfg(test)]
         if let Some(now) = self.fake_now {
             return now;
