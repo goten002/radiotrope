@@ -759,9 +759,6 @@ export component App inherits Window {
                     accessible-label: "Playback controls";
                     snapshot-overlay: root.snapshot-overlay;
                     enabled: !root.dialog-open;
-                    is-recording: root.is-recording;
-                    can-toggle-recording: root.can-toggle-recording;
-                    toggle-recording => { root.toggle-recording(); }
                     is-playing: root.is-playing;
                     is-loading: root.is-loading;
                     has-station: root.station-url != "";
