@@ -154,7 +154,7 @@ fn found_rows(stations: &ModelRc<FavoriteStation>, text: &str) -> ModelRc<i32> {
 }
 
 /// A favorite just removed, and its place in the list, for Undo
-struct Removed {
+pub(crate) struct Removed {
     favorite: Favorite,
     /// Its row, counted from the top
     index: usize,
@@ -168,7 +168,7 @@ thread_local! {
 }
 
 /// Remove the favorite with this id, noting its place in the list
-fn remove_keeping_place(favorites: &mut FavoritesManager, id: &str) -> Option<Removed> {
+pub(crate) fn remove_keeping_place(favorites: &mut FavoritesManager, id: &str) -> Option<Removed> {
     // What another player saved since is taken in first: the place is in
     // the list as it is now
     favorites.reload_if_changed();
@@ -201,12 +201,23 @@ fn put_back(favorites: &mut FavoritesManager, removed: Removed) -> bool {
 
 /// Offer to put back the favorite just removed: "Removed from Favorites ·
 /// Undo" under the list, for a few seconds
-fn offer_undo(ui: &App, removed: Option<Removed>) {
+pub(crate) fn offer_undo(ui: &App, removed: Option<Removed>) {
     let Some(removed) = removed else { return };
     REMOVED.set(Some(removed));
     let offer = UNDO_OFFERS.get().wrapping_add(1).max(1);
     UNDO_OFFERS.set(offer);
     ui.set_favorite_undo(offer);
+}
+
+/// The favorite whose Undo is offered was starred again by hand: its Undo
+/// has nothing left to do
+pub(crate) fn forget_undo_of(ui: &App, starred_again: impl Fn(&Favorite) -> bool) {
+    let was_removed =
+        REMOVED.with_borrow(|removed| removed.as_ref().is_some_and(|r| starred_again(&r.favorite)));
+    if was_removed {
+        REMOVED.set(None);
+        ui.set_favorite_undo(0);
+    }
 }
 
 /// Wire what the favorites list and the header's star do: play, step,
@@ -258,14 +269,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 };
                 fav = fav.with_metadata(country_opt, None, HashSet::new());
                 let _ = f.add(fav);
-                // Starred again by hand: its Undo has nothing left to do
-                let was_removed = REMOVED.with_borrow(|removed| {
-                    removed.as_ref().is_some_and(|r| r.favorite.url() == url)
-                });
-                if was_removed {
-                    REMOVED.set(None);
-                    ui.set_favorite_undo(0);
-                }
+                forget_undo_of(&ui, |removed| removed.url() == url);
             }
             let is_fav = f.is_favorite(&url);
             drop(f);
