@@ -28,4 +28,14 @@ pub struct Args {
     #[cfg(feature = "ui-snapshots")]
     #[arg(long, hide = true, requires = "ui_snapshots", value_parser = crate::ui_snapshots::parse_scale)]
     pub scale: Option<f32>,
+
+    /// Window size: WIDTHxHEIGHT in logical pixels, or `min`
+    #[cfg(feature = "ui-snapshots")]
+    #[arg(long, hide = true, requires = "ui_snapshots", value_parser = crate::ui_snapshots::parse_size)]
+    pub size: Option<crate::ui_snapshots::Size>,
+
+    /// Only the shots whose names start with this (comma-separated list)
+    #[cfg(feature = "ui-snapshots")]
+    #[arg(long, hide = true, requires = "ui_snapshots", value_name = "PREFIX")]
+    pub only: Option<String>,
 }

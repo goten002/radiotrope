@@ -5,6 +5,8 @@
 mod app;
 mod args;
 mod control;
+#[cfg(any(test, feature = "ui-snapshots"))]
+mod headless;
 mod instance;
 mod mcp;
 mod remote;
@@ -14,7 +16,9 @@ mod schedule_ui;
 mod shortcuts;
 #[cfg(feature = "desktop")]
 mod tray;
-#[cfg(feature = "ui-snapshots")]
+// The tests open every screen of the snapshot tool
+#[cfg(any(test, feature = "ui-snapshots"))]
+#[cfg_attr(not(feature = "ui-snapshots"), allow(dead_code))]
 mod ui_snapshots;
 #[cfg(feature = "desktop")]
 mod window_frame;
@@ -84,11 +88,13 @@ fn main() {
 
     #[cfg(feature = "ui-snapshots")]
     if let Some(out_dir) = args.ui_snapshots {
-        if let Err(error) = ui_snapshots::run(
-            &out_dir,
-            args.theme.unwrap_or_default(),
-            args.scale.unwrap_or(1.0),
-        ) {
+        let options = ui_snapshots::Options {
+            theme: args.theme.unwrap_or_default(),
+            scale: args.scale,
+            size: args.size.unwrap_or_default(),
+            only: args.only,
+        };
+        if let Err(error) = ui_snapshots::run(&out_dir, &options) {
             eprintln!("UI snapshots: {error}");
             std::process::exit(1);
         }

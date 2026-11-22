@@ -929,8 +929,9 @@ export component App inherits Window {
 
     // A dialog is open; when the last one closes, the main window takes
     // the keyboard back (its shortcuts work again)
-    property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
+    out property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
         || eq-dialog.show-dialog || filters-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
+        || import-dialog.show-dialog
         || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || shortcuts-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog

@@ -1,3 +1,7 @@
+//! `--ui-snapshots`: every screen of the window, drawn headless in both
+//! themes on a fixed clock, with no audio or network. The same staging opens
+//! each screen for the dialog test at the end of this file.
+
 use std::cell::Cell;
 use std::error::Error;
 use std::fmt::Write as _;
@@ -5,13 +9,20 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
-use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
-use slint::platform::{Platform, PlatformError, WindowAdapter, WindowEvent};
+use slint::platform::software_renderer::MinimalSoftwareWindow;
+use slint::platform::{Key, WindowEvent};
 use slint::{
-    ComponentHandle, Image, LogicalSize, ModelRc, Rgb8Pixel, SharedPixelBuffer, SharedString,
-    VecModel,
+    Color, ComponentHandle, Image, LogicalSize, Model, ModelRc, Rgb8Pixel, SharedPixelBuffer,
+    SharedString, VecModel,
 };
 
+use radiotrope::audio::health::{FailureReason, HealthState};
+use radiotrope_app::config::remote::PORT as REMOTE_PORT;
+use radiotrope_app::data::settings::McpAuth;
+use radiotrope_app::text::{status, MISSING};
+
+use crate::headless::HeadlessPlatform;
+use crate::mcp::setup::{self, AgentApp};
 use crate::{
     flag_image, remote_ui::qr_image, show_eq_presets, AboutInfo, AgentRow, App, BrowseStation,
     Defaults, FavoriteStation, FilterEntry, RemoteDevice, ScheduleDraft, ScheduleRow, VizData,
@@ -33,22 +44,43 @@ pub fn parse_scale(value: &str) -> Result<f32, String> {
         .ok_or_else(|| "scale must be a number between 0.25 and 8".into())
 }
 
-#[derive(Default)]
-struct HeadlessPlatform {
-    window: Rc<Cell<Option<Rc<MinimalSoftwareWindow>>>>,
-    time: Rc<Cell<Duration>>,
+/// The window size the screens are drawn at
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub enum Size {
+    /// The window's size on first start
+    #[default]
+    Default,
+    /// The smallest the window can be made
+    Min,
+    /// Width and height in logical pixels
+    Exact(f32, f32),
 }
 
-impl Platform for HeadlessPlatform {
-    fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
-        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
-        self.window.set(Some(window.clone()));
-        Ok(window)
+/// `--size`: `WxH` in logical pixels, or `min` for the smallest window
+pub fn parse_size(value: &str) -> Result<Size, String> {
+    if value.eq_ignore_ascii_case("min") {
+        return Ok(Size::Min);
     }
+    let pixels = |part: &str| {
+        part.trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| (64..=8192).contains(n))
+    };
+    value
+        .split_once(['x', 'X'])
+        .and_then(|(w, h)| Some(Size::Exact(pixels(w)? as f32, pixels(h)? as f32)))
+        .ok_or_else(|| "size must be WIDTHxHEIGHT (each 64 to 8192), or min".into())
+}
 
-    fn duration_since_start(&self) -> Duration {
-        self.time.get()
-    }
+/// How `--ui-snapshots` draws
+#[derive(Default)]
+pub struct Options {
+    pub theme: Theme,
+    pub scale: Option<f32>,
+    pub size: Size,
+    /// Only the shots whose names start with one of these (comma-separated)
+    pub only: Option<String>,
 }
 
 struct Shot {
@@ -71,6 +103,30 @@ impl Shot {
             state,
             description,
         }
+    }
+
+    /// Shots that show a dialog over the window
+    #[cfg(test)]
+    fn is_dialog(&self) -> bool {
+        DIALOG_SCREENS.contains(&self.screen)
+    }
+
+    /// How many presses of Esc close the dialog. Each one first closes
+    /// what is on top: a dropdown, then the Scheduler's form (back to its
+    /// list), a pairing overlay, or a filter picker (back to Search).
+    #[cfg(test)]
+    fn escapes(&self) -> usize {
+        let dropdown = matches!(
+            self.state,
+            "presets" | "bitrate" | "agent" | "interface" | "auth" | "station" | "date" | "volume"
+        );
+        let nested = match self.screen {
+            "picker" => true,
+            "remote" => matches!(self.state, "code" | "qr"),
+            "schedule" => !matches!(self.state, "" | "empty" | "remove"),
+            _ => false,
+        };
+        1 + usize::from(dropdown) + usize::from(nested)
     }
 }
 
@@ -171,6 +227,36 @@ const SHOTS: &[Shot] = &[
         "main",
         "title-copied",
         "Clipboard confirmation after copying the current track title.",
+    ),
+    Shot::new(
+        "main-fade-in",
+        "main",
+        "fade-in",
+        "Volume slider while the sound fades in after Play.",
+    ),
+    Shot::new(
+        "main-long-names",
+        "main",
+        "long-names",
+        "Long station names in the header and the favorites list.",
+    ),
+    Shot::new(
+        "main-accent-purple",
+        "main",
+        "accent-purple",
+        "Playing with the Purple accent instead of the default orange.",
+    ),
+    Shot::new(
+        "main-accent-white",
+        "main",
+        "accent-white",
+        "Playing with a custom white accent.",
+    ),
+    Shot::new(
+        "main-system-title-bar",
+        "main",
+        "system-frame",
+        "Radiotrope’s own title bar off; the system draws its bar outside the snapshot.",
     ),
     Shot::new(
         "main-spectrum",
@@ -327,6 +413,18 @@ const SHOTS: &[Shot] = &[
         "Results retained after another page fails, with a retry link.",
     ),
     Shot::new(
+        "search-row-loading",
+        "search",
+        "row-loading",
+        "A result row connecting after it was picked.",
+    ),
+    Shot::new(
+        "search-row-failed",
+        "search",
+        "row-failed",
+        "A result row whose station failed to connect.",
+    ),
+    Shot::new(
         "picker-country",
         "picker",
         "country",
@@ -351,6 +449,12 @@ const SHOTS: &[Shot] = &[
         "Country filter directory failure with retry.",
     ),
     Shot::new(
+        "picker-no-match",
+        "picker",
+        "no-match",
+        "Country filter text that matches no country.",
+    ),
+    Shot::new(
         "network-stream-empty",
         "network-stream",
         "",
@@ -373,6 +477,12 @@ const SHOTS: &[Shot] = &[
         "edit-favorite",
         "remove",
         "Remove confirmation in the edit form.",
+    ),
+    Shot::new(
+        "edit-favorite-error",
+        "edit-favorite",
+        "error",
+        "Save refused, with the reason under the URL.",
     ),
     Shot::new(
         "import-choice",
@@ -429,6 +539,12 @@ const SHOTS: &[Shot] = &[
         "Recording bitrate dropdown.",
     ),
     Shot::new(
+        "recording-folder-error",
+        "recording",
+        "folder-error",
+        "A recording folder that can't be used, with the reason.",
+    ),
+    Shot::new(
         "sleep-idle",
         "sleep",
         "",
@@ -445,6 +561,18 @@ const SHOTS: &[Shot] = &[
         "schedule",
         "",
         "Scheduled playback, recording and stop entries.",
+    ),
+    Shot::new(
+        "scheduler-empty",
+        "schedule",
+        "empty",
+        "Scheduler with no entries yet.",
+    ),
+    Shot::new(
+        "scheduler-save-error",
+        "schedule",
+        "add",
+        "New entry refused on save, with the reason.",
     ),
     Shot::new(
         "scheduler-add",
@@ -530,12 +658,24 @@ const SHOTS: &[Shot] = &[
         "network-info",
         "Network connection information bubble.",
     ),
+    Shot::new(
+        "agents-status-error",
+        "agents",
+        "status-error",
+        "Network access on, but the server can't listen.",
+    ),
     Shot::new("remote-off", "remote", "off", "Remote Control disabled."),
     Shot::new(
         "remote-on",
         "remote",
         "on",
         "Remote Control enabled with paired devices.",
+    ),
+    Shot::new(
+        "remote-no-phones",
+        "remote",
+        "no-phones",
+        "Remote Control enabled with no phone paired yet.",
     ),
     Shot::new(
         "remote-status-info",
@@ -580,6 +720,12 @@ const SHOTS: &[Shot] = &[
         "Live stream, codec, network, buffer and decode statistics.",
     ),
     Shot::new(
+        "statistics-stopped",
+        "statistics",
+        "stopped",
+        "Statistics with nothing playing.",
+    ),
+    Shot::new(
         "statistics-failed",
         "statistics",
         "failed",
@@ -611,14 +757,53 @@ const SHOTS: &[Shot] = &[
     ),
 ];
 
-pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error>> {
+/// The screens that open a dialog
+#[cfg(test)]
+const DIALOG_SCREENS: &[&str] = &[
+    "search",
+    "picker",
+    "network-stream",
+    "edit-favorite",
+    "import",
+    "equalizer",
+    "filters",
+    "recording",
+    "sleep",
+    "schedule",
+    "agents",
+    "remote",
+    "statistics",
+    "about",
+    "accent",
+    "shortcuts",
+];
+
+pub fn run(out_dir: &Path, options: &Options) -> Result<(), Box<dyn Error>> {
+    let only: Vec<&str> = options
+        .only
+        .as_deref()
+        .map(|list| {
+            list.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .collect()
+        })
+        .unwrap_or_default();
+    let shots: Vec<&Shot> = SHOTS
+        .iter()
+        .filter(|shot| only.is_empty() || only.iter().any(|p| shot.name.starts_with(p)))
+        .collect();
+    if shots.is_empty() {
+        return Err(format!("no shot name starts with {}", only.join(" or ")).into());
+    }
+
     let platform = HeadlessPlatform::default();
     let window = platform.window.clone();
     let time = platform.time.clone();
     slint::platform::set_platform(Box::new(platform))?;
     std::fs::create_dir_all(out_dir)?;
 
-    let themes: &[&str] = match theme {
+    let themes: &[&str] = match options.theme {
         Theme::Dark => &["dark"],
         Theme::Light => &["light"],
         Theme::Both => &["dark", "light"],
@@ -629,64 +814,26 @@ pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error
         "Wi-Fi Settings and the on-screen keyboard are embedded-only. ",
         "OS-native file pickers and tray and window menus are outside the Slint app.\n",
     ));
+    let mut window_noted = false;
     for &theme in themes {
         writeln!(index, "\n## {theme}\n")?;
-        for shot in SHOTS {
-            let ui = App::new()?;
-            // The shortcut list and the menu hints, as in the live app
-            crate::shortcuts::install(&ui);
-            let window = window
-                .take()
-                .ok_or("Slint did not create a window adapter")?;
-            let defaults = ui.global::<Defaults>();
-            ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
-                scale_factor: scale,
-            });
-            window.set_size(LogicalSize::new(
-                defaults.get_window_width(),
-                defaults.get_window_height(),
-            ));
-            ui.set_snapshot_mode(true);
-            ui.set_theme_mode(theme.into());
-            crate::setup_text_util(&ui);
-            seed(&ui);
-            configure(&ui, shot);
-            let needs_layout = matches!(shot.screen, "menu" | "view-group" | "tools-group")
-                || shot.name == "main-empty";
-            if !needs_layout {
-                open_screen(&ui, shot);
+        for shot in &shots {
+            let Staged {
+                ui,
+                window,
+                mut pixels,
+            } = stage(&window, shot, theme, options)?;
+            if !window_noted {
+                let scale = ui.window().scale_factor();
+                let size = ui.window().size().to_logical(scale);
+                let heading = index.rfind("\n## ").unwrap_or(index.len());
+                let note = format!(
+                    "\nWindow: {} x {} logical pixels at scale {scale}.\n",
+                    size.width, size.height
+                );
+                index.insert_str(heading, &note);
+                window_noted = true;
             }
-            ui.show()?;
-            let size = window.size();
-            let mut pixels = SharedPixelBuffer::<Rgb8Pixel>::new(size.width, size.height);
-
-            // Lay out the window before opening popups, whose origins depend on
-            // the geometry of the items that open them.
-            paint(&window, &mut pixels);
-            if needs_layout {
-                open_screen(&ui, shot);
-            }
-            if shot.state == "scrolled-end" {
-                let end = SharedString::from(slint::platform::Key::End);
-                ui.window()
-                    .dispatch_event(WindowEvent::KeyPressed { text: end.clone() });
-                ui.window()
-                    .dispatch_event(WindowEvent::KeyReleased { text: end });
-            }
-            if shot.screen == "favorite-menu" {
-                ui.set_snapshot_favorite_menu(shot.state.into());
-            }
-            if shot.screen == "bubble" {
-                ui.set_snapshot_bubble(shot.state.into());
-            }
-            if shot.state == "presets" {
-                ui.set_snapshot_preset_menu(true);
-            }
-            ui.set_snapshot_overlay(shot.state.into());
-            // Let Slint evaluate change handlers and finish its short UI
-            // transitions on a fixed clock, without a GUI event loop.
-            slint::platform::update_timers_and_animations();
-            paint(&window, &mut pixels);
             time.set(time.get() + Duration::from_millis(350));
             slint::platform::update_timers_and_animations();
             paint(&window, &mut pixels);
@@ -696,8 +843,8 @@ pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error
             image::save_buffer(
                 out_dir.join(&name),
                 pixels.as_bytes(),
-                size.width,
-                size.height,
+                pixels.width(),
+                pixels.height(),
                 image::ColorType::Rgb8,
             )
             .map_err(|error| format!("could not save {name}: {error}"))?;
@@ -706,6 +853,102 @@ pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error
     }
     std::fs::write(out_dir.join("index.md"), index)?;
     Ok(())
+}
+
+/// One shot's window with its screen open, drawn once
+struct Staged {
+    ui: App,
+    window: Rc<MinimalSoftwareWindow>,
+    pixels: SharedPixelBuffer<Rgb8Pixel>,
+}
+
+/// Make the window for `shot`, fill it with the fixtures and open its
+/// screen, as a user would see it; the clock has not moved on yet
+fn stage(
+    made: &Cell<Option<Rc<MinimalSoftwareWindow>>>,
+    shot: &Shot,
+    theme: &str,
+    options: &Options,
+) -> Result<Staged, Box<dyn Error>> {
+    let ui = App::new()?;
+    // The shortcut list and the menu hints, as in the live app
+    crate::shortcuts::install(&ui);
+    let window = made.take().ok_or("Slint did not create a window adapter")?;
+    let defaults = ui.global::<Defaults>();
+    ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
+        scale_factor: options.scale.unwrap_or(1.0),
+    });
+    window.set_size(match options.size {
+        Size::Default => {
+            LogicalSize::new(defaults.get_window_width(), defaults.get_window_height())
+        }
+        Size::Min => LogicalSize::new(
+            defaults.get_window_min_width(),
+            defaults.get_window_min_height(),
+        ),
+        Size::Exact(width, height) => LogicalSize::new(width, height),
+    });
+    ui.set_snapshot_mode(true);
+    ui.set_theme_mode(theme.into());
+    crate::setup_text_util(&ui);
+    seed(&ui);
+    configure(&ui, shot);
+    let needs_layout =
+        matches!(shot.screen, "menu" | "view-group" | "tools-group") || shot.name == "main-empty";
+    if !needs_layout {
+        open_screen(&ui, shot);
+    }
+    ui.show()?;
+    let size = window.size();
+    let mut pixels = SharedPixelBuffer::<Rgb8Pixel>::new(size.width, size.height);
+
+    // Lay out the window before opening popups, whose origins depend on
+    // the geometry of the items that open them.
+    paint(&window, &mut pixels);
+    if needs_layout {
+        open_screen(&ui, shot);
+    }
+    after_open(&ui, shot);
+    // Let Slint evaluate change handlers and finish its short UI
+    // transitions on a fixed clock, without a GUI event loop.
+    slint::platform::update_timers_and_animations();
+    paint(&window, &mut pixels);
+    Ok(Staged { ui, window, pixels })
+}
+
+/// What a user does once the screen is open: a key, a popup
+fn after_open(ui: &App, shot: &Shot) {
+    match (shot.screen, shot.state) {
+        (_, "scrolled-end") => press(ui, Key::End),
+        // Enter in the form's first field saves it, and the save fails
+        ("edit-favorite", "error") => press(ui, Key::Return),
+        _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
+        ("picker", "no-match") => {
+            // What the filter callback leaves for a text nothing matches
+            ui.set_filter_entries_text("Atlantis".into());
+            ui.set_filter_entries(ModelRc::default());
+        }
+        _ => {}
+    }
+    if shot.screen == "favorite-menu" {
+        ui.set_snapshot_favorite_menu(shot.state.into());
+    }
+    if shot.screen == "bubble" {
+        ui.set_snapshot_bubble(shot.state.into());
+    }
+    if shot.state == "presets" {
+        ui.set_snapshot_preset_menu(true);
+    }
+    ui.set_snapshot_overlay(shot.state.into());
+}
+
+/// Press and release one key
+fn press(ui: &App, key: Key) {
+    let text = SharedString::from(key);
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
 }
 
 fn paint(window: &MinimalSoftwareWindow, pixels: &mut SharedPixelBuffer<Rgb8Pixel>) {
@@ -785,7 +1028,7 @@ fn seed(ui: &App) {
     ui.set_is_station_favorited(true);
     ui.set_codec_info("AAC · 192 kbps · 48 kHz · Stereo".into());
     ui.set_is_playing(true);
-    ui.set_status_text("Playing".into());
+    ui.set_status_text(status::PLAYING.into());
     ui.set_show_visualizer(true);
     ui.set_viz_mode("wave".into());
     let viz = ui.global::<VizData>();
@@ -802,7 +1045,8 @@ fn seed(ui: &App) {
     ui.set_can_record(true);
     ui.set_now_playing_title("The Cedar Quartet — Blue Hour".into());
     ui.set_volume(0.72);
-    ui.set_volume_level(0.72);
+    // The fade level: the slider at rest, not mid-fade (see main-fade-in)
+    ui.set_volume_level(1.0);
     ui.set_show_station_stats(true);
 
     ui.set_eq_enabled(true);
@@ -842,12 +1086,12 @@ fn seed(ui: &App) {
 fn seed_schedule(ui: &App) {
     ui.set_schedule_stations(strings(STATIONS.iter().map(|station| station.0)));
     ui.set_schedule_dates(strings([
-        "Today · Sun 22 Nov",
-        "Tomorrow · Mon 23 Nov",
+        "Today, Sun 22 Nov",
+        "Tomorrow, Mon 23 Nov",
         "Tue 24 Nov",
     ]));
     ui.set_schedule_today(0);
-    ui.set_schedule_next("Next: Tomorrow at 07:00".into());
+    ui.set_schedule_next("Next: Tomorrow 07:00, Harbour Jazz".into());
     ui.set_schedule_rows(model([
         ScheduleRow {
             id: 1,
@@ -897,31 +1141,32 @@ fn seed_schedule(ui: &App) {
     });
 }
 
+/// The example address of this computer on the local network
+const LAN_IP: &str = "192.0.2.42";
+
 fn seed_connections(ui: &App) {
     ui.set_agents_available(true);
-    ui.set_agents_apps(strings(["Claude Code", "Codex", "Other"]));
-    ui.set_agents_auths(strings(["None", "Access token"]));
+    ui.set_agents_apps(strings(AgentApp::ALL.iter().map(|app| app.label())));
+    ui.set_agents_auths(strings(McpAuth::ALL.iter().map(|auth| auth.label())));
     ui.set_agents_auth(1);
-    ui.set_agents_listen_options(strings(["This computer · 127.0.0.1", "Wi-Fi · 192.0.2.42"]));
+    let interface = format!("wlan0 ({LAN_IP})");
+    ui.set_agents_listen_options(strings([
+        "This computer only",
+        interface.as_str(),
+        "All networks",
+    ]));
     ui.set_agents_listen(1);
-    ui.set_agents_port("8787".into());
-    ui.set_agents_local_command("radiotrope --mcp".into());
-    ui.set_agents_local_note(
-        crate::mcp::setup::AgentApp::ClaudeDesktop
-            .local_note()
-            .into(),
-    );
-    ui.set_agents_network_note(crate::mcp::setup::AgentApp::Codex.network_note(true).into());
-    ui.set_agents_network_placeholder("Turn on network access to see the setup command.".into());
-    ui.set_agents_command(
-        "claude mcp add --transport http radiotrope https://192.0.2.42:8787/mcp".into(),
-    );
+    let port = radiotrope_app::config::mcp::DEFAULT_ADDRESS
+        .rsplit_once(':')
+        .map_or("8765", |(_, port)| port);
+    ui.set_agents_port(port.into());
     ui.set_agents_token("snapshot-example-token-83fb2fd9".into());
-    ui.set_agents_url("https://192.0.2.42:8787/mcp".into());
+    ui.set_agents_url(format!("http://{LAN_IP}:{port}/mcp").into());
+    show_agent_lines(ui, AgentApp::ClaudeCode);
 
     ui.set_remote_name("Living Room Radio".into());
     ui.set_remote_name_placeholder("Radiotrope".into());
-    ui.set_remote_address("https://192.0.2.42:8750".into());
+    ui.set_remote_address(format!("{LAN_IP}:{REMOTE_PORT}").into());
     ui.set_remote_address_note(crate::remote_ui::address_note().into());
     ui.set_remote_devices(model([
         RemoteDevice {
@@ -937,15 +1182,24 @@ fn seed_connections(ui: &App) {
     ]));
 }
 
+/// The setup lines for `app`, picked in the dialog
+fn show_agent_lines(ui: &App, app: AgentApp) {
+    let index = AgentApp::ALL.iter().position(|a| *a == app).unwrap_or(0);
+    ui.set_agents_app(index as i32);
+    crate::show_agent_lines(ui);
+    // The program's own path, which differs on every machine
+    ui.set_agents_local_command(setup::local_line(app, "radiotrope").into());
+}
+
 fn seed_statistics(ui: &App) {
-    ui.set_stat_health("Playing".into());
+    ui.set_stat_health(status::PLAYING.into());
     ui.set_stat_playtime("24:18".into());
     ui.set_stat_codec("AAC".into());
     ui.set_stat_bitrate("192 kbps".into());
     ui.set_stat_sample_rate("48 kHz".into());
     ui.set_stat_channels("Stereo".into());
     ui.set_stat_received("33.4 MB".into());
-    ui.set_stat_segments("—".into());
+    ui.set_stat_segments(MISSING.into());
     ui.set_stat_throughput("197 kbps".into());
     ui.set_stat_buffer_level("352 KB".into());
     ui.set_stat_buffer_capacity("512 KB".into());
@@ -965,14 +1219,14 @@ fn configure(ui: &App, shot: &Shot) {
                 let viz = ui.global::<VizData>();
                 viz.set_active(false);
                 viz.set_has_signal(false);
-                ui.set_status_text("Stopped".into());
+                ui.set_status_text(status::STOPPED.into());
                 ui.set_can_record(false);
                 ui.set_now_playing_title("".into());
                 ui.set_codec_info("".into());
                 match shot.state {
                     "loading" => {
                         ui.set_is_loading(true);
-                        ui.set_status_text("Connecting…".into());
+                        ui.set_status_text(status::CONNECTING.into());
                     }
                     "error" => {
                         ui.set_is_error(true);
@@ -981,7 +1235,7 @@ fn configure(ui: &App, shot: &Shot) {
                     "empty" => {
                         ui.set_station_url("".into());
                         ui.set_station_name(crate::UNNAMED_STATION.into());
-                        ui.set_status_text("Ready".into());
+                        ui.set_status_text(status::READY.into());
                         ui.set_station_country("".into());
                         ui.set_is_station_favorited(false);
                         ui.set_current_logo(Image::default());
@@ -1017,6 +1271,11 @@ fn configure(ui: &App, shot: &Shot) {
                 ui.set_recording_notice_error(true);
             }
             "muted" => ui.set_is_muted(true),
+            "fade-in" => ui.set_volume_level(0.72),
+            "long-names" => configure_long_names(ui),
+            "accent-purple" => ui.set_accent_color(Color::from_rgb_u8(0x91, 0x41, 0xac)),
+            "accent-white" => ui.set_accent_color(Color::from_rgb_u8(0xff, 0xff, 0xff)),
+            "system-frame" => ui.set_custom_frame(false),
             "title-bubble" => ui.set_now_playing_title("The Cedar Quartet and the North Coast Orchestra — Blue Hour: Live at Harbour Hall, second set (late-night encore and extended improvisation)".into()),
             "no-stats" => ui.set_show_station_stats(false),
             _ => {}
@@ -1040,7 +1299,46 @@ fn configure(ui: &App, shot: &Shot) {
             if matches!(shot.state, "error" | "next-error") {
                 ui.set_search_error("The station directory did not respond.".into());
             }
+            if matches!(shot.state, "row-loading" | "row-failed") {
+                // The third result picked from the list: the window plays it
+                set_results(ui);
+                let picked = ui.get_search_results().row_data(2).unwrap_or_default();
+                ui.set_station_name(picked.name);
+                ui.set_station_url(picked.url);
+                ui.set_is_station_favorited(false);
+                ui.set_is_playing(false);
+                ui.set_now_playing_title("".into());
+                ui.set_codec_info("".into());
+                if shot.state == "row-loading" {
+                    ui.set_is_loading(true);
+                    ui.set_status_text(status::CONNECTING.into());
+                } else {
+                    ui.set_is_error(true);
+                    ui.set_status_text("Can't connect to radio.example".into());
+                }
+            }
         }
+        "edit-favorite" if shot.state == "error" => {
+            ui.on_edit_favorite(|_| {
+                "Can't save: this favorite was removed. Close and try again.".into()
+            });
+        }
+        "recording" if shot.state == "folder-error" => {
+            ui.set_recording_folder_error(
+                "Can't open the folder: Permission denied (os error 13)".into(),
+            );
+        }
+        "schedule" if shot.state == "empty" => {
+            ui.set_schedule_rows(ModelRc::default());
+            ui.set_schedule_next("".into());
+        }
+        "schedule" if shot.name == "scheduler-save-error" => ui.on_schedule_save(|draft| {
+            format!(
+                "{} has already passed today. Pick a later time or another day.",
+                draft.start
+            )
+            .into()
+        }),
         "sleep" if shot.state == "running" => configure_sleep(ui),
         "import" => {
             ui.set_import_subtitle("12 stations found in favorites.json".into());
@@ -1081,18 +1379,42 @@ fn configure(ui: &App, shot: &Shot) {
                 ui.set_listeners(strings(["Maya's phone", "Kitchen tablet"]));
             }
         }
-        "agents" if !matches!(shot.state, "off" | "agent" | "local-info") => {
-            ui.set_agents_network(true);
-            ui.set_agents_status("Listening on 192.0.2.42:8787".into());
+        "agents" => {
+            // The agent whose note the info bubble shows
+            match shot.state {
+                "local-info" => show_agent_lines(ui, AgentApp::ClaudeDesktop),
+                "network-info" => show_agent_lines(ui, AgentApp::Codex),
+                _ => {}
+            }
+            if !matches!(shot.state, "off" | "agent" | "local-info") {
+                ui.set_agents_network(true);
+                if shot.state == "status-error" {
+                    ui.set_agents_status(
+                        format!(
+                            "Can't listen on {LAN_IP}:{}: Address already in use (os error 98)",
+                            ui.get_agents_port()
+                        )
+                        .into(),
+                    );
+                    ui.set_agents_status_error(true);
+                } else {
+                    ui.set_agents_status(format!("Listening on {}", ui.get_agents_url()).into());
+                }
+            }
         }
-        "statistics" if shot.state == "failed" => {
-            ui.set_stat_health("Failed · stopped sending".into());
-        }
+        "statistics" => match shot.state {
+            "failed" => ui.set_stat_health(
+                crate::format_health(&HealthState::Failed(FailureReason::StreamStall)).into(),
+            ),
+            "stopped" => crate::clear_stats_ui(ui),
+            _ => {}
+        },
         "remote" if shot.state != "off" => {
             ui.set_remote_on(true);
             match shot.state {
                 "status-info" => {
-                    ui.set_remote_status("Can't start Remote Control: port 8750 is in use by another program. Close that program and try again.".into());
+                    ui.set_remote_status(format!("Can't start Remote Control: port {REMOTE_PORT} is in use by another program. Close that program and try again.").into());
+                    ui.set_remote_address("".into());
                     ui.set_remote_status_error(true);
                     ui.set_remote_status_short("Can't start".into());
                 }
@@ -1101,6 +1423,13 @@ fn configure(ui: &App, shot: &Shot) {
                     ui.set_pairing_code("483 621".into());
                     ui.set_pairing_seconds(52);
                     ui.set_pairing_shown(true);
+                    // Cancel and Esc hide it, as in the app
+                    let ui_weak = ui.as_weak();
+                    ui.on_remote_cancel_pairing(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_pairing_shown(false);
+                        }
+                    });
                 }
                 "qr" => {
                     ui.set_pairing_qr(
@@ -1109,7 +1438,14 @@ fn configure(ui: &App, shot: &Shot) {
                     );
                     ui.set_pairing_qr_seconds(88);
                     ui.set_pairing_qr_shown(true);
+                    let ui_weak = ui.as_weak();
+                    ui.on_remote_cancel_qr(move || {
+                        if let Some(ui) = ui_weak.upgrade() {
+                            ui.set_pairing_qr_shown(false);
+                        }
+                    });
                 }
+                "no-phones" => ui.set_remote_devices(ModelRc::default()),
                 _ => {}
             }
         }
@@ -1129,6 +1465,26 @@ fn open_screen(ui: &App, shot: &Shot) {
             kind => set_picker_entries(ui, kind),
         }
     }
+}
+
+/// Names longer than the header and the rows have room for
+fn configure_long_names(ui: &App) {
+    const LONG: [&str; 3] = [
+        "Harbour Jazz and Blues: The Late Night Session from the North Atlantic Coast",
+        "Radio Nacional de las Islas Atlánticas · Programa Cultural",
+        "Midnight Assembly Community Broadcasting Collective",
+    ];
+    let favorites = ui.get_favorites_list();
+    ui.set_favorites_list(model(favorites.iter().enumerate().map(
+        |(index, mut station)| {
+            if let Some(name) = LONG.get(index) {
+                station.name = (*name).into();
+            }
+            station
+        },
+    )));
+    ui.set_station_name(LONG[0].into());
+    ui.set_station_country("United Kingdom of Great Britain and Northern Ireland".into());
 }
 
 fn configure_sleep(ui: &App) {
@@ -1199,3 +1555,7 @@ fn set_picker_entries(ui: &App, kind: &str) {
     })));
     ui.set_filter_entries_loading(false);
 }
+
+#[cfg(test)]
+#[path = "ui_snapshots_test.rs"]
+mod tests;
