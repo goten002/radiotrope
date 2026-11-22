@@ -2,6 +2,7 @@
 //! in-memory pipe, for both the handshake (legacy) and the stateless
 //! (2026-07-28) kind of client
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,15 +16,17 @@ use tokio::io::{
 use radiotrope_app::data::favorites::FavoritesManager;
 use radiotrope_app::data::types::{url_to_id, Favorite, Station};
 use radiotrope_app::providers::{
-    Category, CategoryType, ProviderRegistry, SearchResults, StationProvider,
+    Category, CategoryType, ProviderRegistry, RadiotropeProvider, SearchResults, StationProvider,
 };
 
 use super::tools::RadioTools;
 use crate::app::state::{AppCommand, AppSnapshot};
 
-/// A directory with two stations; searching it takes `delay`
+/// A directory with two stations; searching it takes `delay`, and it
+/// counts the plays reported to it
 struct FakeDirectory {
     delay: Duration,
+    plays: Arc<AtomicUsize>,
 }
 
 impl StationProvider for FakeDirectory {
@@ -63,6 +66,12 @@ impl StationProvider for FakeDirectory {
             Category::new("Greece", "Greece", CategoryType::Country)
                 .with_station_count(700)
                 .with_code(Some("GR".into())),
+            Category::new("FR", "France", CategoryType::Country)
+                .with_station_count(900)
+                .with_code(Some("FR".into())),
+            Category::new("ell", "Greek", CategoryType::Language).with_station_count(600),
+            Category::new("24", "Jazz music", CategoryType::ProgrammeType).with_station_count(18),
+            Category::new("1", "News", CategoryType::ProgrammeType).with_station_count(40),
         ])
     }
     fn browse_category(
@@ -79,9 +88,18 @@ impl StationProvider for FakeDirectory {
     fn get_station(&self, id: &str) -> radiotrope_app::error::Result<Option<Station>> {
         Ok((id == "jazz-id").then(|| {
             Station::new("Jazz FM", "http://jazz.test/stream")
+                .with_provider("fake", Some("jazz-id".to_string()))
                 .with_logo("http://jazz.test/logo.png")
-                .with_metadata(Some("Greece".into()), None, Default::default())
+                .with_metadata(
+                    Some("Greece, Attica".into()),
+                    Some("Greek".into()),
+                    ["Jazz".to_string()].into(),
+                )
         }))
+    }
+    fn report_click(&self, _: &Station) -> radiotrope_app::error::Result<()> {
+        self.plays.fetch_add(1, Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -94,6 +112,8 @@ struct Session {
     window: Sender<AppCommand>,
     state: Arc<Mutex<AppSnapshot>>,
     favorites: Arc<Mutex<FavoritesManager>>,
+    /// Plays reported to the fake directory
+    plays: Arc<AtomicUsize>,
     _dir: TempDir,
 }
 
@@ -115,6 +135,33 @@ impl Session {
 
     async fn with_channel(
         search_delay: Duration,
+        channel: (Sender<AppCommand>, Receiver<AppCommand>),
+    ) -> Self {
+        let plays = Arc::new(AtomicUsize::new(0));
+        let mut providers = ProviderRegistry::new();
+        providers.register(Box::new(FakeDirectory {
+            delay: search_delay,
+            plays: plays.clone(),
+        }));
+        Self::with_providers(providers, plays, channel).await
+    }
+
+    /// Over the Radiotrope directory's own client, asking the directory
+    /// at `base` (see [`serve_directory`])
+    async fn with_directory(base: String) -> Self {
+        // A blocking HTTP client can't be built on the async thread
+        let provider =
+            tokio::task::spawn_blocking(move || RadiotropeProvider::with_base_url(base).unwrap())
+                .await
+                .unwrap();
+        let mut providers = ProviderRegistry::new();
+        providers.register(Box::new(provider));
+        Self::with_providers(providers, Arc::default(), unbounded()).await
+    }
+
+    async fn with_providers(
+        providers: ProviderRegistry,
+        plays: Arc<AtomicUsize>,
         (cmd_tx, commands): (Sender<AppCommand>, Receiver<AppCommand>),
     ) -> Self {
         let state = Arc::new(Mutex::new(AppSnapshot::default()));
@@ -129,10 +176,6 @@ impl Session {
             rand_suffix()
         ));
         std::fs::create_dir_all(&dir).unwrap();
-        let mut providers = ProviderRegistry::new();
-        providers.register(Box::new(FakeDirectory {
-            delay: search_delay,
-        }));
         let tools = RadioTools::new(cmd_tx.clone(), state.clone(), favorites.clone())
             .with_test_setup(providers, dir.join("favorites.json"));
 
@@ -151,6 +194,7 @@ impl Session {
             window: cmd_tx,
             state,
             favorites,
+            plays,
             _dir: TempDir(dir),
         }
     }
@@ -270,7 +314,7 @@ async fn every_tool_has_a_title_and_behaviour_hints() {
     s.legacy_handshake("2025-11-25").await;
     let list = s.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 19);
+    assert_eq!(tools.len(), 27);
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert!(tool["title"].is_string(), "{name} has no title");
@@ -381,32 +425,629 @@ async fn search_filters_combine() {
         )
         .await;
     assert_eq!(count(&r), 0);
-    let r = s
-        .call("search_stations", json!({"order": "sideways"}))
-        .await;
+    let r = s.call("search_stations", json!({"sort": "sideways"})).await;
     assert_eq!(r["isError"], true, "{r}");
 }
 
 #[tokio::test]
-async fn categories_are_listed_largest_first() {
+async fn genres_countries_languages_and_programme_types_are_listed_largest_first() {
     let mut s = Session::start(Duration::ZERO).await;
     s.legacy_handshake("2025-11-25").await;
-    let r = s.call("list_categories", json!({"kind": "genre"})).await;
-    let names: Vec<&str> = r["structuredContent"]["categories"]
-        .as_array()
+    let r = s.call("list_genres", json!({})).await;
+    assert_eq!(
+        r["structuredContent"]["genres"],
+        json!([{"name": "pop", "slug": "pop", "stations": 5000},
+               {"name": "jazz", "slug": "jazz", "stations": 900}])
+    );
+    // The same as text, for clients that only read text
+    let as_text: Value = serde_json::from_str(text(&r)).unwrap();
+    assert_eq!(as_text, r["structuredContent"]);
+
+    let r = s.call("list_countries", json!({"limit": "1"})).await;
+    assert_eq!(
+        r["structuredContent"]["countries"],
+        json!([{"name": "France", "code": "FR", "stations": 900}])
+    );
+    // By a piece of the name, or by the code
+    for filter in ["gree", "gr"] {
+        let r = s.call("list_countries", json!({"filter": filter})).await;
+        assert_eq!(
+            r["structuredContent"]["countries"],
+            json!([{"name": "Greece", "code": "GR", "stations": 700}]),
+            "{filter}"
+        );
+    }
+
+    let r = s.call("list_languages", json!({"filter": "ELL"})).await;
+    assert_eq!(
+        r["structuredContent"]["languages"],
+        json!([{"name": "Greek", "code": "ell", "stations": 600}])
+    );
+
+    let r = s.call("list_categories", json!({})).await;
+    assert_eq!(
+        r["structuredContent"]["categories"],
+        json!([{"name": "News", "code": "1", "stations": 40},
+               {"name": "Jazz music", "code": "24", "stations": 18}])
+    );
+}
+
+/// A directory on a local port, as the Radiotrope API answers: `answer`
+/// gets each request's path and query and returns (status, body). Returns
+/// the base URL and the requests seen.
+fn serve_directory(
+    answer: impl Fn(&str) -> (u16, String) + Send + Sync + 'static,
+) -> (String, Arc<Mutex<Vec<String>>>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let log = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            // Skip the headers
+            let mut header = String::new();
+            while reader.read_line(&mut header).unwrap_or(0) > 2 {
+                header.clear();
+            }
+            let mut parts = line.split(' ');
+            let method = parts.next().unwrap_or("");
+            let target = parts.next().unwrap_or("").to_string();
+            log.lock().unwrap().push(format!("{method} {target}"));
+            let (status, body) = answer(&target);
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (base, seen)
+}
+
+const KISS_ID: &str = "st_0000000000001";
+
+/// The directory's facets, one station (Kiss, in Greece), and nothing for
+/// a search with `q=nothing`
+fn small_directory(target: &str) -> (u16, String) {
+    let kiss = format!(
+        r#"{{"id":"{KISS_ID}","name":"Kiss","country":"GR","region":"Attica",
+           "languages":["ell","eng"],"homepage":"https://kiss.example.gr",
+           "category":{{"code":10,"name":"Pop music"}},
+           "genres":[{{"slug":"pop","name":"Pop"}},{{"slug":"drum-and-bass","name":"Drum and Bass"}}],
+           "logo":null,"streams":[{{"url":"https://stream.example.gr/kiss","codec":"aac",
+           "bitrate_kbps":128,"hls":false,"status":"online"}}]}}"#
+    );
+    let path = target.split('?').next().unwrap_or(target);
+    let body = match path {
+        "/v1/genres" => r#"{"items":[{"slug":"pop","name":"Pop","stations":41},
+            {"slug":"drum-and-bass","name":"Drum and Bass","stations":3}],"snapshot":1}"#
+            .to_string(),
+        "/v1/countries" => r#"{"items":[{"code":"GR","stations":312}],"snapshot":1}"#.to_string(),
+        "/v1/languages" => r#"{"items":[{"code":"ell","stations":300}],"snapshot":1}"#.to_string(),
+        "/v1/categories" => {
+            r#"{"items":[{"code":10,"name":"Pop music","stations":18}],"snapshot":1}"#.to_string()
+        }
+        "/v1/stations" if target.contains("q=nothing") => {
+            r#"{"stations":[],"total":0,"next_cursor":null,"snapshot":1}"#.to_string()
+        }
+        "/v1/stations" => {
+            format!(r#"{{"stations":[{kiss}],"total":7,"next_cursor":"next","snapshot":1}}"#)
+        }
+        "/v1/stations/st_0000000000001" => kiss,
+        "/v1/stations/st_0000000000001/play" => return (204, String::new()),
+        _ => {
+            return (
+                404,
+                r#"{"error":{"code":"not_found","message":"No station"}}"#.into(),
+            )
+        }
+    };
+    (200, body)
+}
+
+#[tokio::test]
+async fn search_filters_reach_the_directory_by_name_or_code() {
+    let (base, seen) = serve_directory(small_directory);
+    let mut s = Session::with_directory(base).await;
+    s.legacy_handshake("2025-11-25").await;
+
+    // Names, as a person would say them
+    let r = s
+        .call(
+            "search_stations",
+            json!({"query": "kiss", "country": "Greece", "genre": "Drum and Bass, pop",
+                   "language": "Greek", "category": "pop music", "sort": "popular",
+                   "limit": 5}),
+        )
+        .await;
+    assert_ne!(r["isError"], true, "{r}");
+    let asked = seen.lock().unwrap().last().unwrap().clone();
+    for part in [
+        "q=kiss",
+        "country=GR",
+        "language=ell",
+        "genre=drum-and-bass&genre=pop",
+        "category=10",
+        "sort=popularity",
+        "limit=5",
+    ] {
+        assert!(asked.contains(part), "{part} not in {asked}");
+    }
+
+    // The station comes back with names, and what follow-up calls take
+    let found = &r["structuredContent"];
+    assert_eq!(found["count"], 1);
+    assert_eq!(found["total"], 7);
+    assert_eq!(found["has_more"], true);
+    assert!(found["note"].is_null());
+    let kiss = &found["stations"][0];
+    assert_eq!(kiss["id"], KISS_ID);
+    assert_eq!(kiss["name"], "Kiss");
+    assert_eq!(kiss["country"], "Greece, Attica");
+    assert_eq!(kiss["country_code"], "GR");
+    assert_eq!(kiss["language"], "Greek, English");
+    assert_eq!(kiss["genres"], json!(["Drum and Bass", "Pop"]));
+    assert_eq!(kiss["codec"], "AAC");
+
+    // Codes and slugs, and the code as a number; `order` is the old name
+    // of `sort`
+    s.call(
+        "search_stations",
+        json!({"country": "gr", "genre": "pop", "language": "ell", "category": 10,
+               "order": "name"}),
+    )
+    .await;
+    let asked = seen.lock().unwrap().last().unwrap().clone();
+    for part in [
+        "country=GR",
+        "language=ell",
+        "genre=pop",
+        "category=10",
+        "sort=name",
+    ] {
+        assert!(asked.contains(part), "{part} not in {asked}");
+    }
+
+    // The best match first is the directory's own order for a query
+    s.call(
+        "search_stations",
+        json!({"query": "kiss", "sort": "relevance"}),
+    )
+    .await;
+    let asked = seen.lock().unwrap().last().unwrap().clone();
+    assert!(!asked.contains("sort="), "{asked}");
+
+    // Codec and bitrate are checked page by page: no total then
+    let r = s.call("search_stations", json!({"codec": "aac"})).await;
+    assert_eq!(r["structuredContent"]["count"], 1);
+    assert!(r["structuredContent"]["total"].is_null());
+}
+
+#[tokio::test]
+async fn a_search_that_finds_nothing_says_where_the_filter_values_are() {
+    let (base, seen) = serve_directory(small_directory);
+    let mut s = Session::with_directory(base).await;
+    s.legacy_handshake("2025-11-25").await;
+
+    let r = s.call("search_stations", json!({"query": "nothing"})).await;
+    let found = &r["structuredContent"];
+    assert_eq!(found["count"], 0);
+    let note = found["note"].as_str().unwrap();
+    assert!(
+        note.contains("list_genres") && !note.contains("  "),
+        "{note}"
+    );
+
+    // A country, language or programme type the directory doesn't have
+    // finds nothing, without asking for stations
+    let before = seen.lock().unwrap().len();
+    for filter in [
+        json!({"country": "Atlantis"}),
+        json!({"language": "Elvish"}),
+        json!({"category": "Polka music"}),
+        json!({"category": 99}),
+    ] {
+        let r = s.call("search_stations", filter.clone()).await;
+        assert_eq!(r["structuredContent"]["count"], 0, "{filter}");
+        assert!(r["structuredContent"]["note"].is_string(), "{filter}");
+    }
+    assert!(
+        seen.lock().unwrap()[before..]
+            .iter()
+            .all(|asked| !asked.contains("/v1/stations")),
+        "no station list was asked for"
+    );
+}
+
+#[tokio::test]
+async fn the_directory_lists_come_with_names_codes_and_counts() {
+    let (base, _) = serve_directory(small_directory);
+    let mut s = Session::with_directory(base).await;
+    s.legacy_handshake("2025-11-25").await;
+    for (tool, key, first) in [
+        (
+            "list_genres",
+            "genres",
+            json!({"name": "Pop", "slug": "pop", "stations": 41}),
+        ),
+        (
+            "list_countries",
+            "countries",
+            json!({"name": "Greece", "code": "GR", "stations": 312}),
+        ),
+        (
+            "list_languages",
+            "languages",
+            json!({"name": "Greek", "code": "ell", "stations": 300}),
+        ),
+        (
+            "list_categories",
+            "categories",
+            json!({"name": "Pop music", "code": "10", "stations": 18}),
+        ),
+    ] {
+        let r = s.call(tool, json!({})).await;
+        assert_eq!(r["structuredContent"][key][0], first, "{tool}: {r}");
+    }
+    // A genre is found by its slug too
+    let r = s
+        .call("list_genres", json!({"filter": "drum-and-bass"}))
+        .await;
+    assert_eq!(r["structuredContent"]["genres"][0]["name"], "Drum and Bass");
+}
+
+#[tokio::test]
+async fn a_station_is_looked_up_by_id_without_playing_it() {
+    let (base, seen) = serve_directory(small_directory);
+    let mut s = Session::with_directory(base).await;
+    s.legacy_handshake("2025-11-25").await;
+    s.favorites
+        .lock()
         .unwrap()
-        .iter()
-        .map(|c| c["name"].as_str().unwrap())
-        .collect();
-    assert_eq!(names, ["pop", "jazz"]);
+        .add(Favorite::new("Kiss", "https://stream.example.gr/kiss"))
+        .unwrap();
+
+    let r = s.call("get_station", json!({"id": KISS_ID})).await;
+    let kiss = &r["structuredContent"];
+    assert_eq!(kiss["name"], "Kiss");
+    assert_eq!(kiss["url"], "https://stream.example.gr/kiss");
+    assert_eq!(kiss["country_code"], "GR");
+    assert_eq!(kiss["bitrate_kbps"], 128);
+    assert_eq!(
+        kiss["favorite_id"],
+        url_to_id("https://stream.example.gr/kiss")
+    );
+    assert!(s.commands.try_recv().is_err(), "nothing was played");
+    assert!(
+        seen.lock().unwrap().iter().all(|r| r.starts_with("GET ")),
+        "and no play was reported"
+    );
+
+    for id in ["st_000000000000z", "not an id", " "] {
+        let r = s.call("get_station", json!({"id": id})).await;
+        assert_eq!(r["isError"], true, "{id}: {r}");
+    }
+    let r = s
+        .call("get_station", json!({"id": "st_000000000000z"}))
+        .await;
+    assert!(text(&r).contains("search_stations"), "{r}");
+}
+
+#[tokio::test]
+async fn an_agents_play_is_counted_only_if_the_user_allowed_it() {
+    let _switch = crate::control::REPORT_PLAYS_TEST.lock().await;
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+
+    // As the window starts: off until the user allows it
+    crate::view_options::set_report_plays(false);
+    let r = s
+        .call("play_station", json!({"id": "jazz-id", "wait_seconds": 0}))
+        .await;
+    assert_ne!(r["isError"], true, "{r}");
+    assert!(matches!(s.commands.try_recv(), Ok(AppCommand::Play { .. })));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        s.plays.load(Ordering::SeqCst),
+        0,
+        "no report without consent"
+    );
+    assert!(
+        crate::app::controller::play_report::play_to_report(
+            "http://jazz.test/stream",
+            crate::view_options::report_plays(),
+            &s.favorites.lock().unwrap(),
+        )
+        .is_none(),
+        "nor once it plays"
+    );
+    let settings = s.call("get_settings", json!({})).await;
+    assert_eq!(
+        settings["structuredContent"]["report_play_count"]["allowed"],
+        false
+    );
+
+    // No tool takes it as an argument, and one slipped in changes nothing
+    let list = s.request("tools/list", json!({})).await;
+    for tool in list["result"]["tools"].as_array().unwrap() {
+        let input = tool["inputSchema"].to_string().to_lowercase();
+        assert!(
+            !input.contains("report") && !input.contains("consent"),
+            "{} takes it",
+            tool["name"]
+        );
+    }
+    for (tool, mut args) in [
+        ("set_equalizer", json!({"enabled": false})),
+        ("get_settings", json!({})),
+        ("play_station", json!({"id": "jazz-id", "wait_seconds": 0})),
+    ] {
+        args["report_plays"] = json!(true);
+        args["allowed"] = json!(true);
+        s.call(tool, args).await;
+    }
+    assert!(
+        !crate::view_options::report_plays(),
+        "still the user's choice"
+    );
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(s.plays.load(Ordering::SeqCst), 0);
+
+    // The user allows it in the window. The play is counted by the
+    // controller once the station plays (app::controller::play_report,
+    // whose tests count it once), not by the tool as well
+    crate::view_options::set_report_plays(true);
+    s.call("play_station", json!({"id": "jazz-id", "wait_seconds": 0}))
+        .await;
+    let settings = s.call("get_settings", json!({})).await;
+    assert_eq!(
+        settings["structuredContent"]["report_play_count"]["allowed"],
+        true
+    );
+    // Looking a station up is not a play
+    s.call("get_station", json!({"id": "jazz-id"})).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(
+        s.plays.load(Ordering::SeqCst),
+        0,
+        "the controller counts it"
+    );
+
+    crate::view_options::set_report_plays(false);
+}
+
+#[tokio::test]
+async fn next_and_previous_step_through_the_favorites() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    for name in ["News 24", "Rock FM"] {
+        let url = format!("http://{}.test/stream", name.replace(' ', "-"));
+        s.favorites
+            .lock()
+            .unwrap()
+            .add(Favorite::new(name, url))
+            .unwrap();
+    }
+    let played = |s: &Session| match s.commands.try_recv() {
+        Ok(AppCommand::Play { name, .. }) => name.unwrap_or_default(),
+        _ => panic!("no Play"),
+    };
+
+    // Nothing playing: the first favorite
+    s.call(
+        "step_favorite",
+        json!({"direction": "next", "wait_seconds": 0}),
+    )
+    .await;
+    assert_eq!(played(&s), "Jazz FM");
+    s.state.lock().unwrap().station_url = Some("http://jazz.test/stream".into());
+    let r = s
+        .call(
+            "step_favorite",
+            json!({"direction": "next", "wait_seconds": 0}),
+        )
+        .await;
+    assert!(text(&r).contains("News 24"), "{r}");
+    assert_eq!(played(&s), "News 24");
+    // Round the start to the last
+    s.call(
+        "step_favorite",
+        json!({"direction": "previous", "wait_seconds": 0}),
+    )
+    .await;
+    assert_eq!(played(&s), "Rock FM");
+    let status = s.call("get_status", json!({})).await;
+    assert_eq!(
+        status["structuredContent"]["last_agent_change"]["action"],
+        "play Rock FM"
+    );
+
+    let r = s.call("step_favorite", json!({"direction": "up"})).await;
+    assert_eq!(r["isError"], true, "{r}");
+    {
+        let mut favs = s.favorites.lock().unwrap();
+        let ids: Vec<String> = favs.all().iter().map(|f| f.id()).collect();
+        for id in ids {
+            favs.remove(&id).unwrap();
+        }
+    }
+    let r = s.call("step_favorite", json!({"direction": "next"})).await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert_eq!(text(&r), "There are no favorites");
+}
+
+#[tokio::test]
+async fn favorites_are_found_by_text_and_put_in_a_new_order() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    {
+        let mut favs = s.favorites.lock().unwrap();
+        favs.add(Favorite::from_station(
+            Station::new("News 24", "http://news.test/stream").with_metadata(
+                Some("Greece".into()),
+                None,
+                Default::default(),
+            ),
+        ))
+        .unwrap();
+        favs.add(Favorite::from_station(
+            Station::new("Rock FM", "http://rock.test/stream").with_metadata(
+                None,
+                None,
+                ["Classic Rock".to_string()].into(),
+            ),
+        ))
+        .unwrap();
+    }
+    let names = |r: &Value| -> Vec<String> {
+        r["structuredContent"]["favorites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let all = s.call("list_favorites", json!({})).await;
+    assert_eq!(names(&all), ["Jazz FM", "News 24", "Rock FM"]);
+    // By name, country or genre
+    for (query, found) in [
+        ("JAZZ", "Jazz FM"),
+        ("greece", "News 24"),
+        ("classic", "Rock FM"),
+    ] {
+        let r = s.call("list_favorites", json!({"query": query})).await;
+        assert_eq!(names(&r), [found], "{query}");
+    }
+    let none = s.call("list_favorites", json!({"query": "polka"})).await;
+    assert!(names(&none).is_empty());
+
+    // The ones given come first; the rest keep their order
+    let rock = url_to_id("http://rock.test/stream");
+    let r = s.call("reorder_favorites", json!({"ids": [rock]})).await;
+    assert_eq!(text(&r), "Moved 1 favorite to the top");
+    let all = s.call("list_favorites", json!({})).await;
+    assert_eq!(names(&all), ["Rock FM", "Jazz FM", "News 24"]);
+    let news = url_to_id("http://news.test/stream");
+    let jazz = url_to_id("http://jazz.test/stream");
+    s.call("reorder_favorites", json!({"ids": [news, jazz, rock]}))
+        .await;
+    let all = s.call("list_favorites", json!({})).await;
+    assert_eq!(names(&all), ["News 24", "Jazz FM", "Rock FM"]);
+
+    // An unknown id changes nothing and says where ids come from
+    let r = s
+        .call("reorder_favorites", json!({"ids": [rock, "nope"]}))
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(text(&r).contains("list_favorites"), "{r}");
+    let r = s.call("reorder_favorites", json!({"ids": []})).await;
+    assert_eq!(r["isError"], true, "{r}");
+    let all = s.call("list_favorites", json!({})).await;
+    assert_eq!(names(&all), ["News 24", "Jazz FM", "Rock FM"]);
+}
+
+#[tokio::test]
+async fn the_equalizer_is_switched_and_given_a_preset() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let presets = radiotrope::audio::PRESETS;
+    let preset = presets[1].name;
 
     let r = s
         .call(
-            "list_categories",
-            json!({"kind": "country", "filter": "gr"}),
+            "set_equalizer",
+            json!({"enabled": true, "preset": preset.to_lowercase()}),
         )
         .await;
-    assert_eq!(r["structuredContent"]["categories"][0]["code"], "GR");
+    assert_eq!(text(&r), format!("Equalizer on, preset {preset}"));
+    assert!(matches!(
+        s.commands.try_recv(),
+        Ok(AppCommand::SetEqPreset(name)) if name == preset
+    ));
+    assert!(matches!(
+        s.commands.try_recv(),
+        Ok(AppCommand::SetEqEnabled(true))
+    ));
+
+    // A preset alone leaves the switch as it is, and says so when off
+    let r = s.call("set_equalizer", json!({"preset": preset})).await;
+    assert!(text(&r).contains("the equalizer is off"), "{r}");
+    assert!(matches!(
+        s.commands.try_recv(),
+        Ok(AppCommand::SetEqPreset(_))
+    ));
+    assert!(s.commands.try_recv().is_err());
+
+    let r = s.call("set_equalizer", json!({"enabled": false})).await;
+    assert_eq!(text(&r), "Equalizer off");
+    assert!(matches!(
+        s.commands.try_recv(),
+        Ok(AppCommand::SetEqEnabled(false))
+    ));
+
+    // An unknown preset names the ones there are; nothing given is refused
+    let r = s
+        .call("set_equalizer", json!({"preset": "No Such Sound"}))
+        .await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(text(&r).contains(presets[0].name), "{r}");
+    let r = s.call("set_equalizer", json!({})).await;
+    assert_eq!(r["isError"], true, "{r}");
+    assert!(s.commands.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn settings_show_the_equalizer_and_the_recording_settings() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let preset = radiotrope::audio::PRESETS[1].name;
+    {
+        let mut st = s.state.lock().unwrap();
+        st.eq_enabled = true;
+        st.eq_preset_name = Some(preset.into());
+        st.recording_setup = crate::app::state::RecordingSetup {
+            dir: Some(std::env::temp_dir().join("rt-settings-test")),
+            format: radiotrope::audio::RecordingFormat::Opus,
+            bitrate: Some(96),
+            with_eq: true,
+        };
+    }
+    let r = s.call("get_settings", json!({})).await;
+    let settings = &r["structuredContent"];
+    assert_eq!(settings["equalizer"]["enabled"], true);
+    assert_eq!(settings["equalizer"]["preset"], preset);
+    assert_eq!(
+        settings["equalizer"]["presets"].as_array().unwrap().len(),
+        radiotrope::audio::PRESETS.len()
+    );
+    assert_eq!(
+        settings["recording"],
+        json!({
+            "folder": std::env::temp_dir().join("rt-settings-test").display().to_string(),
+            "format": "opus",
+            "bitrate_kbps": 96,
+            "with_equalizer": true,
+        })
+    );
+    let note = settings["report_play_count"]["note"].as_str().unwrap();
+    assert!(note.contains("only the user"), "{note}");
+    assert!(!note.contains("  "), "{note}");
+    // Reading changes nothing
+    assert!(s.commands.try_recv().is_err());
+    let by_name = s.request("tools/list", json!({})).await["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["name"] == "get_settings")
+        .unwrap()
+        .clone();
+    assert_eq!(by_name["annotations"]["readOnlyHint"], true);
 }
 
 #[tokio::test]
@@ -544,7 +1185,7 @@ async fn play_waits_for_the_outcome() {
         state.station_logo_url.as_deref(),
         Some("http://jazz.test/logo.png")
     );
-    assert_eq!(state.station_country.as_deref(), Some("Greece"));
+    assert_eq!(state.station_country.as_deref(), Some("Greece, Attica"));
     let unknown = s.call("play_station", json!({"id": "nope"})).await;
     assert_eq!(unknown["isError"], true);
 }

@@ -367,6 +367,15 @@ fn graphics_and_edges_reach_3_for_every_preset() {
                 GRAPHIC,
             );
         }
+        // The muted speaker in the bottom bar, at rest and hovered
+        for icon in ["danger", "danger-text"] {
+            report.check(
+                &format!("{} {icon} (muted speaker) on panel", theme.name()),
+                theme.get(icon),
+                theme.get("panel"),
+                GRAPHIC,
+            );
+        }
         report.check(
             &format!("{} field-border on card", theme.name()),
             theme.get("field-border"),

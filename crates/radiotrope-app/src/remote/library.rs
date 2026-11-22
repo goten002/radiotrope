@@ -89,6 +89,7 @@ pub(super) async fn search(shared: &Shared, request: &Request<Incoming>) -> Resp
         language: text("language"),
         codec: text("codec"),
         min_bitrate: number("min_bitrate").map(|b| b as u32),
+        category: None,
         order,
     };
     let limit = number("limit")

@@ -2000,6 +2000,10 @@ mod key_list_tests;
 mod favorites_keys_tests;
 
 #[cfg(test)]
+#[path = "recording_keys_test.rs"]
+mod recording_keys_tests;
+
+#[cfg(test)]
 #[path = "accent_drag_test.rs"]
 mod accent_drag_tests;
 

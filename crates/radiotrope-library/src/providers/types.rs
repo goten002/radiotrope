@@ -35,7 +35,8 @@ impl SearchResults {
 pub struct StationFilter {
     /// Words in the station name
     pub name: Option<String>,
-    /// Genre tag, e.g. "jazz"
+    /// Genre tag, e.g. "jazz"; several separated by commas ("jazz, blues")
+    /// match stations with any of them
     pub genre: Option<String>,
     /// Country name ("Greece") or ISO 3166-1 code ("GR")
     pub country: Option<String>,
@@ -45,6 +46,9 @@ pub struct StationFilter {
     pub codec: Option<String>,
     /// Lowest bitrate in kbps
     pub min_bitrate: Option<u32>,
+    /// RDS programme type, by its code ("24") or name ("Jazz music").
+    /// Only a directory can check it: stations don't carry theirs.
+    pub category: Option<String>,
     pub order: SearchOrder,
 }
 
@@ -56,6 +60,8 @@ pub enum SearchOrder {
     Popular,
     /// A to Z
     Name,
+    /// Most played first, also when a name is given
+    MostPlayed,
 }
 
 impl StationFilter {
@@ -83,7 +89,7 @@ impl StationFilter {
         let genre_ok = self
             .genre
             .as_deref()
-            .is_none_or(|g| station.genres.iter().any(|sg| contains(sg, g)));
+            .is_none_or(|g| genres_of(g).any(|g| station.genres.iter().any(|sg| contains(sg, g))));
         // Stations carry a country name ("Greece, Attica"): an ISO code
         // given is compared with the code that name stands for
         let country_ok = match (self.country_code(), self.country.as_deref()) {
@@ -116,7 +122,12 @@ impl StationFilter {
     }
 }
 
-/// A browsable category (genre, country, language)
+/// The genres of a filter's `genre`: one, or several separated by commas
+pub fn genres_of(genre: &str) -> impl Iterator<Item = &str> {
+    genre.split(',').map(str::trim).filter(|g| !g.is_empty())
+}
+
+/// A browsable category (genre, country, language, programme type)
 #[derive(Debug, Clone)]
 pub struct Category {
     /// Machine-readable identifier
@@ -166,6 +177,8 @@ pub enum CategoryType {
     Genre,
     Country,
     Language,
+    /// RDS programme type ("Jazz music"); its id is the code, 1 to 31
+    ProgrammeType,
 }
 
 #[cfg(test)]
@@ -191,9 +204,15 @@ mod tests {
             language: Some("English".into()),
             codec: Some("mp3".into()),
             min_bitrate: Some(128),
+            category: None,
             order: SearchOrder::Popular,
         };
         assert!(filter.matches(&station));
+        let any_genre = StationFilter {
+            genre: Some("blues, jazz".into()),
+            ..Default::default()
+        };
+        assert!(any_genre.matches(&station));
         let by_name = StationFilter {
             country: Some("united kingdom".into()),
             ..Default::default()
@@ -210,6 +229,10 @@ mod tests {
             },
             StationFilter {
                 codec: Some("AAC".into()),
+                ..Default::default()
+            },
+            StationFilter {
+                genre: Some("blues, rock".into()),
                 ..Default::default()
             },
             StationFilter {
