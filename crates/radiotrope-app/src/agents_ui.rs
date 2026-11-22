@@ -389,7 +389,9 @@ mod tests {
 
     #[test]
     fn token_failure_is_said_in_plain_words() {
-        let e = std::io::Error::from_raw_os_error(13);
+        // From the kind, not an OS code: 13 is "permission denied" on Unix
+        // but "the data is invalid" on Windows
+        let e = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
         assert_eq!(token_error(&e), "Can't make a new token: permission denied");
     }
 

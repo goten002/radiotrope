@@ -193,6 +193,24 @@ const SHOTS: &[Shot] = &[
     ),
     Shot::new("main-empty", "main", "empty", "Empty favorites list."),
     Shot::new(
+        "main-find",
+        "main",
+        "find",
+        "Find in favorites: the list narrowed to the names containing the text.",
+    ),
+    Shot::new(
+        "main-undo",
+        "main",
+        "undo",
+        "A favorite was removed: the offer to put it back, under the list.",
+    ),
+    Shot::new(
+        "favorite-armed",
+        "main",
+        "armed",
+        "Another favorite pressed once while recording: a second press switches.",
+    ),
+    Shot::new(
         "main-no-row-stats",
         "main",
         "no-stats",
@@ -994,6 +1012,7 @@ fn stage(
     let ui = App::new()?;
     // The shortcut list and the menu hints, as in the live app
     crate::shortcuts::install(&ui);
+    crate::favorites_ui::install_find(&ui);
     let window = made.take().ok_or("Slint did not create a window adapter")?;
     let defaults = ui.global::<Defaults>();
     ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
@@ -1421,7 +1440,8 @@ fn configure(ui: &App, shot: &Shot) {
                 ui.set_schedule_label_bell(true);
                 ui.set_schedule_label_closable(true);
             }
-            "recording" | "recording-confirm" => {
+            "undo" => ui.set_favorite_undo(1),
+            "recording" | "recording-confirm" | "armed" => {
                 ui.set_is_recording(true);
                 ui.set_recording_text("2:36".into());
                 ui.set_recording_size("3.6 MB".into());
@@ -1784,3 +1804,7 @@ mod menu_keys_tests;
 #[cfg(test)]
 #[path = "key_lists_test.rs"]
 mod key_list_tests;
+
+#[cfg(test)]
+#[path = "favorites_keys_test.rs"]
+mod favorites_keys_tests;

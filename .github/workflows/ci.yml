@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # polish/*: integration branches whose PRs need the same checks
+    branches: [main, 'polish/**']
 
 env:
   CARGO_TERM_COLOR: always
@@ -118,11 +119,16 @@ jobs:
         run: cargo test -p radiotrope --no-default-features
       - name: The programs build without it
         run: cargo check -p radiotrope-cli -p radiotrope-probe --no-default-features
-      - name: Install libfdk-aac
+      # Ubuntu's libfdk-aac2 is the build with HE-AAC taken out, so the
+      # full library is built from the upstream source (test only; nothing
+      # of it is shipped)
+      - name: Install libfdk-aac (with HE-AAC)
         run: |
-          sudo add-apt-repository -y multiverse
-          sudo apt-get update
-          sudo apt-get install -y libfdk-aac2
+          git clone --depth 1 --branch v2.0.3 https://github.com/mstorsjo/fdk-aac.git /tmp/fdk-aac
+          cmake -S /tmp/fdk-aac -B /tmp/fdk-aac/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build /tmp/fdk-aac/build -j "$(nproc)"
+          sudo cmake --install /tmp/fdk-aac/build
+          sudo ldconfig
       - name: With the system's libfdk-aac
         shell: bash
         run: |
@@ -186,6 +192,51 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  # The UI snapshot tool, which only the `ui-snapshots` feature builds: lint
+  # it, run the app's tests with it (the headless dialog and keyboard tests
+  # need it), and render every screen in the dark theme (headless, no audio
+  # or network). The pictures are kept with the run as the
+  # "ui-snapshots-dark" artifact, to look at on a PR.
+  snapshots:
+    name: UI snapshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: snapshots
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
+      - name: cargo clippy (ui-snapshots)
+        run: cargo clippy -p radiotrope-app --features ui-snapshots --message-format=short -- -D warnings
+      - name: cargo test (ui-snapshots)
+        run: cargo test -p radiotrope-app --features ui-snapshots
+      - name: Render the screens
+        run: |
+          env -u DISPLAY -u WAYLAND_DISPLAY cargo run -p radiotrope-app --features ui-snapshots \
+            --bin radiotrope -- --ui-snapshots ui-snapshots --theme dark
+          find ui-snapshots -name '*.png' | wc -l
+          test -n "$(find ui-snapshots -name '*.png')"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-snapshots-dark
+          path: ui-snapshots/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Checks on the Slint sources that the compiler doesn't make: controls
+  # need an accessible role, images a role or a label. Stale lines in
+  # scripts/ui-semantics-allow.txt fail it too, so the list stays honest.
+  ui-lint:
+    name: UI lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/lint-ui-semantics.py
 
   # Windows is a release target: lint the Windows-only code and run the
   # tests there (MSVC, with CMake for the bundled libopus)
