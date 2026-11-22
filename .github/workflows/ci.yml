@@ -114,3 +114,10 @@ jobs:
             sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
             exit 1
           fi
+      - name: Repeat the full event queue test 25 times
+        shell: bash
+        run: |
+          for i in {1..25}; do
+            echo "Full event queue iteration $i of 25"
+            cargo test -p radiotrope --lib audio::engine::tests::a_full_event_queue_doesnt_stop_the_audio -- --exact
+          done
