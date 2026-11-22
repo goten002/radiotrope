@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossbeam_channel::{at, never, select, tick, Receiver, Sender};
 
@@ -105,7 +105,7 @@ pub struct AppController {
     outage: Option<resume::Outage>,
     /// The time the outage's retries go by, when a test sets it
     #[cfg(test)]
-    fake_now: Option<Instant>,
+    fake_now: Option<std::time::Instant>,
     /// How loud the stations played were, for volume matching
     levels: Levels,
     /// The station whose loudness the engine is measuring

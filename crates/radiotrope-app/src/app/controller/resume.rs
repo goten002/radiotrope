@@ -811,7 +811,7 @@ mod tests {
         let state = state.lock().unwrap();
         assert!(state.is_error);
         assert!(
-            state.status_text.contains("No audio"),
+            state.status_text.contains("no audio for 2 min"),
             "{}",
             state.status_text
         );
