@@ -10,7 +10,8 @@ import { ScrollBar } from "scroll-bar.slint";
 import { AccentButton, SecondaryButton, DangerButton } from "buttons.slint";
 
 // Clock for the small status animations: steps by Defaults.motion-step
-// while something plays, connects or records (the window runs the timer)
+// while something plays, connects or records (the window runs the timer).
+// It stands still with Theme.reduce-motion on.
 export global Motion {
     in-out property <duration> tick;
 }
@@ -44,7 +45,8 @@ export component MenuSeparator inherits Rectangle {
     }
 }
 
-// Three small bars that bounce while a station plays
+// Three small bars that bounce while a station plays; with Reduce Motion
+// on they stand at three heights
 export component NowPlayingBars inherits HorizontalLayout {
     spacing: 2px;
     alignment: start;
@@ -54,7 +56,8 @@ export component NowPlayingBars inherits HorizontalLayout {
         alignment: end;
         Rectangle {
             width: 3px;
-            height: 3px + 9px * abs(sin(Motion.tick / (Theme.bars-period + i * Theme.bars-period-step) * 180deg + i * 50deg));
+            height: Theme.reduce-motion ? (i == 0 ? 7px : i == 1 ? 12px : 9px)
+                : 3px + 9px * abs(sin(Motion.tick / (Theme.bars-period + i * Theme.bars-period-step) * 180deg + i * 50deg));
             border-radius: 1.5px;
             background: Theme.accent-graphic;
         }
@@ -339,6 +342,11 @@ export component Chip inherits Rectangle {
     // give: those elide first (e.g. Playing and REC stay whole while a
     // Scheduler label shortens)
     in property <bool> keep: false;
+    // The owner says the text to screen readers itself (a live region):
+    // the chip's own text is then not read a second time
+    in property <bool> silent: false;
+    // The chip has the keyboard focus (only one that is a button can)
+    out property <bool> has-focus: keys.has-focus;
     callback clicked();
 
     // Grows with its text but gives way (eliding) when space runs out
@@ -364,6 +372,13 @@ export component Chip inherits Rectangle {
         accessible-role: button;
         accessible-label: root.detail == "" ? root.text : root.text + ", " + root.detail;
         accessible-action-default => { root.clicked(); }
+    }
+
+    // Read once: here, as the button above, or by the owner (`silent`).
+    // The texts drawn below are not read themselves.
+    if !root.interactive && !root.silent: Rectangle {
+        accessible-role: AccessibleRole.text;
+        accessible-label: root.detail == "" ? root.text : root.text + ", " + root.detail;
     }
 
     keys := ButtonKeys {
@@ -408,7 +423,7 @@ export component Chip inherits Rectangle {
                 height: 6px;
                 border-radius: 3px;
                 background: root.foreground;
-                opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / Theme.pulse-period * 180deg)) : 1;
+                opacity: root.pulse && !Theme.reduce-motion ? 0.45 + 0.55 * abs(sin(Motion.tick / Theme.pulse-period * 180deg)) : 1;
             }
         }
 
@@ -419,6 +434,7 @@ export component Chip inherits Rectangle {
 
             Text {
                 text: root.text;
+                accessible-role: none;
                 color: root.foreground;
                 font-size: Theme.font-sm;
                 font-weight: Theme.weight-semibold;
@@ -441,6 +457,7 @@ export component Chip inherits Rectangle {
 
                 separator := Text {
                     text: "·";
+                    accessible-role: none;
                     color: root.foreground;
                     font-size: Theme.font-sm;
                     font-weight: Theme.weight-semibold;
@@ -451,6 +468,7 @@ export component Chip inherits Rectangle {
 
             if root.detail != "": Text {
                 text: root.detail;
+                accessible-role: none;
                 color: root.foreground;
                 font-size: Theme.font-sm;
                 font-weight: Theme.weight-semibold;
@@ -604,8 +622,9 @@ export component StatusPanel inherits VerticalLayout {
     alignment: center;
 
     property <duration> spinner-time;
+    // The spinner stands still with Reduce Motion on
     Timer {
-        running: root.busy;
+        running: root.busy && !Theme.reduce-motion;
         interval: Defaults.motion-step;
         triggered => { root.spinner-time += self.interval; }
     }
@@ -627,7 +646,7 @@ export component StatusPanel inherits VerticalLayout {
                 : root.variant == ChipVariant.warning ? Theme.warning-text
                 : root.busy || root.variant == ChipVariant.accent ? Theme.accent-text
                 : Theme.text-secondary;
-            rotation: root.busy ? root.spinner-time / Theme.spin-period * 360deg : 0deg;
+            rotation: root.busy && !Theme.reduce-motion ? root.spinner-time / Theme.spin-period * 360deg : 0deg;
         }
     }
 

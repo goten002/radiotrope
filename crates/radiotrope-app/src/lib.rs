@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod data;
+pub mod hex_color;
 pub mod network;
 pub mod text;
 pub mod visual;

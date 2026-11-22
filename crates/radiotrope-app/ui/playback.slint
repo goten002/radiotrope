@@ -23,6 +23,8 @@ component RowChip inherits TouchArea {
     in property <bool> urgent: false;
     // The text doesn't fit and ends in "…"
     out property <bool> cut: chip.width + 0.5px < chip.preferred-width;
+    // The chip has the keyboard focus (one that is a button)
+    out property <bool> focused: chip.has-focus;
     // A click on a chip that is a button
     callback pressed-chip();
 
@@ -43,6 +45,8 @@ component RowChip inherits TouchArea {
         keep: root.keep;
         clickable: root.clickable;
         closable: root.closable;
+        // `spoken` below is what a screen reader hears
+        silent: root.spoken != "";
         clicked => { root.pressed-chip(); }
     }
 
@@ -343,7 +347,11 @@ export component Playback inherits Rectangle {
                     spoken: root.recording-notice;
                     urgent: self.is-error;
                     changed has-hover => {
-                        root.chip-hovered(2, self.has-hover && self.cut, self.absolute-position.x, self.absolute-position.y);
+                        root.chip-hovered(2, (self.has-hover || self.focused) && self.cut, self.absolute-position.x, self.absolute-position.y);
+                    }
+                    // Reached with Tab: the whole text shows as on hover
+                    changed focused => {
+                        root.chip-hovered(2, (self.focused || self.has-hover) && self.cut, self.absolute-position.x, self.absolute-position.y);
                     }
                     pressed-chip => {
                         if root.recording-notice-kind == "saved" {

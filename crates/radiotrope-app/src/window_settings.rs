@@ -15,7 +15,7 @@ use radiotrope_app::error::AppError;
 use crate::app::delayed_save::{DelayedSave, SaveErrors, Saved, SAVE_RETRY};
 use crate::app::state::AppSnapshot;
 use crate::context::{lock, AppContext};
-use crate::{app, App, EqPresetGroup, VizStyle};
+use crate::{app, App, EqPresetGroup, HexColor, VizStyle};
 #[cfg(feature = "desktop")]
 use crate::{tray, window_frame};
 
@@ -76,6 +76,8 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
     ui.set_show_station_stats(settings.show_station_stats);
     ui.set_show_visualizer(settings.show_visualizer);
     ui.set_panel_gradient(settings.panel_gradient);
+    // Zoom, Reduce Motion and the play reports
+    crate::view_options::setup(ui, settings);
     #[cfg(feature = "desktop")]
     {
         ui.set_tray_icon(settings.tray_icon);
@@ -244,19 +246,31 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     }
 
     // Accent color callbacks
+    setup_hex_color(ui);
     {
         let state = shared_state.clone();
         ui.on_accent_color_changed(move |color| {
-            let hex = format!(
-                "#{:02x}{:02x}{:02x}",
+            let hex = radiotrope_app::hex_color::format_hex_color(
                 color.red(),
                 color.green(),
-                color.blue()
+                color.blue(),
             );
             let mut s = lock(&state);
             s.accent_color = Some(hex);
         });
     }
+}
+
+/// The Accent Color dialog's hex field: format, check and parse in Rust
+pub(crate) fn setup_hex_color(ui: &App) {
+    use radiotrope_app::hex_color::{format_hex_color, parse_hex_color};
+    let hex = ui.global::<HexColor>();
+    hex.on_to_hex(|c| format_hex_color(c.red(), c.green(), c.blue()).into());
+    hex.on_is_valid(|text| parse_hex_color(&text).is_some());
+    hex.on_to_color(|text| {
+        let (r, g, b) = parse_hex_color(&text).unwrap_or_default();
+        slint::Color::from_rgb_u8(r, g, b)
+    });
 }
 
 /// The equalizer's preset menu, from the engine's preset list: the presets
@@ -350,6 +364,11 @@ pub(crate) struct WindowSettings {
     pub(crate) show_station_stats: bool,
     pub(crate) show_visualizer: bool,
     pub(crate) panel_gradient: bool,
+    /// View > Zoom in percent, for the next start
+    pub(crate) zoom: u32,
+    /// View > Reduce Motion; `None` follows the system
+    pub(crate) reduce_motion: Option<bool>,
+    pub(crate) report_plays: bool,
     /// Custom title bar, rounded corners and always on top (not on the Pi)
     pub(crate) frame: Option<(bool, bool, bool)>,
     /// Tray icon, close to tray, start in tray, minimize to tray (desktop)
@@ -381,12 +400,16 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
     // Saved in logical pixels, the unit the size is restored in at startup.
     // The window reports physical pixels, so saving those made the window
     // grow by the display scale (e.g. 125%) on every launch. A maximized
-    // window keeps the size it had before it was maximized.
+    // window keeps the size it had before it was maximized. With another
+    // zoom picked for the next start, the size is saved in that start's
+    // pixels, so the window is as large on screen as it is now.
+    let zoom = crate::view_options::zoom_choice(ui);
     let window = ui.window();
     let window_size = (!window.is_maximized())
         .then(|| window.size().to_logical(window.scale_factor()))
         .filter(|size| size.width >= 1.0 && size.height >= 1.0)
-        .map(|size| (size.width.round() as u32, size.height.round() as u32));
+        .map(|size| (size.width.round() as u32, size.height.round() as u32))
+        .map(|size| crate::view_options::size_at_zoom(size, zoom));
 
     WindowSettings {
         volume: s.volume,
@@ -410,6 +433,9 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         show_station_stats: ui.get_show_station_stats(),
         show_visualizer: ui.get_show_visualizer(),
         panel_gradient: ui.get_panel_gradient(),
+        zoom,
+        reduce_motion: crate::view_options::reduce_motion_choice(ui),
+        report_plays: crate::view_options::report_plays_choice(ui),
         frame: cfg!(not(feature = "embedded")).then(|| {
             (
                 ui.get_custom_frame(),
@@ -501,6 +527,9 @@ impl WindowSettings {
         settings.show_station_stats = w.show_station_stats;
         settings.show_visualizer = w.show_visualizer;
         settings.panel_gradient = w.panel_gradient;
+        settings.zoom = w.zoom;
+        settings.reduce_motion = w.reduce_motion;
+        settings.report_plays = w.report_plays;
         if let Some((custom_title_bar, rounded_corners, always_on_top)) = w.frame {
             settings.custom_title_bar = custom_title_bar;
             settings.rounded_corners = rounded_corners;

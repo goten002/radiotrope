@@ -149,6 +149,12 @@ const SHOTS: &[Shot] = &[
         "Playing station with codec, now-playing metadata and favorite row stats.",
     ),
     Shot::new(
+        "main-reduce-motion",
+        "main",
+        "reduce-motion",
+        "Playing with View > Reduce Motion on: steady bars and dot, a still visualizer.",
+    ),
+    Shot::new(
         "main-error",
         "main",
         "error",
@@ -350,6 +356,12 @@ const SHOTS: &[Shot] = &[
         "View menu with the inline Theme selector.",
     ),
     Shot::new(
+        "menu-view-end",
+        "view-group",
+        "tray",
+        "View menu with System Tray open, after End: the last row has the focus (scrolled into view in a short window).",
+    ),
+    Shot::new(
         "menu-theme",
         "view-group",
         "theme",
@@ -360,6 +372,12 @@ const SHOTS: &[Shot] = &[
         "view-group",
         "style",
         "Visualizer styles expanded in the View menu.",
+    ),
+    Shot::new(
+        "menu-zoom",
+        "view-group",
+        "zoom",
+        "Zoom choices expanded in the View menu, with Reduce Motion below.",
     ),
     Shot::new(
         "menu-window-options",
@@ -875,10 +893,22 @@ const SHOTS: &[Shot] = &[
         "Accent Color presets and custom color controls.",
     ),
     Shot::new(
-        "accent-color-low-contrast",
+        "accent-color-white",
         "accent",
-        "low-contrast",
-        "A custom white accent: the low-contrast note under the picker.",
+        "white",
+        "A custom white accent: no note under the picker, the same height.",
+    ),
+    Shot::new(
+        "accent-color-hex",
+        "accent",
+        "hex",
+        "C97718 typed in the hex field and applied with Enter.",
+    ),
+    Shot::new(
+        "accent-color-hex-invalid",
+        "accent",
+        "hex-invalid",
+        "Text that isn't a hex color, with the error beside the field.",
     ),
     Shot::new(
         "keyboard-shortcuts",
@@ -1035,6 +1065,7 @@ fn stage(
     ui.set_snapshot_mode(true);
     ui.set_theme_mode(theme.into());
     crate::setup_text_util(&ui);
+    crate::window_settings::setup_hex_color(&ui);
     seed(&ui);
     configure(&ui, shot);
     let needs_layout =
@@ -1067,6 +1098,7 @@ fn after_open(ui: &App, shot: &Shot) {
         // Enter in the form's first field saves it, and the save fails
         ("edit-favorite", "error") => press(ui, Key::Return),
         _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
+        _ if shot.name == "menu-view-end" => press(ui, Key::End),
         _ if shot.name == "menu-tools-keys" => {
             for _ in 0..3 {
                 press(ui, Key::DownArrow);
@@ -1079,6 +1111,21 @@ fn after_open(ui: &App, shot: &Shot) {
                 press(ui, Key::DownArrow);
                 slint::platform::update_timers_and_animations();
             }
+        }
+        // Tab to the hex field, type and press Enter
+        ("accent", "hex" | "hex-invalid") => {
+            for _ in 0..HEX_FIELD_TABS {
+                press(ui, Key::Tab);
+            }
+            type_text(
+                ui,
+                if shot.state == "hex" {
+                    " C97718 "
+                } else {
+                    "#12g"
+                },
+            );
+            press(ui, Key::Return);
         }
         _ => {}
     }
@@ -1094,7 +1141,7 @@ fn after_open(ui: &App, shot: &Shot) {
     if shot.screen == "bubble" {
         ui.set_snapshot_bubble(shot.state.into());
     }
-    if shot.screen == "accent" && shot.state == "low-contrast" {
+    if shot.screen == "accent" && shot.state == "white" {
         ui.set_accent_color(Color::from_rgb_u8(0xff, 0xff, 0xff));
     }
     if shot.state == "presets" {
@@ -1134,15 +1181,17 @@ fn use_filter_list(ui: &App, state: &str) {
     }
 }
 
-/// Type a text, a key at a time
+/// Tab presses from an opened Accent Color dialog to its hex field
+const HEX_FIELD_TABS: usize = 13;
+
+/// Type `text` a character at a time
 fn type_text(ui: &App, text: &str) {
-    for key in text.chars() {
-        let text = SharedString::from(key);
+    for c in text.chars() {
+        let text = SharedString::from(c.to_string());
         ui.window()
             .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
         ui.window()
             .dispatch_event(WindowEvent::KeyReleased { text });
-        slint::platform::update_timers_and_animations();
     }
 }
 
@@ -1466,6 +1515,7 @@ fn configure(ui: &App, shot: &Shot) {
             "sleep" => {
                 configure_sleep(ui);
             }
+            "reduce-motion" => ui.set_reduce_motion(true),
             "schedule" => {
                 ui.set_schedule_label("Record in 0:12".into());
             }
