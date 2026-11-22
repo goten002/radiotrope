@@ -25,6 +25,7 @@ use radiotrope_app::data::types::{
 use radiotrope_app::providers::types::Category;
 use radiotrope_app::providers::{CategoryType, ProviderRegistry, StationFilter};
 
+use crate::app::controller::CoverSource;
 use crate::app::state::{AppCommand, AppSnapshot};
 
 /// How long recording changes wait for the recorder to answer
@@ -136,6 +137,8 @@ pub struct Control {
     providers: Arc<Mutex<Option<Arc<ProviderRegistry>>>>,
     /// Where favorites are saved; `None` is the usual data folder
     favorites_file: Option<PathBuf>,
+    /// A recording's cover art, as the window and the schedule get it
+    cover_source: Option<CoverSource>,
 }
 
 impl Control {
@@ -150,7 +153,14 @@ impl Control {
             favorites,
             providers: Arc::new(Mutex::new(None)),
             favorites_file: None,
+            cover_source: None,
         }
+    }
+
+    /// Where a recording started here gets its cover art
+    pub fn with_cover_source(mut self, cover: CoverSource) -> Self {
+        self.cover_source = Some(cover);
+        self
     }
 
     /// Search these providers and save favorites to this file (for tests)
@@ -639,6 +649,7 @@ impl Control {
             ));
         }
         let notice_before = s.recording_notice.as_ref().map(|n| n.seq);
+        let cover = self.cover_for(&s).await;
         // The settings as the window has them, not as the file may be
         // half-way through a save
         let setup = &s.recording_setup;
@@ -648,7 +659,7 @@ impl Control {
             bitrate: setup.bitrate,
             // As in the window: the switch only counts with the EQ on
             with_eq: setup.with_eq && s.eq_enabled,
-            cover: None,
+            cover,
         })?;
         sent();
         let deadline = Instant::now() + RECORDING_WAIT;
@@ -665,6 +676,21 @@ impl Control {
             }
         }
         Ok(RecordingStart::Starting)
+    }
+
+    /// The playing station's cached logo as cover art, read and encoded off
+    /// the async task. None when it isn't cached (as in the window: a
+    /// recording doesn't wait for a logo).
+    async fn cover_for(&self, s: &AppSnapshot) -> Option<Vec<u8>> {
+        let cover = self.cover_source.clone()?;
+        let station = Station::new(
+            s.station_name.as_deref().unwrap_or_default(),
+            s.station_url.as_deref()?,
+        );
+        tokio::task::spawn_blocking(move || cover(&station))
+            .await
+            .ok()
+            .flatten()
     }
 
     /// Stop the recording and save it. `sent` runs once the player has the
@@ -1219,5 +1245,68 @@ mod tests {
         assert_eq!(removed.name(), "Jazz FM");
         assert!(!std::fs::read_to_string(&file).unwrap().contains("Jazz FM"));
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A control over a playing station whose recording "starts" as soon
+    /// as the player has the command, keeping the command for the test
+    async fn record_with(cover_source: Option<CoverSource>) -> AppCommand {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(8);
+        let state = Arc::new(Mutex::new(AppSnapshot {
+            playback: PlaybackState::Playing,
+            station_name: Some("Jazz FM".into()),
+            station_url: Some("http://jazz.test/stream".into()),
+            ..AppSnapshot::default()
+        }));
+        let mut control = Control::new(
+            cmd_tx,
+            state.clone(),
+            Arc::new(Mutex::new(FavoritesManager::new())),
+        );
+        if let Some(cover) = cover_source {
+            control = control.with_cover_source(cover);
+        }
+        let started = control
+            .start_recording(|| {
+                state.lock().unwrap().recording = Some(crate::app::state::RecordingProgress {
+                    path: PathBuf::from("Jazz FM.ogg"),
+                    duration: Duration::ZERO,
+                    bytes: 0,
+                });
+            })
+            .await
+            .unwrap();
+        assert!(matches!(started, RecordingStart::Started(_)));
+        cmd_rx.try_recv().unwrap()
+    }
+
+    fn sent_cover(cmd: AppCommand) -> Option<Vec<u8>> {
+        match cmd {
+            AppCommand::StartRecording { cover, .. } => cover,
+            _ => panic!("not a StartRecording"),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_recording_started_here_has_the_station_logo() {
+        // As the phone remote and MCP start one: the cover comes from the
+        // same source as the window's and the schedule's
+        let asked: Arc<Mutex<Vec<String>>> = Arc::default();
+        let cover: CoverSource = Arc::new({
+            let asked = asked.clone();
+            move |station: &Station| {
+                asked.lock().unwrap().push(station.url.clone());
+                Some(b"\x89PNG logo".to_vec())
+            }
+        });
+        let cmd = record_with(Some(cover)).await;
+        assert_eq!(sent_cover(cmd).as_deref(), Some(&b"\x89PNG logo"[..]));
+        assert_eq!(*asked.lock().unwrap(), ["http://jazz.test/stream"]);
+    }
+
+    #[tokio::test]
+    async fn a_logo_not_cached_records_with_no_cover() {
+        let none: CoverSource = Arc::new(|_: &Station| None);
+        assert_eq!(sent_cover(record_with(Some(none)).await), None);
+        assert_eq!(sent_cover(record_with(None).await), None);
     }
 }

@@ -17,6 +17,7 @@ use radiotrope_app::data::schedule::{
     self, Action, Decision, Entry, LastRun, Outcome, Running, ScheduleFile, ScheduledStation,
 };
 use radiotrope_app::data::storage;
+use radiotrope_app::data::types::Station;
 
 use super::alarm_tone::AlarmTone;
 use super::AppController;
@@ -43,8 +44,11 @@ pub const BEEP_AFTER_SECS: i64 = 30;
 /// its fade in is done
 pub const BEEP_VOLUME: f32 = 0.5;
 
-/// Gives a station's logo as PNG, for a scheduled recording's cover art
-pub type CoverSource = Box<dyn Fn(&ScheduledStation) -> Option<Vec<u8>> + Send>;
+/// Gives a station's cached logo as PNG, for a recording's cover art. One
+/// is built at start up and shared by every way a recording starts (the
+/// window, the schedule, the phone remote and MCP), so they all agree.
+/// `None` when the logo isn't cached: a recording doesn't wait for one.
+pub type CoverSource = std::sync::Arc<dyn Fn(&Station) -> Option<Vec<u8>> + Send + Sync>;
 
 /// Why an entry whose station never played failed, for its row
 const STATION_DID_NOT_START: &str = "the station didn't start";
@@ -555,7 +559,7 @@ impl AppController {
             (state.recording_setup.clone(), state.eq_enabled)
         };
         let cover = match (&self.cover_source, station) {
-            (Some(cover), Some(station)) => cover(station),
+            (Some(cover), Some(station)) => cover(&Station::new(&station.name, &station.url)),
             _ => None,
         };
         let started = self.try_start_recording(
