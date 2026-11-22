@@ -78,6 +78,10 @@ export component App inherits Window {
                 stream-dialog.country = root.station-country;
             }
             stream-dialog.show-dialog = true;
+            if detail == "armed" {
+                stream-dialog.url = "https://stream.example.com/radio";
+                stream-dialog.confirm-switch(stream-dialog.url);
+            }
         }
         if screen == "edit-favorite" {
             edit-dialog.open(root.favorites-list[0]);
@@ -799,6 +803,7 @@ export component App inherits Window {
             }
 
             stream-dialog := NetworkStreamDialog {
+                recording: root.is-recording;
                 playing-url: root.station-url;
                 is-playing: root.is-playing;
                 accepted(url, name, logo, country) => {

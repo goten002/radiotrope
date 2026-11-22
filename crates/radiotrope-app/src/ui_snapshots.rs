@@ -545,6 +545,12 @@ const SHOTS: &[Shot] = &[
         "Custom stream form ready to play.",
     ),
     Shot::new(
+        "network-stream-armed",
+        "network-stream",
+        "armed",
+        "Play pressed once for another stream while recording: a second press switches.",
+    ),
+    Shot::new(
         "edit-favorite",
         "edit-favorite",
         "",
