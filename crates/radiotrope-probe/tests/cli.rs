@@ -251,3 +251,50 @@ fn a_list_comes_from_standard_input() {
     let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
     assert_eq!(json.as_array().unwrap().len(), 2);
 }
+
+#[test]
+fn user_agent_is_sent_as_given() {
+    use std::io::{BufRead, BufReader};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/live", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut agent = None;
+        for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+            let line = line.unwrap();
+            if line.is_empty() {
+                break;
+            }
+            if let Some((name, value)) = line.split_once(':') {
+                if name.eq_ignore_ascii_case("user-agent") {
+                    agent = Some(value.trim().to_string());
+                }
+            }
+        }
+        let _ = stream
+            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        agent
+    });
+    let output = probe(&[
+        "--user-agent",
+        "MyMonitor/1.0 (+https://example.com)",
+        "--listen",
+        "2",
+        "--timeout",
+        "6",
+        &url,
+    ]);
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(
+        server.join().unwrap().as_deref(),
+        Some("MyMonitor/1.0 (+https://example.com)")
+    );
+}
+
+#[test]
+fn a_user_agent_with_a_line_break_is_refused() {
+    let output = probe(&["--user-agent", "A\r\nX-Evil: 1", "http://x/"]);
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(err.contains("--user-agent must be"), "{err}");
+}

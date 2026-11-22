@@ -298,7 +298,8 @@ enum Wait {
     Event,
     /// Nothing came in time, or a signal cut the wait short
     Idle,
-    /// The terminal hung up
+    /// The terminal hung up (only seen on Unix, where poll(2) looks first)
+    #[cfg_attr(not(unix), allow(dead_code))]
     Gone,
 }
 

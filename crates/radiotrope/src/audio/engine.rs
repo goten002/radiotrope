@@ -5008,7 +5008,19 @@ mod tests {
             }),
             "the output never ran dry"
         );
-        let stalled_at = sample_count(&engine);
+        // An underrun can come early on a slow machine, while decoded audio
+        // is still playing out: wait until the count stops moving
+        let mut stalled_at = sample_count(&engine);
+        let settle = Instant::now() + Duration::from_secs(10);
+        loop {
+            thread::sleep(Duration::from_millis(300));
+            let now = sample_count(&engine);
+            if now == stalled_at {
+                break;
+            }
+            assert!(Instant::now() < settle, "the output never stalled");
+            stalled_at = now;
+        }
         thread::sleep(Duration::from_millis(600));
         assert_eq!(sample_count(&engine), stalled_at, "nothing new to play");
 
