@@ -519,8 +519,10 @@ export component Controls inherits Rectangle {
                         // loudest wave isn't clipped by Icon's 1px edge trim
                         icon-size: Theme.icon-lg;
                         label: root.is-muted ? "Unmute" : "Mute";
-                        icon-color: Theme.text-secondary;
-                        hover-color: Theme.text-primary;
+                        // Red while muted (danger keeps 4.5:1 on the bar in
+                        // both themes; danger-text is its stronger hover)
+                        icon-color: root.is-muted ? Theme.danger : Theme.text-secondary;
+                        hover-color: root.is-muted ? Theme.danger-text : Theme.text-primary;
                         clicked => { root.mute-clicked(); }
                     }
                 }
