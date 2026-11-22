@@ -80,6 +80,28 @@ pub(crate) fn size_at_zoom(size: (u32, u32), chosen: u32) -> (u32, u32) {
     (convert(size.0), convert(size.1))
 }
 
+/// What a screen keeps besides the window, in its logical pixels: a
+/// panel or taskbar, and the system's title bar
+#[cfg(any(feature = "desktop", test))]
+const SCREEN_RESERVE: (f32, f32) = (16.0, 64.0);
+
+/// The largest zoom whose smallest window, `min` at 100%, fits a screen
+/// of `screen` logical pixels (at the display's own scale) with room for
+/// [`SCREEN_RESERVE`]. 100% and less always count as fitting: that window
+/// is the one the app has anyway.
+#[cfg(any(feature = "desktop", test))]
+fn zoom_that_fits(screen: (f32, f32), min: (f32, f32)) -> u32 {
+    let room = (screen.0 - SCREEN_RESERVE.0, screen.1 - SCREEN_RESERVE.1);
+    radiotrope_app::data::settings::ZOOM_CHOICES
+        .into_iter()
+        .filter(|&percent| {
+            let zoom = percent as f32 / 100.0;
+            percent <= 100 || (min.0 * zoom <= room.0 && min.1 * zoom <= room.1)
+        })
+        .max()
+        .unwrap_or(100)
+}
+
 /// Whether a play of a directory station is reported to the directory
 pub(crate) fn report_plays() -> bool {
     REPORT_PLAYS.load(Ordering::Relaxed)
@@ -119,34 +141,90 @@ pub(crate) fn report_plays_choice(ui: &App) -> bool {
 }
 
 /// Keep the display's own scale in settings.json for the next start's
-/// zoom. It is looked at now and then, not once: Wayland tells the scale
-/// after the window is up, a window started in the tray has none yet, and
-/// the window can move to another display.
+/// zoom, and grey the zooms too large for the screen. They are looked at
+/// now and then, not once: Wayland tells the scale after the window is up,
+/// a window started in the tray has none yet, and the window can move to
+/// another display.
 #[cfg(feature = "desktop")]
 fn watch_display_scale(ui: &App, saved: Option<f32>) {
-    use slint::winit_030::WinitWindowAccessor;
+    use std::cell::Cell;
+    use std::rc::Rc;
 
     let ui_weak = ui.as_weak();
-    let mut known = saved;
-    let timer = slint::Timer::default();
-    timer.start(slint::TimerMode::Repeated, SCALE_CHECK, move || {
+    let known = Rc::new(Cell::new(saved));
+    let screen_seen = Rc::new(Cell::new(false));
+    let check = move || {
         let Some(ui) = ui_weak.upgrade() else { return };
-        // winit's scale is the display's, whatever scale Slint draws at
-        let Some(scale) = ui
-            .window()
-            .with_winit_window(|window| window.scale_factor() as f32)
-            .filter(|scale| scale.is_finite() && *scale > 0.0)
-        else {
-            return;
-        };
-        if known.is_some_and(|known| (known - scale).abs() < 0.005) {
-            return;
+        // The first time, a zoom picked on a larger screen comes down
+        if fit_zoom_to_screen(&ui, !screen_seen.get()) {
+            screen_seen.set(true);
         }
-        known = Some(scale);
-        crate::window_settings::update_settings(|settings| settings.display_scale = Some(scale));
-    });
+        save_display_scale(&ui, &known);
+    };
+    // Soon after the window is up, then now and then
+    slint::Timer::single_shot(std::time::Duration::from_secs(1), check.clone());
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, SCALE_CHECK, check);
     // Runs for as long as the app does
     std::mem::forget(timer);
+}
+
+/// Grey the zooms whose smallest window is larger than the screen the
+/// window is on. With `clamp`, a choice among them becomes the largest
+/// that fits (for the next start: this run keeps its zoom). False while
+/// the screen isn't known.
+#[cfg(feature = "desktop")]
+fn fit_zoom_to_screen(ui: &App, clamp: bool) -> bool {
+    use slint::winit_030::WinitWindowAccessor;
+
+    let Some(screen) = ui
+        .window()
+        .with_winit_window(|window| {
+            let monitor = window.current_monitor()?;
+            let scale = monitor.scale_factor() as f32;
+            let size = monitor.size();
+            (scale.is_finite() && scale > 0.0 && size.width > 0 && size.height > 0)
+                .then(|| (size.width as f32 / scale, size.height as f32 / scale))
+        })
+        .flatten()
+    else {
+        return false;
+    };
+    let defaults = ui.global::<crate::Defaults>();
+    let min = (
+        defaults.get_window_min_width(),
+        defaults.get_window_min_height(),
+    );
+    let fits = zoom_that_fits(screen, min);
+    let options = ui.global::<ViewOptions>();
+    options.set_zoom_fits(fits as i32);
+    if clamp && zoom_choice(ui) > fits {
+        options.set_zoom(fits as i32);
+    }
+    true
+}
+
+/// Save the display's own scale when it isn't the one `known`
+#[cfg(feature = "desktop")]
+fn save_display_scale(ui: &App, known: &std::cell::Cell<Option<f32>>) {
+    use slint::winit_030::WinitWindowAccessor;
+
+    // winit's scale is the display's, whatever scale Slint draws at
+    let Some(scale) = ui
+        .window()
+        .with_winit_window(|window| window.scale_factor() as f32)
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+    else {
+        return;
+    };
+    if known
+        .get()
+        .is_some_and(|known| (known - scale).abs() < 0.005)
+    {
+        return;
+    }
+    known.set(Some(scale));
+    crate::window_settings::update_settings(|settings| settings.display_scale = Some(scale));
 }
 
 #[cfg(test)]
@@ -174,6 +252,24 @@ mod tests {
         // This run is at 100%
         assert_eq!(size_at_zoom((800, 600), 100), (800, 600));
         assert_eq!(size_at_zoom((800, 600), 150), (533, 400));
+        // The smallest window at 150% is the smallest at 100% on screen
+        assert_eq!(size_at_zoom((960, 720), 150), (640, 480));
         assert_eq!(size_at_zoom((900, 600), 90), (1000, 667));
+    }
+
+    #[test]
+    fn the_zooms_whose_smallest_window_is_larger_than_the_screen_are_out() {
+        let min = (640.0, 480.0);
+        // 960 x 720 at 150% needs more than a 1280 x 720 screen has
+        assert_eq!(zoom_that_fits((1280.0, 720.0), min), 130);
+        // 1366 x 768 keeps no room for a panel and a title bar at 150%
+        assert_eq!(zoom_that_fits((1366.0, 768.0), min), 130);
+        assert_eq!(zoom_that_fits((1920.0, 1080.0), min), 150);
+        // 1920 x 1080 at a display scale of 1.25
+        assert_eq!(zoom_that_fits((1536.0, 864.0), min), 150);
+        // 100% and less stay, even on a screen smaller than the window
+        assert_eq!(zoom_that_fits((800.0, 480.0), min), 100);
+        assert_eq!(zoom_that_fits((1024.0, 600.0), min), 100);
+        assert_eq!(zoom_that_fits((1024.0, 768.0), min), 130);
     }
 }

@@ -1923,5 +1923,9 @@ mod key_list_tests;
 mod favorites_keys_tests;
 
 #[cfg(test)]
+#[path = "accent_drag_test.rs"]
+mod accent_drag_tests;
+
+#[cfg(test)]
 #[path = "report_plays_test.rs"]
 mod report_plays_tests;

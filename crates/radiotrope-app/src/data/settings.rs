@@ -27,6 +27,8 @@ const RETIRED_FIELDS: &[&str] = &[
     "show_notifications",
     // View > Reduce Motion, which was taken out again
     "reduce_motion",
+    // View > Window > Always on Top, left to the window manager now
+    "always_on_top",
 ];
 
 /// The version of the Report Plays dialog's text. Plays are reported only
@@ -121,10 +123,6 @@ pub struct Settings {
     /// Round the window's corners with our title bar (desktop)
     #[serde(default = "default_true")]
     pub rounded_corners: bool,
-
-    /// Keep the window above other windows
-    #[serde(default)]
-    pub always_on_top: bool,
 
     /// View > Zoom, in percent: one of [`ZOOM_CHOICES`], read through
     /// [`zoom_percent`](Self::zoom_percent). Applied when the player starts.
@@ -360,7 +358,6 @@ impl Default for Settings {
             panel_gradient: true,
             custom_title_bar: true,
             rounded_corners: true,
-            always_on_top: false,
             zoom: default_zoom(),
             display_scale: None,
             accent_color: None,
@@ -890,6 +887,15 @@ mod tests {
     }
 
     #[test]
+    fn an_old_always_on_top_field_is_read_and_dropped() {
+        // Saved by the builds that had View > Window > Always on Top
+        let Stored(old) = serde_json::from_str(r#"{"always_on_top": true, "zoom": 115}"#).unwrap();
+        assert_eq!(old.zoom_percent(), 115);
+        let saved = serde_json::to_string(&old).unwrap();
+        assert!(!saved.contains("always_on_top"));
+    }
+
+    #[test]
     fn a_zoom_that_is_no_choice_reads_as_the_nearest_one() {
         for (saved, read) in [
             (0, 90),
@@ -1120,7 +1126,6 @@ mod tests {
         assert!(settings.panel_gradient);
         assert!(settings.custom_title_bar);
         assert!(settings.rounded_corners);
-        assert!(!settings.always_on_top);
 
         let _ = fs::remove_file(&path);
     }

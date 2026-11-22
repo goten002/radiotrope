@@ -303,6 +303,9 @@ export global ViewOptions {
     in property <int> zoom-in-use: 100;
     // The percentages offered
     out property <[int]> zoom-choices: [90, 100, 115, 130, 150];
+    // The largest of them whose smallest window fits the screen the
+    // window is on; the larger ones are greyed
+    in property <int> zoom-fits: 150;
     // Stations > Report Plays: off until the user allows it in its dialog
     // (dialogs/report-plays.slint), which switching it on opens
     in-out property <bool> report-plays: false;
@@ -314,9 +317,10 @@ export global Defaults {
     // ── Main window ──
     out property <length> window-width: 800px;
     out property <length> window-height: 600px;
+    // 4:3. View > Zoom multiplies it: the zooms it would make larger than
+    // the screen are greyed (960 x 720 at 150% needs more than 1280 x 720)
     out property <length> window-min-width: 640px;
-    // Low enough for a 768 px display at 150% zoom (the favorites scroll)
-    out property <length> window-min-height: 400px;
+    out property <length> window-min-height: 480px;
     // Edges to grab for resizing with the app's own title bar
     out property <length> resize-border: 8px;
     // Rounded corners with the app's own title bar (Windows 11 uses its own)

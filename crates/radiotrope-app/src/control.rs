@@ -251,8 +251,8 @@ impl Control {
     }
 
     /// A station by its directory id, looked up off the async thread. The
-    /// play is counted in the directory, as the GUI does (not with Tools >
-    /// Connections > Report Plays off); nobody waits on it.
+    /// play is counted in the directory, as the GUI does (not with
+    /// Stations > Report Plays off); nobody waits on it.
     pub async fn station_to_play(&self, id: String) -> Result<Station, Error> {
         let station = self.station(id).await?;
         if !crate::view_options::report_plays() {
