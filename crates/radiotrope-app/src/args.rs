@@ -4,16 +4,16 @@
 
 use clap::Parser;
 
-/// Radiotrope, an internet radio player for the desktop
+/// Radiotrope, an internet radio player
 #[derive(Parser)]
-#[command(name = "radiotrope", version)]
+#[command(name = "radiotrope", version, after_help = AFTER_HELP)]
 pub struct Args {
     /// Connect an AI agent over MCP on stdio. Talks to the running player,
     /// starting it first if needed, so all agents share one player.
     #[arg(long)]
     pub mcp: bool,
 
-    /// With --mcp: run a separate player for this agent alone instead
+    /// With --mcp: run a separate player for this agent alone
     #[arg(long, requires = "mcp")]
     pub standalone: bool,
 
@@ -44,3 +44,17 @@ pub struct Args {
     #[arg(long, hide = true, requires = "ui_snapshots", value_name = "PREFIX")]
     pub only: Option<String>,
 }
+
+/// Shown after the options in `--help`, in the same layout as the terminal
+/// player's and the station checker's
+const AFTER_HELP: &str = "\
+Run without options to open the player. A second start brings the open
+window forward.
+
+Examples:
+  radiotrope                  Open the player
+  radiotrope --mcp            Let an AI agent use the open player
+  radiotrope --quit           Close the open player
+
+Environment:
+  RUST_LOG=radiotrope=debug   More log output; send it to a file with 2>log.txt";

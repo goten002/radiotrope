@@ -4,7 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # polish/*: integration branches whose PRs need the same checks
+    branches: [main, 'polish/**']
 
 env:
   CARGO_TERM_COLOR: always
@@ -186,6 +187,62 @@ jobs:
         with:
           components: rustfmt
       - run: cargo fmt --check
+
+  # The UI snapshot tool, which only the `ui-snapshots` feature builds: lint
+  # it, run the theme contrast test with it, and render every screen in the
+  # dark theme (headless, no audio or network). The pictures are kept with
+  # the run as the "ui-snapshots-dark" artifact, to look at on a PR.
+  snapshots:
+    name: UI snapshots
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: snapshots
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
+      - name: cargo clippy (ui-snapshots)
+        run: cargo clippy -p radiotrope-app --features ui-snapshots --message-format=short -- -D warnings
+      - name: Theme contrast
+        run: cargo test -p radiotrope-app --features ui-snapshots --test theme_contrast
+      - name: Render the screens
+        run: |
+          env -u DISPLAY -u WAYLAND_DISPLAY cargo run -p radiotrope-app --features ui-snapshots \
+            --bin radiotrope -- --ui-snapshots ui-snapshots --theme dark
+          find ui-snapshots -name '*.png' | wc -l
+          test -n "$(find ui-snapshots -name '*.png')"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ui-snapshots-dark
+          path: ui-snapshots/
+          if-no-files-found: warn
+          retention-days: 14
+
+  # Checks on the Slint sources that the compiler doesn't make: every
+  # executable scripts/lint-* runs from the repository root and fails the
+  # job by exiting non-zero (the accessibility lint, for one)
+  ui-lint:
+    name: UI lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: scripts/lint-*
+        shell: bash
+        run: |
+          shopt -s nullglob
+          found=0
+          for script in scripts/lint-*; do
+            [ -f "$script" ] && [ -x "$script" ] || continue
+            found=1
+            echo "::group::$script"
+            "./$script"
+            echo "::endgroup::"
+          done
+          [ "$found" = 1 ] || echo "No scripts/lint-* yet"
 
   # Windows is a release target: lint the Windows-only code and run the
   # tests there (MSVC, with CMake for the bundled libopus)

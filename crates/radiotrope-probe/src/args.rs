@@ -6,11 +6,12 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-/// Check internet radio stations: on air or not, their format, and what is playing
+/// The Radiotrope station checker: on air or not, the format, and what is playing
 #[derive(Parser, Debug)]
-#[command(name = "radiotrope-probe", version, after_help = EXIT_HELP)]
+#[command(name = "radiotrope-probe", version, after_help = AFTER_HELP)]
 pub struct Args {
     /// Station addresses: a stream, a PLS or M3U playlist, or HLS
+    #[arg(value_name = "URL")]
     pub urls: Vec<String>,
 
     /// Read addresses from a file, one per line ("-" for standard input;
@@ -35,7 +36,7 @@ pub struct Args {
           value_parser = clap::value_parser!(u64).range(1..=600))]
     pub listen: u64,
 
-    /// Most seconds a station may take, start to finish
+    /// Longest time for one station, in seconds, including the listen
     #[arg(short, long, value_name = "SECS", default_value_t = 30,
           value_parser = clap::value_parser!(u64).range(1..=3600))]
     pub timeout: u64,
@@ -48,7 +49,28 @@ pub struct Args {
     /// Sound below this level counts as silence
     #[arg(long, value_name = "DBFS", default_value_t = -50.0, allow_negative_numbers = true)]
     pub silence_db: f64,
+
+    /// The User-Agent to send, for example to name your monitor in the
+    /// station's logs. By default the player's, so the station answers as it
+    /// answers listeners (some refuse agents they don't know).
+    #[arg(long, value_name = "TEXT")]
+    pub user_agent: Option<String>,
 }
 
-const EXIT_HELP: &str = "Exit status: 0 up, 1 degraded, 2 down (the worst station counts), \
-3 the check can't run.";
+/// Shown after the options in `--help`, in the same layout as the terminal
+/// player's and the app's
+const AFTER_HELP: &str = "\
+Examples:
+  radiotrope-probe https://example.com/live.mp3
+                              Check one station
+  radiotrope-probe --quiet --input stations.txt
+                              Check a list from a file, one line per station
+  radiotrope-probe --json --listen 20 https://example.com/playlist.m3u
+                              Listen 20 seconds; the report as JSON
+
+Exit status: 0 up, 1 degraded, 2 down (the worst station counts), 3 the check
+can't run.
+
+Environment:
+  NO_COLOR=1                  No colors
+  RUST_LOG=radiotrope=debug   More log output; send it to a file with 2>log.txt";
