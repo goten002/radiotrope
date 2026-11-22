@@ -1,4 +1,5 @@
-import { Theme } from "defaults.slint";
+import { Theme, Defaults } from "defaults.slint";
+import { ButtonKeys, FocusRing } from "component-primitives.slint";
 
 // Live audio levels, written from Rust about 30 times a second
 export global VizData {
@@ -49,6 +50,16 @@ export global VizStyle {
         if mode == "dots" { return "vu"; }
         if mode == "vu" { return "hbars"; }
         return "wave";
+    }
+
+    // The style's name as the View menu and the tile show it
+    public pure function mode-name(mode: string) -> string {
+        if mode == "spectrum" { return "Spectrum"; }
+        if mode == "mirror" { return "Mirror"; }
+        if mode == "dots" { return "Dot Matrix"; }
+        if mode == "vu" { return "VU Meters"; }
+        if mode == "hbars" { return "Horizontal VU"; }
+        return "Wave";
     }
 }
 
@@ -161,8 +172,81 @@ export component VizContent inherits Rectangle {
         }
     }
 
+    // Nothing playing, or silence: the style is drawn at rest in a faint
+    // colour (a flat line, floor-height bars, unlit dots), so the tile shows
+    // which style is on instead of an empty box
+    property <bool> resting: !root.is-loading && (!VizData.active || !VizData.has-signal);
+    property <color> rest-color: Theme.text-tertiary.with-alpha(0.45);
+    property <int> rest-bands: VizData.spectrum.length > 0 ? VizData.spectrum.length : 16;
+    property <length> rest-bar: (root.width - (root.rest-bands - 1) * root.gap) / root.rest-bands;
+
+    if root.resting && root.mode == "wave": Rectangle {
+        y: root.height - 2px;
+        height: 2px;
+        border-radius: 1px;
+        background: root.rest-color;
+    }
+
+    if root.resting && (root.mode == "spectrum" || root.mode == "mirror"): Rectangle {
+        for i in root.rest-bands: Rectangle {
+            x: i * (root.rest-bar + root.gap);
+            y: root.mode == "mirror" ? (parent.height - self.height) / 2 : parent.height - self.height;
+            width: root.rest-bar;
+            height: 2px;
+            border-radius: 1px;
+            background: root.rest-color;
+        }
+    }
+
+    if root.resting && root.mode == "dots": Rectangle {
+        for c in root.dot-count: Rectangle {
+            x: (parent.width - root.dots-size) / 2 + c * (root.dot + root.dot-gap);
+            y: (parent.height - root.dots-size) / 2;
+            width: root.dot;
+            height: root.dots-size;
+
+            for r in root.dot-count: Rectangle {
+                y: r * (root.dot + root.dot-gap);
+                width: root.dot;
+                height: root.dot;
+                border-radius: root.dot / 2;
+                background: root.rest-color.with-alpha(0.3);
+            }
+        }
+    }
+
+    if root.resting && root.mode == "vu": HorizontalLayout {
+        spacing: 6px;
+        alignment: center;
+
+        for i in 2: Rectangle {
+            width: 20px;
+            Rectangle {
+                y: parent.height - 2px;
+                height: 2px;
+                border-radius: 1px;
+                background: root.rest-color;
+            }
+        }
+    }
+
+    if root.resting && root.mode == "hbars": VerticalLayout {
+        spacing: 6px;
+        alignment: center;
+
+        for i in 2: Rectangle {
+            height: 20px;
+            Rectangle {
+                x: 0;
+                width: 2px;
+                border-radius: 1px;
+                background: root.rest-color;
+            }
+        }
+    }
+
     // Spectrum: bars rising from the bottom
-    if !root.is-loading && root.mode == "spectrum": HorizontalLayout {
+    if !root.resting && !root.is-loading && root.mode == "spectrum": HorizontalLayout {
         spacing: root.gap;
 
         for val[i] in VizData.spectrum: Bar {
@@ -173,7 +257,7 @@ export component VizContent inherits Rectangle {
     }
 
     // Mirror: bars grow out from the middle, the same up and down
-    if !root.is-loading && root.mode == "mirror": HorizontalLayout {
+    if !root.resting && !root.is-loading && root.mode == "mirror": HorizontalLayout {
         spacing: root.gap;
 
         for val[i] in VizData.spectrum: Bar {
@@ -219,9 +303,8 @@ export component VizContent inherits Rectangle {
     }
 
     // The whole curve shows while any band has a level, running along the
-    // bottom where bands are quiet; silence leaves the tile empty like the
-    // bars instead of a flat line
-    if !root.is-loading && root.mode == "wave" && VizData.has-signal: Rectangle {
+    // bottom where bands are quiet; silence draws the resting line above
+    if !root.resting && !root.is-loading && root.mode == "wave": Rectangle {
         // Fill: opaque (mixed with the tile colour) so the pieces can
         // overlap slightly and leave no seams
         for i in root.last-band: Path {
@@ -279,7 +362,7 @@ export component VizContent inherits Rectangle {
     property <length> dot: (min(root.width, root.height) - (root.dot-count - 1) * root.dot-gap) / root.dot-count;
     property <length> dots-size: root.dot-count * root.dot + (root.dot-count - 1) * root.dot-gap;
 
-    if !root.is-loading && root.mode == "dots": Rectangle {
+    if !root.resting && !root.is-loading && root.mode == "dots": Rectangle {
         for level[c] in VizData.columns: Rectangle {
             // Level in dots: whole dots are lit, the one above lights by the
             // fraction, so the column fades between dots instead of jumping
@@ -299,14 +382,14 @@ export component VizContent inherits Rectangle {
                 height: root.dot;
                 border-radius: root.dot / 2;
                 property <bool> peak: r == parent.peak-row && r >= ceil(parent.fill);
-                // Unlit dots are faint while something plays, gone when stopped
-                background: parent.tint.with-alpha(self.peak ? 1 : (VizData.active ? 0.12 : 0) + 0.88 * clamp(parent.fill - r, 0, 1));
+                // Unlit dots are faint
+                background: parent.tint.with-alpha(self.peak ? 1 : 0.12 + 0.88 * clamp(parent.fill - r, 0, 1));
             }
         }
     }
 
     // VU: two vertical meters, left and right
-    if !root.is-loading && root.mode == "vu": HorizontalLayout {
+    if !root.resting && !root.is-loading && root.mode == "vu": HorizontalLayout {
         spacing: 6px;
         alignment: center;
 
@@ -324,7 +407,7 @@ export component VizContent inherits Rectangle {
     }
 
     // Horizontal VU: the same two meters lying down, same thickness
-    if !root.is-loading && root.mode == "hbars": VerticalLayout {
+    if !root.resting && !root.is-loading && root.mode == "hbars": VerticalLayout {
         spacing: 6px;
         alignment: center;
 
@@ -344,30 +427,105 @@ export component VizContent inherits Rectangle {
     }
 }
 
-// 70px tile in the header; click cycles the mode
+// 70px tile in the header: a button that cycles the style (click, Space or
+// Enter). Hovering, or a change of style, shows the style's name in the tile.
 export component Visualization inherits Rectangle {
     in property <bool> is-loading;
     in-out property <string> viz-mode: "wave";
+    // Off while a dialog is open: the tile leaves the Tab order
+    in property <bool> enabled: true;
+    // Headless capture: show the name label as after a click
+    in property <bool> snapshot-name;
+
+    // The style changed just now: its name shows for a moment
+    property <bool> changed-now: false;
+    // Hovered long enough to show the name
+    property <bool> hover-ready: false;
+    property <bool> show-name: root.snapshot-name || root.changed-now || root.hover-ready || keys.has-focus;
 
     width: 70px;
     height: 70px;
-    background: Theme.viz-bg;
-    border-radius: Theme.radius-md;
-    border-width: 1px;
-    border-color: Theme.hairline;
-    clip: true;
 
-    TouchArea {
-        mouse-cursor: pointer;
-        clicked => { root.viz-mode = VizStyle.next-mode(root.viz-mode); }
+    accessible-role: button;
+    accessible-label: "Visualizer style: " + VizStyle.mode-name(root.viz-mode);
+    accessible-description: "Changes to " + VizStyle.mode-name(VizStyle.next-mode(root.viz-mode));
+    accessible-action-default => { root.next(); }
+
+    function next() {
+        root.viz-mode = VizStyle.next-mode(root.viz-mode);
+        root.changed-now = true;
+        name-timer.running = false;
+        name-timer.running = true;
     }
 
-    VizContent {
-        x: 6px;
-        y: 6px;
-        width: parent.width - 12px;
-        height: parent.height - 12px;
-        mode: root.viz-mode;
-        is-loading: root.is-loading;
+    name-timer := Timer {
+        interval: Defaults.value-hint-time;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.changed-now = false;
+        }
+    }
+
+    Timer {
+        interval: Defaults.hover-delay;
+        running: touch.has-hover && !root.hover-ready;
+        triggered => { root.hover-ready = true; }
+    }
+
+    tile := Rectangle {
+        background: Theme.viz-bg;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: touch.has-hover ? Theme.selection-mark : Theme.hairline;
+        animate border-color { duration: Theme.fast; }
+        clip: true;
+
+        VizContent {
+            x: 6px;
+            y: 6px;
+            width: parent.width - 12px;
+            height: parent.height - 12px;
+            mode: root.viz-mode;
+            is-loading: root.is-loading;
+        }
+
+        // The style's name over the drawing
+        Rectangle {
+            opacity: root.show-name ? 1 : 0;
+            animate opacity { duration: Theme.fast; }
+            background: Theme.viz-bg.with-alpha(0.82);
+
+            Text {
+                x: 4px;
+                width: parent.width - 8px;
+                text: VizStyle.mode-name(root.viz-mode);
+                font-size: Theme.font-xs;
+                font-weight: Theme.weight-semibold;
+                color: Theme.text-primary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.next(); }
+        changed has-hover => {
+            if !self.has-hover {
+                root.hover-ready = false;
+            }
+        }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.next(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: Theme.radius-md;
     }
 }
