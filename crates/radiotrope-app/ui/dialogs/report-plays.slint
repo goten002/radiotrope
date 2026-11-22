@@ -3,39 +3,12 @@ import { SecondaryButton } from "../buttons.slint";
 import { DialogShell } from "../components.slint";
 import { AboutInfo } from "about.slint";
 
-// One fact of the dialog: a small mark and a sentence
-component Point inherits HorizontalLayout {
-    in property <string> text;
-
-    spacing: Theme.space-8;
-
-    VerticalLayout {
-        alignment: start;
-        padding-top: 7px;
-        Rectangle {
-            width: 5px;
-            height: 5px;
-            border-radius: 2.5px;
-            background: Theme.text-secondary;
-            // Decoration: the sentence is read on its own
-            accessible-role: none;
-        }
-    }
-
-    Text {
-        horizontal-stretch: 1;
-        text: root.text;
-        color: Theme.text-primary;
-        font-size: Theme.font-md;
-        wrap: word-wrap;
-    }
-}
-
-// Asked when the user switches Stations > Report Plays on: what is sent,
-// why, what is kept, and how to take it back. Opt-in consent: the switch
-// stays off unless Allow is pressed; Esc, the close button and a click
-// outside are Don't Allow. Both answers look the same, so neither is
-// pushed. Switching it off never asks.
+// Asked when the user switches Stations > Report Plays on: why, what is
+// kept, and how to take it back, in plain words; the README's Privacy
+// section, behind Learn More, has the technical details. Opt-in consent:
+// the switch stays off unless Allow is pressed; Esc, the close button and
+// a click outside are Don't Allow. Both answers look the same, so neither
+// is pushed. Switching it off never asks.
 export component ReportPlaysDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
@@ -51,29 +24,24 @@ export component ReportPlaysDialog inherits Rectangle {
         close-requested => { root.show-dialog = false; }
 
         Text {
-            text: "When you start a station from Search Stations, Radiotrope can tell our server it was played, so popular stations can be shown to everyone.";
+            text: "Help others find good stations. When you play a station from Search Stations, Radiotrope counts the play so popular stations show up first.";
             color: Theme.text-primary;
             font-size: Theme.font-md;
             wrap: word-wrap;
         }
 
-        VerticalLayout {
-            spacing: Theme.space-8;
+        Text {
+            text: "We only count plays: we don't store your IP address or anything else that could identify you, and there's no account.";
+            color: Theme.text-primary;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
+        }
 
-            Point {
-                text: "Sent: the station's ID and the app's version. No account, device ID or listening history.";
-            }
-            Point {
-                text: "Kept: one number per station per hour, not who played it.";
-            }
-            // As the server does it (radiotrope-api): a keyed hash in
-            // memory, its key replaced daily; the details are in Learn More
-            Point {
-                text: "Your IP address reaches our server, as with any internet connection, but is never stored or logged. To count you once per station per day, the server keeps a scrambled code made from it, in memory only, with a key destroyed every day at midnight UTC. After that, nobody can trace it to you, not even us.";
-            }
-            Point {
-                text: "You can turn this off at any time in Stations > Report Plays.";
-            }
+        Text {
+            text: "You can turn this off anytime in Stations > Report Plays.";
+            color: Theme.text-primary;
+            font-size: Theme.font-md;
+            wrap: word-wrap;
         }
 
         // Learn More at the left, where a dialog's extra action goes; the
