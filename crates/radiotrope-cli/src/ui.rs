@@ -4,21 +4,24 @@
 //! Uses only characters Consolas and Cascadia Mono have, so it looks the
 //! same in the Windows console as in Linux terminals.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::buffer::Buffer;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap,
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use radiotrope::stream::StreamType;
 use radiotrope_library::data::favorites::FavoriteEdit;
+use radiotrope_library::text::{self, clock};
 
 use crate::favorites::{self, FavoritesWorker, Reply};
-use crate::input::{Confirmation, Effect};
+use crate::input::{self, Confirmation, Effect};
 use crate::library::Station;
-use crate::player::{Phase, Player};
+use crate::player::{Phase, Player, NOTICE_TIME};
 use crate::search::Search;
 use crate::visual::{Spectrum, COLUMNS};
 
@@ -75,13 +78,16 @@ impl ColorMode {
     }
 }
 
-/// The colours of the screen, from the accent
+/// The colours of the screen, from the accent. The accent is only for
+/// fills and marks (the button, the volume bar, the spectrum, `▌`, `★`,
+/// `●`): as text it is hard to read on a light background. Text is in the
+/// terminal's own colours, with the dim attribute for secondary text (a
+/// fixed grey vanishes in some themes, Solarized Dark among them).
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub mode: ColorMode,
     pub accent: Color,
     pub error: Color,
-    pub dim: Color,
 }
 
 impl Palette {
@@ -90,12 +96,12 @@ impl Palette {
             mode,
             accent: rgb(mode, accent, Color::Yellow),
             error: rgb(mode, (0xff, 0x5a, 0x5a), Color::LightRed),
-            dim: if mode == ColorMode::None {
-                Color::Reset
-            } else {
-                Color::DarkGray
-            },
         }
+    }
+
+    /// Secondary text: numbers, countries, hints, lines
+    fn secondary(&self) -> Style {
+        Style::default().add_modifier(Modifier::DIM)
     }
 
     /// A colour between the accent and its light tint (`t` 0-1)
@@ -178,8 +184,13 @@ pub struct View {
     pub search: Search,
     pub confirmation: Option<Confirmation>,
     pub saving_favorites: bool,
+    /// Why the last edit failed, shown until the next key or a few seconds
     pub favorites_error: Option<String>,
+    edit_error_at: Option<Instant>,
+    /// Why the favorites file can't be read, shown while that lasts
     follow_error: Option<String>,
+    /// The help screen, with how far it is scrolled
+    pub help: Option<u16>,
 }
 
 impl View {
@@ -198,7 +209,32 @@ impl View {
             confirmation: None,
             saving_favorites: false,
             favorites_error: None,
+            edit_error_at: None,
             follow_error: None,
+            help: None,
+        }
+    }
+
+    /// The favorites file couldn't be read at start
+    pub fn favorites_unreadable(&mut self, error: String) {
+        self.follow_error = Some(error);
+    }
+
+    /// Clear an edit's error (a key was pressed)
+    pub fn dismiss_edit_error(&mut self) {
+        if !self.saving_favorites {
+            self.favorites_error = None;
+        }
+    }
+
+    /// Clear an edit's error that has been showing long enough
+    fn expire_edit_error(&mut self) {
+        if self
+            .edit_error_at
+            .is_some_and(|at| at.elapsed() > NOTICE_TIME)
+        {
+            self.favorites_error = None;
+            self.edit_error_at = None;
         }
     }
 
@@ -281,12 +317,18 @@ impl View {
                         self.follow_error = None;
                         self.replace_favorites(favorites);
                     }
-                    Err(error) => self.favorites_error = Some(error),
+                    Err(error) => {
+                        log::warn!("Can't change favorites: {error}");
+                        self.favorites_error = Some(error);
+                        self.edit_error_at = Some(Instant::now());
+                    }
                 }
             }
             Reply::Followed(result) => match result {
                 Ok(favorites) => {
+                    // The file is readable again: an edit's error is old news
                     self.follow_error = None;
+                    self.favorites_error = None;
                     self.replace_favorites(favorites);
                 }
                 Err(error) => self.follow_error = Some(error),
@@ -299,8 +341,9 @@ impl View {
 pub fn draw(frame: &mut Frame, view: &mut View, player: &Player) {
     let area = frame.area();
     let p = view.palette;
+    view.expire_edit_error();
     if area.width < 24 || area.height < 6 {
-        let text = Paragraph::new("Radiotrope: make the window bigger");
+        let text = Paragraph::new("Window too small").wrap(Wrap { trim: true });
         frame.render_widget(text, area);
         return;
     }
@@ -314,10 +357,10 @@ pub fn draw(frame: &mut Frame, view: &mut View, player: &Player) {
     };
 
     let block = Block::default()
-        .title(Span::styled(" Radiotrope ", p.fg(p.dim)))
+        .title(Span::styled(" Radiotrope ", p.secondary()))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(p.fg(p.dim));
+        .border_style(p.secondary());
     let inner = block.inner(box_area);
     frame.render_widget(block, box_area);
 
@@ -348,67 +391,138 @@ pub fn draw(frame: &mut Frame, view: &mut View, player: &Player) {
     draw_header(frame, view, player, rows[0], wide);
     if with_list {
         separator(frame.buffer_mut(), box_area, rows[1].y, p);
-        draw_body(frame, view, player, rows[2]);
+        draw_body(frame, view, player, rows[2], help_area.is_some());
         separator(frame.buffer_mut(), box_area, rows[3].y, p);
         draw_bottom(frame, view, player, rows[4]);
     } else {
         if compact_body {
-            draw_body(frame, view, player, rows[1]);
+            draw_body(frame, view, player, rows[1], help_area.is_some());
         }
         draw_bottom(frame, view, player, rows[2]);
     }
     if let Some(help) = help_area {
-        draw_help(frame, view, help);
+        draw_help(frame, view, player, help);
+    }
+    if let Some(scroll) = view.help {
+        draw_help_screen(frame, view, area, scroll);
     }
 }
 
-fn draw_body(frame: &mut Frame, view: &mut View, player: &Player, area: Rect) {
+/// What to say about the favorites under the list, if anything: the
+/// text and whether it is an error
+fn favorites_notice(view: &View) -> Option<(String, bool)> {
+    if let Some(error) = &view.favorites_error {
+        return Some((edit_error(error), true));
+    }
+    // With no favorites shown the empty list explains it
+    if view.follow_error.is_some() && !view.favorites.is_empty() {
+        return Some((
+            "Can't read your favorites. Showing the last ones read.".into(),
+            true,
+        ));
+    }
+    view.saving_favorites
+        .then(|| ("Saving favorites\u{2026}".into(), false))
+}
+
+/// The favorites file can't be read because its contents are damaged (not
+/// because of the disk), which the app can repair
+fn damaged(error: &str) -> bool {
+    error.starts_with("Invalid favorite")
+}
+
+/// An edit's error for the screen: the parser's words mean nothing to a user
+fn edit_error(error: &str) -> String {
+    if damaged(error) {
+        "Can't change favorites: the file is damaged. Open the Radiotrope app to restore it.".into()
+    } else {
+        format!("Can't change favorites: {}", lower_first(error))
+    }
+}
+
+fn lower_first(text: &str) -> String {
+    let mut chars = text.chars();
+    match (chars.next(), chars.next()) {
+        // Keep "HTTP …" and the like
+        (Some(a), Some(b)) if a.is_uppercase() && !b.is_uppercase() => a
+            .to_lowercase()
+            .chain(text[a.len_utf8()..].chars())
+            .collect(),
+        _ => text.to_string(),
+    }
+}
+
+fn draw_body(frame: &mut Frame, view: &mut View, player: &Player, area: Rect, help_line: bool) {
+    let p = view.palette;
     if let Some(confirmation) = &view.confirmation {
-        let question = format!("Remove {}?", confirmation.name);
-        let width = area.width as usize;
-        let lines = if area.height >= 2 {
-            vec![
-                Line::raw(fit(&question, width)),
-                Line::raw(fit("Enter/y yes  Esc/n no", width)),
-            ]
-        } else {
-            vec![Line::raw(fit(&format!("Y/N · {question}"), width))]
-        };
-        frame.render_widget(
-            Paragraph::new(lines).style(view.palette.fg(view.palette.accent)),
-            area,
-        );
+        let question = format!("Remove {} from favorites?", confirmation.name);
+        let width = area.width.saturating_sub(1) as usize;
+        let mut lines = vec![Line::from(vec![
+            Span::raw(" "),
+            Span::styled(fit(&question, width), Style::default().bold()),
+        ])];
+        // The keys are in the help line, or here when there is none
+        if !help_line {
+            let keys = "Enter/y remove  Esc/n cancel";
+            if area.height >= 2 {
+                lines.push(Line::styled(
+                    format!(" {}", fit(keys, width)),
+                    p.secondary(),
+                ));
+            } else {
+                lines = vec![Line::raw(format!(
+                    " {}",
+                    fit(&format!("y/n \u{b7} {question}"), width)
+                ))];
+            }
+        }
+        frame.render_widget(Paragraph::new(lines), area);
         return;
     }
     let mut body = area;
-    let notice = view
-        .favorites_error
-        .as_ref()
-        .or(view.follow_error.as_ref())
-        .map(|error| format!("Favorites: {error}"))
-        .or_else(|| view.saving_favorites.then(|| "Saving favorites…".into()));
-    if let Some(notice) = notice {
+    let notice = favorites_notice(view);
+    if view.search.open {
+        // In search the notice takes the status row, so results keep theirs
+        let playing = player.station.as_ref().filter(|_| player.is_active());
+        draw_search(frame, view, playing, notice, body);
+        return;
+    }
+    if let Some((notice, is_error)) = notice {
         body.height -= 1;
         let row = Rect::new(area.x, body.bottom(), area.width, 1);
-        frame.render_widget(Paragraph::new(fit(&notice, area.width as usize)), row);
+        let style = if is_error {
+            p.fg(p.error)
+        } else {
+            p.secondary()
+        };
+        frame.render_widget(
+            Paragraph::new(format!(
+                " {}",
+                fit(&notice, area.width.saturating_sub(1) as usize)
+            ))
+            .style(style),
+            row,
+        );
         if body.height == 0 {
             return;
         }
     }
-    if view.search.open {
-        let playing = player.station.as_ref().filter(|_| player.is_active());
-        draw_search(frame, view, playing, body);
-    } else {
-        draw_list(frame, view, player, body);
-    }
+    draw_list(frame, view, player, body);
 }
 
-fn draw_search(frame: &mut Frame, view: &mut View, playing: Option<&Station>, area: Rect) {
+fn draw_search(
+    frame: &mut Frame,
+    view: &mut View,
+    playing: Option<&Station>,
+    notice: Option<(String, bool)>,
+    area: Rect,
+) {
     let p = view.palette;
     let search = &mut view.search;
-    let field = Rect::new(area.x, area.y, area.width, 1);
+    // One column of margin, as everywhere else in the box
+    let field = Rect::new(area.x + 1, area.y, area.width.saturating_sub(1), 1);
     let label = "Find: ";
-    let text_width = area.width as usize - label.len();
+    let text_width = (field.width as usize).saturating_sub(label.len());
     let mut start = search.caret;
     let mut caret_column = 0;
     for (index, grapheme) in search.query[..search.caret].grapheme_indices(true).rev() {
@@ -424,9 +538,9 @@ fn draw_search(frame: &mut Frame, view: &mut View, playing: Option<&Station>, ar
     }
     let field_text = format!("{label}{}", fit(&search.query[start..], text_width));
     let style = if search.editing {
-        p.fg(p.accent)
+        Style::default().bold()
     } else {
-        p.fg(p.dim)
+        p.secondary()
     };
     frame.render_widget(Paragraph::new(field_text).style(style), field);
     if search.editing {
@@ -435,43 +549,77 @@ fn draw_search(frame: &mut Frame, view: &mut View, playing: Option<&Station>, ar
     if area.height < 2 {
         return;
     }
-    let status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+    let status_row = Rect::new(field.x, area.bottom() - 1, field.width, 1);
+    let (status, status_style) = match notice {
+        Some((text, true)) => (text, p.fg(p.error)),
+        Some((text, false)) => (text, p.secondary()),
+        None if search.error.is_some() => (search.status(), p.fg(p.error)),
+        None => (search.status(), p.secondary()),
+    };
     frame.render_widget(
-        Paragraph::new(fit(&search.status(), area.width as usize)).style(p.fg(p.dim)),
-        status,
+        Paragraph::new(fit(&status, status_row.width as usize)).style(status_style),
+        status_row,
     );
     let results = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
+    let cursor = search.list.selected().filter(|_| !search.editing);
+    let width = (area.width as usize).saturating_sub(4);
     let items: Vec<_> = search
         .rows
         .iter()
-        .map(|station| {
+        .enumerate()
+        .map(|(i, station)| {
             let playing = playing.is_some_and(|current| current.url == station.url);
             let saved = favorites::find_match(&view.favorites, station).is_some();
             let country = station.country.as_deref().unwrap_or("");
-            let width = area.width as usize - 4;
-            let country_width = country.width().min(width / 3);
-            let name_width = width - country_width - 1;
+            // The country takes what the name leaves, and a third at least
+            let name_room = station.name.width().min(width);
+            let country_width = country
+                .width()
+                .min(width.saturating_sub(name_room + 1).max(width / 3));
+            let name_width = width.saturating_sub(country_width + 1);
             let name = pad(&fit(&station.name, name_width), name_width);
+            let row = row_style(cursor == Some(i));
             ListItem::new(Line::from(vec![
-                Span::styled(if playing { "▌" } else { " " }, p.fg(p.accent)),
-                Span::styled(if saved { "★ " } else { "  " }, p.fg(p.accent)),
-                Span::raw(name),
-                Span::raw(" "),
-                Span::styled(fit(country, country_width), p.fg(p.dim)),
+                Span::styled(if playing { "\u{258c}" } else { " " }, p.fg(p.accent)),
+                Span::styled(
+                    if saved { "\u{2605} " } else { "  " },
+                    row.patch(p.fg(p.accent)),
+                ),
+                Span::styled(name, if playing { row.bold() } else { row }),
+                Span::styled(" ", row),
+                Span::styled(
+                    pad(&fit(country, country_width), country_width),
+                    secondary_in(row, p),
+                ),
             ]))
         })
         .collect();
-    let list = List::new(items).highlight_style(if search.editing {
-        Style::default()
-    } else {
+    frame.render_stateful_widget(List::new(items), results, &mut search.list);
+}
+
+/// A list row: reverse video when selected, the same in both lists and in
+/// any theme
+fn row_style(selected: bool) -> Style {
+    if selected {
         Style::default().reversed()
-    });
-    frame.render_stateful_widget(list, results, &mut search.list);
+    } else {
+        Style::default()
+    }
+}
+
+/// Secondary text in a row: dim, except in the selected row, where the
+/// reverse video already sets it apart
+fn secondary_in(row: Style, p: Palette) -> Style {
+    if row == Style::default() {
+        p.secondary()
+    } else {
+        row
+    }
 }
 
 /// A line across the box at row `y`, joined to its sides
 fn separator(buf: &mut Buffer, box_area: Rect, y: u16, p: Palette) {
-    let style = p.fg(p.dim);
+    let style = p.secondary();
     let right = box_area.right() - 1;
     for x in box_area.left()..=right {
         let symbol = if x == box_area.left() {
@@ -506,7 +654,7 @@ fn draw_header(frame: &mut Frame, view: &View, player: &Player, area: Rect, wide
     if wide {
         lines.push(Line::from(vec![
             Span::raw(" "),
-            Span::styled(fit(&format_line(player), width), p.fg(p.dim)),
+            Span::styled(fit(&format_line(player), width), p.secondary()),
         ]));
     }
     lines.push(status_line(player, p, width));
@@ -538,12 +686,7 @@ fn format_line(player: &Player) -> String {
     }
     if let Some(codec) = &player.codec {
         if codec.sample_rate > 0 {
-            let khz = codec.sample_rate as f32 / 1000.0;
-            parts.push(if khz.fract() == 0.0 {
-                format!("{khz:.0} kHz")
-            } else {
-                format!("{khz:.1} kHz")
-            });
+            parts.push(text::sample_rate(codec.sample_rate));
         }
         parts.push(match codec.channels {
             1 => "Mono".to_string(),
@@ -551,36 +694,41 @@ fn format_line(player: &Player) -> String {
             n => format!("{n} channels"),
         });
     }
-    parts.join(" · ")
+    parts.join(text::SEPARATOR)
 }
 
+/// `● Playing  1:23`: the dot is grey when stopped, accent while
+/// connecting or playing, red on an error, like the app's status chip
 fn status_line(player: &Player, p: Palette, width: usize) -> Line<'static> {
-    let color = if player.is_error {
-        p.error
+    let (dot, words) = if player.is_error {
+        (p.fg(p.error), p.fg(p.error))
     } else if player.phase == Phase::Stopped {
-        p.dim
+        (p.secondary(), p.secondary())
     } else {
-        p.accent
+        (p.fg(p.accent), Style::default())
     };
     let mut spans = vec![Span::raw(" ")];
     let mut used = 1;
     let mut tail = String::new();
-    if let Some(started) = player.started_at {
+    if let Some(started) = player.started_at.filter(|_| player.shows_clock()) {
         tail.push_str("  ");
-        tail.push_str(&clock(started.elapsed()));
+        tail.push_str(&clock(started.elapsed().as_secs()));
     }
     let rec = player
         .recording
         .as_ref()
-        .map(|r| format!("● REC {}", clock(r.duration)));
+        .map(|r| format!("\u{25cf} REC {}", clock(r.duration.as_secs())));
     let rec_width = rec.as_ref().map_or(0, |r| r.width() + 4);
     let room = width.saturating_sub(used + tail.width() + rec_width);
-    let status = fit(&format!("● {}", player.status), room);
-    used += status.width();
-    spans.push(Span::styled(status, p.fg(color)));
+    if room >= 3 {
+        let status = fit(&player.status, room - 2);
+        used += status.width() + 2;
+        spans.push(Span::styled("\u{25cf} ", dot));
+        spans.push(Span::styled(status, words));
+    }
     if !tail.is_empty() {
         used += tail.width();
-        spans.push(Span::styled(tail, p.fg(p.dim)));
+        spans.push(Span::styled(tail, p.secondary()));
     }
     if let Some(rec) = rec {
         if used + rec_width <= width {
@@ -620,19 +768,32 @@ fn draw_list(frame: &mut Frame, view: &mut View, player: &Player, area: Rect) {
     let p = view.palette;
     if view.favorites.is_empty() {
         let width = area.width.saturating_sub(1) as usize;
-        let lines = vec![
-            Line::from(""),
-            Line::from(format!(" {}", fit("No favorites yet.", width))),
-            Line::from(Span::styled(
-                format!(" {}", fit("Press / to find a station", width)),
-                p.fg(p.dim),
-            )),
-            Line::from(Span::styled(
-                format!(" {}", fit("or play one: radiotrope-cli <URL>", width)),
-                p.fg(p.dim),
-            )),
-        ];
-        frame.render_widget(Paragraph::new(lines), area);
+        let line = |text: &str, style: Style| {
+            Line::from(Span::styled(format!(" {}", fit(text, width)), style))
+        };
+        let lines = match &view.follow_error {
+            // The list is empty because the file can't be read: say so,
+            // not "No favorites yet"
+            Some(error) => vec![
+                Line::from(""),
+                line("Can't read your favorites.", p.fg(p.error).bold()),
+                if damaged(error) {
+                    line(
+                        "The favorites file is damaged. Open the Radiotrope app to restore it.",
+                        Style::default(),
+                    )
+                } else {
+                    line(error, Style::default())
+                },
+            ],
+            None => vec![
+                Line::from(""),
+                line("No favorites yet.", Style::default()),
+                line("Press / to find a station", p.secondary()),
+                line("or play one: radiotrope-cli <URL>", p.secondary()),
+            ],
+        };
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
         return;
     }
 
@@ -659,28 +820,15 @@ fn draw_list(frame: &mut Frame, view: &mut View, player: &Player, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, station)| {
-            let selected = cursor == Some(i);
             let playing = playing_url == Some(station.url.as_str());
-            let row = if selected && p.mode != ColorMode::None {
-                Style::default().bg(Color::DarkGray).fg(Color::White)
-            } else {
-                Style::default()
-            };
-            let dim = if selected {
-                row
-            } else {
-                row.patch(p.fg(p.dim))
-            };
-            let name_style = if playing {
-                row.patch(p.fg(p.accent)).bold()
-            } else if selected && p.mode == ColorMode::None {
-                row.reversed()
-            } else {
-                row
-            };
+            let row = row_style(cursor == Some(i));
+            let dim = secondary_in(row, p);
+            // The playing station is marked by the rail; its name is bold
+            // in the terminal's own colour
+            let name_style = if playing { row.bold() } else { row };
             let name = pad(&fit(&station.name, name_width), name_width);
             let mut spans = vec![
-                Span::styled(if playing { "▌" } else { " " }, p.fg(p.accent)),
+                Span::styled(if playing { "\u{258c}" } else { " " }, p.fg(p.accent)),
                 Span::styled(format!(" {:>number_width$}  ", i + 1), dim),
                 Span::styled(name, name_style),
             ];
@@ -728,18 +876,23 @@ fn draw_bottom(frame: &mut Frame, view: &View, player: &Player, area: Rect) {
         Span::raw(" "),
     ];
     let used = 5;
-    let room = width.saturating_sub(used + right_width + 2);
+    // One column of space before the volume
+    let room = width.saturating_sub(used + right_width + 1);
 
     let middle = if let Some(notice) = &player.notice {
-        let color = if notice.is_error { p.error } else { p.accent };
-        Span::styled(fit(&notice.text, room + 2), p.fg(color))
+        let style = if notice.is_error {
+            p.fg(p.error)
+        } else {
+            Style::default()
+        };
+        Span::styled(fit(&notice.text, room), style)
     } else {
         let song = song(player);
         if song.is_empty() {
             Span::raw("")
         } else {
-            spans.push(Span::styled("♪ ", p.fg(p.accent)));
-            Span::raw(fit(&song, room))
+            spans.push(Span::styled("\u{266a} ", p.fg(p.accent)));
+            Span::raw(fit(&song, room.saturating_sub(2)))
         }
     };
     spans.push(middle);
@@ -754,7 +907,7 @@ fn draw_bottom(frame: &mut Frame, view: &View, player: &Player, area: Rect) {
             (player.volume * bar_cells as f32).round() as usize
         };
         right.push(Span::styled("█".repeat(filled), p.fg(p.accent)));
-        right.push(Span::styled("░".repeat(bar_cells - filled), p.fg(p.dim)));
+        right.push(Span::styled("░".repeat(bar_cells - filled), p.secondary()));
         right.push(Span::raw(" "));
     }
     right.push(Span::raw(volume));
@@ -776,67 +929,94 @@ fn song(player: &Player) -> String {
     }
 }
 
-fn draw_help(frame: &mut Frame, view: &View, area: Rect) {
+/// The keys for what the screen shows, most important first, always
+/// ending in `? help`
+fn draw_help(frame: &mut Frame, view: &View, player: &Player, area: Rect) {
     let p = view.palette;
-    let keys: &[(&str, &str)] = if view.confirmation.is_some() {
-        &[("Enter/y", "remove"), ("Esc/n", "cancel")]
-    } else if view.search.open {
-        if view.search.editing {
-            &[("Enter", "search"), ("Tab", "results"), ("Esc", "back")]
-        } else if view.search.error.is_some() {
-            &[("Enter", "retry"), ("Tab", "query"), ("Esc", "back")]
-        } else {
-            &[
-                ("Enter", "play"),
-                ("f", "favorite"),
-                ("Tab", "query"),
-                ("Esc", "back"),
-                ("PgDn", "more"),
-            ]
-        }
-    } else {
-        &[
-            ("/", "search"),
-            ("f", "favorite"),
-            ("Enter", "play"),
-            ("Space", "play/stop"),
-            ("n/p", "next/prev"),
-            ("r", "record"),
-            ("+-", "volume"),
-            ("m", "mute"),
-            ("q", "quit"),
-        ]
-    };
-    let mut spans = Vec::new();
+    let playing = player.station.as_ref();
+    let keys = input::help_line(view, playing, player.is_active());
+    let end = input::help_line_end();
+    let width_of = |(key, what): (&str, &str)| key.width() + what.width() + 3;
+    let room = (area.width as usize).saturating_sub(width_of(end));
     let mut used = 0;
-    for (key, what) in keys {
-        let w = key.width() + what.width() + 3;
-        if used + w > area.width as usize {
-            break;
+    let mut spans = Vec::new();
+    let push = |spans: &mut Vec<Span>, (key, what): (&str, &str)| {
+        spans.push(Span::styled(format!(" {key}"), Style::default().bold()));
+        spans.push(Span::styled(format!(" {what} "), p.secondary()));
+    };
+    for pair in keys {
+        // Later ones that are shorter may still fit
+        if used + width_of(pair) <= room {
+            used += width_of(pair);
+            push(&mut spans, pair);
         }
-        used += w;
-        spans.push(Span::styled(format!(" {key}"), p.fg(p.accent).bold()));
-        spans.push(Span::styled(format!(" {what} "), p.fg(p.dim)));
     }
+    push(&mut spans, end);
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-/// `m:ss`, or `h:mm:ss` from an hour
-pub fn clock(time: Duration) -> String {
-    let secs = time.as_secs();
-    let (h, m, s) = (secs / 3600, secs % 3600 / 60, secs % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m}:{s:02}")
+/// Every key, grouped, over the screen (`?` or F1). Scrolls when the
+/// window is too short.
+fn draw_help_screen(frame: &mut Frame, view: &mut View, area: Rect, scroll: u16) {
+    let key_width = input::KEY_GROUPS
+        .iter()
+        .flat_map(|(_, keys)| keys.iter())
+        .map(|k| k.keys.width())
+        .max()
+        .unwrap_or(0);
+    // A narrow window cuts the descriptions with "…", not mid-word
+    let what_room = (area.width as usize).saturating_sub(2 + 3 + key_width + 2);
+    let mut lines = Vec::new();
+    // No blank lines between groups (the bold names part them), so it
+    // all fits in 80x24
+    for (group, keys) in input::KEY_GROUPS.iter() {
+        lines.push(Line::styled(format!(" {group}"), Style::default().bold()));
+        for k in keys.iter() {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("   {}", pad(k.keys, key_width)),
+                    Style::default().bold(),
+                ),
+                Span::raw(format!("  {}", fit(k.what, what_room))),
+            ]));
+        }
     }
+    let content_width = lines.iter().map(Line::width).max().unwrap_or(0) as u16 + 2;
+    let width = (content_width + 2).min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let inner_rows = height.saturating_sub(2);
+    let max_scroll = (lines.len() as u16).saturating_sub(inner_rows);
+    let scroll = scroll.min(max_scroll);
+    view.help = Some(scroll);
+    let title = if max_scroll > 0 {
+        " Keys \u{b7} \u{2191}\u{2193} scroll \u{b7} any other key closes "
+    } else {
+        " Keys \u{b7} any key closes "
+    };
+    let rect = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    let block = Block::default()
+        .title(Span::styled(
+            fit(title, width.saturating_sub(2) as usize),
+            Style::default().bold(),
+        ))
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded);
+    frame.render_widget(Clear, rect);
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), rect);
 }
 
-/// The host of `url`, for a station without a name
+/// The host of `url`, for a station without a name, without any
+/// `user:password@` (a password on screen ends up in screenshots)
 fn host(url: &str) -> &str {
     url.split("//")
         .nth(1)
         .and_then(|s| s.split('/').next())
+        .map(|h| h.rsplit_once('@').map_or(h, |(_, host)| host))
         .filter(|h| !h.is_empty())
         .unwrap_or(url)
 }
@@ -903,7 +1083,7 @@ mod tests {
     ) -> String {
         terminal
             .draw(|frame| {
-                draw_search(frame, view, playing, frame.area());
+                draw_search(frame, view, playing, None, frame.area());
             })
             .unwrap();
         terminal
@@ -926,7 +1106,7 @@ mod tests {
         );
         view.search.open();
         let text = render_search(&mut terminal, &mut view, None);
-        assert!(text.contains("Find: ") && text.contains("Blank = most played"));
+        assert!(text.contains(" Find: ") && text.contains("Press Enter with no text"));
         let request = view.search.submit();
         assert!(render_search(&mut terminal, &mut view, None).contains("Loading stations"));
         view.search.apply(Reply {
@@ -937,7 +1117,7 @@ mod tests {
                 has_more: true,
             }),
         });
-        assert!(render_search(&mut terminal, &mut view, None).contains("No playable rows"));
+        assert!(render_search(&mut terminal, &mut view, None).contains("No stations on this"));
         let request = view.search.move_cursor(10, true).unwrap();
         assert!(render_search(&mut terminal, &mut view, None).contains("Loading more"));
         view.search.apply(Reply {
@@ -954,7 +1134,7 @@ mod tests {
             request,
             result: Ok(SearchResults::empty()),
         });
-        assert!(render_search(&mut terminal, &mut view, None).contains("No matches"));
+        assert!(render_search(&mut terminal, &mut view, None).contains("No stations found"));
     }
 
     #[test]
@@ -986,11 +1166,11 @@ mod tests {
         });
         let text = render_search(&mut terminal, &mut view, Some(&playing));
         assert!(text.contains("▌★ Jazz") && text.contains("Greece"));
-        assert!(text.contains("News FM") && text.contains("End of list"));
+        assert!(text.contains("News FM") && !text.contains("End of list"));
         assert_eq!(text.matches('★').count(), 1);
         assert_eq!(
             terminal.backend_mut().get_cursor_position().unwrap(),
-            Position::new(9, 0)
+            Position::new(10, 0)
         );
         for _ in 0..40 {
             view.search.insert('界');
@@ -1010,13 +1190,6 @@ mod tests {
     }
 
     #[test]
-    fn clock_shows_hours_only_when_needed() {
-        assert_eq!(clock(Duration::from_secs(5)), "0:05");
-        assert_eq!(clock(Duration::from_secs(761)), "12:41");
-        assert_eq!(clock(Duration::from_secs(3723)), "1:02:03");
-    }
-
-    #[test]
     fn xterm_colours_land_on_the_nearest() {
         assert_eq!(xterm_index(0, 0, 0), 16);
         assert_eq!(xterm_index(255, 255, 255), 231);
@@ -1031,5 +1204,6 @@ mod tests {
             "stream.example.com:8000"
         );
         assert_eq!(host("not a url"), "not a url");
+        assert_eq!(host("http://me:secret@live.test:8000/x"), "live.test:8000");
     }
 }

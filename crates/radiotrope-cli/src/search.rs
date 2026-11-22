@@ -180,6 +180,11 @@ impl Search {
         None
     }
 
+    /// The directory has more results after these
+    pub fn has_more(&self) -> bool {
+        self.has_more
+    }
+
     pub fn selected(&self) -> Option<&Station> {
         self.rows.get(self.list.selected()?)
     }
@@ -205,13 +210,13 @@ impl Search {
             self.has_more,
             self.rows.is_empty(),
         ) {
-            (false, ..) => "Blank = most played".into(),
+            (false, ..) => "Press Enter with no text for the most-played stations".into(),
             (_, true, 0, ..) => format!("Loading stations…{waited}"),
             (_, true, ..) => format!("Loading more…{waited}"),
-            (_, _, _, true, true) => "No playable rows · ↓ more".into(),
+            (_, _, _, true, true) => "No stations on this page. Press \u{2193} for more".into(),
             (_, _, _, true, false) => "↓ or PgDn at end for more".into(),
-            (_, _, _, false, true) => "No matches".into(),
-            _ => "End of list".into(),
+            (_, _, _, false, true) => "No stations found".into(),
+            _ => String::new(),
         }
     }
 
@@ -296,7 +301,10 @@ mod tests {
             false,
         ));
         assert!(search.rows.is_empty());
-        assert_eq!(search.status(), "Blank = most played");
+        assert_eq!(
+            search.status(),
+            "Press Enter with no text for the most-played stations"
+        );
     }
 
     #[test]
@@ -305,7 +313,10 @@ mod tests {
         search.open();
         let first = search.submit();
         search.apply(page(first, vec![], true));
-        assert_eq!(search.status(), "No playable rows · ↓ more");
+        assert_eq!(
+            search.status(),
+            "No stations on this page. Press \u{2193} for more"
+        );
         let second = search.move_cursor(10, true).unwrap();
         assert_eq!(second.offset, PAGE_SIZE);
         assert!(search.move_cursor(1, true).is_none());
@@ -329,7 +340,7 @@ mod tests {
         ));
         assert_eq!(search.list.selected(), Some(0));
         assert_eq!(search.rows.len(), 2);
-        assert_eq!(search.status(), "End of list");
+        assert_eq!(search.status(), "");
     }
 
     #[test]
