@@ -247,6 +247,23 @@ export component AccentColorDialog inherits Rectangle {
 
     callback color-changed(color);
     property <[color]> swatches: Theme.accent-swatches;
+    // The chosen color itself is under 3:1 on this theme's panels: toggles,
+    // fills and the Play button are drawn darker or lighter to make up
+    property <bool> low-contrast: contrast(Theme.accent-base, Theme.dark-mode ? Theme.card : Theme.elevated) < 3.0;
+
+    // WCAG 2 contrast ratio, as in Theme (whose helpers are private)
+    pure function luminance(c: color) -> float {
+        return 0.2126 * linear(c.red) + 0.7152 * linear(c.green) + 0.0722 * linear(c.blue);
+    }
+    pure function linear(channel: int) -> float {
+        let v = channel / 255;
+        return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+    }
+    pure function contrast(a: color, b: color) -> float {
+        let la = luminance(a);
+        let lb = luminance(b);
+        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05);
+    }
 
     if show-dialog: DialogShell {
         title: "Accent Color";
@@ -283,11 +300,20 @@ export component AccentColorDialog inherits Rectangle {
             ColorPicker {
                 current: Theme.accent-base;
                 // Keep the whole dialog on a 480 px tall screen
-                square-height: Math.clamp(root.height - 380px, 64px, Defaults.accent-picker-height);
+                square-height: Math.clamp(root.height - (root.low-contrast ? 404px : 380px), 64px,
+                    Defaults.accent-picker-height);
                 picked(c, final) => {
                     Theme.accent-base = c;
                     if final { root.color-changed(c); }
                 }
+            }
+
+            if root.low-contrast: Text {
+                text: "Low contrast with this theme: some marks are drawn in a stronger shade";
+                color: Theme.text-secondary;
+                font-size: Theme.font-sm;
+                wrap: word-wrap;
+                accessible-live-region: polite;
             }
         }
 
