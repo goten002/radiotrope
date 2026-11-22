@@ -1,5 +1,5 @@
 import { Theme } from "defaults.slint";
-import { Icon } from "components.slint";
+import { IconButton, FocusRing } from "components.slint";
 
 export component StyledLineEdit inherits Rectangle {
     in property <string> placeholder-text;
@@ -18,12 +18,12 @@ export component StyledLineEdit inherits Rectangle {
     // Space on the right for the text: the margin, plus the ✕ button when shown
     property <length> right-margin: root.show-clear ? 32px : root.margin;
 
-    height: 36px;
+    height: Theme.control-field;
     border-radius: Theme.radius-sm;
-    background: Theme.elevated;
-    border-width: input.has-focus ? 1.5px : 1px;
-    border-color: input.has-focus ? Theme.accent : Theme.hairline;
-    animate border-color { duration: Theme.fast; }
+    background: root.enabled ? Theme.elevated : Theme.disabled-bg;
+    border-width: 1px;
+    border-color: Theme.field-border;
+    forward-focus: input;
     clip: true;
 
     // Placeholder, until something is typed (also while the field has focus)
@@ -32,7 +32,7 @@ export component StyledLineEdit inherits Rectangle {
         color: Theme.text-tertiary;
         font-size: Theme.font-base;
         vertical-alignment: center;
-        x: root.margin;
+        x: root.margin + (input.has-focus ? Theme.space-4 : 0px);
         width: root.width - root.margin - root.right-margin;
         height: root.height;
     }
@@ -62,42 +62,33 @@ export component StyledLineEdit inherits Rectangle {
             }
         }
 
+        changed has-focus => {
+            if self.has-focus {
+                root.ensure-visible(ScrollBehavior.instant);
+            }
+        }
         accepted => { root.accepted(root.text); }
         edited => { root.edited(root.text); }
     }
 
-    // Clear button
-    if root.show-clear: Rectangle {
-        x: root.width - self.width - 6px;
-        y: (root.height - self.height) / 2;
-        width: 24px;
-        height: 24px;
-        border-radius: 12px;
-        background: clear-touch.has-hover ? Theme.menu-hover : transparent;
-        animate background { duration: Theme.fast; }
+    // Draw inside the field so scrolling or clipping never hides the ring.
+    if input.has-focus: FocusRing {
+        radius: root.border-radius;
+        offset: 0px;
+    }
 
-        accessible-role: button;
-        accessible-label: "Clear";
-        accessible-action-default => {
+    if root.show-clear: IconButton {
+        x: root.width - self.width - Theme.space-6;
+        y: (root.height - self.height) / 2;
+        width: Theme.space-24;
+        height: self.width;
+        icon-size: Theme.icon-sm;
+        icon: @image-url("icons/xmark.svg");
+        label: "Clear";
+        clicked => {
             root.text = "";
             input.focus();
             root.cleared();
-        }
-
-        clear-touch := TouchArea {
-            mouse-cursor: pointer;
-            clicked => {
-                root.text = "";
-                input.focus();
-                root.cleared();
-            }
-        }
-
-        Icon {
-            width: 10px;
-            height: 10px;
-            source: @image-url("icons/xmark.svg");
-            colorize: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         }
     }
 

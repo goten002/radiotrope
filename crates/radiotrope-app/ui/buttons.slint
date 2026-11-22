@@ -1,5 +1,5 @@
 import { Theme } from "defaults.slint";
-import { Icon, ButtonKeys, FocusRing } from "components.slint";
+import { Icon, ButtonKeys, FocusRing } from "component-primitives.slint";
 
 export component AccentButton inherits Rectangle {
     in property <string> label;
@@ -8,14 +8,17 @@ export component AccentButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    height: 34px;
-    width: row.preferred-width + 32px;
+    height: Theme.control-button;
+    out property <length> natural-width: row.preferred-width + 2 * Theme.space-16;
+    width: root.natural-width;
     border-radius: Theme.radius-sm;
+    property <color> foreground: !root.enabled ? Theme.disabled-text
+        : touch.pressed ? Theme.on-accent-pressed
+        : touch.has-hover ? Theme.on-accent-hover : Theme.on-accent;
     background: !root.enabled ? Theme.disabled-bg
-                : touch.pressed ? Theme.accent-hover.darker(0.1)
+                : touch.pressed ? Theme.accent-pressed
                 : touch.has-hover ? Theme.accent-hover
                 : Theme.accent;
-    animate background { duration: Theme.fast; }
     drop-shadow-blur: root.enabled && touch.has-hover ? 12px : 0px;
     drop-shadow-color: Theme.accent.with-alpha(0.35);
     animate drop-shadow-blur { duration: Theme.fast; }
@@ -38,23 +41,23 @@ export component AccentButton inherits Rectangle {
 
     row := HorizontalLayout {
         alignment: center;
-        spacing: 6px;
+        spacing: Theme.space-6;
 
         if root.icon.width > 0: VerticalLayout {
             alignment: center;
             Icon {
-                width: 11px;
-                height: 11px;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
                 source: root.icon;
-                colorize: root.enabled ? Theme.on-accent : Theme.disabled-text;
+                colorize: root.foreground;
             }
         }
 
         Text {
             text: root.label;
-            color: root.enabled ? Theme.on-accent : Theme.disabled-text;
+            color: root.foreground;
             font-size: Theme.font-base;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             horizontal-alignment: center;
             vertical-alignment: center;
             accessible-role: none;
@@ -79,13 +82,15 @@ export component SecondaryButton inherits Rectangle {
     out property <bool> has-focus: focus.has-focus;
     callback clicked();
 
-    height: 34px;
-    width: row.preferred-width + 32px;
+    height: Theme.control-button;
+    out property <length> natural-width: row.preferred-width + 2 * Theme.space-16;
+    width: root.natural-width;
     border-radius: Theme.radius-sm;
     border-width: 1px;
     border-color: Theme.hairline;
-    background: touch.pressed ? Theme.menu-hover
-                : touch.has-hover ? Theme.menu-bar-hover
+    background: !root.enabled ? Theme.disabled-bg
+                : touch.pressed ? Theme.pressed-bg
+                : touch.has-hover ? Theme.hover-bg
                 : Theme.elevated;
     animate background { duration: Theme.fast; }
     forward-focus: focus;
@@ -107,13 +112,13 @@ export component SecondaryButton inherits Rectangle {
 
     row := HorizontalLayout {
         alignment: center;
-        spacing: 6px;
+        spacing: Theme.space-6;
 
         if root.icon.width > 0: VerticalLayout {
             alignment: center;
             Icon {
-                width: 11px;
-                height: 11px;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
                 source: root.icon;
                 colorize: !root.enabled ? Theme.disabled-text
                     : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
@@ -125,7 +130,7 @@ export component SecondaryButton inherits Rectangle {
             color: !root.enabled ? Theme.disabled-text
                 : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
             font-size: Theme.font-base;
-            font-weight: 500;
+            font-weight: Theme.weight-semibold;
             horizontal-alignment: center;
             vertical-alignment: center;
             accessible-role: none;
@@ -150,20 +155,32 @@ export component DangerButton inherits Rectangle {
     in property <bool> enabled: true;
     // Its colour: red, or Theme.success for a go button
     in property <color> tone: Theme.danger;
+    // Set while a destructive action is waiting for its second press.
+    in property <bool> armed: false;
+    // Supplying both labels reserves room for the longer one before arming.
+    in property <string> armed-label;
+    property <string> displayed-label: root.armed && root.armed-label != "" ? root.armed-label : root.label;
+    property <color> foreground: !root.enabled ? Theme.disabled-text
+        : root.tone == Theme.danger ? Theme.danger-text
+        : root.tone == Theme.success ? Theme.success-text
+        : root.tone == Theme.warning ? Theme.warning-text : Theme.status-text(root.tone);
     callback clicked();
 
-    height: 34px;
-    width: row.preferred-width + 28px;
+    height: Theme.control-button;
+    out property <length> natural-width: row.preferred-width + 28px
+        + max(0px, alternate-measure.preferred-width - caption.preferred-width);
+    width: root.natural-width;
     border-radius: Theme.radius-sm;
     background: !root.enabled ? Theme.disabled-bg
                 : touch.pressed ? root.tone.with-alpha(0.3)
-                : touch.has-hover ? root.tone.with-alpha(0.22)
+                : root.armed ? Theme.danger-armed
+                : touch.has-hover ? root.tone.with-alpha(0.18)
                 : root.tone.with-alpha(0.14);
     animate background { duration: Theme.fast; }
     forward-focus: focus;
 
     accessible-role: button;
-    accessible-label: root.label;
+    accessible-label: root.displayed-label;
     accessible-enabled: root.enabled;
     accessible-action-default => {
         if root.enabled {
@@ -178,27 +195,34 @@ export component DangerButton inherits Rectangle {
     }
 
     row := HorizontalLayout {
-        x: 14px;
-        spacing: 6px;
+        alignment: center;
+        spacing: Theme.space-6;
 
         if root.icon.width > 0: VerticalLayout {
             alignment: center;
             Icon {
                 source: root.icon;
-                width: 11px;
-                height: 11px;
-                colorize: root.enabled ? root.tone : Theme.disabled-text;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
+                colorize: root.foreground;
             }
         }
 
-        Text {
-            text: root.label;
-            color: root.enabled ? root.tone : Theme.disabled-text;
+        caption := Text {
+            text: root.displayed-label;
+            color: root.foreground;
             font-size: Theme.font-base;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             vertical-alignment: center;
             accessible-role: none;
         }
+    }
+
+    alternate-measure := Text {
+        visible: false;
+        text: root.armed ? root.label : root.armed-label;
+        font-size: Theme.font-base;
+        font-weight: Theme.weight-semibold;
     }
 
     focus := ButtonKeys {
