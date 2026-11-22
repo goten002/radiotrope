@@ -86,12 +86,13 @@ impl AgentInfo {
         self.seen == Seen::Connected
     }
 
-    /// "connected", "just now" or "4 min ago"
+    /// "Connected", "Used just now" or "Used 4 min ago", as the paired
+    /// phones read
     pub fn seen_label(&self) -> String {
         match self.seen {
-            Seen::Connected => "connected".to_string(),
-            Seen::Ago(ago) if ago.as_secs() < 60 => "just now".to_string(),
-            Seen::Ago(ago) => format!("{} min ago", ago.as_secs() / 60),
+            Seen::Connected => "Connected".to_string(),
+            Seen::Ago(ago) if ago.as_secs() < 60 => "Used just now".to_string(),
+            Seen::Ago(ago) => format!("Used {} min ago", ago.as_secs() / 60),
         }
     }
 }
@@ -460,7 +461,7 @@ mod tests {
         presence.set_name(&Place::Network(session("a")), "claude-code");
         let agents = presence.agents_at(start + Duration::from_secs(150));
         assert_eq!(agents[0].describe(), "claude-code, 192.168.1.20");
-        assert_eq!(agents[0].seen_label(), "2 min ago");
+        assert_eq!(agents[0].seen_label(), "Used 2 min ago");
         assert!(!agents[0].is_connected());
         assert!(presence.agents_at(start + AGENT_IDLE).is_empty());
     }
@@ -474,7 +475,7 @@ mod tests {
         let stream = presence.stream_opened(&session("a"), ip);
         let agents = presence.agents_at(start + AGENT_IDLE * 3);
         assert_eq!(agents.len(), 1);
-        assert_eq!(agents[0].seen_label(), "connected");
+        assert_eq!(agents[0].seen_label(), "Connected");
         // Quit: gone once the grace for a reconnect is over
         drop(stream);
         assert_eq!(presence.agents().len(), 1);
@@ -571,7 +572,7 @@ mod tests {
         let agents = presence.agents();
         assert_eq!(agents.len(), 1);
         assert_eq!(agents[0].describe(), "new-agent, 192.168.1.20");
-        assert_eq!(agents[0].seen_label(), "just now");
+        assert_eq!(agents[0].seen_label(), "Used just now");
     }
 
     #[test]

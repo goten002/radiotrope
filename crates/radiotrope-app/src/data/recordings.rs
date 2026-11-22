@@ -54,11 +54,22 @@ pub fn folder(custom: Option<&Path>) -> PathBuf {
     }
 }
 
-/// Create `dir` if needed and check that files can be written in it.
+/// Create `dir` if needed and check that files can be written in it. The
+/// error is a sentence for the user (the folder is shown beside it).
 pub fn prepare_dir(dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    fs::create_dir_all(dir).map_err(|e| {
+        format!(
+            "Can't create the recording folder: {}",
+            crate::text::io_reason(&e)
+        )
+    })?;
     let probe = dir.join(format!(".{NAME}-write-test-{}", std::process::id()));
-    fs::write(&probe, b"").map_err(|e| format!("Cannot write to {}: {e}", dir.display()))?;
+    fs::write(&probe, b"").map_err(|e| {
+        format!(
+            "Can't save files in the recording folder: {}",
+            crate::text::io_reason(&e)
+        )
+    })?;
     let _ = fs::remove_file(&probe);
     Ok(())
 }

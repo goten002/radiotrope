@@ -248,7 +248,7 @@ impl Recorder {
             .create_new(true)
             .open(&options.path)
             .map_err(|e| {
-                RadioError::Audio(format!("Cannot create {}: {e}", options.path.display()))
+                RadioError::Audio(format!("Can't create {}: {e}", options.path.display()))
             })?;
         self.start_writing(options, file)
     }

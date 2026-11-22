@@ -6,21 +6,24 @@ use radiotrope::error::RadioError;
 use thiserror::Error;
 
 /// Application error type
+///
+/// The `Display` text is what a user may read, with no "… error:" prefix.
+/// `Debug` keeps the variant and its details for the logs.
 #[derive(Error, Debug)]
 pub enum AppError {
     #[error(transparent)]
     Engine(#[from] RadioError),
 
-    #[error("Configuration error: {0}")]
+    #[error("{0}")]
     Config(String),
 
-    #[error("Not found: {0}")]
+    #[error("{0}")]
     NotFound(String),
 
-    #[error("Image error: {0}")]
+    #[error("{0}")]
     Image(String),
 
-    #[error("Invalid response: {0}")]
+    #[error("Can't read the server's answer")]
     InvalidResponse(String),
 }
 
@@ -186,9 +189,16 @@ mod tests {
     }
 
     #[test]
+    fn test_config_error_has_no_prefix() {
+        let e = super::AppError::Config("Can't read the file: x".into());
+        assert_eq!(e.to_string(), "Can't read the file: x");
+        assert!(format!("{e:?}").starts_with("Config("));
+    }
+
+    #[test]
     fn test_other_error_keeps_its_words() {
         let e = super::AppError::InvalidResponse("bad json".into());
-        assert_eq!(P::of(&e).message(), "Invalid response: bad json");
+        assert_eq!(P::of(&e).message(), "Can't read the server's answer");
     }
 
     #[test]

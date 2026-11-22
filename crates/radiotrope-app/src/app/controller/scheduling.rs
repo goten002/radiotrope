@@ -213,12 +213,12 @@ impl AppController {
         let new = entry.id == 0;
         if new && self.schedule.len() >= schedule::MAX_ENTRIES {
             return Err(format!(
-                "The schedule is full ({} entries)",
+                "The Scheduler is full ({} entries). Remove one to add another.",
                 schedule::MAX_ENTRIES
             ));
         }
         if !new && !self.schedule.iter().any(|e| e.id == entry.id) {
-            return Err("That entry is gone".into());
+            return Err("This entry was removed".into());
         }
         if let Some(other) =
             schedule::clashing_recording(&self.schedule, &entry, now.date_naive(), &Local)
@@ -248,7 +248,7 @@ impl AppController {
         let before = self.schedule.len();
         self.schedule.retain(|e| e.id != id);
         let result = if self.schedule.len() == before {
-            Err("That entry is gone".into())
+            Err("This entry was removed".into())
         } else {
             self.save_schedule();
             self.publish_schedule(&Local::now());
@@ -266,7 +266,7 @@ impl AppController {
         reply: ScheduleReply<()>,
     ) {
         let result = match self.schedule.iter().find(|e| e.id == id).cloned() {
-            None => Err("That entry is gone".into()),
+            None => Err("This entry was removed".into()),
             Some(entry) if entry.enabled == enabled => Ok(()),
             Some(entry) if enabled => {
                 // A "once" entry that ran comes round again on the next day
@@ -458,8 +458,7 @@ impl AppController {
             state.is_resolving = false;
             state.playback = PlaybackState::Playing;
             state.alarm_beep = true;
-            state.status_text =
-                format!("Alarm mode: {name} didn't start, playing the fallback sound").into();
+            state.status_text = format!("{name} didn't start. Playing the fallback sound.").into();
             state.is_error = true;
             state.title.clear();
             state.artist.clear();
@@ -517,7 +516,7 @@ impl AppController {
         }
         self.sleep = None;
         if self.scheduled_recording() {
-            self.notify("Sleep timer ended, the recording carries on", false);
+            self.notify("Sleep Timer ended; recording continues", false);
             return;
         }
         self.stop_for_schedule();

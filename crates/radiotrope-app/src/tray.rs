@@ -16,6 +16,7 @@ use tray_icon::menu::{
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
 use radiotrope_app::config::ui::{TRAY_FAVORITES, TRAY_FRONT_GRACE, TRAY_REFRESH, TRAY_TEXT_CHARS};
+use radiotrope_app::text::{status::CONNECTING, SEPARATOR};
 
 use crate::{App, Defaults};
 
@@ -98,7 +99,7 @@ struct View {
     muted: bool,
     record_label: &'static str,
     can_record: bool,
-    /// The sleep timer runs: Off can be picked
+    /// The Sleep Timer runs: Stop Timer can be picked
     sleeping: bool,
     /// (id, label, ticked)
     favorites: Vec<(String, String, bool)>,
@@ -114,7 +115,7 @@ impl View {
         let header = if !active {
             "Not playing".to_string()
         } else if p.loading {
-            format!("{station} · Starting…")
+            format!("{station}{SEPARATOR}{CONNECTING}")
         } else {
             station.clone()
         };
@@ -202,7 +203,7 @@ impl Tray {
             let item = MenuItem::with_id(format!("{SLEEP}{minutes}"), label, true, None);
             sleep.append(&item).map_err(|e| e.to_string())?;
         }
-        let sleep_off = MenuItem::with_id(format!("{SLEEP}0"), "Off", false, None);
+        let sleep_off = MenuItem::with_id(format!("{SLEEP}0"), "Stop Timer", false, None);
         sleep
             .append_items(&[&PredefinedMenuItem::separator(), &sleep_off])
             .map_err(|e| e.to_string())?;
@@ -686,7 +687,7 @@ mod tests {
             song: String::new(),
             ..playing()
         };
-        assert_eq!(View::of(&p).header, "Fly 104 · Starting…");
+        assert_eq!(View::of(&p).header, "Fly 104 · Connecting…");
         assert_eq!(View::of(&p).play_label, "Stop");
     }
 

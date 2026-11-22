@@ -422,8 +422,8 @@ impl LogoService {
 
     /// Decode image bytes to RGBA pixels (see [`decode_logo`] for the limits)
     pub fn decode_to_rgba(&self, data: &[u8]) -> Result<(Vec<u8>, u32, u32)> {
-        let img = decode_logo(data)
-            .map_err(|e| AppError::Image(format!("Failed to decode image: {}", e)))?;
+        let img =
+            decode_logo(data).map_err(|e| AppError::Image(format!("Can't decode image: {}", e)))?;
 
         let rgba = img.to_rgba8();
         let (width, height) = rgba.dimensions();

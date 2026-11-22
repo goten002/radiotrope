@@ -70,7 +70,7 @@ impl ImageCache {
         let cache_dir = ensure_cache_dir()?.join("logos");
         fs::create_dir_all(&cache_dir).map_err(|e| {
             AppError::Config(format!(
-                "Failed to create logos cache directory {:?}: {}",
+                "Can't create logos cache directory {:?}: {}",
                 cache_dir, e
             ))
         })?;
@@ -91,7 +91,7 @@ impl ImageCache {
                         cache_dir: dir.clone(),
                     }
                 }
-                Err(e) => format!("Failed to create {}: {e}", dir.display()),
+                Err(e) => format!("Can't create {}: {e}", dir.display()),
             },
             Err(e) => e.to_string(),
         };
@@ -119,7 +119,7 @@ impl ImageCache {
     pub fn with_dir(cache_dir: PathBuf) -> Result<Self> {
         fs::create_dir_all(&cache_dir).map_err(|e| {
             AppError::Config(format!(
-                "Failed to create cache directory {:?}: {}",
+                "Can't create cache directory {:?}: {}",
                 cache_dir, e
             ))
         })?;
@@ -206,9 +206,8 @@ impl ImageCache {
         // Remove any existing cached image with different extension
         self.delete(id);
 
-        fs::write(&path, data).map_err(|e| {
-            AppError::Config(format!("Failed to write cached image {:?}: {}", path, e))
-        })?;
+        fs::write(&path, data)
+            .map_err(|e| AppError::Config(format!("Can't write cached image {:?}: {}", path, e)))?;
 
         Ok(path)
     }
@@ -223,9 +222,8 @@ impl ImageCache {
             .cache_dir
             .join(format!("{}.{}.{}.tmp", id, std::process::id(), n));
 
-        fs::write(&tmp, png).map_err(|e| {
-            AppError::Config(format!("Failed to write cached image {:?}: {}", tmp, e))
-        })?;
+        fs::write(&tmp, png)
+            .map_err(|e| AppError::Config(format!("Can't write cached image {:?}: {}", tmp, e)))?;
 
         // Remove files with other extensions left by earlier versions
         for ext in IMAGE_EXTENSIONS.iter().filter(|e| **e != "png") {
@@ -234,7 +232,7 @@ impl ImageCache {
 
         fs::rename(&tmp, &path).map_err(|e| {
             let _ = fs::remove_file(&tmp);
-            AppError::Config(format!("Failed to write cached image {:?}: {}", path, e))
+            AppError::Config(format!("Can't write cached image {:?}: {}", path, e))
         })?;
 
         Ok(path)
@@ -478,7 +476,7 @@ impl ImageCache {
     /// Clear all cached images
     pub fn clear(&self) -> Result<usize> {
         let entries = fs::read_dir(&self.cache_dir)
-            .map_err(|e| AppError::Config(format!("Failed to read cache directory: {}", e)))?;
+            .map_err(|e| AppError::Config(format!("Can't read cache directory: {}", e)))?;
 
         let mut removed = 0;
         for entry in entries.flatten() {
@@ -714,7 +712,7 @@ fn make_thumbnail(data: &[u8]) -> Option<Vec<u8>> {
 
 impl Default for ImageCache {
     fn default() -> Self {
-        Self::new().expect("Failed to create default image cache")
+        Self::new().expect("Can't create default image cache")
     }
 }
 

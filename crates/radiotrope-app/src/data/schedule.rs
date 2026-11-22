@@ -472,7 +472,7 @@ impl Entry {
             }
         }
         if self.days.is_once() && self.date.is_none() {
-            return Err("Pick the days it runs".into());
+            return Err("Pick at least one day".into());
         }
         if let Some(volume) = self.volume {
             if !(0.0..=1.0).contains(&volume) {

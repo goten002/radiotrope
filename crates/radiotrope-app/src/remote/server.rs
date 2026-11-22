@@ -164,7 +164,10 @@ pub fn tls_config(cert: &PlayerCert) -> Result<Arc<rustls::ServerConfig>, String
 pub fn start(addr: SocketAddr, shared: Shared) -> Result<Server, String> {
     let listener = StdListener::bind(addr).map_err(|e| match e.kind() {
         std::io::ErrorKind::AddrInUse => {
-            format!("Port {} is in use by another program", addr.port())
+            format!(
+                "Can't start Remote Control: port {} is in use by another program. Close that program and try again.",
+                addr.port()
+            )
         }
         _ => format!("Can't listen on {addr}: {e}"),
     })?;

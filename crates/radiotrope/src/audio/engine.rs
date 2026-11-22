@@ -1472,8 +1472,7 @@ impl AudioEngine {
                         if let Some(ref slot) = stream_error_slot {
                             if let Ok(guard) = slot.lock() {
                                 if let Some(ref err_msg) = *guard {
-                                    let err_msg = format!("Stream error: {}", err_msg);
-                                    events.send(AudioEvent::Error(err_msg));
+                                    events.send(AudioEvent::Error(err_msg.clone()));
                                 }
                             }
                         }
@@ -3906,9 +3905,10 @@ mod tests {
         }
 
         assert!(got_error, "Should emit Error event for IO failure");
+        // The reader's own words, with no "Stream error:" prefix
         assert!(
-            error_msg.contains("Stream error"),
-            "Error message should indicate stream error, got: {}",
+            !error_msg.is_empty() && !error_msg.starts_with("Stream error"),
+            "Error message should say what failed, got: {}",
             error_msg
         );
         assert!(got_stopped, "Should emit Stopped after Error");

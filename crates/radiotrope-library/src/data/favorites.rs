@@ -227,7 +227,7 @@ impl FavoritesManager {
                         .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) => {}
             Err(error) => {
                 return Err(AppError::Config(format!(
-                    "Cannot read {}: {error}",
+                    "Can't read {}: {error}",
                     path.display()
                 )));
             }
@@ -877,7 +877,7 @@ impl FavoritesManager {
             ImportMode::Replace => {
                 if list.len() > cap {
                     return Err(AppError::Config(format!(
-                        "The list has {} stations; at most {cap} can be favorites",
+                        "The list has {} stations, but Favorites holds at most {cap}",
                         list.len()
                     )));
                 }
@@ -955,9 +955,13 @@ impl FavoritesManager {
             favorites,
         };
         let text = serde_json::to_string_pretty(&file)
-            .map_err(|e| AppError::Config(format!("Failed to write the favorites: {e}")))?;
-        std::fs::write(path, text)
-            .map_err(|e| AppError::Config(format!("Can't save {}: {e}", path.display())))?;
+            .map_err(|e| AppError::Config(format!("Can't save the favorites: {e}")))?;
+        std::fs::write(path, text).map_err(|e| {
+            AppError::Config(format!(
+                "Can't save the file: {}. Try another folder.",
+                io_reason(&e)
+            ))
+        })?;
         Ok(count)
     }
 
@@ -1064,13 +1068,32 @@ impl Default for FavoritesManager {
     }
 }
 
+/// Why a file couldn't be read or written, in plain words: "permission
+/// denied", without the system's "(os error 13)"
+fn io_reason(e: &std::io::Error) -> String {
+    let text = e.to_string();
+    let text = match text.rfind(" (os error ") {
+        Some(at) => &text[..at],
+        None => &text,
+    };
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
+}
+
 /// The favorites in a file another computer exported (or its own
 /// favorites.json), in their order. Entries that can't be read are left out.
 pub fn read_list(path: &Path) -> Result<Vec<Favorite>> {
     let text = std::fs::read_to_string(path)
-        .map_err(|e| AppError::Config(format!("Can't read {}: {e}", path.display())))?;
-    let file: StoredFavoritesFile = serde_json::from_str(&text)
-        .map_err(|_| AppError::Config("This isn't a Radiotrope favorites file".into()))?;
+        .map_err(|e| AppError::Config(format!("Can't read the file: {}", io_reason(&e))))?;
+    let file: StoredFavoritesFile = serde_json::from_str(&text).map_err(|_| {
+        AppError::Config(
+            "This isn't a Radiotrope favorites file. Pick a file made with Export Favorites."
+                .into(),
+        )
+    })?;
     let mut list: Vec<Favorite> = file
         .favorites
         .into_iter()
@@ -1100,7 +1123,7 @@ fn lock_for_save(path: &Path) -> Result<File> {
         .open(&path)
         .map_err(|e| {
             AppError::Config(format!(
-                "Cannot open favorites lock {}: {e}",
+                "Can't open the favorites lock {}: {e}",
                 path.display()
             ))
         })?;
@@ -1120,7 +1143,7 @@ fn lock_for_save(path: &Path) -> Result<File> {
             }
             Err(TryLockError::Error(e)) => {
                 return Err(AppError::Config(format!(
-                    "Cannot acquire favorites lock {}: {e}",
+                    "Can't lock the favorites {}: {e}",
                     path.display()
                 )));
             }
@@ -1172,6 +1195,28 @@ mod tests {
 
     fn empty_manager() -> FavoritesManager {
         FavoritesManager::new()
+    }
+
+    #[test]
+    fn test_file_errors_read_plainly() {
+        let missing = temp_path().with_file_name("nothing-here.json");
+        let e = read_list(&missing).unwrap_err().to_string();
+        assert!(e.starts_with("Can't read the file: "), "{e}");
+        assert!(!e.contains("os error"), "{e}");
+
+        let not_ours = temp_path();
+        fs::write(&not_ours, "<html></html>").unwrap();
+        assert_eq!(
+            read_list(&not_ours).unwrap_err().to_string(),
+            "This isn't a Radiotrope favorites file. Pick a file made with Export Favorites."
+        );
+    }
+
+    #[test]
+    fn test_io_reason_drops_the_os_code() {
+        let e = std::io::Error::from_raw_os_error(2);
+        assert!(!io_reason(&e).contains("os error"), "{}", io_reason(&e));
+        assert!(io_reason(&e).starts_with(char::is_lowercase));
     }
 
     #[test]

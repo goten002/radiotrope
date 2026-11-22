@@ -93,10 +93,13 @@ pub fn start(options: &Options, tools: RadioTools) -> Result<Server, String> {
     let addr = resolve(&options.address)?;
     let listener = StdListener::bind(addr).map_err(|e| match e.kind() {
         std::io::ErrorKind::AddrInUse => {
-            format!("Port {} is in use by another program", addr.port())
+            format!(
+                "Can't start: port {} is in use by another program. Close that program and try again.",
+                addr.port()
+            )
         }
         std::io::ErrorKind::AddrNotAvailable => {
-            format!("{} is not an address of this computer", addr.ip())
+            format!("Can't start: {} is not an address of this computer", addr.ip())
         }
         _ => format!("Can't listen on {addr}: {e}"),
     })?;

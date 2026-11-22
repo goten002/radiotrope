@@ -201,7 +201,13 @@ impl Remote {
                 false,
             ),
             // Phones can still add it by address
-            Err(e) => (None, format!("{e}; phones can add it by address"), true),
+            Err(e) => (
+                None,
+                format!(
+                    "Phones can't find the player by themselves. Add it in the app by address. ({e})"
+                ),
+                true,
+            ),
         };
         let addresses = crate::mcp::network::interfaces()
             .into_iter()

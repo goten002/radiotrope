@@ -626,12 +626,7 @@ fn rows(entries: &[Entry], running: Option<u64>) -> Vec<ScheduleRow> {
 
 /// "4:05", "23:12" or "1:02:03"
 fn clock_text(secs: i64) -> String {
-    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
-    if h > 0 {
-        format!("{h}:{m:02}:{s:02}")
-    } else {
-        format!("{m}:{s:02}")
-    }
+    radiotrope_app::text::clock(secs.max(0) as u64)
 }
 
 #[cfg(test)]

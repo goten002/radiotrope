@@ -26,7 +26,7 @@ use super::AppController;
 pub const RESUME_WINDOW: Duration = Duration::from_secs(RECONNECT_GIVE_UP_SECS);
 
 /// The status while a recording waits for its station
-pub const RECONNECTING: &str = "Reconnecting...";
+pub const RECONNECTING: &str = radiotrope_app::text::status::RECONNECTING;
 
 /// A recording waiting for its station, which failed, to play again
 pub struct Resume {
@@ -175,7 +175,7 @@ impl AppController {
             && state.playback == PlaybackState::Stopped
             && !state.is_resolving
         {
-            state.status_text = "Stopped".into();
+            state.status_text = radiotrope_app::text::status::STOPPED.into();
         }
     }
 

@@ -614,7 +614,7 @@ pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error
     let mut index = String::from(concat!(
         "# Radiotrope UI snapshots\n\n",
         "The Theme selector is inline in the View menu.\n",
-        "WiFi Settings and the on-screen keyboard are embedded-only. ",
+        "Wi-Fi Settings and the on-screen keyboard are embedded-only. ",
         "OS-native file pickers and tray and window menus are outside the Slint app.\n",
     ));
     for &theme in themes {
@@ -740,16 +740,21 @@ fn station_url(index: usize) -> SharedString {
 
 fn seed(ui: &App) {
     ui.set_favorites_list(model(STATIONS.iter().enumerate().map(
-        |(index, &(name, country, _))| FavoriteStation {
-            id: format!("station-{index}").into(),
-            name: name.into(),
-            country: country.into(),
-            url: station_url(index),
-            logo_url: format!("https://radio.example/logos/{}.png", index + 1).into(),
-            listen_time: format!("{} h {} m", 8 - index, 34 + index * 2).into(),
-            last_played: if index == 0 { "Today" } else { "Yesterday" }.into(),
-            play_count: 27 - index as i32 * 3,
-            session_time: if index == 0 { "24 m" } else { "" }.into(),
+        |(index, &(name, country, _))| {
+            FavoriteStation {
+                id: format!("station-{index}").into(),
+                name: name.into(),
+                country: country.into(),
+                url: station_url(index),
+                logo_url: format!("https://radio.example/logos/{}.png", index + 1).into(),
+                listen_time: radiotrope_app::text::minutes(
+                    ((8 - index) * 60 + 34 + index * 2) as u64 * 60,
+                )
+                .into(),
+                last_played: if index == 0 { "Today" } else { "Yesterday" }.into(),
+                play_count: 27 - index as i32 * 3,
+                session_time: if index == 0 { "24 min" } else { "" }.into(),
+            }
         },
     )));
     ui.set_favorite_logos(model((0..STATIONS.len()).map(logo)));
@@ -882,8 +887,12 @@ fn seed_connections(ui: &App) {
     ui.set_agents_listen(1);
     ui.set_agents_port("8787".into());
     ui.set_agents_local_command("radiotrope --mcp".into());
-    ui.set_agents_local_note("Run this command to connect over stdio.".into());
-    ui.set_agents_network_note("Use the access token in the Authorization header.".into());
+    ui.set_agents_local_note(
+        crate::mcp::setup::AgentApp::ClaudeDesktop
+            .local_note()
+            .into(),
+    );
+    ui.set_agents_network_note(crate::mcp::setup::AgentApp::Codex.network_note(true).into());
     ui.set_agents_network_placeholder("Turn on network access to see the setup command.".into());
     ui.set_agents_command(
         "claude mcp add --transport http radiotrope https://192.0.2.42:8787/mcp".into(),
@@ -894,11 +903,11 @@ fn seed_connections(ui: &App) {
     ui.set_remote_name("Living Room Radio".into());
     ui.set_remote_name_placeholder("Radiotrope".into());
     ui.set_remote_address("https://192.0.2.42:8750".into());
-    ui.set_remote_address_note("Connect your phone to the same local network.".into());
+    ui.set_remote_address_note(crate::remote_ui::address_note().into());
     ui.set_remote_devices(model([
         RemoteDevice {
             id: "phone-1".into(),
-            name: "Maya’s phone".into(),
+            name: "Maya's phone".into(),
             seen: "Used 5 min ago".into(),
         },
         RemoteDevice {
@@ -910,11 +919,11 @@ fn seed_connections(ui: &App) {
 }
 
 fn seed_statistics(ui: &App) {
-    ui.set_stat_health("Healthy".into());
+    ui.set_stat_health("Playing".into());
     ui.set_stat_playtime("24:18".into());
-    ui.set_stat_codec("AAC (ICY)".into());
+    ui.set_stat_codec("AAC".into());
     ui.set_stat_bitrate("192 kbps".into());
-    ui.set_stat_sample_rate("48000 Hz".into());
+    ui.set_stat_sample_rate("48 kHz".into());
     ui.set_stat_channels("Stereo".into());
     ui.set_stat_received("33.4 MB".into());
     ui.set_stat_segments("—".into());
@@ -944,11 +953,11 @@ fn configure(ui: &App, shot: &Shot) {
                 match shot.state {
                     "loading" => {
                         ui.set_is_loading(true);
-                        ui.set_status_text("Connecting to station…".into());
+                        ui.set_status_text("Connecting…".into());
                     }
                     "error" => {
                         ui.set_is_error(true);
-                        ui.set_status_text("Could not connect to the stream".into());
+                        ui.set_status_text("Can't connect to radio.example".into());
                     }
                     "empty" => {
                         ui.set_station_url("".into());
@@ -980,7 +989,7 @@ fn configure(ui: &App, shot: &Shot) {
             }
             "recording" => {
                 ui.set_is_recording(true);
-                ui.set_recording_text("02:36".into());
+                ui.set_recording_text("2:36".into());
                 ui.set_recording_size("3.6 MB".into());
             }
             "recording-saved" => ui.set_recording_notice("Saved · 3.6 MB".into()),
@@ -1022,7 +1031,7 @@ fn configure(ui: &App, shot: &Shot) {
                 ui.set_import_message("Favorites imported".into());
                 ui.set_import_message_detail("Added 5 stations and skipped 7 duplicates.".into());
             } else if shot.state == "error" {
-                ui.set_import_message("Could not import favorites".into());
+                ui.set_import_message("Can't read the file: permission denied".into());
                 ui.set_import_message_detail(
                     "The selected file could not be read as a favorites list.".into(),
                 );
@@ -1050,7 +1059,7 @@ fn configure(ui: &App, shot: &Shot) {
                     },
                 ]));
             } else {
-                ui.set_listeners(strings(["Maya’s phone", "Kitchen tablet"]));
+                ui.set_listeners(strings(["Maya's phone", "Kitchen tablet"]));
             }
         }
         "agents" if !matches!(shot.state, "off" | "agent" | "local-info") => {
@@ -1061,11 +1070,11 @@ fn configure(ui: &App, shot: &Shot) {
             ui.set_remote_on(true);
             match shot.state {
                 "status-info" => {
-                    ui.set_remote_status("Could not start Remote Control: the listen port is already in use.".into());
+                    ui.set_remote_status("Can't start Remote Control: port 8750 is in use by another program. Close that program and try again.".into());
                     ui.set_remote_status_error(true);
                 }
                 "code" => {
-                    ui.set_pairing_device("Maya’s phone".into());
+                    ui.set_pairing_device("Maya's phone".into());
                     ui.set_pairing_code("483 621".into());
                     ui.set_pairing_seconds(52);
                     ui.set_pairing_shown(true);

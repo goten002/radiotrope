@@ -17,7 +17,8 @@ pub struct Announcer {
 
 impl Announcer {
     pub fn start(name: &str, player_id: &str, port: u16) -> Result<Self, String> {
-        let daemon = ServiceDaemon::new().map_err(|e| format!("Can't announce the player: {e}"))?;
+        let daemon = ServiceDaemon::new()
+            .map_err(|e| format!("Can't announce the player on the network: {e}"))?;
         let host = format!("{}.local.", host_label(&computer_name()));
         let api = API_VERSION.to_string();
         let properties = [
@@ -26,12 +27,12 @@ impl Announcer {
             ("ver", env!("CARGO_PKG_VERSION")),
         ];
         let info = ServiceInfo::new(SERVICE_TYPE, name, &host, "", port, &properties[..])
-            .map_err(|e| format!("Can't announce the player: {e}"))?
+            .map_err(|e| format!("Can't announce the player on the network: {e}"))?
             .enable_addr_auto();
         let fullname = info.get_fullname().to_string();
         daemon
             .register(info)
-            .map_err(|e| format!("Can't announce the player: {e}"))?;
+            .map_err(|e| format!("Can't announce the player on the network: {e}"))?;
         Ok(Self { daemon, fullname })
     }
 }

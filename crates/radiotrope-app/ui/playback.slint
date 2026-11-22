@@ -115,7 +115,7 @@ export component Playback inherits Rectangle {
                 spacing: 6px;
 
                 Chip {
-                    text: root.status-text == "Playing" && root.playtime != "--" && root.playtime != ""
+                    text: root.status-text == "Playing" && root.playtime != "—" && root.playtime != ""
                         ? "Playing " + root.playtime : root.status-text;
                     tone: root.is-error ? Theme.danger : Theme.accent-text;
                     dot: true;

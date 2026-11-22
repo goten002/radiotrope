@@ -178,7 +178,7 @@ impl Agents {
                 Ok(t) => t,
                 Err(e) => {
                     return NetworkStatus {
-                        text: format!("Can't make a token: {e}"),
+                        text: format!("Can't create a token: {e}"),
                         is_error: true,
                         ..Default::default()
                     }

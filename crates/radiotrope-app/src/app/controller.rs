@@ -19,6 +19,7 @@ use radiotrope::stream::metadata::StreamMetadata;
 use radiotrope::stream::{StreamCancel, StreamResolver, StreamType};
 use radiotrope_app::data::levels::Levels;
 use radiotrope_app::data::recordings;
+use radiotrope_app::text::{self, status};
 
 use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
 
@@ -45,7 +46,11 @@ const RECORDING_POLL: Duration = Duration::from_millis(200);
 
 /// The status while the output device's driver is stuck in an open. Nothing
 /// plays until it returns, and if it never does only a restart helps.
-pub const OUTPUT_NOT_RESPONDING: &str = "Audio device not responding, restart if it stays";
+pub const OUTPUT_NOT_RESPONDING: &str =
+    "Audio device not responding. Restart Radiotrope if this continues.";
+
+/// The status of a station that plays nothing
+const NO_AUDIO: &str = "The station sends no audio";
 
 pub struct AppController {
     cmd_rx: Receiver<AppCommand>,
@@ -166,7 +171,7 @@ impl AppController {
                 // nothing will play
                 eprintln!("Failed to initialize audio engine: {e}");
                 let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-                state.status_text = format!("Error: {e}").into();
+                state.status_text = format!("Can't start audio: {e}").into();
                 state.is_error = true;
                 return;
             }
@@ -480,7 +485,7 @@ impl AppController {
         state.is_connecting = false;
         let was_beeping = std::mem::take(&mut state.alarm_beep);
         state.playback = PlaybackState::Stopped;
-        state.status_text = "Stopped".into();
+        state.status_text = status::STOPPED.into();
         state.is_error = false;
         state.title.clear();
         state.artist.clear();
@@ -554,7 +559,7 @@ impl AppController {
             state.sample_rate = 0;
             state.channels = 0;
             state.bitrate = None;
-            state.status_text = "Resolving...".into();
+            state.status_text = status::CONNECTING.into();
             state.is_error = false;
             // The old station was stopped above. Its own Stopped is ignored
             // like the rest of its events.
@@ -637,7 +642,7 @@ impl AppController {
                         StreamType::Hls => "HLS".to_string(),
                     };
                     state.bitrate = resolved.info.bitrate;
-                    state.status_text = "Connecting...".into();
+                    state.status_text = status::CONNECTING.into();
                     state.is_error = false;
                     state.is_connecting = true;
                     state.station_url.clone().unwrap_or_default()
@@ -669,7 +674,7 @@ impl AppController {
                     // error on the one played before (a favorite, say)
                     state.last_error = Some(e.clone());
                     state.is_resolving = false;
-                    state.status_text = format!("Error: {e}").into();
+                    state.status_text = text::playback_error(&e).into();
                     state.is_error = true;
                 }
                 // A recording waiting for the station tries again
@@ -734,7 +739,7 @@ impl AppController {
                 if state.bitrate.is_none() {
                     state.bitrate = codec_info.bitrate;
                 }
-                state.status_text = "Playing".into();
+                state.status_text = status::PLAYING.into();
                 state.is_error = false;
                 self.stream_failed = false;
                 drop(state);
@@ -751,7 +756,7 @@ impl AppController {
                 state.is_connecting = false;
                 // A stream that failed stops with its error still showing
                 if !std::mem::take(&mut self.stream_failed) {
-                    state.status_text = "Stopped".into();
+                    state.status_text = status::STOPPED.into();
                     state.is_error = false;
                 }
                 // A recording that waits for the station says so
@@ -763,20 +768,20 @@ impl AppController {
             AudioEvent::Paused => {
                 state.playback = PlaybackState::Paused;
                 state.is_connecting = false;
-                state.status_text = "Paused".into();
+                state.status_text = status::PAUSED.into();
                 state.is_error = false;
                 self.stream_failed = false;
             }
             AudioEvent::Resumed => {
                 state.playback = PlaybackState::Playing;
-                state.status_text = "Playing".into();
+                state.status_text = status::PLAYING.into();
                 state.is_error = false;
                 self.stream_failed = false;
             }
             AudioEvent::Error(ref e) => {
                 eprintln!("Engine error: {e}");
                 state.last_error = Some(e.clone());
-                state.status_text = format!("Error: {e}").into();
+                state.status_text = text::playback_error(e).into();
                 state.is_error = true;
                 state.is_connecting = false;
                 self.stream_failed = true;
@@ -785,21 +790,21 @@ impl AppController {
                 state.status_text = if pct < 100 {
                     format!("Buffering {}%", pct).into()
                 } else {
-                    "Playing".into()
+                    status::PLAYING.into()
                 };
                 state.is_error = false;
             }
             AudioEvent::StreamStalled => {
-                state.status_text = "Stalled".into();
+                state.status_text = status::WAITING_FOR_DATA.into();
                 state.is_error = true;
             }
             AudioEvent::StreamRecovered => {
-                state.status_text = "Playing".into();
+                state.status_text = status::PLAYING.into();
                 state.is_error = false;
             }
             AudioEvent::OutputLost => {
                 // The station stays loaded, and so does a recording
-                state.status_text = "Audio output lost, waiting for a device".into();
+                state.status_text = "Audio output lost. Waiting for a device\u{2026}".into();
                 state.is_error = true;
             }
             AudioEvent::OutputNotResponding => {
@@ -821,19 +826,19 @@ impl AppController {
             }
             AudioEvent::OutputRestored => {
                 state.status_text = match state.playback {
-                    PlaybackState::Playing => "Playing",
-                    PlaybackState::Paused => "Paused",
-                    PlaybackState::Stopped => "Stopped",
+                    PlaybackState::Playing => status::PLAYING,
+                    PlaybackState::Paused => status::PAUSED,
+                    PlaybackState::Stopped => status::STOPPED,
                 }
                 .into();
                 state.is_error = false;
             }
             AudioEvent::ProbeTimeout => {
-                state.status_text = "Probe timeout".into();
+                state.status_text = "Station not responding".into();
                 state.is_error = true;
             }
             AudioEvent::NoAudioTimeout => {
-                state.status_text = "No audio".into();
+                state.status_text = NO_AUDIO.into();
                 state.is_error = true;
                 state.is_connecting = false;
                 self.stream_failed = true;
@@ -873,7 +878,7 @@ impl AppController {
         }
 
         if let Err(e) = recordings::prepare_dir(folder) {
-            self.notify(&format!("Recording folder not available. {e}"), true);
+            self.notify(&e, true);
             return;
         }
 
@@ -911,7 +916,7 @@ impl AppController {
                     bytes: 0,
                 });
             }
-            Err(e) => self.notify(&format!("Could not start recording: {e}"), true),
+            Err(e) => self.notify(&format!("Can't start recording: {e}"), true),
         }
     }
 
@@ -1504,7 +1509,7 @@ mod tests {
         controller.handle_engine_event(device(AudioEvent::OutputResponding));
         let state = state.lock().unwrap();
         assert!(!state.is_error);
-        assert_eq!(state.status_text, "Resolving...");
+        assert_eq!(state.status_text, status::CONNECTING);
         assert_eq!(state.last_error, None);
     }
 
@@ -1563,7 +1568,7 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.playback, PlaybackState::Stopped);
         assert!(state.is_error);
-        assert_eq!(state.status_text, "No audio");
+        assert_eq!(state.status_text, NO_AUDIO);
     }
 
     /// What `start_stream` does while the next station resolves
@@ -1572,7 +1577,7 @@ mod tests {
         let mut state = state.lock().unwrap();
         state.is_resolving = true;
         state.is_connecting = false;
-        state.status_text = "Resolving...".into();
+        state.status_text = status::CONNECTING.into();
         state.is_error = false;
         state.playback = PlaybackState::Stopped;
     }
@@ -1583,7 +1588,7 @@ mod tests {
         let mut state = state.lock().unwrap();
         state.is_resolving = false;
         state.is_connecting = true;
-        state.status_text = "Connecting...".into();
+        state.status_text = status::CONNECTING.into();
     }
 
     #[test]
@@ -1593,7 +1598,7 @@ mod tests {
         resolving(&mut controller, &state);
         controller.handle_engine_event(on(1, AudioEvent::Stopped));
         assert_eq!(state.lock().unwrap().playback, PlaybackState::Stopped);
-        assert_eq!(state.lock().unwrap().status_text, "Resolving...");
+        assert_eq!(state.lock().unwrap().status_text, status::CONNECTING);
 
         // The new station fails to start
         connecting(&mut controller, &state, 2);
@@ -1602,7 +1607,11 @@ mod tests {
         let state = state.lock().unwrap();
         assert_eq!(state.playback, PlaybackState::Stopped);
         assert!(state.is_error);
-        assert!(state.status_text.contains("Probe failed"));
+        assert!(
+            state.status_text.contains("probe failed"),
+            "{}",
+            state.status_text
+        );
     }
 
     #[test]
@@ -1639,7 +1648,7 @@ mod tests {
         }
         {
             let state = state.lock().unwrap();
-            assert_eq!(state.status_text, "Resolving...");
+            assert_eq!(state.status_text, status::CONNECTING);
             assert!(!state.is_error);
             assert_eq!(state.playback, PlaybackState::Stopped);
         }
@@ -1665,7 +1674,7 @@ mod tests {
         controller.handle_engine_event(on(1, AudioEvent::Stopped));
         {
             let state = state.lock().unwrap();
-            assert_eq!(state.status_text, "Connecting...");
+            assert_eq!(state.status_text, status::CONNECTING);
             assert!(!state.is_error);
         }
 
@@ -1683,7 +1692,7 @@ mod tests {
         {
             let state = state.lock().unwrap();
             assert!(state.is_error);
-            assert!(state.status_text.contains("waiting for a device"));
+            assert!(state.status_text.contains("Waiting for a device"));
         }
         controller.handle_engine_event(device(AudioEvent::OutputRestored));
         let state = state.lock().unwrap();
@@ -1712,7 +1721,7 @@ mod tests {
         {
             let state = state.lock().unwrap();
             assert!(state.is_resolving);
-            assert_eq!(state.status_text, "Resolving...");
+            assert_eq!(state.status_text, status::CONNECTING);
             assert!(!state.is_error);
             assert_eq!(state.play_seq, play_seq + 1);
             assert_eq!(
