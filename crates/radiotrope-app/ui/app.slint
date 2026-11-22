@@ -504,10 +504,10 @@ export component App inherits Window {
                 if action == ShortcutAction.favorite-up || action == ShortcutAction.favorite-down
                     || action == ShortcutAction.favorite-first || action == ShortcutAction.favorite-last
                     || action == ShortcutAction.favorite-page-up || action == ShortcutAction.favorite-page-down {
+                    // The list takes the focus itself, on the highlighted row
                     if !favorites.move-highlight(action) {
                         return reject;
                     }
-                    self.focus();
                 } else if action == ShortcutAction.favorite-clear && favorites.has-highlight {
                     favorites.clear-highlight();
                 } else if action == ShortcutAction.favorite-play && favorites.has-highlight {
@@ -676,6 +676,9 @@ export component App inherits Window {
                     play-error: root.is-error;
                     touch-scroll: root.touch-scroll;
                     show-stats: root.show-station-stats;
+                    enabled: !root.dialog-open;
+                    search-requested => { menu-bar.open-station-search(); }
+                    import-requested => { root.import-favorites(); }
                     favorite-move-requested(station, to-top) => { root.move-favorite(station, to-top); }
                     favorite-remove-requested(station) => { root.delete-favorite(station); }
                     favorite-reset-stats-requested(station) => { root.reset-favorite-stats(station.id); }
