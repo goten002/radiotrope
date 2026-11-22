@@ -65,6 +65,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
 
 /// Show the favorites file dialog with only a message (an export done, or
 /// what went wrong)
+#[cfg(feature = "desktop")]
 fn show_favorites_file_message(ui: &App, title: &str, message: &str, detail: &str, error: bool) {
     ui.set_import_title(title.into());
     ui.set_import_subtitle(Default::default());
