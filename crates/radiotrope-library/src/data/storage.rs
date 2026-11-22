@@ -9,7 +9,7 @@ use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 /// Files that, next to the program, turn on portable mode. Explorer hides
 /// file extensions by default, so a "portable" made from a new text file is
@@ -372,8 +372,8 @@ fn damaged_path(path: &Path) -> PathBuf {
 fn set_aside(path: &Path) {
     let aside = damaged_path(path);
     match fs::rename(path, &aside) {
-        Ok(()) => eprintln!("{path:?} could not be read and was moved to {aside:?}"),
-        Err(e) => eprintln!("{path:?} could not be read or moved aside: {e}"),
+        Ok(()) => eprintln!("{path:?} can't be read and was moved to {aside:?}"),
+        Err(e) => eprintln!("{path:?} can't be read or moved aside: {e}"),
     }
 }
 
@@ -383,7 +383,7 @@ pub fn keep_copy(path: &Path) {
     let copy = damaged_path(path);
     match fs::copy(path, &copy) {
         Ok(_) => eprintln!("{path:?} was only partly readable; the original is kept as {copy:?}"),
-        Err(e) => eprintln!("{path:?} was only partly readable and could not be copied: {e}"),
+        Err(e) => eprintln!("{path:?} was only partly readable and can't be copied: {e}"),
     }
 }
 
@@ -484,6 +484,94 @@ pub fn delete_at(path: &Path) -> Result<()> {
 /// Check if a file exists at a specific path
 pub fn exists_at(path: &Path) -> bool {
     path.exists()
+}
+
+// =============================================================================
+// Clean-up of the settings folder
+// =============================================================================
+
+/// A save's new file older than this was left by a crash between the write
+/// and the move (see [`write_file`]); no save takes this long
+const STALE_TEMP: Duration = Duration::from_secs(10 * 60);
+
+/// How many damaged copies (`<file>.bad-<time>`) are kept per file
+const DAMAGED_KEPT: usize = 3;
+
+/// Damaged copies older than this are dropped even when fewer are kept
+const DAMAGED_MAX_AGE: Duration = Duration::from_secs(90 * 24 * 60 * 60);
+
+/// Whether `name` is a save's new file: `<file>.<pid>-<n>.tmp`
+fn is_temp_name(name: &str) -> bool {
+    let Some(rest) = name.strip_suffix(".tmp") else {
+        return false;
+    };
+    let Some((_, tag)) = rest.rsplit_once('.') else {
+        return false;
+    };
+    let Some((pid, n)) = tag.split_once('-') else {
+        return false;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    digits(pid) && digits(n)
+}
+
+/// `(file, unix time)` for a damaged copy named `<file>.bad-<unix time>`
+fn damaged_name(name: &str) -> Option<(&str, u64)> {
+    let (file, secs) = name.rsplit_once(".bad-")?;
+    Some((file, secs.parse().ok()?))
+}
+
+/// Remove what saves leave behind in `dir` and nobody reads again:
+/// - new files of a save that never finished (a crash between the write and
+///   the move), once older than 10 minutes
+/// - damaged copies (`<file>.bad-<time>`) beyond the three newest of each
+///   file, and any older than 90 days
+///
+/// `now` is the current time. Returns how many files were removed.
+pub fn tidy_folder(dir: &Path, now: SystemTime) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    let mut removed = 0;
+    let mut remove = |path: &Path| match fs::remove_file(path) {
+        Ok(()) => removed += 1,
+        Err(e) => eprintln!("Can't remove {path:?}: {e}"),
+    };
+    let mut damaged: std::collections::HashMap<String, Vec<(u64, PathBuf)>> =
+        std::collections::HashMap::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_file = entry.file_type().is_ok_and(|t| t.is_file());
+        if !is_file {
+            continue;
+        }
+        if is_temp_name(&name) {
+            let modified = entry.metadata().and_then(|m| m.modified());
+            let age = modified.map(|m| now.duration_since(m).unwrap_or_default());
+            if age.is_ok_and(|age| age > STALE_TEMP) {
+                remove(&entry.path());
+            }
+        } else if let Some((file, secs)) = damaged_name(&name) {
+            damaged
+                .entry(file.to_string())
+                .or_default()
+                .push((secs, entry.path()));
+        }
+    }
+    let now_secs = now
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for mut copies in damaged.into_values() {
+        copies.sort_by_key(|c| std::cmp::Reverse(c.0));
+        for (i, (secs, path)) in copies.iter().enumerate() {
+            let too_old = now_secs.saturating_sub(*secs) > DAMAGED_MAX_AGE.as_secs();
+            if i >= DAMAGED_KEPT || too_old {
+                remove(path);
+            }
+        }
+    }
+    removed
 }
 
 // =============================================================================
@@ -857,5 +945,110 @@ mod tests {
         assert_eq!(damaged_copies(&path), 1);
         assert_eq!(load_from::<TestData>(&path).unwrap(), Some(data(5)));
         cleanup(&path);
+    }
+
+    fn tidy_dir(name: &str) -> PathBuf {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let dir = temp_dir().join(format!(
+            "radiotrope_tidy_{}_{}_{name}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn temp_files_of_a_save_are_recognized() {
+        assert!(is_temp_name("favorites.json.1234-0.tmp"));
+        assert!(is_temp_name("settings.json.7-12.tmp"));
+        assert!(!is_temp_name("favorites.json"));
+        assert!(!is_temp_name("notes.tmp"));
+        assert!(!is_temp_name("favorites.json.x-1.tmp"));
+        assert!(!is_temp_name("favorites.json.12.tmp"));
+    }
+
+    #[test]
+    fn tidying_removes_temp_files_only_once_they_are_stale() {
+        let dir = tidy_dir("temp");
+        fs::write(dir.join("favorites.json.99-0.tmp"), "{").unwrap();
+        fs::write(dir.join("favorites.json"), "{}").unwrap();
+        fs::write(dir.join("mine.tmp"), "x").unwrap();
+
+        // A save may be writing it right now
+        assert_eq!(tidy_folder(&dir, SystemTime::now()), 0);
+        assert_eq!(names(&dir).len(), 3);
+
+        let later = SystemTime::now() + Duration::from_secs(11 * 60);
+        assert_eq!(tidy_folder(&dir, later), 1);
+        assert_eq!(names(&dir), ["favorites.json", "mine.tmp"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tidying_keeps_the_three_newest_damaged_copies_of_each_file() {
+        let dir = tidy_dir("damaged");
+        let now = SystemTime::now();
+        let now_secs = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        for age_days in [1, 2, 3, 4, 5] {
+            let secs = now_secs - age_days * 24 * 60 * 60;
+            fs::write(dir.join(format!("favorites.json.bad-{secs}")), "x").unwrap();
+        }
+        let settings_secs = now_secs - 10;
+        fs::write(dir.join(format!("settings.json.bad-{settings_secs}")), "x").unwrap();
+
+        assert_eq!(tidy_folder(&dir, now), 2);
+        let day = 24 * 60 * 60;
+        let mut expected = vec![
+            format!("favorites.json.bad-{}", now_secs - day),
+            format!("favorites.json.bad-{}", now_secs - 2 * day),
+            format!("favorites.json.bad-{}", now_secs - 3 * day),
+            format!("settings.json.bad-{settings_secs}"),
+        ];
+        expected.sort();
+        assert_eq!(names(&dir), expected);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tidying_drops_damaged_copies_older_than_90_days() {
+        let dir = tidy_dir("old");
+        let now = SystemTime::now();
+        let now_secs = now
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let day = 24 * 60 * 60;
+        let recent = format!("stats.json.bad-{}", now_secs - 89 * day);
+        fs::write(dir.join(&recent), "x").unwrap();
+        fs::write(
+            dir.join(format!("stats.json.bad-{}", now_secs - 91 * day)),
+            "x",
+        )
+        .unwrap();
+
+        assert_eq!(tidy_folder(&dir, now), 1);
+        assert_eq!(names(&dir), [recent]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tidying_a_missing_folder_does_nothing() {
+        let dir = temp_dir().join("radiotrope_tidy_no_such_folder");
+        assert_eq!(tidy_folder(&dir, SystemTime::now()), 0);
     }
 }
