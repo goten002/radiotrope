@@ -1,6 +1,18 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { SecondaryButton } from "../buttons.slint";
 import { DialogShell, SectionHeader, Icon, Toggle, ButtonKeys, FocusRing } from "../components.slint";
+import { StyledLineEdit } from "../styled-line-edit.slint";
+
+// Hex colors, implemented in Rust (`hex_color.rs`)
+export global HexColor {
+    // `#rrggbb` for a color
+    pure callback to-hex(color) -> string;
+    // The text is a hex color: `#c97718`, `c97718` or `#abc`, any case,
+    // spaces around allowed
+    pure callback is-valid(string) -> bool;
+    // The color a valid text names
+    pure callback to-color(string) -> color;
+}
 
 component ColorSwatch inherits Rectangle {
     in property <color> swatch-color;
@@ -242,28 +254,86 @@ component ColorPicker inherits VerticalLayout {
     }
 }
 
+// The accent as `#rrggbb`, to copy, or to type or paste a color. It follows
+// the picker live; a typed color applies on Enter or when the field loses
+// focus. The row's height never changes, error or not.
+component HexField inherits HorizontalLayout {
+    // The accent in use
+    in property <color> current;
+    // A valid color was typed
+    callback picked(color);
+
+    // The last text didn't name a color
+    property <bool> error: false;
+
+    function show-current() {
+        field.text = HexColor.to-hex(root.current);
+        root.error = false;
+    }
+
+    // Apply the typed text: a valid color is used and shown as `#rrggbb`,
+    // an empty field goes back to the accent, anything else shows the error
+    function apply() {
+        if field.text.is-empty {
+            root.show-current();
+        } else if HexColor.is-valid(field.text) {
+            let c = HexColor.to-color(field.text);
+            if c != root.current { root.picked(c); }
+            root.show-current();
+        } else {
+            root.error = true;
+        }
+    }
+
+    init => { root.show-current(); }
+    changed current => {
+        // Not while typing: the field keeps what the person wrote
+        if !field.has-focus { root.show-current(); }
+    }
+
+    height: Theme.control-field;
+    spacing: Theme.space-12;
+
+    Text {
+        text: "Hex color";
+        color: Theme.text-secondary;
+        font-size: Theme.font-md;
+        font-weight: Theme.weight-semibold;
+        vertical-alignment: center;
+        // The field says it
+        accessible-role: none;
+    }
+
+    field := StyledLineEdit {
+        width: 104px;
+        label: "Hex color";
+        placeholder-text: "#c97718";
+        accepted => { root.apply(); }
+        edited => { root.error = false; }
+        changed has-focus => {
+            if !self.has-focus { root.apply(); }
+        }
+    }
+
+    // Kept in the layout while hidden, at the field's height, so the
+    // dialog never changes size
+    Text {
+        horizontal-stretch: 1;
+        text: root.error ? "Use 3 or 6 hex digits, like #c97718" : "";
+        color: Theme.danger-text;
+        font-size: Theme.font-sm;
+        vertical-alignment: center;
+        wrap: word-wrap;
+        overflow: elide;
+        accessible-live-region: polite;
+    }
+}
+
 export component AccentColorDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
     callback color-changed(color);
     property <[color]> swatches: Theme.accent-swatches;
-    // The chosen color itself is under 3:1 on this theme's panels: toggles,
-    // fills and the Play button are drawn darker or lighter to make up
-    property <bool> low-contrast: contrast(Theme.accent-base, Theme.dark-mode ? Theme.card : Theme.elevated) < 3.0;
-
-    // WCAG 2 contrast ratio, as in Theme (whose helpers are private)
-    pure function luminance(c: color) -> float {
-        return 0.2126 * linear(c.red) + 0.7152 * linear(c.green) + 0.0722 * linear(c.blue);
-    }
-    pure function linear(channel: int) -> float {
-        let v = channel / 255;
-        return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
-    }
-    pure function contrast(a: color, b: color) -> float {
-        let la = luminance(a);
-        let lb = luminance(b);
-        return (max(la, lb) + 0.05) / (min(la, lb) + 0.05);
-    }
 
     if show-dialog: DialogShell {
         title: "Accent Color";
@@ -299,21 +369,22 @@ export component AccentColorDialog inherits Rectangle {
 
             ColorPicker {
                 current: Theme.accent-base;
-                // Keep the whole dialog on a 480 px tall screen
-                square-height: Math.clamp(root.height - (root.low-contrast ? 404px : 380px), 64px,
-                    Defaults.accent-picker-height);
+                // Keep the whole dialog on a 480 px tall screen; nothing
+                // below depends on the colour, so its height stays put
+                square-height: Math.clamp(root.height - 380px - Theme.space-6 - Theme.control-field,
+                    64px, Defaults.accent-picker-height);
                 picked(c, final) => {
                     Theme.accent-base = c;
                     if final { root.color-changed(c); }
                 }
             }
 
-            if root.low-contrast: Text {
-                text: "Low contrast with this theme: some marks are drawn in a stronger shade";
-                color: Theme.text-secondary;
-                font-size: Theme.font-sm;
-                wrap: word-wrap;
-                accessible-live-region: polite;
+            HexField {
+                current: Theme.accent-base;
+                picked(c) => {
+                    Theme.accent-base = c;
+                    root.color-changed(c);
+                }
             }
         }
 
