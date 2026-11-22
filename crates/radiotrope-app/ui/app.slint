@@ -291,6 +291,8 @@ export component App inherits Window {
     in-out property <[string]> agents-auths <=> agents-dialog.auths;
     in-out property <int> agents-auth <=> agents-dialog.auth;
     callback agents-auth-changed(int);
+    in-out property <string> agents-token-error <=> agents-dialog.token-error;
+    in-out property <string> agents-connected <=> agents-dialog.connected;
     // Remote Control (Radiotrope Remote)
     callback remote-opened();
     callback remote-toggled(bool);
@@ -312,10 +314,12 @@ export component App inherits Window {
     in-out property <string> remote-edit-name <=> remote-dialog.edit-name;
     in-out property <string> remote-name-placeholder <=> remote-dialog.name-placeholder;
     in-out property <[RemoteDevice]> remote-devices <=> remote-dialog.devices;
+    in-out property <string> remote-app-url <=> remote-dialog.app-url;
     // A phone is pairing: the code to show, and for how long
     in-out property <bool> pairing-shown;
     in-out property <string> pairing-device;
     in-out property <string> pairing-code;
+    in-out property <string> pairing-code-spoken;
     in-out property <int> pairing-seconds;
     in-out property <bool> pairing-qr-shown;
     in-out property <image> pairing-qr;
@@ -845,6 +849,8 @@ export component App inherits Window {
                 remove-device(id) => { root.remote-remove-device(id); }
                 pair-qr => { root.remote-pair-qr(); }
                 share-toggled(on) => { root.remote-share-toggled(on); }
+                covered: root.pairing-shown || root.pairing-qr-shown;
+                open-url(url) => { root.open-url(url); }
             }
 
             shortcuts-dialog := KeyboardShortcutsDialog {}
@@ -873,6 +879,7 @@ export component App inherits Window {
                 show-dialog: root.pairing-shown;
                 device-name: root.pairing-device;
                 code: root.pairing-code;
+                code-spoken: root.pairing-code-spoken;
                 seconds-left: root.pairing-seconds;
                 cancel => { root.remote-cancel-pairing(); }
             }

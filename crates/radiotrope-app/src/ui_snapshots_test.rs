@@ -6,10 +6,7 @@ use super::*;
 
 /// Known bugs, left to the package that owns the dialog. Remove a shot
 /// here once it is fixed: the test fails while a fixed shot is listed.
-///
-/// - The pairing overlays: once one closes, nothing in the Remote Control
-///   dialog has the keyboard focus, so Esc does nothing until a click.
-const KNOWN_FAILURES: &[&str] = &["remote-pairing-code", "remote-pairing-qr"];
+const KNOWN_FAILURES: &[&str] = &[];
 
 /// Let change handlers run and the short transitions finish
 fn settle(time: &Cell<Duration>) {
