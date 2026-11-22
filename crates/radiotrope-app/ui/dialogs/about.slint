@@ -12,6 +12,8 @@ export global AboutInfo {
     in property <string> platform;
     in property <string> config-dir;
     in property <string> cache-dir;
+    // Where the log goes when stderr isn't read; empty where there is none
+    in property <string> log-file;
     in property <string> repository;
     in property <string> license;
     in property <string> authors;
@@ -172,6 +174,7 @@ export component AboutDialog inherits Rectangle {
                 InfoRow { label: "Platform"; value: AboutInfo.platform; selectable: true; }
                 InfoRow { label: "Settings"; value: AboutInfo.config-dir; selectable: true; }
                 InfoRow { label: "Cache"; value: AboutInfo.cache-dir; selectable: true; }
+                if AboutInfo.log-file != "": InfoRow { label: "Log"; value: AboutInfo.log-file; selectable: true; }
 
                 SectionHeader { title: "CREDITS"; }
                 LinkRow {

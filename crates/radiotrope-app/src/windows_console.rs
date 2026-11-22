@@ -4,17 +4,13 @@
 //! `eprintln!` and panic messages would go nowhere. Started from a terminal,
 //! it writes there; started by an agent, its pipes are kept; otherwise
 //! (Explorer, the Start menu, a player an agent started) the output goes to
-//! a log file in the local app data folder.
+//! the log file (see [`crate::log_file`]).
 
 use std::ffi::c_void;
-use std::path::PathBuf;
 
 /// Set on the player [`crate::instance::spawn_player`] starts: it must not
 /// share the agent's terminal, or closing that terminal would end it
 pub const NO_CONSOLE_ENV: &str = "RADIOTROPE_NO_CONSOLE";
-
-/// The log is started afresh (the old one kept as `.old.log`) past this size
-const LOG_MAX_BYTES: u64 = 1024 * 1024;
 
 const STD_ERROR_HANDLE: u32 = -12i32 as u32;
 const ATTACH_PARENT_PROCESS: u32 = u32::MAX;
@@ -77,44 +73,16 @@ fn stderr_is_usable() -> bool {
     }
 }
 
-/// `%LOCALAPPDATA%\radiotrope\radiotrope.log`, or `data\local\` beside
-/// the program in portable mode
-pub fn log_path() -> Option<PathBuf> {
-    Some(
-        radiotrope_app::data::storage::local_dir()
-            .ok()?
-            .join("radiotrope.log"),
-    )
-}
-
-/// Send stderr (`eprintln!`, panic messages) to [`log_path`]
+/// Send stderr (`eprintln!`, panic messages) to the log file
 fn log_to_file() {
-    use std::io::Write;
     use std::os::windows::io::IntoRawHandle;
 
-    let Some(path) = log_path() else {
-        return;
-    };
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > LOG_MAX_BYTES) {
-        let _ = std::fs::rename(&path, path.with_extension("old.log"));
-    }
-    let Ok(mut file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
+    let Some(file) = crate::log_file::path()
+        .as_deref()
+        .and_then(crate::log_file::open)
     else {
         return;
     };
-    let _ = writeln!(
-        file,
-        "--- radiotrope {} started {} (pid {})",
-        env!("CARGO_PKG_VERSION"),
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S"),
-        std::process::id()
-    );
     // The handle stays open for the life of the process. Rust's stderr looks
     // the standard handle up on every write, so this takes effect at once.
     // SAFETY: a valid handle we own and never close

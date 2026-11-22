@@ -821,6 +821,12 @@ const SHOTS: &[Shot] = &[
         "scrolled-end",
         "Keyboard Shortcuts scrolled to the last card with the End key.",
     ),
+    Shot::new(
+        "quit",
+        "quit",
+        "",
+        "Quit Radiotrope? while recording, with Scheduler entries due.",
+    ),
 ];
 
 /// The screens that open a dialog
@@ -842,6 +848,7 @@ const DIALOG_SCREENS: &[&str] = &[
     "about",
     "accent",
     "shortcuts",
+    "quit",
 ];
 
 pub fn run(out_dir: &Path, options: &Options) -> Result<(), Box<dyn Error>> {
@@ -1162,6 +1169,12 @@ fn seed(ui: &App) {
     about.set_platform("Linux x86_64".into());
     about.set_config_dir("/home/radio/.config/radiotrope".into());
     about.set_cache_dir("/home/radio/.cache/radiotrope".into());
+    ui.set_quit_recording_line(crate::quit_ui::recording_line(Some("Harbour Jazz")).into());
+    ui.set_quit_schedule_line(
+        crate::quit_ui::schedule_line(2, "Record Harbour Jazz", "tomorrow at 07:00").into(),
+    );
+    ui.set_quit_can_keep_running(true);
+    about.set_log_file("/home/radio/.local/state/radiotrope/radiotrope.log".into());
     about.set_repository(env!("CARGO_PKG_REPOSITORY").into());
     about.set_license(crate::license_label(env!("CARGO_PKG_LICENSE")).into());
     about.set_authors(crate::author_names(env!("CARGO_PKG_AUTHORS")).into());
