@@ -1,7 +1,7 @@
 import { ShortcutAction } from "shortcuts.slint";
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator } from "components.slint";
+import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator, ChoiceRow, StatusPanel } from "components.slint";
 
 export struct FavoriteStation {
     id: string,
@@ -9,7 +9,7 @@ export struct FavoriteStation {
     url: string,
     logo-url: string,
     country: string,
-    // Stats: total listening time ("3 h 25 m"), when last played
+    // Stats: total listening time ("3 h 25 min"), when last played
     // ("Yesterday"), both empty when never played
     listen-time: string,
     last-played: string,
@@ -18,82 +18,45 @@ export struct FavoriteStation {
     session-time: string,
 }
 
-// Item of a row's menu
-component RowMenuItem inherits Rectangle {
-    in property <string> label;
-    in property <image> icon;
-    in property <bool> danger: false;
-    in property <bool> enabled: true;
-    // Waiting for a second click to confirm: bold, so it stands out
-    in property <bool> confirming: false;
-    callback clicked();
+// Background of a station row in a list (Favorites, and search results):
+// a tint and a rail on the left for the current station, the danger tint
+// and a danger rail when it failed. The list decides what is highlighted
+// (pointer or arrow keys, both look the same) and what is lifted (dragged).
+export component StationRowSurface inherits Rectangle {
+    in property <bool> current;
+    in property <bool> failed;
+    in property <bool> highlighted;
+    in property <bool> lifted;
+    out property <color> name-color: root.failed ? Theme.danger-text
+        : root.current ? Theme.accent-text : Theme.text-primary;
 
-    // Hovered, or reached with Tab: highlighted the same way
-    property <bool> lit: (touch.has-hover || keys.has-focus) && root.enabled;
-
-    height: 28px;
-    min-width: 170px;
-    border-radius: Theme.radius-sm;
-    background: root.lit ? (root.danger ? Theme.danger.with-alpha(0.14) : Theme.menu-hover) : transparent;
+    border-radius: Theme.radius-md;
+    background: root.lifted ? Theme.elevated
+        : root.highlighted ? Theme.pressed-bg
+        : root.failed ? Theme.danger-tint
+        : root.current ? Theme.accent-soft : transparent;
     animate background { duration: Theme.fast; }
 
-    accessible-role: button;
-    accessible-label: root.label;
-    accessible-enabled: root.enabled;
-    accessible-action-default => {
-        if root.enabled {
-            root.clicked();
-        }
+    if root.current || root.failed: Rectangle {
+        x: 0;
+        y: Theme.space-8;
+        width: 3px;
+        height: parent.height - 2 * self.y;
+        background: root.failed ? Theme.danger : Theme.selection-mark;
+        border-radius: self.width / 2;
     }
+}
 
-    touch := TouchArea {
-        enabled: root.enabled;
-        clicked => { root.clicked(); }
-    }
-
-    keys := ButtonKeys {
-        enabled: root.enabled;
-        activated => { root.clicked(); }
-    }
-
-    // Laid out like the menu bar's items: icon, then label
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 12px;
-        spacing: 10px;
-        alignment: start;
-
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                width: 15px;
-                height: 15px;
-                source: root.icon;
-                colorize: !root.enabled ? Theme.disabled-text
-                    : root.danger ? Theme.danger
-                    : root.lit ? Theme.text-primary : Theme.text-secondary;
-            }
-        }
-
-        Text {
-            text: root.label;
-            color: !root.enabled ? Theme.disabled-text
-                : root.danger ? Theme.danger
-                : root.lit ? Theme.text-primary : Theme.menu-text;
-            font-size: Theme.font-base;
-            font-weight: root.confirming ? 700 : 400;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-    }
+component RowMenuItem inherits ChoiceRow {
+    checkable: false;
 }
 
 // Sizes of the favorites list, in one place: dragging a row works out
 // where it lands from them
 global RowMetrics {
-    out property <length> row-height: 56px;
-    out property <length> row-spacing: 4px;
-    out property <length> list-padding: 8px;
+    out property <length> row-height: Theme.row-media;
+    out property <length> row-spacing: Theme.space-4;
+    out property <length> list-padding: Theme.space-8;
     // From one row's top to the next one's
     out property <length> row-stride: row-height + row-spacing;
 }
@@ -157,8 +120,8 @@ component FavoriteRow inherits Rectangle {
     // included, so asking to confirm doesn't push the text to the edge:
     // card padding, item padding, icon and spacing around the label
     property <length> menu-width: max(186px,
-        max(remove-label.preferred-width, confirm-label.preferred-width)
-            + 2 * 4px + 10px + 15px + 10px + 12px);
+        max(remove-label.preferred-width, confirm-label.preferred-width, reset-label.preferred-width)
+            + 2 * Theme.space-4 + 3 * Theme.space-8 + Theme.icon-md);
 
     public function open-menu(x: length, y: length) {
         root.confirm-remove = false;
@@ -171,34 +134,27 @@ component FavoriteRow inherits Rectangle {
     forward-focus: keys;
     accessible-role: list-item;
     accessible-label: root.name;
-    accessible-description: root.is-current && root.state != "" ? root.state : root.country;
+    accessible-description: !root.is-current || root.state == "" ? root.country
+        : root.state == "loading" ? "Connecting"
+        : root.state == "error" ? "Playback error" : "Playing";
     accessible-item-index: root.row-index;
     accessible-action-default => { root.clicked(); }
 
     height: RowMetrics.row-height;
-    background: root.is-drag-source ? Theme.elevated
-              : root.highlighted ? Theme.menu-hover
-              : is-current ? Theme.accent-soft
-              : transparent;
-    animate background { duration: Theme.fast; }
     border-radius: Theme.radius-md;
     border-width: root.is-drag-source ? 1px : 0;
-    border-color: Theme.accent;
-    // Lifted look while dragged (no shadow otherwise: it would show
-    // through the transparent background)
-    drop-shadow-blur: root.is-drag-source ? 16px : 0;
-    drop-shadow-offset-y: root.is-drag-source ? 4px : 0;
+    border-color: Theme.selection-mark;
+    background: root.is-drag-source ? Theme.elevated : transparent;
+    // Lifted look while dragged
+    drop-shadow-blur: root.is-drag-source ? Theme.space-16 : 0;
+    drop-shadow-offset-y: root.is-drag-source ? Theme.space-4 : 0;
     drop-shadow-color: root.is-drag-source ? Theme.shadow : transparent;
 
-    // Accent left border for current station
-    if is-current: Rectangle {
-        x: 0;
-        // As tall as the logo (40px, centred in the row)
-        y: 8px;
-        width: 3px;
-        height: parent.height - 16px;
-        background: Theme.accent;
-        border-radius: 1.5px;
+    row-surface := StationRowSurface {
+        current: root.is-current;
+        failed: root.is-current && root.state == "error";
+        highlighted: root.highlighted;
+        lifted: root.is-drag-source;
     }
 
     // Holding the row opens the menu on touch screens (right-click does
@@ -248,7 +204,7 @@ component FavoriteRow inherits Rectangle {
     HorizontalLayout {
         padding-left: 10px;
         padding-right: 12px;
-        spacing: 8px;
+        spacing: Theme.space-8;
         alignment: stretch;
 
         // Logo
@@ -276,7 +232,7 @@ component FavoriteRow inherits Rectangle {
                     source: @image-url("icons/radio.svg");
                     width: 18px;
                     height: 18px;
-                    colorize: Theme.accent;
+                    colorize: Theme.selection-mark;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                 }
@@ -287,17 +243,17 @@ component FavoriteRow inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 2px;
+            spacing: Theme.space-2;
 
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Theme.space-8;
 
                 Text {
                     horizontal-stretch: 0;
                     text: root.name;
-                    color: root.is-current ? Theme.accent-text : Theme.text-primary;
+                    color: row-surface.name-color;
                     font-size: Theme.font-base;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     overflow: elide;
                 }
 
@@ -314,9 +270,9 @@ component FavoriteRow inherits Rectangle {
                     alignment: center;
                     Icon {
                         source: @image-url("icons/spinner.svg");
-                        width: 12px;
-                        height: 12px;
-                        colorize: Theme.accent;
+                        width: Theme.icon-sm;
+                        height: Theme.icon-sm;
+                        colorize: Theme.selection-mark;
                         rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
                     }
                 }
@@ -325,10 +281,10 @@ component FavoriteRow inherits Rectangle {
                     horizontal-stretch: 0;
                     alignment: center;
                     Icon {
-                        source: @image-url("icons/circle-exclamation.svg");
-                        width: 13px;
-                        height: 13px;
-                        colorize: Theme.danger;
+                        source: @image-url("icons/circle-alert.svg");
+                        width: Theme.icon-compact;
+                        height: Theme.icon-compact;
+                        colorize: Theme.danger-text;
                     }
                 }
 
@@ -346,14 +302,14 @@ component FavoriteRow inherits Rectangle {
         // Stats: listening time over when it was last played
         if root.show-stats: VerticalLayout {
             alignment: center;
-            spacing: 2px;
+            spacing: Theme.space-2;
             horizontal-stretch: 0;
 
             if root.listen-time != "": Text {
                 text: root.listen-time;
-                color: root.is-current ? Theme.accent-text : Theme.text-primary;
+                color: row-surface.current && !row-surface.failed ? Theme.accent-text : Theme.text-primary;
                 font-size: Theme.font-md;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 horizontal-alignment: right;
             }
             Text {
@@ -455,7 +411,7 @@ component FavoriteRow inherits Rectangle {
             padding-right: 12px;
             padding-top: 8px;
             padding-bottom: 8px;
-            spacing: 12px;
+            spacing: Theme.space-12;
 
             VerticalLayout {
                 alignment: center;
@@ -465,20 +421,20 @@ component FavoriteRow inherits Rectangle {
                     text: "LISTENING TIME";
                     color: Theme.text-secondary;
                     font-size: Theme.font-xs;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     letter-spacing: 0.5px;
                 }
                 if stats-bubble.played: Text {
-                    text: root.listen-time != "" ? root.listen-time : "<1 m";
+                    text: root.listen-time != "" ? root.listen-time : "<1 min";
                     color: Theme.text-primary;
                     font-size: Theme.font-xl;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                 }
                 if !stats-bubble.played: Text {
                     text: "Not played yet";
                     color: Theme.text-tertiary;
                     font-size: Theme.font-md;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                 }
             }
 
@@ -501,7 +457,7 @@ component FavoriteRow inherits Rectangle {
                         text: root.session-time;
                         color: Theme.text-primary;
                         font-size: Theme.font-sm;
-                        font-weight: 600;
+                        font-weight: Theme.weight-semibold;
                         horizontal-alignment: right;
                     }
                 }
@@ -515,7 +471,7 @@ component FavoriteRow inherits Rectangle {
                         text: root.last-played;
                         color: Theme.text-primary;
                         font-size: Theme.font-sm;
-                        font-weight: 600;
+                        font-weight: Theme.weight-semibold;
                         horizontal-alignment: right;
                     }
                 }
@@ -529,7 +485,7 @@ component FavoriteRow inherits Rectangle {
                         text: root.play-count;
                         color: Theme.text-primary;
                         font-size: Theme.font-sm;
-                        font-weight: 600;
+                        font-weight: Theme.weight-semibold;
                         horizontal-alignment: right;
                     }
                 }
@@ -541,13 +497,17 @@ component FavoriteRow inherits Rectangle {
     remove-label := Text {
         visible: false;
         text: "Remove from Favorites";
-        font-size: Theme.font-base;
+        font-size: Theme.font-md;
     }
     confirm-label := Text {
         visible: false;
         text: "Press Again to Remove";
-        font-size: Theme.font-base;
-        font-weight: 700;
+        font-size: Theme.font-md;
+    }
+    reset-label := Text {
+        visible: false;
+        text: "Reset Listening Stats";
+        font-size: Theme.font-md;
     }
 
     menu := PopupWindow {
@@ -558,11 +518,11 @@ component FavoriteRow inherits Rectangle {
 
         PopupCard {
             VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 RowMenuItem {
                     label: "Edit";
-                    icon: @image-url("icons/pencil.svg");
+                    icon: @image-url("icons/edit.svg");
                     clicked => {
                         menu.close();
                         root.edit-clicked();
@@ -570,7 +530,7 @@ component FavoriteRow inherits Rectangle {
                 }
                 RowMenuItem {
                     label: "Move to Top";
-                    icon: @image-url("icons/angles-up.svg");
+                    icon: @image-url("icons/move-top.svg");
                     clicked => {
                         menu.close();
                         root.move-requested(true);
@@ -578,7 +538,7 @@ component FavoriteRow inherits Rectangle {
                 }
                 RowMenuItem {
                     label: "Move to Bottom";
-                    icon: @image-url("icons/angles-down.svg");
+                    icon: @image-url("icons/move-bottom.svg");
                     clicked => {
                         menu.close();
                         root.move-requested(false);
@@ -588,9 +548,9 @@ component FavoriteRow inherits Rectangle {
                 // Act before closing: inside an `if` the handler stops
                 // once the menu closes
                 if root.show-stats: RowMenuItem {
-                    label: root.confirm-reset ? "Press Again to Reset" : "Reset Stats";
-                    confirming: root.confirm-reset;
-                    icon: @image-url("icons/rotate-left.svg");
+                    label: root.confirm-reset ? "Press Again to Reset" : "Reset Listening Stats";
+                    danger-armed: root.confirm-reset;
+                    icon: @image-url("icons/reset.svg");
                     enabled: root.play-count > 0
                         || root.listen-time != "" || root.session-time != "";
                     clicked => {
@@ -606,9 +566,8 @@ component FavoriteRow inherits Rectangle {
                 // Asks once more before removing
                 RowMenuItem {
                     label: root.confirm-remove ? "Press Again to Remove" : "Remove from Favorites";
-                    confirming: root.confirm-remove;
-                    icon: @image-url("icons/trash-can.svg");
-                    danger: true;
+                    danger-armed: root.confirm-remove;
+                    icon: @image-url("icons/trash.svg");
                     clicked => {
                         if root.confirm-remove {
                             menu.close();
@@ -785,33 +744,10 @@ export component Favorites inherits Rectangle {
     background: Theme.surface;
 
     // Empty state
-    if favorites.length == 0: VerticalLayout {
-        alignment: center;
-        spacing: 12px;
-
-        HorizontalLayout {
-            alignment: center;
-            Icon {
-                source: @image-url("icons/book-bookmark.svg");
-                width: 48px;
-                height: 48px;
-                colorize: Theme.text-secondary;
-            }
-        }
-
-        Text {
-            text: "No favorites yet";
-            font-size: Theme.font-lg;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-        }
-
-        Text {
-            text: "Stations you favorite will appear here";
-            font-size: Theme.font-sm;
-            color: Theme.text-secondary;
-            horizontal-alignment: center;
-        }
+    if favorites.length == 0: StatusPanel {
+        icon: @image-url("icons/book-bookmark.svg");
+        title: "No favorites yet";
+        message: "Stations you add to Favorites appear here.";
     }
 
     // Favorites list

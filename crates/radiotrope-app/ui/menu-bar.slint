@@ -4,28 +4,122 @@ import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Pick
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 
-component MenuItem inherits Rectangle {
+// What every menu row shows, laid out like the shared ChoiceRow: icon,
+// label, then an optional note, shortcut, swatch, tick or arrow on the right
+component MenuRowContent inherits HorizontalLayout {
     // Moved right under the group row that shows it (GroupMenuItem)
+    in property <length> indent;
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    // Hovered or reached with Tab
+    in property <bool> lit;
+    // A faint note or a keyboard shortcut on the right ("Ctrl+Q")
+    in property <string> trailing-text;
+    // A small colour square on the right (Accent Color shows the accent)
+    in property <bool> has-swatch;
+    in property <color> swatch;
+    // Keeps room for a tick, shown while checked
+    in property <bool> checkable;
+    in property <bool> checked;
+    // An arrow that turns as the group opens and folds
+    in property <bool> expandable;
+    in property <bool> expanded;
+
+    property <color> foreground: !root.enabled ? Theme.disabled-text
+        : root.lit ? Theme.text-primary : Theme.menu-text;
+
+    padding-left: Theme.space-8 + root.indent;
+    padding-right: Theme.space-8;
+    spacing: Theme.space-8;
+
+    VerticalLayout {
+        alignment: center;
+        Icon {
+            width: Theme.icon-md;
+            height: Theme.icon-md;
+            source: root.icon;
+            colorize: root.foreground;
+        }
+    }
+
+    Text {
+        horizontal-stretch: 1;
+        text: root.label;
+        color: root.foreground;
+        font-size: Theme.font-md;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    if root.trailing-text != "": Text {
+        text: root.trailing-text;
+        color: root.enabled ? Theme.text-tertiary : Theme.disabled-text;
+        font-size: Theme.font-sm;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    if root.has-swatch: VerticalLayout {
+        alignment: center;
+        Rectangle {
+            width: Theme.icon-sm;
+            height: Theme.icon-sm;
+            border-radius: Theme.radius-sm - 1px;
+            background: root.swatch;
+        }
+    }
+
+    if root.checkable: Rectangle {
+        width: Theme.icon-sm;
+        if root.checked: Icon {
+            width: Theme.icon-sm;
+            height: Theme.icon-sm;
+            source: @image-url("icons/tick.svg");
+            colorize: root.enabled ? Theme.selection-mark : Theme.disabled-text;
+        }
+    }
+
+    // Points down while folded and up while open: the items show in
+    // place, under the group, not in a side menu
+    if root.expandable: VerticalLayout {
+        alignment: center;
+        Icon {
+            width: Theme.icon-sm;
+            height: Theme.icon-sm;
+            source: root.expanded ? @image-url("icons/chevron-up.svg") : @image-url("icons/chevron-down.svg");
+            colorize: root.foreground;
+        }
+    }
+}
+
+// Background of a menu row: the same hover and press colours as ChoiceRow
+component MenuRowBase inherits Rectangle {
+    in property <bool> enabled: true;
+    in property <bool> hovered;
+    in property <bool> pressed;
+
+    height: Theme.row-menu;
+    min-width: 160px;
+    border-radius: Theme.radius-sm;
+    background: !root.enabled ? transparent
+        : root.pressed ? Theme.pressed-bg
+        : root.hovered ? Theme.hover-bg : transparent;
+    animate background { duration: Theme.fast; }
+}
+
+component MenuItem inherits MenuRowBase {
     in property <length> indent;
     in property <string> label;
     in property <image> icon;
     // Its keyboard shortcut, shown on the right ("Ctrl+Q")
     in property <string> shortcut;
-    // A small colour square on the right (Accent Color shows the accent)
     in property <bool> has-swatch;
     in property <color> swatch;
-    // Greyed out and not clickable when false
-    in property <bool> enabled: true;
     callback clicked();
 
-    // Hovered, or reached with Tab: highlighted the same way
-    property <bool> lit: touch.has-hover || keys.has-focus;
-
-    height: 28px;
-    min-width: 160px;
-    border-radius: Theme.radius-sm;
-    background: root.lit ? Theme.menu-hover : transparent;
-    animate background { duration: Theme.fast; }
+    hovered: touch.has-hover || keys.has-focus;
+    pressed: touch.pressed;
 
     accessible-role: button;
     accessible-label: root.label;
@@ -47,53 +141,15 @@ component MenuItem inherits Rectangle {
         activated => { root.clicked(); }
     }
 
-    HorizontalLayout {
-        padding-left: 10px + root.indent;
-        padding-right: 12px;
-        spacing: 10px;
-        // Stretched when something sits at the right edge
-        alignment: root.shortcut != "" || root.has-swatch ? LayoutAlignment.stretch : LayoutAlignment.start;
-
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                width: 15px;
-                height: 15px;
-                source: root.icon;
-                colorize: !root.enabled ? Theme.disabled-text
-                    : root.lit ? Theme.text-primary : Theme.text-secondary;
-            }
-        }
-
-        Text {
-            text: root.label;
-            color: !root.enabled ? Theme.disabled-text
-                : root.lit ? Theme.text-primary : Theme.menu-text;
-            font-size: Theme.font-base;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-
-        if root.shortcut != "" || root.has-swatch: Rectangle {
-            horizontal-stretch: 1;
-            min-width: 16px;
-        }
-        if root.has-swatch: VerticalLayout {
-            alignment: center;
-            Rectangle {
-                width: 12px;
-                height: 12px;
-                border-radius: 3px;
-                background: root.swatch;
-            }
-        }
-        if root.shortcut != "": Text {
-            text: root.shortcut;
-            color: Theme.disabled-text;
-            font-size: Theme.font-sm;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
+    MenuRowContent {
+        indent: root.indent;
+        label: root.label;
+        icon: root.icon;
+        enabled: root.enabled;
+        lit: root.hovered;
+        trailing-text: root.shortcut;
+        has-swatch: root.has-swatch;
+        swatch: root.swatch;
     }
 }
 
@@ -101,43 +157,34 @@ component MenuItem inherits Rectangle {
 component MenuNote inherits Rectangle {
     // Moved right under the group row that shows it (GroupMenuItem)
     in property <length> indent;
-    in property <string> text;
+    in property <[string]> lines;
 
-    HorizontalLayout {
+    VerticalLayout {
         // Lined up with the item labels (padding, icon, spacing)
-        padding-left: 35px + root.indent;
-        padding-right: 12px;
-        padding-top: 2px;
-        padding-bottom: 4px;
+        padding-left: Theme.space-8 + Theme.icon-md + Theme.space-8 + root.indent;
+        padding-right: Theme.space-12;
+        padding-top: Theme.space-2;
+        padding-bottom: Theme.space-4;
 
-        Text {
-            text: root.text;
-            color: Theme.disabled-text;
+        for line in root.lines: Text {
+            text: line;
+            color: Theme.text-tertiary;
             font-size: Theme.font-sm;
         }
     }
 }
 
-component CheckMenuItem inherits Rectangle {
-    // Moved right under the group row that shows it (GroupMenuItem)
+component CheckMenuItem inherits MenuRowBase {
     in property <length> indent;
     in property <string> label;
     in property <image> icon;
     in property <bool> checked;
-    // A faint note on the right, before the tick ("Dark")
+    // A faint note on the right, before the tick
     in property <string> hint;
-    // Greyed out and not clickable when false
-    in property <bool> enabled: true;
     callback clicked();
 
-    // Hovered, or reached with Tab: highlighted the same way
-    property <bool> lit: touch.has-hover || keys.has-focus;
-
-    height: 28px;
-    min-width: 160px;
-    border-radius: Theme.radius-sm;
-    background: root.lit ? Theme.menu-hover : transparent;
-    animate background { duration: Theme.fast; }
+    hovered: touch.has-hover || keys.has-focus;
+    pressed: touch.pressed;
 
     accessible-role: checkbox;
     accessible-label: root.label;
@@ -160,73 +207,29 @@ component CheckMenuItem inherits Rectangle {
         activated => { root.clicked(); }
     }
 
-    HorizontalLayout {
-        padding-left: 10px + root.indent;
-        padding-right: 12px;
-        spacing: 10px;
-
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                width: 15px;
-                height: 15px;
-                source: root.icon;
-                colorize: !root.enabled ? Theme.disabled-text
-                    : root.lit ? Theme.text-primary : Theme.text-secondary;
-            }
-        }
-
-        Text {
-            horizontal-stretch: 1;
-            text: root.label;
-            color: !root.enabled ? Theme.disabled-text
-                : root.lit ? Theme.text-primary : Theme.menu-text;
-            font-size: Theme.font-base;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-
-        if root.hint != "": Text {
-            text: root.hint;
-            color: Theme.disabled-text;
-            font-size: Theme.font-sm;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-
-        // Tick on the right while the option is on
-        Rectangle {
-            width: 12px;
-
-            if root.checked: Icon {
-                width: 12px;
-                height: 12px;
-                y: (parent.height - self.height) / 2;
-                source: @image-url("icons/tick.svg");
-                colorize: root.enabled ? Theme.accent : Theme.disabled-text;
-            }
-        }
+    MenuRowContent {
+        indent: root.indent;
+        label: root.label;
+        icon: root.icon;
+        enabled: root.enabled;
+        lit: root.hovered;
+        trailing-text: root.hint;
+        checkable: true;
+        checked: root.checked;
     }
 }
 
 // A group of set-once options, folded: a click (or Space, Enter, Right)
 // shows its items right under it, indented, and another click folds them
-// (Left folds too). The arrow points down while it is open.
-component GroupMenuItem inherits Rectangle {
+// (Left folds too). The arrow points up while it is open.
+component GroupMenuItem inherits MenuRowBase {
     in property <string> label;
     in property <image> icon;
-    // A faint note before the arrow ("On")
-    in property <string> hint;
     in property <bool> open;
     callback toggled();
 
-    property <bool> lit: touch.has-hover || keys.has-focus;
-
-    height: 28px;
-    min-width: 160px;
-    border-radius: Theme.radius-sm;
-    background: root.lit ? Theme.menu-hover : transparent;
-    animate background { duration: Theme.fast; }
+    hovered: touch.has-hover || keys.has-focus;
+    pressed: touch.pressed;
 
     accessible-role: button;
     accessible-label: root.label;
@@ -251,71 +254,37 @@ component GroupMenuItem inherits Rectangle {
         }
     }
 
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 8px;
-        spacing: 10px;
-
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                width: 15px;
-                height: 15px;
-                source: root.icon;
-                colorize: root.lit ? Theme.text-primary : Theme.text-secondary;
-            }
-        }
-
-        Text {
-            horizontal-stretch: 1;
-            text: root.label;
-            color: root.lit ? Theme.text-primary : Theme.menu-text;
-            font-size: Theme.font-base;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-
-        if root.hint != "": Text {
-            text: root.hint;
-            color: Theme.disabled-text;
-            font-size: Theme.font-sm;
-            vertical-alignment: center;
-            accessible-role: none;
-        }
-
-        VerticalLayout {
-            alignment: center;
-            Icon {
-                width: 10px;
-                height: 10px;
-                source: root.open ? @image-url("icons/chevron-down.svg") : @image-url("icons/chevron-right.svg");
-                colorize: root.lit ? Theme.text-primary : Theme.text-secondary;
-            }
-        }
+    MenuRowContent {
+        label: root.label;
+        icon: root.icon;
+        lit: root.hovered;
+        expandable: true;
+        expanded: root.open;
     }
 
     if keys.has-focus: FocusRing {
+        offset: -1px;
         radius: root.border-radius;
     }
 }
 
 // View > Theme: the three choices in the row itself, one click each
 component ThemeMenuRow inherits Rectangle {
-    height: 34px;
+    height: Theme.control-button;
     min-width: 160px;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 4px;
-        spacing: 10px;
+        padding-left: Theme.space-8;
+        padding-right: Theme.space-4;
+        spacing: Theme.space-8;
 
         VerticalLayout {
             alignment: center;
             Icon {
-                width: 15px;
-                height: 15px;
+                width: Theme.icon-md;
+                height: Theme.icon-md;
                 source: Theme.dark-mode ? @image-url("icons/moon.svg") : @image-url("icons/sun.svg");
-                colorize: Theme.text-secondary;
+                colorize: Theme.menu-text;
             }
         }
 
@@ -323,7 +292,7 @@ component ThemeMenuRow inherits Rectangle {
             horizontal-stretch: 1;
             text: "Theme";
             color: Theme.menu-text;
-            font-size: Theme.font-base;
+            font-size: Theme.font-md;
             vertical-alignment: center;
             accessible-role: none;
         }
@@ -355,8 +324,8 @@ component CaptionButton inherits Rectangle {
 
     width: 42px;
     height: 32px;
-    background: touch.pressed ? Theme.menu-hover
-        : touch.has-hover ? Theme.menu-bar-hover : transparent;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg : transparent;
     animate background { duration: Theme.fast; }
 
     accessible-role: button;
@@ -380,7 +349,7 @@ component MenuTitle inherits Rectangle {
 
     width: title.preferred-width + 20px;
     height: 32px;
-    background: root.enabled && (touch.has-hover || keys.has-focus) ? Theme.menu-bar-hover : transparent;
+    background: root.enabled && (touch.has-hover || keys.has-focus) ? Theme.hover-bg : transparent;
     animate background { duration: Theme.fast; }
 
     accessible-role: button;
@@ -714,7 +683,7 @@ export component MenuBar inherits Rectangle {
 
         PopupCard {
             popup-layout := VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 MenuItem {
                     label: "Network Stream";
@@ -778,7 +747,7 @@ export component MenuBar inherits Rectangle {
 
         PopupCard {
             stations-popup-layout := VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 MenuItem {
                     label: "Search Stations";
@@ -792,7 +761,7 @@ export component MenuBar inherits Rectangle {
                 MenuSeparator {}
                 // Need a file dialog, which the kiosk build lacks
                 MenuItem {
-                    label: "Export Favorites...";
+                    label: "Export Favorites";
                     enabled: Platform.has-file-manager;
                     icon: @image-url("icons/file-export.svg");
                     clicked => {
@@ -801,7 +770,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 MenuItem {
-                    label: "Import Favorites...";
+                    label: "Import Favorites";
                     enabled: Platform.has-file-manager;
                     icon: @image-url("icons/file-import.svg");
                     clicked => {
@@ -822,7 +791,7 @@ export component MenuBar inherits Rectangle {
 
         PopupCard {
             window-popup-layout := VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 MenuItem {
                     label: "Minimize";
@@ -872,7 +841,7 @@ export component MenuBar inherits Rectangle {
 
         PopupCard {
             view-popup-layout := VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 ThemeMenuRow {}
                 MenuItem {
@@ -887,7 +856,7 @@ export component MenuBar inherits Rectangle {
                 }
                 MenuSeparator {}
                 CheckMenuItem {
-                    label: "Show Station Stats";
+                    label: "Show Listening Stats";
                     icon: @image-url("icons/clock.svg");
                     checked: root.show-station-stats;
                     clicked => {
@@ -925,7 +894,7 @@ export component MenuBar inherits Rectangle {
                     // Chrome's wording: ticked means the system frame
                     label: "Use System Title Bar";
                     icon: @image-url("icons/window-maximize.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     checked: !root.custom-frame;
                     clicked => {
                         root.toggle-custom-frame();
@@ -936,7 +905,7 @@ export component MenuBar inherits Rectangle {
                     // The system title bar has its own corners
                     label: "Rounded Corners";
                     icon: @image-url("icons/rounded-corner.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     enabled: root.custom-frame && root.corners-available;
                     hint: root.corners-available ? "" : root.corners-hint;
                     checked: root.rounded-corners;
@@ -948,14 +917,13 @@ export component MenuBar inherits Rectangle {
                 if Platform.has-tray: GroupMenuItem {
                     label: "System Tray";
                     icon: @image-url("icons/window-restore.svg");
-                    hint: root.tray-icon ? "On" : "Off";
                     open: view-popup.group == "tray";
                     toggled => { view-popup.group = view-popup.group == "tray" ? "" : "tray"; }
                 }
                 if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
                     label: "Show Tray Icon";
                     icon: @image-url("icons/window-restore.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     checked: root.tray-icon;
                     clicked => {
                         root.tray-icon = !root.tray-icon;
@@ -965,7 +933,7 @@ export component MenuBar inherits Rectangle {
                 if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
                     label: "Close to Tray";
                     icon: @image-url("icons/rectangle-xmark.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.close-to-tray;
                     clicked => {
@@ -975,7 +943,7 @@ export component MenuBar inherits Rectangle {
                 if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
                     label: "Minimize to Tray";
                     icon: @image-url("icons/square-minus.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.hide-on-minimize;
                     clicked => {
@@ -985,7 +953,7 @@ export component MenuBar inherits Rectangle {
                 if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
                     label: "Start Hidden in Tray";
                     icon: @image-url("icons/eye-slash.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.start-in-tray;
                     clicked => {
@@ -993,8 +961,8 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 if Platform.has-tray && view-popup.group == "tray" && root.tray-icon && !root.tray-available: MenuNote {
-                    indent: 16px;
-                    text: "This desktop shows no tray icons.\nOn GNOME, turn on the AppIndicator extension.";
+                    indent: Theme.space-16;
+                    lines: ["This desktop doesn't show tray icons.", "On GNOME, turn on the AppIndicator extension."];
                 }
             }
         }
@@ -1008,10 +976,11 @@ export component MenuBar inherits Rectangle {
 
         PopupCard {
             help-popup-layout := VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 if DesktopShortcuts.enabled: MenuItem {
                     label: "Keyboard Shortcuts";
+                    icon: @image-url("icons/keyboard.svg");
                     shortcut: DesktopShortcuts.label(ShortcutAction.help);
                     // Open first: closing the popup takes this item with it
                     clicked => {
@@ -1042,7 +1011,7 @@ export component MenuBar inherits Rectangle {
 
         PopupCard {
             tools-popup-layout := VerticalLayout {
-                padding: 4px;
+                padding: Theme.space-4;
 
                 MenuItem {
                     label: "Statistics";
@@ -1074,7 +1043,7 @@ export component MenuBar inherits Rectangle {
                     shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.record) : "";
                     // Greyed out until a station plays
                     enabled: root.can-toggle-recording;
-                    icon: @image-url("icons/circle.svg");
+                    icon: @image-url("icons/record.svg");
                     clicked => {
                         root.toggle-recording();
                         tools-popup.close();
@@ -1089,7 +1058,7 @@ export component MenuBar inherits Rectangle {
                 if tools-popup.group == "recordings": MenuItem {
                     label: "Settings";
                     icon: @image-url("icons/gear.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     clicked => {
                         root.open-recording-settings();
                         tools-popup.close();
@@ -1098,7 +1067,7 @@ export component MenuBar inherits Rectangle {
                 if Platform.has-file-manager && tools-popup.group == "recordings": MenuItem {
                     label: "Open Folder";
                     icon: @image-url("icons/folder-open.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     clicked => {
                         root.open-recordings-folder();
                         tools-popup.close();
@@ -1115,7 +1084,7 @@ export component MenuBar inherits Rectangle {
                 }
                 MenuItem {
                     label: "Scheduler";
-                    icon: @image-url("icons/calendar-days.svg");
+                    icon: @image-url("icons/calendar.svg");
                     clicked => {
                         root.open-schedule();
                         tools-popup.close();
@@ -1130,8 +1099,8 @@ export component MenuBar inherits Rectangle {
                 }
                 if tools-popup.group == "connections": MenuItem {
                     label: "Agents (MCP)";
-                    icon: @image-url("icons/robot.svg");
-                    indent: 16px;
+                    icon: @image-url("icons/bot.svg");
+                    indent: Theme.space-16;
                     clicked => {
                         root.open-agents();
                         tools-popup.close();
@@ -1140,7 +1109,7 @@ export component MenuBar inherits Rectangle {
                 if tools-popup.group == "connections": MenuItem {
                     label: "Remote Control";
                     icon: @image-url("icons/mobile-screen-button.svg");
-                    indent: 16px;
+                    indent: Theme.space-16;
                     clicked => {
                         root.open-remote-control();
                         tools-popup.close();
@@ -1148,7 +1117,7 @@ export component MenuBar inherits Rectangle {
                 }
                 if Platform.has-wifi: MenuSeparator {}
                 if Platform.has-wifi: MenuItem {
-                    label: "WiFi Settings";
+                    label: "Wi-Fi Settings";
                     icon: @image-url("icons/wifi.svg");
                     clicked => {
                         root.open-wifi-settings();
