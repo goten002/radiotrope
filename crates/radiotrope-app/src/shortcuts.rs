@@ -1,11 +1,23 @@
-//! Window-local desktop key bindings and their display labels.
+//! Window-local desktop key bindings, their menu labels and the rows of the
+//! Keyboard Shortcuts dialog.
 
-use crate::{App, DesktopShortcuts, ShortcutAction, ShortcutRow};
+use crate::{App, DesktopShortcuts, KeyCombo, ShortcutAction, ShortcutGroup, ShortcutRow};
 use slint::platform::Key;
-use slint::{ComponentHandle, ModelRc, VecModel};
+use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::rc::Rc;
 
 use ShortcutAction::*;
+
+/// The Control key as the platform names it (Slint reports Command as
+/// Control on macOS).
+const CTRL: &str = if cfg!(target_os = "macos") {
+    "⌘"
+} else {
+    "Ctrl"
+};
+
+/// The ways to press a shortcut, each a list of keycap labels pressed together.
+type Caps = &'static [&'static [&'static str]];
 
 enum Keys {
     Text(&'static str),
@@ -23,26 +35,19 @@ impl Keys {
 
 struct Binding {
     action: ShortcutAction,
-    group: &'static str,
-    description: &'static str,
+    /// The menu hint, e.g. "Ctrl+F"
     label: &'static str,
+    caps: Caps,
     keys: Keys,
     control: bool,
 }
 
 impl Binding {
-    const fn new(
-        action: ShortcutAction,
-        group: &'static str,
-        description: &'static str,
-        label: &'static str,
-        keys: Keys,
-    ) -> Self {
+    const fn new(action: ShortcutAction, label: &'static str, caps: Caps, keys: Keys) -> Self {
         Self {
             action,
-            group,
-            description,
             label,
+            caps,
             keys,
             control: false,
         }
@@ -50,123 +55,147 @@ impl Binding {
 
     const fn control(
         action: ShortcutAction,
-        group: &'static str,
-        description: &'static str,
         label: &'static str,
+        caps: Caps,
         key: &'static str,
     ) -> Self {
         Self {
             control: true,
-            ..Self::new(action, group, description, label, Keys::Text(key))
+            ..Self::new(action, label, caps, Keys::Text(key))
         }
     }
 }
 
 const BINDINGS: &[Binding] = &[
-    Binding::new(
-        PlayStop,
-        "Playback",
-        "Play or stop",
-        "Space",
-        Keys::Text(" "),
-    ),
-    Binding::new(Mute, "Playback", "Mute or unmute", "M", Keys::Text("m")),
-    Binding::new(
-        VolumeUp,
-        "Playback",
-        "Turn volume up",
-        "+ / =",
-        Keys::Text("+="),
-    ),
-    Binding::new(
-        VolumeDown,
-        "Playback",
-        "Turn volume down",
-        "-",
-        Keys::Text("-"),
-    ),
-    Binding::new(
-        Record,
-        "Playback",
-        "Start or stop recording",
-        "R",
-        Keys::Text("r"),
-    ),
-    Binding::new(
-        NextFavorite,
-        "Favorites",
-        "Play next favorite",
-        "N",
-        Keys::Text("n"),
-    ),
-    Binding::new(
-        PreviousFavorite,
-        "Favorites",
-        "Play previous favorite",
-        "P",
-        Keys::Text("p"),
-    ),
-    Binding::new(
-        ToggleFavorite,
-        "Favorites",
-        "Add or remove the current station from Favorites",
-        "F",
-        Keys::Text("f"),
-    ),
-    Binding::control(Search, "Stations", "Search stations", "Ctrl+F", "f"),
-    Binding::control(
-        NetworkStream,
-        "Stations",
-        "Open network stream",
-        "Ctrl+O",
-        "o",
-    ),
-    Binding::control(CloseWindow, "Window", "Close the window", "Ctrl+W", "w"),
-    Binding::control(Quit, "Window", "Quit Radiotrope", "Ctrl+Q", "q"),
+    Binding::new(PlayStop, "Space", &[&["Space"]], Keys::Text(" ")),
+    Binding::new(Mute, "M", &[&["M"]], Keys::Text("m")),
+    Binding::new(VolumeUp, "+ / =", &[&["+"]], Keys::Text("+=")),
+    Binding::new(VolumeDown, "-", &[&["−"]], Keys::Text("-")),
+    Binding::new(Record, "R", &[&["R"]], Keys::Text("r")),
+    Binding::new(NextFavorite, "N", &[&["N"]], Keys::Text("n")),
+    Binding::new(PreviousFavorite, "P", &[&["P"]], Keys::Text("p")),
+    Binding::new(ToggleFavorite, "F", &[&["F"]], Keys::Text("f")),
+    Binding::control(Search, "Ctrl+F", &[&[CTRL, "F"]], "f"),
+    Binding::control(NetworkStream, "Ctrl+O", &[&[CTRL, "O"]], "o"),
+    Binding::control(CloseWindow, "Ctrl+W", &[&[CTRL, "W"]], "w"),
+    Binding::control(Quit, "Ctrl+Q", &[&[CTRL, "Q"]], "q"),
     Binding::new(
         Help,
-        "Window",
-        "Show keyboard shortcuts",
         "F1",
+        &[&["F1"]],
         Keys::Named(slint::platform::Key::F1),
     ),
 ];
 
-// Paired keys share one reference row. An empty description omits the second key.
-const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, &str)] = &[
-    (FavoriteUp, Key::UpArrow, "↑ / ↓", "Move through favorites"),
-    (FavoriteDown, Key::DownArrow, "↑ / ↓", ""),
-    (
-        FavoriteFirst,
-        Key::Home,
-        "Home / End",
-        "Jump to the first or last favorite",
-    ),
-    (FavoriteLast, Key::End, "Home / End", ""),
+// Keys for the highlighted favorite: the key, its label and its keycaps
+const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, Caps)] = &[
+    (FavoriteUp, Key::UpArrow, "↑ / ↓", &[&["↑"]]),
+    (FavoriteDown, Key::DownArrow, "↑ / ↓", &[&["↓"]]),
+    (FavoriteFirst, Key::Home, "Home / End", &[&["Home"]]),
+    (FavoriteLast, Key::End, "Home / End", &[&["End"]]),
     (
         FavoritePageUp,
         Key::PageUp,
         "Page Up / Page Down",
-        "Move through favorites by a page",
+        &[&["Page Up"]],
     ),
-    (FavoritePageDown, Key::PageDown, "Page Up / Page Down", ""),
     (
-        FavoritePlay,
-        Key::Return,
-        "Enter",
-        "Play the highlighted favorite",
+        FavoritePageDown,
+        Key::PageDown,
+        "Page Up / Page Down",
+        &[&["Page Down"]],
     ),
+    (FavoritePlay, Key::Return, "Enter", &[&["Enter"]]),
     (
         FavoriteMenu,
         Key::Menu,
         "Shift+F10 / Menu key",
-        "Open the highlighted or focused favorite's actions",
+        &[&["Shift", "F10"], &["Menu"]],
+    ),
+    (FavoriteClear, Key::Escape, "Esc", &[&["Esc"]]),
+];
+
+/// The keys of a dialog row: shortcuts from the tables above, or keys that
+/// work wherever the focus is.
+enum RowKeys {
+    Actions(&'static [ShortcutAction]),
+    Caps(Caps),
+}
+
+struct Row {
+    description: &'static str,
+    keys: RowKeys,
+}
+
+const fn row(description: &'static str, actions: &'static [ShortcutAction]) -> Row {
+    Row {
+        description,
+        keys: RowKeys::Actions(actions),
+    }
+}
+
+const fn keys(description: &'static str, caps: Caps) -> Row {
+    Row {
+        description,
+        keys: RowKeys::Caps(caps),
+    }
+}
+
+/// The Keyboard Shortcuts dialog, one card per group
+const GROUPS: &[(&str, &[Row])] = &[
+    (
+        "Playback",
+        &[
+            row("Play or stop", &[PlayStop]),
+            row("Mute or unmute", &[Mute]),
+            row("Volume up / down", &[VolumeUp, VolumeDown]),
+            row("Start or stop recording", &[Record]),
+        ],
     ),
     (
-        FavoriteClear,
-        Key::Escape,
-        "Esc",
-        "Clear the favorites highlight",
+        "Favorites",
+        &[
+            row(
+                "Next / previous favorite",
+                &[NextFavorite, PreviousFavorite],
+            ),
+            row("Add or remove the current station", &[ToggleFavorite]),
+            row("Move through favorites", &[FavoriteUp, FavoriteDown]),
+            row("Play the highlighted favorite", &[FavoritePlay]),
+        ],
+    ),
+    (
+        "Stations",
+        &[
+            row("Search stations", &[Search]),
+            row("Open network stream", &[NetworkStream]),
+        ],
+    ),
+    (
+        "Window",
+        &[
+            row("Close the window", &[CloseWindow]),
+            row("Quit Radiotrope", &[Quit]),
+            row("Show keyboard shortcuts", &[Help]),
+        ],
+    ),
+    (
+        "In lists and dialogs",
+        &[
+            keys("Move focus forward or back", &[&["Tab"], &["Shift", "Tab"]]),
+            keys(
+                "Activate the focused button or row",
+                &[&["Enter"], &["Space"]],
+            ),
+            row("Open a favorite's actions", &[FavoriteMenu]),
+            keys(
+                "Adjust the volume or an EQ fader",
+                &[&["←"], &["↓"], &["↑"], &["→"]],
+            ),
+            row("Move by a page", &[FavoritePageUp, FavoritePageDown]),
+            row("Jump to the start or end", &[FavoriteFirst, FavoriteLast]),
+            row("Close a dialog or clear the highlight", &[FavoriteClear]),
+        ],
     ),
 ];
 
@@ -242,6 +271,82 @@ fn label(action: ShortcutAction) -> &'static str {
         .unwrap_or("")
 }
 
+fn caps(action: ShortcutAction) -> Caps {
+    BINDINGS
+        .iter()
+        .find(|binding| binding.action == action)
+        .map(|binding| binding.caps)
+        .or_else(|| {
+            FAVORITE_KEYS
+                .iter()
+                .find(|(id, _, _, _)| *id == action)
+                .map(|(_, _, _, caps)| *caps)
+        })
+        .unwrap_or(&[])
+}
+
+/// A keycap's name for a screen reader
+fn spoken_key(cap: &str) -> &str {
+    match cap {
+        "Ctrl" => "Control",
+        "⌘" => "Command",
+        "Esc" => "Escape",
+        "↑" => "Up arrow",
+        "↓" => "Down arrow",
+        "←" => "Left arrow",
+        "→" => "Right arrow",
+        "+" => "Plus",
+        "−" => "Minus",
+        _ => cap,
+    }
+}
+
+struct DialogRow {
+    description: &'static str,
+    alternatives: Vec<&'static [&'static str]>,
+    separator: &'static str,
+    spoken: String,
+}
+
+impl DialogRow {
+    fn new(row: &Row) -> Self {
+        let alternatives: Vec<_> = match row.keys {
+            RowKeys::Actions(actions) => actions.iter().flat_map(|&a| caps(a)).copied().collect(),
+            RowKeys::Caps(caps) => caps.to_vec(),
+        };
+        // Combinations side by side would read as one: put "or" between them
+        let combined = alternatives.iter().any(|combo| combo.len() > 1);
+        let separator = if combined { "or" } else { "" };
+        let spoken = alternatives
+            .iter()
+            .map(|combo| {
+                combo
+                    .iter()
+                    .map(|cap| spoken_key(cap))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .collect::<Vec<_>>()
+            .join(if combined { " or " } else { ", " });
+        Self {
+            description: row.description,
+            alternatives,
+            separator,
+            spoken: format!("{}: {spoken}", row.description),
+        }
+    }
+}
+
+fn dialog_groups() -> impl Iterator<Item = (&'static str, Vec<DialogRow>)> {
+    GROUPS
+        .iter()
+        .map(|&(title, rows)| (title, rows.iter().map(DialogRow::new).collect()))
+}
+
+fn model<T: Clone + 'static>(items: impl IntoIterator<Item = T>) -> ModelRc<T> {
+    ModelRc::from(Rc::new(VecModel::from_iter(items)))
+}
+
 pub fn install(ui: &App) {
     let desktop = cfg!(all(feature = "desktop", not(feature = "embedded")));
     let shortcuts = ui.global::<DesktopShortcuts>();
@@ -267,45 +372,17 @@ pub fn install(ui: &App) {
     }
     shortcuts.on_label(|action| label(action).into());
 
-    let mut rows = Vec::new();
-    for group in ["Playback", "Favorites", "Stations", "Window", "Dialogs"] {
-        let mut heading = group;
-        let mut add = |description: &str, keys: &str| {
-            rows.push(ShortcutRow {
-                heading: std::mem::take(&mut heading).into(),
-                description: description.into(),
-                keys: keys.into(),
-            });
-        };
-        for binding in BINDINGS.iter().filter(|binding| binding.group == group) {
-            add(binding.description, binding.label);
-        }
-        match group {
-            "Playback" => add(
-                "Adjust the focused volume slider or EQ fader",
-                "Arrow keys / Page Up / Page Down / Home / End",
-            ),
-            "Favorites" => {
-                for &(_, _, keys, description) in FAVORITE_KEYS {
-                    if !description.is_empty() {
-                        add(description, keys);
-                    }
-                }
-            }
-            "Dialogs" => {
-                add("Move focus forward or backward", "Tab / Shift+Tab");
-                add("Activate the focused button or row", "Enter / Space");
-                add("Close the dialog or popup", "Esc");
-                add(
-                    "Scroll this dialog",
-                    "↑ / ↓ / Page Up / Page Down / Home / End",
-                );
-            }
-            _ => {}
-        }
-    }
-
-    shortcuts.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+    shortcuts.set_groups(model(dialog_groups().map(|(title, rows)| ShortcutGroup {
+        title: title.into(),
+        rows: model(rows.into_iter().map(|row| ShortcutRow {
+            description: row.description.into(),
+            alternatives: model(row.alternatives.into_iter().map(|combo| KeyCombo {
+                keys: model(combo.iter().map(|&cap| SharedString::from(cap))),
+            })),
+            separator: row.separator.into(),
+            spoken: row.spoken.into(),
+        })),
+    })));
     shortcuts.set_enabled(true);
 }
 
@@ -588,6 +665,77 @@ mod tests {
         ] {
             assert_eq!(label(action), expected);
         }
+    }
+
+    fn actions() -> impl Iterator<Item = ShortcutAction> {
+        BINDINGS
+            .iter()
+            .map(|binding| binding.action)
+            .chain(FAVORITE_KEYS.iter().map(|&(action, _, _, _)| action))
+    }
+
+    #[test]
+    fn every_action_has_keycaps() {
+        for action in actions() {
+            let caps = caps(action);
+            assert!(!caps.is_empty(), "{action:?} has no keycaps");
+            for combo in caps {
+                assert!(!combo.is_empty(), "{action:?} has an empty combination");
+                assert!(combo.iter().all(|cap| !cap.is_empty()));
+            }
+        }
+    }
+
+    #[test]
+    fn dialog_shows_every_action_once() {
+        for action in actions() {
+            let shown = GROUPS
+                .iter()
+                .flat_map(|(_, rows)| rows.iter())
+                .filter(|row| matches!(row.keys, RowKeys::Actions(actions) if actions.contains(&action)))
+                .count();
+            assert_eq!(shown, 1, "{action:?} is shown {shown} times");
+        }
+        for (title, rows) in dialog_groups() {
+            assert!(!rows.is_empty(), "{title} has no rows");
+            for row in rows {
+                assert!(
+                    !row.alternatives.is_empty(),
+                    "{} has no keys",
+                    row.description
+                );
+            }
+        }
+    }
+
+    fn dialog_row(description: &str) -> DialogRow {
+        dialog_groups()
+            .flat_map(|(_, rows)| rows)
+            .find(|row| row.description == description)
+            .unwrap()
+    }
+
+    #[test]
+    fn dialog_rows() {
+        let row = dialog_row("Volume up / down");
+        assert_eq!(row.alternatives, [&["+"][..], &["−"][..]]);
+        assert_eq!(row.separator, "");
+        assert_eq!(row.spoken, "Volume up / down: Plus, Minus");
+
+        let row = dialog_row("Open a favorite's actions");
+        assert_eq!(row.alternatives, [&["Shift", "F10"][..], &["Menu"][..]]);
+        assert_eq!(row.separator, "or");
+        assert_eq!(row.spoken, "Open a favorite's actions: Shift F10 or Menu");
+
+        assert_eq!(
+            dialog_row("Move through favorites").spoken,
+            "Move through favorites: Up arrow, Down arrow"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            dialog_row("Search stations").spoken,
+            "Search stations: Control F"
+        );
     }
 
     #[test]

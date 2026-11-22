@@ -792,6 +792,27 @@ export component DialogShell inherits Rectangle {
                     body.content-y = min(0px, body.content-y + body.height);
                     return accept;
                 }
+                // With nothing inside focused (a read-only dialog), the
+                // arrows, Home and End scroll the body too
+                if self.has-focus && !event.modifiers.control && !event.modifiers.alt
+                    && !event.modifiers.meta && !event.modifiers.shift {
+                    if event.text == Key.UpArrow {
+                        body.content-y = min(0px, body.content-y + 24px);
+                        return accept;
+                    }
+                    if event.text == Key.DownArrow {
+                        body.content-y = max(body.height - body.content-height, body.content-y - 24px);
+                        return accept;
+                    }
+                    if event.text == Key.Home {
+                        body.content-y = 0px;
+                        return accept;
+                    }
+                    if event.text == Key.End {
+                        body.content-y = body.height - body.content-height;
+                        return accept;
+                    }
+                }
             }
             if event.text == Key.Tab && !event.modifiers.shift
                 && (self.has-focus || close.has-focus) {

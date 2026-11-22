@@ -603,6 +603,12 @@ const SHOTS: &[Shot] = &[
         "",
         "Desktop keyboard shortcut reference.",
     ),
+    Shot::new(
+        "keyboard-shortcuts-end",
+        "shortcuts",
+        "scrolled-end",
+        "Keyboard Shortcuts scrolled to the last card with the End key.",
+    ),
 ];
 
 pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error>> {
@@ -659,6 +665,13 @@ pub fn run(out_dir: &Path, theme: Theme, scale: f32) -> Result<(), Box<dyn Error
             paint(&window, &mut pixels);
             if needs_layout {
                 open_screen(&ui, shot);
+            }
+            if shot.state == "scrolled-end" {
+                let end = SharedString::from(slint::platform::Key::End);
+                ui.window()
+                    .dispatch_event(WindowEvent::KeyPressed { text: end.clone() });
+                ui.window()
+                    .dispatch_event(WindowEvent::KeyReleased { text: end });
             }
             if shot.screen == "favorite-menu" {
                 ui.set_snapshot_favorite_menu(shot.state.into());

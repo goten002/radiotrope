@@ -74,7 +74,7 @@ dialogs. Use `Theme.row-menu` and `Theme.row-dense` in place of deprecated
 
 | Component | Use for |
 | --- | --- |
-| `DialogShell` | Modal card with a scrollable body and fixed header and footer. Set `card-height` for a viewport-driven dialog. |
+| `DialogShell` | Modal card with a scrollable body and fixed header and footer. Set `card-height` for a viewport-driven dialog. Page Up / Page Down scroll the body; while the shell itself has the focus (a read-only dialog), the arrows, Home and End do too. |
 | `DialogFooter` | Destructive action on the left, then Cancel and primary on the right. Set `close-only` for information or result dialogs, or `full-width` for touch actions. |
 | `StatusPanel` | Empty, loading, and error states with an icon, short title, optional explanation, and one optional secondary action. |
 | `PopupCard` | A bordered, shadowed surface for menus and bubbles. |
@@ -90,6 +90,7 @@ dialogs. Use `Theme.row-menu` and `Theme.row-dense` in place of deprecated
 | `Field`, `StyledLineEdit` | A label and single-line editor with a visible focus ring and optional Clear button. |
 | `Toggle`, `Picker`, `PickerOption`, `PickerChoice` | An on/off setting or a small set of segmented choices. |
 | `ScrollBar` | Vertical thumb, track paging, and drag handling for an existing Flickable. Handle keyboard scrolling in the viewport. |
+| `KeyCap`, `KeyCaps` | A keyboard key drawn as a raised cap (`keycap.slint`), and a shortcut's key combinations: "+" between keys pressed together, an optional `separator` such as "or" between alternatives. |
 | `SectionHeader`, `InfoRow`, `LinkRow`, `CreditLink` | Section labels, label/value pairs, and accessible links. |
 | `Motion`, `NowPlayingBars` | The app's animation clock and a playing indicator. |
 | `AgentsChip`, `AgentsBubble`, `ListenersBubble` | Connection count and details on the main window. |
