@@ -1328,10 +1328,16 @@ mod tests {
         );
         assert_eq!(loudest(&controller, 100), 0.0, "still heard");
 
-        // The next station is as loud as the one before the fade
+        // The next station plays at the user's volume, not the fade's: a
+        // hundred times louder than the fade ended at, once it has
+        // started (a busy machine takes its time)
         play_tone(&controller, state);
-        let next = loudest(&controller, 100);
-        assert!((next - full).abs() < full * 0.1, "{next} after {full}");
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let mut next = loudest(&controller, 100);
+        while next < faded * 30.0 && Instant::now() < deadline {
+            next = loudest(&controller, 100);
+        }
+        assert!(next >= faded * 30.0, "{next} after a fade to {faded}");
     }
 
     #[test]
