@@ -698,8 +698,8 @@ export component MenuBar inherits Rectangle {
                     shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.network-stream) : "";
                     icon: @image-url("icons/link.svg");
                     clicked => {
-                        open-popup.close();
                         root.open-network-stream();
+                        open-popup.close();
                     }
                 }
                 MenuSeparator {}
@@ -762,8 +762,8 @@ export component MenuBar inherits Rectangle {
                     shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.search) : "";
                     icon: @image-url("icons/magnifying-glass.svg");
                     clicked => {
-                        stations-popup.close();
                         root.open-station-search();
+                        stations-popup.close();
                     }
                 }
                 MenuSeparator {}
@@ -990,9 +990,10 @@ export component MenuBar inherits Rectangle {
                 if DesktopShortcuts.enabled: MenuItem {
                     label: "Keyboard Shortcuts";
                     shortcut: DesktopShortcuts.label(ShortcutAction.help);
+                    // Open first: closing the popup takes this item with it
                     clicked => {
-                        help-popup.close();
                         root.open-keyboard-shortcuts();
+                        help-popup.close();
                     }
                 }
                 MenuItem {

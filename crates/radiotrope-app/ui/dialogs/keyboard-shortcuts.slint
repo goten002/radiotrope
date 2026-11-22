@@ -51,7 +51,7 @@ export component KeyboardShortcutsDialog inherits Rectangle {
                         Text {
                             text: row.description;
                             color: Theme.text-secondary;
-                            font-size: Theme.font-sm;
+                            font-size: Theme.font-base;
                             wrap: word-wrap;
                             horizontal-stretch: 1;
                         }
@@ -59,7 +59,8 @@ export component KeyboardShortcutsDialog inherits Rectangle {
                             width: 190px;
                             text: row.keys;
                             color: Theme.text-primary;
-                            font-size: Theme.font-sm;
+                            font-size: Theme.font-base;
+                            font-weight: 600;
                             horizontal-alignment: right;
                             wrap: word-wrap;
                         }
