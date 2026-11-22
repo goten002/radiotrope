@@ -1,6 +1,6 @@
 import { Theme } from "defaults.slint";
 import { Visualization } from "visualization.slint";
-import { Chip, IconButton, Icon } from "components.slint";
+import { Chip, ChipVariant, IconButton, Icon } from "components.slint";
 
 export component Playback inherits Rectangle {
     in property <string> station-name;
@@ -24,7 +24,7 @@ export component Playback inherits Rectangle {
     // A "Saved ..." notice opens the recordings folder when clicked
     in property <bool> can-open-recordings;
     callback open-recordings-folder();
-    // Time left on the Timer, "23:12" ("" when none runs)
+    // Time left on the Sleep Timer, "23:12" ("" when none runs)
     in property <string> sleep-left;
     // The Scheduler's label around an entry's start ("" when none), and
     // whether it is for the fallback sound
@@ -40,6 +40,8 @@ export component Playback inherits Rectangle {
     // Off (View > Visualizer), the tile is left out of the header
     in-out property <bool> show-visualizer: true;
 
+    property <image> empty-image;
+
     height: 108px;
     // No background of its own: it sits on the header (app.slint), which
     // draws the panel colour and the accent glow behind the menu bar too
@@ -52,9 +54,9 @@ export component Playback inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding: 14px;
-        padding-left: 16px;
-        spacing: 14px;
+        padding: Theme.space-12;
+        padding-left: Theme.space-16;
+        spacing: Theme.space-16;
         alignment: stretch;
 
         // Station logo / placeholder
@@ -94,30 +96,31 @@ export component Playback inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 5px;
+            spacing: Theme.space-6;
 
             Text {
                 text: root.station-name;
                 color: Theme.text-primary;
                 font-size: Theme.font-station;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 overflow: elide;
             }
 
-            if root.codec-info != "": Text {
-                text: root.codec-info;
+            Text {
+                text: root.codec-info == "" ? " " : root.codec-info;
                 color: Theme.text-secondary;
                 font-size: Theme.font-md;
                 overflow: elide;
             }
 
             HorizontalLayout {
-                spacing: 6px;
+                spacing: Theme.space-6;
 
                 Chip {
                     text: root.status-text == "Playing" && root.playtime != "—" && root.playtime != ""
                         ? "Playing " + root.playtime : root.status-text;
-                    tone: root.is-error ? Theme.danger : Theme.accent-text;
+                    variant: root.is-error ? ChipVariant.danger
+                        : self.pulse ? ChipVariant.accent : ChipVariant.neutral;
                     dot: true;
                     pulse: root.status-text == "Playing" || root.is-loading;
                     steady: true;
@@ -129,7 +132,9 @@ export component Playback inherits Rectangle {
                 if root.is-recording || root.recording-notice != "": Chip {
                     text: root.is-recording ? "REC " + root.recording-text : root.recording-notice;
                     detail: root.is-recording ? root.recording-size : "";
-                    tone: root.is-recording || root.recording-notice-error ? Theme.danger : Theme.text-secondary;
+                    variant: root.is-recording || root.recording-notice-error ? ChipVariant.danger : ChipVariant.neutral;
+                    icon: root.is-recording ? empty-image : root.recording-notice-error
+                        ? @image-url("icons/circle-alert.svg") : @image-url("icons/record.svg");
                     dot: root.is-recording;
                     pulse: root.is-recording;
                     steady: root.is-recording;
@@ -139,9 +144,8 @@ export component Playback inherits Rectangle {
                 }
 
                 if root.sleep-left != "": Chip {
-                    text: "Timer " + root.sleep-left;
+                    text: "Sleep " + root.sleep-left;
                     icon: @image-url("icons/moon.svg");
-                    tone: Theme.text-secondary;
                     steady: true;
                     keep: true;
                     clickable: true;
@@ -150,8 +154,7 @@ export component Playback inherits Rectangle {
 
                 if root.schedule-label != "": Chip {
                     text: root.schedule-label;
-                    icon: root.schedule-label-bell ? @image-url("icons/bell.svg") : @image-url("icons/calendar-days.svg");
-                    tone: Theme.text-secondary;
+                    icon: root.schedule-label-bell ? @image-url("icons/bell.svg") : @image-url("icons/calendar.svg");
                     steady: true;
                     clickable: true;
                     // After an entry started it is only news: a click closes it
@@ -171,23 +174,22 @@ export component Playback inherits Rectangle {
             }
         }
 
-        // Star (favorite) button, greyed out until a station is loaded
-        VerticalLayout {
+        // Star (favorite) button
+        if root.has-station: VerticalLayout {
             alignment: center;
             IconButton {
-                width: 36px;
-                height: 36px;
+                width: Theme.control-field;
+                height: Theme.control-field;
                 icon: @image-url("icons/star.svg");
-                label: root.is-station-favorited ? "Remove from favorites" : "Add to favorites";
-                icon-size: 20px;
-                enabled: root.has-station;
+                label: root.is-station-favorited ? "Remove from Favorites" : "Add to Favorites";
+                icon-size: Theme.icon-lg;
                 active: root.is-station-favorited;
                 clicked => { root.toggle-favorite(); }
             }
         }
 
         // Visualization tile
-        if root.show-visualizer: VerticalLayout {
+        if root.show-visualizer && root.has-station: VerticalLayout {
             alignment: center;
             viz := Visualization {
                 viz-mode <=> root.viz-mode;

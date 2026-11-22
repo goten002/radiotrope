@@ -301,6 +301,8 @@ export component App inherits Window {
     in-out property <bool> remote-on <=> remote-dialog.enabled-on;
     in-out property <string> remote-status <=> remote-dialog.status;
     in-out property <bool> remote-status-error <=> remote-dialog.status-error;
+    // A short form of an error status for its row ("Can't start")
+    in-out property <string> remote-status-short <=> remote-dialog.status-short;
     in-out property <string> remote-address <=> remote-dialog.address;
     in-out property <string> remote-address-note <=> remote-dialog.address-note;
     in-out property <string> remote-name <=> remote-dialog.name;
@@ -871,7 +873,7 @@ export component App inherits Window {
                 open-url(url) => { root.open-url(url); }
             }
 
-            // WiFi settings dialog (an empty stand-in on desktop builds)
+            // Wi-Fi settings dialog (an empty stand-in on desktop builds)
             wifi-dialog := WifiSettingsDialog {
                 show-dialog <=> root.show-wifi-settings;
                 scan-requested() => { root.wifi-scan-requested(); }
