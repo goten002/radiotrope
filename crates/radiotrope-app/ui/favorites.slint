@@ -967,6 +967,23 @@ export component Favorites inherits Rectangle {
         }
     }
 
+    // The field hides when the focus leaves it empty (Tab, Down into the
+    // list, a dialog or menu, a click on the window's background) or a row
+    // is clicked. With text it stays: hiding it would drop the filter the
+    // list shows without a word. A clicked row hides it after the click,
+    // so the list moves up under a click that is already done.
+    property <bool> find-focused: find-field.has-focus;
+    changed find-focused => {
+        if !root.find-focused {
+            root.leave-empty-find();
+        }
+    }
+    function leave-empty-find() {
+        if root.find-open && root.find-text == "" {
+            root.close-find();
+        }
+    }
+
     // Esc in the list: closes Find first, then clears the highlight
     public function escape() {
         if root.find-open {
@@ -1266,7 +1283,10 @@ export component Favorites inherits Rectangle {
                         can-move-up: !root.finding && idx > 0;
                         can-move-down: !root.finding && idx < root.shown.length - 1;
                         step-requested(step) => { root.favorites-reordered(idx, idx + step); }
-                        clicked => { root.activate(station); }
+                        clicked => {
+                            root.activate(station);
+                            root.leave-empty-find();
+                        }
                         listen-time: station.listen-time;
                         last-played: station.last-played;
                         play-count: station.play-count;
