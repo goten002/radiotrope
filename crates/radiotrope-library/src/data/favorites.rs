@@ -15,7 +15,9 @@ use crate::data::types::{
 use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 /// Favorites data file name
 const FAVORITES_FILE: &str = "favorites.json";
@@ -210,16 +212,16 @@ impl FavoritesManager {
     ///
     /// A missing or damaged file is no news: the next save writes it anew.
     pub fn reload_if_changed(&mut self) -> bool {
-        let stats = self.reload_stats_if_changed();
-        self.reload_favorites_if_changed() || stats
+        let stats = self.reload_stats(false);
+        self.reload_favorites(false) || stats
     }
 
-    fn reload_favorites_if_changed(&mut self) -> bool {
+    fn reload_favorites(&mut self, force_read: bool) -> bool {
         let Some(path) = self.path.clone() else {
             return false;
         };
         let stamp = storage::stamp(&path);
-        if stamp.is_none() || stamp == self.seen {
+        if stamp.is_none() || (!force_read && stamp == self.seen) {
             return false;
         }
         // Before the read, as at load
@@ -256,12 +258,12 @@ impl FavoritesManager {
     /// [`reload_if_changed`](Self::reload_if_changed) for the stats: the
     /// stations whose stats changed here keep them, the others take what
     /// the other process saved
-    fn reload_stats_if_changed(&mut self) -> bool {
+    fn reload_stats(&mut self, force_read: bool) -> bool {
         let Some(path) = self.stats_path() else {
             return false;
         };
         let stamp = storage::stamp(&path);
-        if stamp.is_none() || stamp == self.stats_seen {
+        if stamp.is_none() || (!force_read && stamp == self.stats_seen) {
             return false;
         }
         self.stats_seen = stamp;
@@ -301,10 +303,13 @@ impl FavoritesManager {
     ///
     /// What another process saved there since is kept too (see
     /// [`reload_if_changed`](Self::reload_if_changed)).
+    /// The directory's lock covers the reload and both writes, including
+    /// saves after importing or undoing an import.
     pub fn save_to(&mut self, path: &Path) -> Result<()> {
         if !self.dirty && !self.stats_dirty {
             return Ok(());
         }
+        let _lock = lock_for_save(path)?;
         if self.path.as_deref() != Some(path) {
             // A file this manager hasn't read: the favorites already in it
             // stay, next to the ones here (stats too)
@@ -314,7 +319,8 @@ impl FavoritesManager {
             self.stats_seen = None;
             self.stats_base.clear();
         }
-        self.reload_if_changed();
+        self.reload_stats(true);
+        self.reload_favorites(true);
 
         if self.dirty {
             let file = FavoritesFile {
@@ -996,6 +1002,49 @@ fn stats_path_for(path: &Path) -> PathBuf {
     path.with_file_name(STATS_FILE)
 }
 
+fn lock_for_save(path: &Path) -> Result<File> {
+    // Keep the lock file in place across saves. The data files are replaced
+    // on rename, and even custom favorites filenames share stats in a folder.
+    let path = path.with_file_name("favorites.json.lock");
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        storage::create_dir_if_needed(parent)?;
+    }
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+        .map_err(|e| {
+            AppError::Config(format!(
+                "Cannot open favorites lock {}: {e}",
+                path.display()
+            ))
+        })?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(lock),
+            Err(TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(AppError::Config(format!(
+                        "Timed out waiting for favorites lock {}",
+                        path.display()
+                    )));
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(25)));
+            }
+            Err(TryLockError::Error(e)) => {
+                return Err(AppError::Config(format!(
+                    "Cannot acquire favorites lock {}: {e}",
+                    path.display()
+                )));
+            }
+        }
+    }
+}
+
 /// The favorites in a file read from `path`, by ID
 fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favorite> {
     let mut favorites = HashMap::new();
@@ -1623,6 +1672,82 @@ mod tests {
         // The agent's player sees the GUI's at its next look
         assert!(agent.reload_if_changed());
         assert_eq!(urls(&agent), saved_urls(&path));
+        remove_files(&path);
+    }
+
+    #[test]
+    fn overlapping_saves_preserve_both_favorites_and_stats() {
+        use std::sync::{mpsc, Barrier};
+
+        let (path, mut first, mut second) = two_players(&[]);
+        for (manager, url, seconds) in [
+            (&mut first, "http://a.test", 60),
+            (&mut second, "http://b.test", 120),
+        ] {
+            manager.add(Favorite::new(url, url)).unwrap();
+            manager.add_listening(url, seconds, true).unwrap();
+        }
+
+        // Queue both saves behind an independent holder of the same lock.
+        let lock = lock_for_save(&path).unwrap();
+        let start = Barrier::new(3);
+        let (done, results) = mpsc::channel();
+        std::thread::scope(|scope| {
+            for mut manager in [first, second] {
+                let (path, start, done) = (&path, &start, done.clone());
+                scope.spawn(move || {
+                    start.wait();
+                    done.send(manager.save_to(path)).unwrap();
+                });
+            }
+            start.wait();
+            let while_locked = results.recv_timeout(Duration::from_millis(100));
+            drop(lock);
+            assert!(matches!(while_locked, Err(mpsc::RecvTimeoutError::Timeout)));
+            for _ in 0..2 {
+                results.recv().unwrap().unwrap();
+            }
+        });
+
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(urls(&saved), ["http://a.test", "http://b.test"]);
+        assert_eq!(
+            saved
+                .stats(&url_to_id("http://a.test"))
+                .total_listen_time_secs,
+            60
+        );
+        assert_eq!(
+            saved
+                .stats(&url_to_id("http://b.test"))
+                .total_listen_time_secs,
+            120
+        );
+        remove_files(&path);
+    }
+
+    #[test]
+    fn lock_contention_times_out_and_leaves_the_changes_pending() {
+        let (path, mut writer, _) = two_players(&["http://a.test"]);
+        writer.add_listening("http://a.test", 60, true).unwrap();
+        let lock = lock_for_save(&path).unwrap();
+
+        let error = writer.save_to(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("Timed out waiting for favorites lock"),
+            "{error}"
+        );
+        assert!(writer.is_dirty());
+        drop(lock);
+
+        writer.save_to(&path).unwrap();
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(
+            saved
+                .stats(&url_to_id("http://a.test"))
+                .total_listen_time_secs,
+            60
+        );
         remove_files(&path);
     }
 

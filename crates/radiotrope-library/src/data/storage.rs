@@ -61,7 +61,7 @@ pub fn data_path(filename: &str) -> Result<PathBuf> {
 // =============================================================================
 
 /// Create a directory if it doesn't exist, with proper error handling
-fn create_dir_if_needed(path: &Path) -> Result<()> {
+pub(super) fn create_dir_if_needed(path: &Path) -> Result<()> {
     match fs::create_dir_all(path) {
         Ok(()) => Ok(()),
         Err(e) => {
