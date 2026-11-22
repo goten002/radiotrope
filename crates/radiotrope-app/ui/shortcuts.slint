@@ -6,15 +6,31 @@ export enum ShortcutAction {
     favorite-play, favorite-menu, favorite-clear,
 }
 
+// Keys pressed together, e.g. ["Ctrl", "F"]
+export struct KeyCombo {
+    keys: [string],
+}
+
+// One line of the Keyboard Shortcuts dialog
 export struct ShortcutRow {
-    heading: string,
     description: string,
-    keys: string,
+    // Each a way to press it, drawn side by side
+    alternatives: [KeyCombo],
+    // Drawn between the alternatives ("or"), or empty
+    separator: string,
+    // The spoken label: "Search stations: Control F"
+    spoken: string,
+}
+
+// One card of the dialog
+export struct ShortcutGroup {
+    title: string,
+    rows: [ShortcutRow],
 }
 
 export global DesktopShortcuts {
     in property <bool> enabled;
-    in property <[ShortcutRow]> rows;
+    in property <[ShortcutGroup]> groups;
     pure callback label(ShortcutAction) -> string;
     callback match-key(KeyEvent) -> ShortcutAction;
 }

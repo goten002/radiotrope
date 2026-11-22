@@ -1,0 +1,69 @@
+import { Theme } from "defaults.slint";
+import { KeyCombo } from "shortcuts.slint";
+
+// One key drawn as a keyboard key: a raised, rounded cap with its name
+// inside. Single letters come out square.
+export component KeyCap inherits Rectangle {
+    in property <string> label;
+
+    min-width: self.height;
+    preferred-width: max(self.height, name.preferred-width + 2 * Theme.space-6);
+    height: 22px;
+    horizontal-stretch: 0;
+    // The border, two pixels deep at the bottom so the key looks raised
+    background: Theme.popup-border;
+    border-radius: Theme.radius-sm;
+    accessible-role: none;
+
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 3px;
+        background: Theme.card;
+        border-radius: Theme.radius-sm - 1px;
+
+        name := Text {
+            text: root.label;
+            color: Theme.text-primary;
+            font-size: Theme.font-sm;
+            font-weight: Theme.weight-semibold;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Ways to press one shortcut: each combination draws its keys joined by
+// "+", the combinations side by side or with `separator` between them.
+export component KeyCaps inherits HorizontalLayout {
+    in property <[KeyCombo]> alternatives;
+    in property <string> separator;
+
+    spacing: Theme.space-6;
+    alignment: end;
+
+    for combo[i] in root.alternatives: HorizontalLayout {
+        spacing: Theme.space-6;
+        height: 22px;
+
+        if i > 0 && root.separator != "": Text {
+            text: root.separator;
+            color: Theme.text-tertiary;
+            font-size: Theme.font-sm;
+            vertical-alignment: center;
+        }
+
+        for key[k] in combo.keys: HorizontalLayout {
+            spacing: Theme.space-2;
+
+            if k > 0: Text {
+                text: "+";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-sm;
+                vertical-alignment: center;
+            }
+            KeyCap { label: key; }
+        }
+    }
+}
