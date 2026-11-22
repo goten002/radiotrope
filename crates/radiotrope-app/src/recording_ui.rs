@@ -15,7 +15,8 @@ use radiotrope_app::{text, visual};
 use crate::app::state::AppSnapshot;
 use crate::app::ui_sender::UiSender;
 use crate::context::lock;
-use crate::{app, format_bytes, App};
+use crate::stats_ui::format_bytes;
+use crate::{app, App};
 
 /// Largest station logo embedded as cover art in a recording
 pub(crate) const MAX_COVER_BYTES: usize = 512 * 1024;
