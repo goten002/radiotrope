@@ -425,6 +425,12 @@ const SHOTS: &[Shot] = &[
         "A result row whose station failed to connect.",
     ),
     Shot::new(
+        "search-keyboard-row",
+        "search",
+        "keyboard",
+        "The results list with the keyboard: Down from the search field, the second row active.",
+    ),
+    Shot::new(
         "picker-country",
         "picker",
         "country",
@@ -435,6 +441,12 @@ const SHOTS: &[Shot] = &[
         "picker",
         "genre",
         "Genre filter options and counts.",
+    ),
+    Shot::new(
+        "picker-keyboard-row",
+        "picker",
+        "country-keys",
+        "The country list with the keyboard: Down from the filter field, the third row active.",
     ),
     Shot::new(
         "picker-loading",
@@ -923,6 +935,13 @@ fn after_open(ui: &App, shot: &Shot) {
         // Enter in the form's first field saves it, and the save fails
         ("edit-favorite", "error") => press(ui, Key::Return),
         _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
+        // Down from the text field goes into the list, then moves in it
+        ("search", "keyboard") | ("picker", "country-keys") => {
+            for _ in 0..if shot.screen == "search" { 2 } else { 3 } {
+                press(ui, Key::DownArrow);
+                slint::platform::update_timers_and_animations();
+            }
+        }
         ("picker", "no-match") => {
             // What the filter callback leaves for a text nothing matches
             ui.set_filter_entries_text("Atlantis".into());
@@ -1285,7 +1304,8 @@ fn configure(ui: &App, shot: &Shot) {
             if matches!(shot.state, "filtered" | "next-loading" | "next-error") {
                 ui.set_snapshot_country_flag(flag_image(Some("GB"), None));
             }
-            if shot.name == "search-results" || matches!(shot.state, "next-loading" | "next-error")
+            if shot.name == "search-results"
+                || matches!(shot.state, "next-loading" | "next-error" | "keyboard")
             {
                 set_results(ui);
             }
@@ -1462,7 +1482,8 @@ fn open_screen(ui: &App, shot: &Shot) {
                 ui.set_filter_entries_error("The station directory did not respond.".into());
             }
             "loading" => {}
-            kind => set_picker_entries(ui, kind),
+            "genre" => set_picker_entries(ui, "genre"),
+            _ => set_picker_entries(ui, "country"),
         }
     }
 }
@@ -1559,3 +1580,7 @@ fn set_picker_entries(ui: &App, kind: &str) {
 #[cfg(test)]
 #[path = "ui_snapshots_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "key_lists_test.rs"]
+mod key_list_tests;
