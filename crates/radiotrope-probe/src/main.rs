@@ -2,14 +2,14 @@
 //! or a scheduler
 //!
 //! Exit codes: 0 every station up, 1 one degraded, 2 one down, 3 the check
-//! could not run (bad arguments, unreadable list).
+//! can't run (bad arguments, unreadable list).
 
 mod args;
 
 use std::collections::BTreeMap;
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -17,7 +17,7 @@ use std::time::Duration;
 use clap::error::ErrorKind;
 use clap::Parser;
 use radiotrope_probe::report::EXIT_UNKNOWN;
-use radiotrope_probe::text::{self, Style};
+use radiotrope_probe::text::{self, Style, Totals};
 use radiotrope_probe::{check, Options, Report, Status};
 
 use args::Args;
@@ -59,6 +59,12 @@ fn main() {
 }
 
 fn run(args: Args) -> i32 {
+    if args.listen >= args.timeout {
+        eprintln!(
+            "radiotrope-probe: --timeout must be longer than --listen (the timeout covers the whole check)"
+        );
+        return EXIT_UNKNOWN;
+    }
     let mut urls = args.urls.clone();
     if let Some(path) = &args.input {
         match read_list(path) {
@@ -94,16 +100,80 @@ fn run(args: Args) -> i32 {
         Style::Plain
     };
 
+    // A list makes an array even with one line in it, so a script reading
+    // the output doesn't depend on how long the list is today
+    let array = args.input.is_some() || urls.len() > 1;
     let several = urls.len() > 1;
-    let reports = check_all(urls, &options, args.jobs as usize);
+    let count = urls.len();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reports = check_all(urls, &options, args.jobs as usize, stop.clone());
     let mut worst = Status::Up;
-    let mut printer = Printer::new(output, style, several);
+    let mut totals = Totals::default();
+    let mut progress = Progress::new(several && show_progress(), count);
+    let mut printer = Printer::new(output, style, array);
+    progress.show(0);
     for (index, report) in reports {
         worst = worst.max(report.status);
-        printer.add(index, report);
+        totals.add(&report);
+        progress.clear();
+        if !printer.add(index, report) {
+            // The reader went away (`| head -1`): no one wants the rest
+            stop.store(true, Ordering::Relaxed);
+            return worst.exit_code();
+        }
+        progress.show(totals.checked());
     }
-    printer.finish();
+    progress.clear();
+    if !printer.finish() {
+        return worst.exit_code();
+    }
+    if several {
+        match output {
+            Output::Text => {
+                print(&format!("\n{}", totals.line()));
+            }
+            // On stderr, so the lines on stdout stay one per station
+            Output::Quiet => eprint!("{}", totals.line()),
+            Output::Json | Output::Ndjson => {}
+        }
+    }
     worst.exit_code()
+}
+
+/// "Checked 12 of 200" on one line of stderr while a long list runs
+struct Progress {
+    on: bool,
+    total: usize,
+    shown: bool,
+}
+
+impl Progress {
+    fn new(on: bool, total: usize) -> Self {
+        Self {
+            on,
+            total,
+            shown: false,
+        }
+    }
+
+    fn show(&mut self, done: usize) {
+        if self.on && done < self.total {
+            let mut err = io::stderr().lock();
+            let _ = write!(err, "\r\x1b[KChecked {done} of {}", self.total);
+            let _ = err.flush();
+            self.shown = true;
+        }
+    }
+
+    /// Take the line away before a report or the totals take its place
+    fn clear(&mut self) {
+        if self.shown {
+            let mut err = io::stderr().lock();
+            let _ = write!(err, "\r\x1b[K");
+            let _ = err.flush();
+            self.shown = false;
+        }
+    }
 }
 
 /// Addresses in a list file: one per line, blank lines and # comments skipped
@@ -127,18 +197,28 @@ fn read_list(path: &PathBuf) -> io::Result<Vec<String>> {
 }
 
 /// Check every address, `jobs` at a time. Reports come as each finishes,
-/// with their place in `urls`.
+/// with their place in `urls`. Setting `stop` starts no more checks.
 fn check_all(
     urls: Vec<String>,
     options: &Options,
     jobs: usize,
+    stop: Arc<AtomicBool>,
 ) -> impl Iterator<Item = (usize, Report)> {
     let urls = Arc::new(urls);
     let next = Arc::new(AtomicUsize::new(0));
     let (tx, rx) = crossbeam_channel::unbounded();
     for _ in 0..jobs.min(urls.len()) {
-        let (urls, next, tx, options) = (urls.clone(), next.clone(), tx.clone(), options.clone());
+        let (urls, next, tx, options, stop) = (
+            urls.clone(),
+            next.clone(),
+            tx.clone(),
+            options.clone(),
+            stop.clone(),
+        );
         thread::spawn(move || loop {
+            if stop.load(Ordering::Relaxed) {
+                break;
+            }
             let index = next.fetch_add(1, Ordering::Relaxed);
             let Some(url) = urls.get(index) else {
                 break;
@@ -155,28 +235,33 @@ fn check_all(
 struct Printer {
     output: Output,
     style: Style,
-    several: bool,
+    /// JSON as an array, even of one
+    array: bool,
     waiting: BTreeMap<usize, Report>,
     next: usize,
     all: Vec<(usize, Report)>,
 }
 
 impl Printer {
-    fn new(output: Output, style: Style, several: bool) -> Self {
+    fn new(output: Output, style: Style, array: bool) -> Self {
         Self {
             output,
             style,
-            several,
+            array,
             waiting: BTreeMap::new(),
             next: 0,
             all: Vec::new(),
         }
     }
 
-    fn add(&mut self, index: usize, report: Report) {
+    /// False once the output can't be written any more
+    fn add(&mut self, index: usize, report: Report) -> bool {
         match self.output {
             Output::Ndjson => print(&format!("{}\n", json(&report, false))),
-            Output::Json => self.all.push((index, report)),
+            Output::Json => {
+                self.all.push((index, report));
+                true
+            }
             Output::Text | Output::Quiet => {
                 self.waiting.insert(index, report);
                 while let Some(report) = self.waiting.remove(&self.next) {
@@ -186,18 +271,22 @@ impl Printer {
                         _ if self.next > 0 => format!("\n{}", text::full(&report, self.style)),
                         _ => text::full(&report, self.style),
                     };
-                    print(&text);
+                    if !print(&text) {
+                        return false;
+                    }
                     self.next += 1;
                 }
+                true
             }
         }
     }
 
-    fn finish(mut self) {
+    /// False if the output can't be written
+    fn finish(mut self) -> bool {
         if self.output != Output::Json {
-            return;
+            return true;
         }
-        let text = if self.several {
+        let text = if self.array {
             // In the order given, not the order they finished
             self.all.sort_by_key(|(index, _)| *index);
             let reports: Vec<&Report> = self.all.iter().map(|(_, r)| r).collect();
@@ -208,7 +297,7 @@ impl Printer {
                 .map(|(_, r)| json(r, true))
                 .unwrap_or_default()
         };
-        print(&format!("{text}\n"));
+        print(&format!("{text}\n"))
     }
 }
 
@@ -221,18 +310,29 @@ fn json(report: &Report, pretty: bool) -> String {
     result.unwrap_or_default()
 }
 
-/// Print, ignoring a closed pipe (`radiotrope-probe ... | head`)
-fn print(text: &str) {
+/// Print; false when the output is closed (`radiotrope-probe ... | head`),
+/// which is not an error to report
+fn print(text: &str) -> bool {
     let mut out = io::stdout().lock();
-    let _ = out.write_all(text.as_bytes());
-    let _ = out.flush();
+    out.write_all(text.as_bytes()).is_ok() && out.flush().is_ok()
 }
 
-/// Colour the status word on a terminal, unless NO_COLOR is set. Not on
-/// Windows: its older consoles show the codes as text.
+/// Colour the status word on a terminal, unless NO_COLOR is set
 fn use_colour(output: Output) -> bool {
     matches!(output, Output::Text | Output::Quiet)
-        && !cfg!(windows)
+        && terminal_codes()
         && io::stdout().is_terminal()
         && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
+/// The progress line, on a terminal that can redraw it
+fn show_progress() -> bool {
+    terminal_codes() && io::stderr().is_terminal()
+}
+
+/// Whether the console understands colour and line codes. On Windows only
+/// Windows Terminal is sure to (it sets WT_SESSION); older consoles show
+/// the codes as text.
+fn terminal_codes() -> bool {
+    !cfg!(windows) || std::env::var_os("WT_SESSION").is_some()
 }

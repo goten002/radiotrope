@@ -47,6 +47,84 @@ fn usage_errors_exit_3_not_2() {
 }
 
 #[test]
+fn a_listen_longer_than_the_timeout_is_refused() {
+    for (listen, timeout) in [("10", "3"), ("5", "5")] {
+        let output = probe(&["--listen", listen, "--timeout", timeout, "http://x/"]);
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        let err = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            err.contains(
+                "--timeout must be longer than --listen (the timeout covers the whole check)"
+            ),
+            "{err}"
+        );
+        assert!(output.stdout.is_empty());
+    }
+    // The default timeout is 30 s
+    assert_eq!(
+        probe(&["--listen", "30", "http://x/"]).status.code(),
+        Some(3)
+    );
+}
+
+#[test]
+fn a_missing_scheme_says_how_to_fix_it() {
+    let output = probe(&["--quiet", "radio.example/live.pls"]);
+    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(
+        stdout(&output),
+        "DOWN     radio.example/live.pls: Not a web address. Start it with http:// or https://\n"
+    );
+}
+
+#[test]
+fn a_list_of_one_still_makes_an_array() {
+    let dir = std::env::temp_dir().join(format!("radiotrope-probe-one-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let list = dir.join("one-line.txt");
+    std::fs::write(&list, "ftp://a/\n").unwrap();
+    let output = probe(&["--json", "--input", list.to_str().unwrap()]);
+    let _ = std::fs::remove_dir_all(&dir);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(json.as_array().map(Vec::len), Some(1), "{json}");
+    // One address on the command line stays one object
+    let output = probe(&["--json", "ftp://a/"]);
+    let json: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert!(json.is_object(), "{json}");
+}
+
+#[test]
+fn several_stations_end_with_totals() {
+    let server = Server::start();
+    let live = server.route("/live", Live::tone().handler());
+    let gone = server.route("/gone", status(404, "Not Found"));
+    let output = probe(&["-l", "1", &live, &gone, "ftp://x/"]);
+    let text = stdout(&output);
+    assert!(
+        text.ends_with("\n\n3 checked: 1 up, 2 down (1 not a web address)\n"),
+        "{text}"
+    );
+
+    // In one-line mode the totals go to stderr: one stdout line per station
+    let output = probe(&["--quiet", "ftp://a/", "ftp://b/"]);
+    let text = stdout(&output);
+    assert_eq!(text.lines().count(), 2, "{text}");
+    assert!(
+        text.lines().all(|l| l.starts_with("DOWN     ftp://")),
+        "{text}"
+    );
+    let err = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        err.ends_with("2 checked: 2 down (2 not a web address)\n"),
+        "{err}"
+    );
+
+    // One station needs no totals
+    let output = probe(&["ftp://a/"]);
+    assert!(!stdout(&output).contains(" checked: "), "{output:?}");
+}
+
+#[test]
 fn a_down_station_exits_2_with_json() {
     let output = probe(&["--json", "ftp://radio.example/live"]);
     assert_eq!(output.status.code(), Some(2));
@@ -100,7 +178,7 @@ fn an_up_station_exits_0_with_one_line() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let text = stdout(&output);
     assert!(
-        text.starts_with("UP Test FM: MP3 128 kbps, 44.1 kHz stereo, -"),
+        text.starts_with("UP       Test FM: MP3 128 kbps, 44.1 kHz stereo, -"),
         "{text}"
     );
     assert!(text.ends_with(", \"Artist - Song\"\n"), "{text}");
@@ -123,7 +201,7 @@ fn the_full_text_names_the_station() {
         text.contains("  Problem  No sound above -50 dBFS"),
         "{text}"
     );
-    assert!(text.contains("  Now      no song info\n"), "{text}");
+    assert!(text.contains("  Now      No song info\n"), "{text}");
 }
 
 #[test]

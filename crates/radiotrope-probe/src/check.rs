@@ -89,8 +89,6 @@ struct Shared {
 
 /// Check the station at `url`
 pub fn check(url: &str, options: &Options) -> Report {
-    // Ignored when the program already chose its own User-Agent
-    let _ = crate::set_user_agent(crate::USER_AGENT);
     let started = Instant::now();
     let mut report = Report::new(url, rfc3339(SystemTime::now()));
     match valid_url(url) {
@@ -108,9 +106,16 @@ pub fn check(url: &str, options: &Options) -> Report {
     report
 }
 
+/// The message for an address typed without its scheme, the most common slip
+const NO_SCHEME: &str = "Not a web address. Start it with http:// or https://";
+
 /// Only http and https addresses are stations
 fn valid_url(url: &str) -> Result<(), String> {
-    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Not a valid address: {e}"))?;
+    // "radio.example:8000/live" parses, with "radio.example" as its scheme
+    if !url.contains("://") {
+        return Err(NO_SCHEME.to_string());
+    }
+    let parsed = reqwest::Url::parse(url).map_err(|e| format!("Not a valid web address ({e})"))?;
     match parsed.scheme() {
         "http" | "https" if parsed.host_str().is_some() => Ok(()),
         "http" | "https" => Err("The address has no host".to_string()),
@@ -342,7 +347,6 @@ fn listen(
 ) {
     let start = Instant::now();
     let end = (start + options.listen).min(deadline);
-    let bytes_at_start = bytes.as_ref().map(|b| b.load(Ordering::Relaxed));
     let mut player = Player::default();
     let mut songs = Songs::default();
     let mut ended = None;
@@ -385,13 +389,7 @@ fn listen(
     } else {
         0.0
     };
-    audio.measured_kbps = match (bytes, bytes_at_start) {
-        (Some(bytes), Some(at_start)) if listened > 0.0 => {
-            let got = bytes.load(Ordering::Relaxed).saturating_sub(at_start);
-            Some(round1(got as f64 * 8.0 / 1000.0 / listened))
-        }
-        _ => None,
-    };
+    audio.measured_kbps = bytes.and_then(|b| stream_kbps(b.load(Ordering::Relaxed), decoded));
     audio.stalls = player.stalls;
     audio.stalled_s = round2(player.stalled_secs);
     audio.rms_dbfs = levels.rms_dbfs().map(round1);
@@ -438,6 +436,17 @@ fn listen(
         });
     }
     report.metadata = songs.into_metadata();
+}
+
+/// Less decoded audio than this gives no bitrate: too few bytes to tell
+const MIN_KBPS_AUDIO_S: f64 = 0.5;
+
+/// The stream's real bitrate: every byte received over the audio decoded
+/// from them. The decoder here keeps up with the network, so the server's
+/// start-up burst counts on both sides and doesn't inflate the rate, as
+/// dividing by the time listened would.
+fn stream_kbps(bytes: u64, decoded_s: f64) -> Option<f64> {
+    (decoded_s >= MIN_KBPS_AUDIO_S).then(|| round1(bytes as f64 * 8.0 / 1000.0 / decoded_s))
 }
 
 /// Song info seen during the listen
@@ -533,8 +542,31 @@ mod tests {
         assert!(valid_url("ftp://radio.example/live")
             .unwrap_err()
             .contains("ftp"));
-        assert!(valid_url("radio.example/live").is_err());
         assert!(valid_url("").is_err());
+    }
+
+    #[test]
+    fn a_missing_scheme_says_how_to_fix_it() {
+        for typed in [
+            "radio.example/live",
+            "radio.example:8000/live",
+            "localhost:8000",
+        ] {
+            assert_eq!(valid_url(typed).unwrap_err(), NO_SCHEME, "{typed}");
+        }
+        let message = valid_url("http://radio.example:99999/").unwrap_err();
+        assert!(
+            message.starts_with("Not a valid web address ("),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn the_bitrate_comes_from_the_audio_not_the_clock() {
+        // 128 kbps for 12 s: a 2 s burst, then 10 s listened
+        let bytes = 128_000 / 8 * 12;
+        assert_eq!(stream_kbps(bytes, 12.0), Some(128.0));
+        assert_eq!(stream_kbps(bytes, 0.1), None);
     }
 
     #[test]

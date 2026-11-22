@@ -282,24 +282,30 @@ fn the_json_has_every_section() {
     assert!(at.len() == 20 && at.ends_with('Z'), "{at}");
 }
 
+/// The User-Agent in a request's headers, read up to the blank line
+fn user_agent_of(stream: &std::net::TcpStream) -> Option<String> {
+    let mut agent = None;
+    for line in BufReader::new(stream.try_clone().unwrap()).lines() {
+        let line = line.ok()?;
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            if name.eq_ignore_ascii_case("user-agent") {
+                agent = Some(value.trim().to_string());
+            }
+        }
+    }
+    agent
+}
+
 #[test]
-fn the_probe_names_itself_to_stations() {
+fn the_probe_sends_the_players_user_agent() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/live", listener.local_addr().unwrap());
     let server = thread::spawn(move || {
         let (mut stream, _) = listener.accept().unwrap();
-        let mut agent = None;
-        for line in BufReader::new(stream.try_clone().unwrap()).lines() {
-            let line = line.unwrap();
-            if line.is_empty() {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':') {
-                if name.eq_ignore_ascii_case("user-agent") {
-                    agent = Some(value.trim().to_string());
-                }
-            }
-        }
+        let agent = user_agent_of(&stream);
         let _ = stream
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
         agent
@@ -308,5 +314,44 @@ fn the_probe_names_itself_to_stations() {
     assert_eq!(report.status, Status::Down, "{report:#?}");
     let agent = server.join().unwrap().expect("a User-Agent header");
     assert_eq!(agent, radiotrope_probe::USER_AGENT);
-    assert!(agent.starts_with("RadiotropeProbe/"), "{agent}");
+    assert_eq!(agent, radiotrope::config::network::USER_AGENT);
+    assert!(agent.starts_with("Radiotrope/"), "{agent}");
+}
+
+/// Some stations answer only the players they know (SomaFM refuses
+/// unknown agents with 403): the probe must hear what a listener hears
+#[test]
+fn a_station_that_refuses_unknown_agents_is_up() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/live", listener.local_addr().unwrap());
+    let station = Live::tone().handler();
+    thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            let station = station.clone();
+            thread::spawn(move || {
+                let known = user_agent_of(&stream).is_some_and(|a| a.starts_with("Radiotrope/"));
+                if known {
+                    station(&mut stream);
+                } else {
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
+            });
+        }
+    });
+    let report = check(&url, &options(2, 10));
+    assert_eq!(report.status, Status::Up, "{report:#?}");
+}
+
+#[test]
+fn the_bitrate_is_the_streams_not_the_bursts() {
+    // 2 s of audio arrive at once; dividing by the time listened made a
+    // 128 kbps station read as 200 and more
+    let server = Server::start();
+    let url = server.route("/live", Live::tone().handler());
+    let report = check(&url, &options(2, 10));
+    let kbps = report.audio.as_ref().unwrap().measured_kbps.unwrap();
+    assert!((110.0..150.0).contains(&kbps), "{kbps}");
 }
