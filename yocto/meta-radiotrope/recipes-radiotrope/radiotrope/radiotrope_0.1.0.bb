@@ -42,7 +42,7 @@ S = "${WORKDIR}/radiotrope"
 # checksums what is copied, so a change to the Rust or Slint sources
 # rebuilds the player; a plain pull-and-build is enough
 RADIOTROPE_SRC ?= "/work"
-RADIOTROPE_SRC_PARTS = "Cargo.toml Cargo.lock LICENSE crates assets"
+RADIOTROPE_SRC_PARTS = "Cargo.toml Cargo.lock LICENSE crates assets vendor"
 do_unpack[file-checksums] += "${@' '.join('%s/%s:True' % (d.getVar('RADIOTROPE_SRC'), p) for p in d.getVar('RADIOTROPE_SRC_PARTS').split())}"
 
 python do_unpack:append() {
