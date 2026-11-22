@@ -37,6 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - Stations > Undo Favorites Import. The import dialog already shows what an import will do before it changes anything. Phones can still undo an import they sent.
 
 ### Fixed
+- Favorite logos now update when a station changes its logo: a logo from a new address is downloaded at once, and every favorite's logo is downloaded again once a month. The old logo stays if the download fails.
 - Many streaming fixes: HLS segment timeouts, plain M3U versus HLS, SHOUTcast redirects, stale HLS playlists, and reconnects after network drops.
 - Logos landing on the wrong station, logo cache wipes after the id change, and caps on logo downloads.
 - Recordings are finished properly at exit.
