@@ -282,6 +282,8 @@ component CheckMenuItem inherits MenuRowBase {
     in property <bool> checked;
     // A faint note on the right, before the tick
     in property <string> hint;
+    // What the option does, for screen readers only (the menu stays short)
+    in property <string> description;
     // One of a set where another is always ticked (the visualizer styles):
     // no faint tick while this one is off
     in property <bool> one-of-set;
@@ -299,7 +301,7 @@ component CheckMenuItem inherits MenuRowBase {
 
     accessible-role: checkbox;
     accessible-label: root.label;
-    accessible-description: root.hint;
+    accessible-description: root.hint != "" ? root.hint : root.description;
     accessible-enabled: root.enabled;
     accessible-checkable: true;
     accessible-checked: root.checked;
@@ -935,7 +937,7 @@ export component MenuBar inherits Rectangle {
     property <[bool]> open-usable: [
         true, !Platform.has-power-off, Platform.has-power-off, Platform.has-power-off,
     ];
-    property <[bool]> stations-usable: [true, root.has-favorites, Platform.has-file-manager, Platform.has-file-manager];
+    property <[bool]> stations-usable: [true, root.has-favorites, Platform.has-file-manager, Platform.has-file-manager, true];
     property <[bool]> window-usable: [true, true, root.on-top-available, true];
     property <[bool]> view-usable: [
         // 0 Theme, 1 Accent Color, 2 Show Listening Stats, 3 Visualizer
@@ -964,10 +966,9 @@ export component MenuBar inherits Rectangle {
         true, root.tools-group == "recordings", Platform.has-file-manager && root.tools-group == "recordings",
         // 7 Sleep Timer, 8 Scheduler
         true, true,
-        // 9 Connections, 10 Agents (MCP), 11 Remote Control, 12 Report Plays
+        // 9 Connections, 10 Agents (MCP), 11 Remote Control
         true, root.tools-group == "connections", root.tools-group == "connections",
-        root.tools-group == "connections",
-        // 13 Wi-Fi Settings
+        // 12 Wi-Fi Settings
         Platform.has-wifi,
     ];
     property <[bool]> help-usable: [DesktopShortcuts.enabled, true];
@@ -1289,6 +1290,20 @@ export component MenuBar inherits Rectangle {
                 clicked => {
                     root.import-favorites();
                     stations-popup.close();
+                }
+            }
+            MenuSeparator {}
+            // A play of a station from the directory (Search Stations)
+            // tells the directory its id, for its "most played" lists
+            CheckMenuItem {
+                slot: 4;
+                label: "Report Plays";
+                icon: @image-url("icons/chart-column.svg");
+                description: "Tells the station directory which station you play, to rank popular stations.";
+                checked: ViewOptions.report-plays;
+                clicked => {
+                    ViewOptions.report-plays = !ViewOptions.report-plays;
+                    ViewOptions.report-plays-changed(ViewOptions.report-plays);
                 }
             }
         }
@@ -1648,7 +1663,7 @@ export component MenuBar inherits Rectangle {
             title-width: root.title-width;
             usable: root.tools-usable;
             fold-to: root.tools-group == "recordings" && MenuNav.active >= 5 && MenuNav.active <= 6 ? 4
-                : root.tools-group == "connections" && MenuNav.active >= 10 && MenuNav.active <= 12 ? 9 : -1;
+                : root.tools-group == "connections" && MenuNav.active >= 10 && MenuNav.active <= 11 ? 9 : -1;
             fold => { root.tools-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { tools-popup.close(); }
@@ -1770,23 +1785,10 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                // A play of a station from the directory tells the
-                // directory its id, for the "most played" lists
-                CheckMenuItem {
-                    slot: 12;
-                    label: "Report Plays to the Station Directory";
-                    icon: @image-url("icons/chart-column.svg");
-                    indent: Theme.space-16;
-                    checked: ViewOptions.report-plays;
-                    clicked => {
-                        ViewOptions.report-plays = !ViewOptions.report-plays;
-                        ViewOptions.report-plays-changed(ViewOptions.report-plays);
-                    }
-                }
             }
             if Platform.has-wifi: MenuSeparator {}
             if Platform.has-wifi: MenuItem {
-                slot: 13;
+                slot: 12;
                 label: "Wi-Fi Settings";
                 icon: @image-url("icons/wifi.svg");
                 clicked => {
