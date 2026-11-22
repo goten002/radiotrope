@@ -80,8 +80,9 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let favorites = favorites::stations(&manager);
     let settings = read_settings();
 
-    let start = match cli.station.as_deref().map(str::trim) {
-        None | Some("") => None,
+    let station = cli.station();
+    let start = match station.as_deref() {
+        None => None,
         Some(arg) if arg.contains("://") => Some(
             favorites
                 .iter()
@@ -89,22 +90,15 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 .cloned()
                 .unwrap_or_else(|| Station::new("", arg)),
         ),
-        Some(arg) => {
-            match library::find_favorite(&favorites, arg) {
-                Some(station) => Some(station.clone()),
-                None => {
-                    eprintln!("No favorite matches \"{arg}\".");
-                    if let Some(error) = &favorites_error {
-                        eprintln!("Favorites: {error}");
-                    } else if favorites.is_empty() {
-                        eprintln!("There are no favorites yet: open station search, or give a stream URL.");
-                    } else {
-                        eprintln!("Run radiotrope-cli without a station to see your favorites.");
-                    }
-                    std::process::exit(2);
+        Some(arg) => match library::find_favorite(&favorites, arg) {
+            Some(station) => Some(station.clone()),
+            None => {
+                for line in no_match(arg, favorites.len(), favorites_error.as_deref()) {
+                    eprintln!("{line}");
                 }
+                std::process::exit(2);
             }
-        }
+        },
     };
 
     let quitting = quit_on_signals();
@@ -152,8 +146,8 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         if let Some(error) = favorites_error {
             view.apply_favorites(favorites::Reply::Followed(Err(error)));
         }
-    } else {
-        view.favorites_error = favorites_error;
+    } else if let Some(error) = favorites_error {
+        view.favorites_unreadable(error);
     }
 
     // The guard puts the terminal back however this ends: a quit, a signal,
@@ -224,10 +218,45 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     // Save any recording and close the engine while the screen is still
     // ours (audio libraries may print on the way out)
-    player.shutdown();
+    let saved = player.shutdown();
     drop(terminal);
     drop(terminal_guard);
+    // The screen is gone: the paths stay in the scrollback, to copy
+    for path in saved {
+        println!("Saved recording: {}", path.display());
+    }
     Ok(looped?)
+}
+
+/// What to print when `arg` names no favorite
+fn no_match(arg: &str, count: usize, favorites_error: Option<&str>) -> Vec<String> {
+    if arg.parse::<usize>().is_ok() && favorites_error.is_none() && count > 0 {
+        return vec![match count {
+            1 => "There is only 1 favorite.".to_string(),
+            n => format!("There are only {n} favorites."),
+        }];
+    }
+    let mut lines = vec![format!("No favorite matches \"{arg}\".")];
+    // `stream.example.com/live` or `host:8000`: an address without its scheme
+    let looks_like_address = !arg.contains(' ')
+        && arg.contains('.')
+        && (arg.contains('/')
+            || arg
+                .rsplit_once(':')
+                .is_some_and(|(_, port)| port.parse::<u16>().is_ok()));
+    if looks_like_address {
+        lines.push("If this is an address, start it with http:// or https://".into());
+    } else if let Some(error) = favorites_error {
+        lines.push(format!("Can't read your favorites: {error}"));
+    } else if count == 0 {
+        lines.push(
+            "There are no favorites yet: search for a station with /, or give a stream address."
+                .into(),
+        );
+    } else {
+        lines.push("Run radiotrope-cli without a station to see your favorites.".into());
+    }
+    lines
 }
 
 /// A flag set by SIGTERM, SIGHUP (the terminal window closed) or SIGINT,
@@ -475,5 +504,39 @@ fn restore_stderr(saved_stderr: libc::c_int) {
             libc::dup2(saved_stderr, 2);
             libc::close(saved_stderr);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_match_says_what_to_do() {
+        assert_eq!(no_match("7", 1, None), ["There is only 1 favorite."]);
+        assert_eq!(no_match("7", 3, None), ["There are only 3 favorites."]);
+        for address in ["stream.example.com/live", "radio.test:8000"] {
+            assert_eq!(
+                no_match(address, 3, None)[1],
+                "If this is an address, start it with http:// or https://"
+            );
+        }
+        assert!(no_match("jazz", 0, None)[1].starts_with("There are no favorites yet"));
+        assert!(no_match("jazz", 2, Some("Invalid favorites: x"))[1]
+            .starts_with("Can't read your favorites"));
+        assert_eq!(
+            no_match("jazz radio", 2, None),
+            [
+                "No favorite matches \"jazz radio\".",
+                "Run radiotrope-cli without a station to see your favorites."
+            ]
+        );
+    }
+
+    #[test]
+    fn several_words_name_one_station() {
+        let cli = Cli::parse_from(["radiotrope-cli", "radio", "paradise"]);
+        assert_eq!(cli.station().as_deref(), Some("radio paradise"));
+        assert_eq!(Cli::parse_from(["radiotrope-cli"]).station(), None);
     }
 }
