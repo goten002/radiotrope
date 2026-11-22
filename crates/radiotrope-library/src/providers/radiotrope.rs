@@ -9,7 +9,7 @@
 //! has reached, and walks the list from the start for an offset it has not.
 
 use crate::config::providers::{CATEGORY_CACHE_TTL, RADIOTROPE_API_URL, STATION_CACHE_TTL};
-use crate::data::flags::{code_for_country, country_name};
+use crate::data::countries::{code_for_country, country_name};
 use crate::data::languages::{language_code, language_name};
 use crate::data::types::Station;
 use crate::error::{AppError, Result};

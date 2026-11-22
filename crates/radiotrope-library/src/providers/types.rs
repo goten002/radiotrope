@@ -2,7 +2,7 @@
 //!
 //! Types used across all station providers.
 
-use crate::data::flags::code_for_country;
+use crate::data::countries::code_for_country;
 use crate::data::types::Station;
 
 /// Results from a station search or browse operation

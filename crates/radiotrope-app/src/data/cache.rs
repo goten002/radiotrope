@@ -13,6 +13,7 @@
 use crate::config::app::NAME;
 use crate::config::caches::TEMP_FILE_MAX_AGE;
 use crate::config::logos::{MAX_DECODE_BYTES, MAX_DIMENSION};
+pub use crate::data::storage::{cache_dir, ensure_cache_dir};
 use crate::data::svg_logo;
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
@@ -38,30 +39,6 @@ const SOURCE_EXTENSION: &str = "src";
 /// 256px keeps the player's logos sharp at 2x scale and is large enough for
 /// the phone app, which shows the player's cached logos.
 pub const LOGO_MAX_SIZE: u32 = 256;
-
-/// Get the application cache directory path
-///
-/// Uses the system cache directory:
-/// - Linux: `~/.cache/radiotrope/`
-/// - macOS: `~/Library/Caches/radiotrope/`
-/// - Windows: `C:\Users\<User>\AppData\Local\radiotrope\cache\`
-pub fn cache_dir() -> Result<PathBuf> {
-    dirs::cache_dir().map(|p| p.join(NAME)).ok_or_else(|| {
-        AppError::Config(
-            "Could not determine cache directory. HOME environment variable may not be set."
-                .to_string(),
-        )
-    })
-}
-
-/// Ensure the cache directory exists
-pub fn ensure_cache_dir() -> Result<PathBuf> {
-    let dir = cache_dir()?;
-    fs::create_dir_all(&dir).map_err(|e| {
-        AppError::Config(format!("Failed to create cache directory {:?}: {}", dir, e))
-    })?;
-    Ok(dir)
-}
 
 /// What the cache holds for an id
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
