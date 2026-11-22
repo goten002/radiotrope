@@ -18,31 +18,30 @@ export struct FavoriteStation {
     session-time: string,
 }
 
-// Background of a station row in a list (Favorites, and search results):
-// a tint and a rail on the left for the current station, the danger tint
-// and a danger rail when it failed. The list decides what is highlighted
-// (pointer or arrow keys, both look the same) and what is lifted (dragged).
+// Background of a station row in a list, styled like the search results:
+// the current station (playing, connecting or failed) has a tint and a
+// rail on the left. A failure shows only in the danger alert mark, so the
+// name stays neutral then. The list decides what is highlighted (pointer
+// or arrow keys, both look the same) and what is lifted (dragged).
 export component StationRowSurface inherits Rectangle {
     in property <bool> current;
     in property <bool> failed;
     in property <bool> highlighted;
     in property <bool> lifted;
-    out property <color> name-color: root.failed ? Theme.danger-text
-        : root.current ? Theme.accent-text : Theme.text-primary;
+    out property <color> name-color: root.current && !root.failed ? Theme.accent-text : Theme.text-primary;
 
     border-radius: Theme.radius-md;
     background: root.lifted ? Theme.elevated
         : root.highlighted ? Theme.pressed-bg
-        : root.failed ? Theme.danger-tint
         : root.current ? Theme.accent-soft : transparent;
     animate background { duration: Theme.fast; }
 
-    if root.current || root.failed: Rectangle {
+    if root.current: Rectangle {
         x: 0;
         y: Theme.space-8;
         width: 3px;
         height: parent.height - 2 * self.y;
-        background: root.failed ? Theme.danger : Theme.selection-mark;
+        background: Theme.selection-mark;
         border-radius: self.width / 2;
     }
 }
