@@ -17,6 +17,11 @@ export struct ScheduleRow {
     details: string,
     // Playing or recording now
     running: bool,
+    // How its last run went: "Last: recorded 45 min · Fri 19:30" ("" for
+    // an entry that hasn't come round yet)
+    last: string,
+    // The last run was missed, skipped or failed
+    last-bad: bool,
 }
 
 // An entry being added or edited
@@ -80,7 +85,8 @@ component EntryRow inherits Rectangle {
             : root.entry.action == "play" ? "Play " + root.entry.title
             : root.entry.title);
 
-    height: Theme.row-dense;
+    // A third line when there is a last result to tell
+    height: root.entry.last != "" ? Theme.row-dense + Theme.space-16 : Theme.row-dense;
     border-radius: Theme.radius-md;
     background: touch.has-hover ? Theme.hover-bg
         : root.entry.running ? Theme.accent-soft : Theme.elevated;
@@ -150,6 +156,14 @@ component EntryRow inherits Rectangle {
                     : root.entry.running ? "Running now · " + root.entry.details : root.entry.details;
                 // On the tinted running row the secondary grey is too faint
                 color: root.confirm-remove ? Theme.danger-text
+                    : root.entry.running ? Theme.text-primary : Theme.text-secondary;
+                font-size: Theme.font-sm;
+                overflow: elide;
+            }
+            // Did it run? Red when it didn't; the words say so too
+            if root.entry.last != "": Text {
+                text: root.entry.last;
+                color: root.entry.last-bad ? Theme.danger-text
                     : root.entry.running ? Theme.text-primary : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;

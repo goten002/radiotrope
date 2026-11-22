@@ -123,7 +123,7 @@ impl Shot {
         let nested = match self.screen {
             "picker" => true,
             "remote" => matches!(self.state, "code" | "qr"),
-            "schedule" => !matches!(self.state, "" | "empty" | "remove"),
+            "schedule" => !matches!(self.state, "" | "empty" | "remove" | "last-result"),
             _ => false,
         };
         1 + usize::from(dropdown) + usize::from(nested)
@@ -203,6 +203,30 @@ const SHOTS: &[Shot] = &[
         "main",
         "recording-error",
         "Playback panel notice after a recording failure.",
+    ),
+    Shot::new(
+        "main-notice-error",
+        "main",
+        "notice-error",
+        "A failed recording's notice: it stays until it is closed.",
+    ),
+    Shot::new(
+        "main-notice-missed",
+        "main",
+        "notice-missed",
+        "A missed Scheduler entry's notice: it stays until it is closed.",
+    ),
+    Shot::new(
+        "main-notice-bubble",
+        "main",
+        "chip-bubble",
+        "Full text of a cut-off notice in a bubble, with the pointer on it.",
+    ),
+    Shot::new(
+        "main-save-error",
+        "main",
+        "save-error",
+        "Favorites that can't be saved: a red chip until a save works.",
     ),
     Shot::new(
         "main-schedule-started",
@@ -603,6 +627,12 @@ const SHOTS: &[Shot] = &[
         "schedule",
         "",
         "Scheduled playback, recording and stop entries.",
+    ),
+    Shot::new(
+        "scheduler-last-result",
+        "schedule",
+        "last-result",
+        "Scheduler entries with how their last run went.",
     ),
     Shot::new(
         "scheduler-empty",
@@ -1016,6 +1046,12 @@ fn after_open(ui: &App, shot: &Shot) {
         }
         _ => {}
     }
+    if shot.screen == "main" && shot.state == "chip-bubble" {
+        // The pointer on the notice chip under the station
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(300.0, 112.0),
+        });
+    }
     if shot.screen == "favorite-menu" {
         ui.set_snapshot_favorite_menu(shot.state.into());
     }
@@ -1198,6 +1234,8 @@ fn seed_schedule(ui: &App) {
             title: "Harbour Jazz".into(),
             details: "Weekdays · for 1 h · fade in".into(),
             running: false,
+            last: Default::default(),
+            last_bad: false,
         },
         ScheduleRow {
             id: 2,
@@ -1207,6 +1245,8 @@ fn seed_schedule(ui: &App) {
             title: "North Coast FM".into(),
             details: "Friday · for 45 min".into(),
             running: false,
+            last: Default::default(),
+            last_bad: false,
         },
         ScheduleRow {
             id: 3,
@@ -1216,6 +1256,8 @@ fn seed_schedule(ui: &App) {
             title: "Stop playback".into(),
             details: "Every day".into(),
             running: false,
+            last: Default::default(),
+            last_bad: false,
         },
     ]));
     ui.on_schedule_draft(|id| {
@@ -1367,7 +1409,23 @@ fn configure(ui: &App, shot: &Shot) {
             "recording-saved" => ui.set_recording_notice("Saved · 3.6 MB".into()),
             "recording-error" => {
                 ui.set_recording_notice("Recording failed".into());
-                ui.set_recording_notice_error(true);
+                ui.set_recording_notice_kind("error".into());
+                ui.set_recording_notice_stays(true);
+            }
+            "notice-error" | "chip-bubble" => {
+                ui.set_recording_notice(
+                    "Recording stopped: no space left on device. Saved Harbour Jazz - 2026-11-20 19-30-00.mp3".into(),
+                );
+                ui.set_recording_notice_kind("error".into());
+                ui.set_recording_notice_stays(true);
+            }
+            "notice-missed" => {
+                ui.set_recording_notice("Missed 07:00: Play Harbour Jazz".into());
+                ui.set_recording_notice_kind("scheduler".into());
+                ui.set_recording_notice_stays(true);
+            }
+            "save-error" => {
+                ui.set_save_error("Can't save favorites: no space left on device".into());
             }
             "muted" => ui.set_is_muted(true),
             "fade-in" => ui.set_volume_level(0.72),
@@ -1427,6 +1485,24 @@ fn configure(ui: &App, shot: &Shot) {
             ui.set_recording_folder_error(
                 "Can't open the folder: Permission denied (os error 13)".into(),
             );
+        }
+        "schedule" if shot.state == "last-result" => {
+            let last = [
+                ("Last: played · Fri 07:00", false),
+                ("Last: failed, no space left on device · Fri 19:30", true),
+                ("Last: missed · Thu 23:45", true),
+            ];
+            let rows: Vec<ScheduleRow> = ui
+                .get_schedule_rows()
+                .iter()
+                .zip(last)
+                .map(|(row, (last, last_bad))| ScheduleRow {
+                    last: last.into(),
+                    last_bad,
+                    ..row
+                })
+                .collect();
+            ui.set_schedule_rows(model(rows));
         }
         "schedule" if shot.state == "empty" => {
             ui.set_schedule_rows(ModelRc::default());

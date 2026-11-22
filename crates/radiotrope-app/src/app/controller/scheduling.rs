@@ -11,16 +11,16 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, TimeDelta};
 
-use radiotrope::audio::PlaybackState;
+use radiotrope::audio::{PlaybackState, RecordingStatus};
 use radiotrope_app::data::recordings;
 use radiotrope_app::data::schedule::{
-    self, Action, Decision, Entry, Running, ScheduleFile, ScheduledStation,
+    self, Action, Decision, Entry, LastRun, Outcome, Running, ScheduleFile, ScheduledStation,
 };
 use radiotrope_app::data::storage;
 
 use super::alarm_tone::AlarmTone;
 use super::AppController;
-use crate::app::state::{NextRun, ScheduleReply, ScheduledNow, SleepTimerInfo};
+use crate::app::state::{NextRun, NoticeKind, ScheduleReply, ScheduledNow, SleepTimerInfo};
 
 /// How long an alarm's volume takes to rise from silence
 pub const FADE_IN: Duration = Duration::from_secs(30);
@@ -46,6 +46,16 @@ pub const BEEP_VOLUME: f32 = 0.5;
 /// Gives a station's logo as PNG, for a scheduled recording's cover art
 pub type CoverSource = Box<dyn Fn(&ScheduledStation) -> Option<Vec<u8>> + Send>;
 
+/// Why an entry whose station never played failed, for its row
+const STATION_DID_NOT_START: &str = "the station didn't start";
+
+/// One run of an entry: the entry, and when the run began (Unix seconds)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RunId {
+    id: u64,
+    at: i64,
+}
+
 /// An entry the schedule started that plays now
 pub(super) struct ActiveEntry {
     entry: Entry,
@@ -63,6 +73,24 @@ pub(super) struct ActiveEntry {
     heard: bool,
     /// Its station didn't start, and the alarm beeps instead
     beeping: bool,
+}
+
+impl ActiveEntry {
+    fn run(&self) -> RunId {
+        RunId {
+            id: self.entry.id,
+            at: self.started.timestamp(),
+        }
+    }
+}
+
+/// `text` as the reason after "Last: failed, ": without its capital
+fn as_reason(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_lowercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// The sleep timer
@@ -86,7 +114,14 @@ impl AppController {
     /// Load the schedule from `path` and keep it there
     pub fn with_schedule(mut self, path: PathBuf) -> Self {
         match storage::load_from::<ScheduleFile>(&path) {
-            Ok(Some(file)) => self.schedule = file.entries,
+            Ok(Some(file)) => {
+                self.schedule = file.entries;
+                self.schedule_results = file.results;
+                // A result whose entry was taken out of the file by hand
+                let entries = &self.schedule;
+                self.schedule_results
+                    .retain(|r| entries.iter().any(|e| e.id == r.id));
+            }
             Ok(None) => {}
             Err(e) => eprintln!("Schedule not loaded: {e}"),
         }
@@ -122,6 +157,24 @@ impl AppController {
             scheduled_recording: self.scheduled_recording(),
         };
         let (decisions, changed) = schedule::run_due(&mut self.schedule, &now, running);
+        let mut notices = Vec::new();
+        for decision in &decisions {
+            match decision {
+                Decision::NotRun { last, notice } => {
+                    schedule::keep_result(&mut self.schedule_results, last.clone());
+                    notices.extend(notice.clone());
+                }
+                Decision::Stop { entry } => schedule::keep_result(
+                    &mut self.schedule_results,
+                    LastRun {
+                        id: entry.id,
+                        at: now.timestamp(),
+                        outcome: Outcome::Stopped,
+                    },
+                ),
+                Decision::Start { .. } => {}
+            }
+        }
         if changed {
             self.save_schedule();
         }
@@ -130,8 +183,19 @@ impl AppController {
                 Decision::Start { entry, until } => self.start_entry(*entry, until, &now),
                 // A fading stop faded over the minute before it
                 Decision::Stop { .. } => self.stop_for_schedule(),
-                Decision::Notice(text) => self.notify(&text, false),
+                Decision::NotRun { .. } => {}
             }
+        }
+        // One notice holds one text: several entries missed at once (the
+        // computer slept through them) are counted, and their rows in the
+        // Scheduler say which
+        match notices.as_slice() {
+            [] => {}
+            [text] => self.notify(text, NoticeKind::Scheduler),
+            many => self.notify(
+                &format!("{} scheduled entries didn't run", many.len()),
+                NoticeKind::Scheduler,
+            ),
         }
 
         self.look_after_active(&now);
@@ -247,6 +311,7 @@ impl AppController {
     pub(super) fn remove_schedule_entry(&mut self, id: u64, reply: ScheduleReply<()>) {
         let before = self.schedule.len();
         self.schedule.retain(|e| e.id != id);
+        self.schedule_results.retain(|r| r.id != id);
         let result = if self.schedule.len() == before {
             Err("This entry was removed".into())
         } else {
@@ -357,7 +422,11 @@ impl AppController {
         // An alarm with no end is the user's after a while
         if active.until.is_none() && (*now - active.started).num_seconds() >= ALARM_WATCH_SECS {
             let beeping = active.beeping;
+            let unheard = (!active.heard && !beeping).then(|| active.run());
             self.active = None;
+            if let Some(run) = unheard {
+                self.keep_run_result(run, failed(STATION_DID_NOT_START));
+            }
             if beeping {
                 self.stop_playback();
             }
@@ -384,17 +453,26 @@ impl AppController {
         let record_tried = active.record_tried;
         let retry_at = active.retry_at;
         let station = active.entry.station.clone();
+        let run = active.run();
 
         if playback == PlaybackState::Playing {
             if let Some(active) = self.active.as_mut() {
                 active.retry_at = None;
                 active.heard = true;
             }
+            if !record && !heard {
+                self.keep_run_result(run, Outcome::Played);
+            }
+            if record && recording && self.recording_for.is_none() {
+                // A recording already running when the entry came round
+                // is the entry's now
+                self.recording_for = Some(run);
+            }
             if record && !recording && record_tried != play_seq {
                 if let Some(active) = self.active.as_mut() {
                     active.record_tried = play_seq;
                 }
-                self.record_for_schedule(station.as_ref());
+                self.record_for_schedule(station.as_ref(), run);
             }
         } else if !record && fallback && !heard && waited >= BEEP_AFTER_SECS {
             // The alarm must wake someone
@@ -432,6 +510,7 @@ impl AppController {
             return;
         };
         active.beeping = true;
+        let run = active.run();
         // An alarm that fades in lets its beep rise the same way
         let fade = active.entry.fade;
         let name = active
@@ -464,10 +543,13 @@ impl AppController {
             state.artist.clear();
             state.codec_name.clear();
         }
+        self.keep_run_result(run, failed(STATION_DID_NOT_START));
         self.apply_volume(now);
     }
 
-    fn record_for_schedule(&mut self, station: Option<&ScheduledStation>) {
+    /// Record the station of the entry running as `run`. A recording that
+    /// can't start is said under the station and in the entry's row.
+    fn record_for_schedule(&mut self, station: Option<&ScheduledStation>, run: RunId) {
         let (setup, eq_on) = {
             let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             (state.recording_setup.clone(), state.eq_enabled)
@@ -476,13 +558,60 @@ impl AppController {
             (Some(cover), Some(station)) => cover(station),
             _ => None,
         };
-        self.start_recording(
+        let started = self.try_start_recording(
             &recordings::folder(setup.dir.as_deref()),
             setup.format,
             setup.bitrate,
             setup.with_eq && eq_on,
             cover,
         );
+        match started {
+            Ok(()) => self.recording_for = Some(run),
+            Err(e) => {
+                self.keep_run_result(run, failed(&as_reason(&e)));
+                self.notify(&e, NoticeKind::Error);
+            }
+        }
+    }
+
+    /// A recording ended. One made for a scheduled entry is that entry's
+    /// last result: how long it is, or why it stopped.
+    pub(super) fn scheduled_recording_finished(&mut self, status: &RecordingStatus) {
+        let Some(run) = self.recording_for.take() else {
+            return;
+        };
+        let outcome = match &status.error {
+            Some(e) => failed(&as_reason(e)),
+            None => Outcome::Recorded {
+                // To the nearest minute, and never "0 min"
+                minutes: ((status.duration.as_secs() + 30) / 60).max(1) as u32,
+            },
+        };
+        self.keep_run_result(run, outcome);
+    }
+
+    /// Keep `outcome` as the last result of the entry that ran as `run`,
+    /// and save it. What went wrong in a run stays said: a recording
+    /// that failed and was started again isn't "recorded".
+    fn keep_run_result(&mut self, run: RunId, outcome: Outcome) {
+        if !self.schedule.iter().any(|e| e.id == run.id) {
+            return;
+        }
+        let failed_before = self.schedule_results.iter().any(|r| {
+            r.id == run.id && r.at == run.at && matches!(r.outcome, Outcome::Failed { .. })
+        });
+        if failed_before && !matches!(outcome, Outcome::Failed { .. }) {
+            return;
+        }
+        schedule::keep_result(
+            &mut self.schedule_results,
+            LastRun {
+                id: run.id,
+                at: run.at,
+                outcome,
+            },
+        );
+        self.save_schedule();
     }
 
     /// The entry's time is up: stop, and put its volume back
@@ -491,7 +620,16 @@ impl AppController {
             return;
         };
         self.fade_in = None;
+        let run = active.run();
         self.stop_playback();
+        // Nothing was heard or recorded in all its time
+        let has_result = self
+            .schedule_results
+            .iter()
+            .any(|r| r.id == run.id && r.at == run.at);
+        if !has_result {
+            self.keep_run_result(run, failed(STATION_DID_NOT_START));
+        }
         if let (Some(previous), Some(set)) = (active.restore_volume, active.entry.volume) {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             if (state.volume - set).abs() < 0.001 {
@@ -516,7 +654,10 @@ impl AppController {
         }
         self.sleep = None;
         if self.scheduled_recording() {
-            self.notify("Sleep Timer ended; recording continues", false);
+            self.notify(
+                "Sleep Timer ended; recording continues",
+                NoticeKind::SleepTimer,
+            );
             return;
         }
         self.stop_for_schedule();
@@ -601,6 +742,7 @@ impl AppController {
         let file = ScheduleFile {
             version: schedule::FILE_VERSION,
             entries: self.schedule.clone(),
+            results: self.schedule_results.clone(),
         };
         if let Err(e) = storage::save_to(path, &file) {
             eprintln!("Schedule not saved: {e}");
@@ -611,6 +753,7 @@ impl AppController {
     fn schedule_changed(&mut self) {
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
         state.schedule = self.schedule.clone();
+        state.schedule_results = self.schedule_results.clone();
         state.schedule_seq += 1;
     }
 
@@ -642,6 +785,12 @@ impl AppController {
         state.sleep = sleep;
         state.scheduled = scheduled;
         state.next_run = next_run;
+    }
+}
+
+fn failed(reason: &str) -> Outcome {
+    Outcome::Failed {
+        reason: reason.to_string(),
     }
 }
 
@@ -1055,6 +1204,191 @@ mod tests {
         controller.stop_fade_skipped = Some(at);
         controller.apply_volume(&(at - TimeDelta::seconds(30)));
         assert_eq!(controller.engine_volume, Some(0.8));
+    }
+
+    /// An alarm set two minutes ahead, then the clock at 20 minutes past
+    /// it: the computer slept through it
+    fn missed_alarm(controller: &mut AppController) -> u64 {
+        let (id, at) = save(controller, entry(Action::Play));
+        controller.run_schedule(at + TimeDelta::minutes(20));
+        id
+    }
+
+    #[test]
+    fn a_missed_entry_is_a_scheduler_notice_that_stays() {
+        let (mut controller, state) = controller();
+        let id = missed_alarm(&mut controller);
+        let s = state.lock().unwrap();
+        let notice = s.recording_notice.as_ref().expect("a notice");
+        assert!(notice.text.starts_with("Missed "), "{}", notice.text);
+        assert!(notice.text.ends_with(": Play Jazz FM"), "{}", notice.text);
+        assert_eq!(notice.kind, NoticeKind::Scheduler);
+        assert!(notice.kind.stays());
+        // Not a failure for an agent that asks
+        assert!(!notice.is_error);
+        // And its row says so
+        assert_eq!(s.schedule_results.len(), 1);
+        assert_eq!(s.schedule_results[0].id, id);
+        assert_eq!(s.schedule_results[0].outcome, Outcome::Missed);
+    }
+
+    #[test]
+    fn several_entries_missed_at_once_are_counted_in_one_notice() {
+        let (mut controller, state) = controller();
+        let (_, at) = save(&mut controller, entry(Action::Play));
+        save(
+            &mut controller,
+            Entry {
+                station: Some(ScheduledStation {
+                    name: "BBC Radio 3".into(),
+                    url: DEAD_URL.into(),
+                    ..Default::default()
+                }),
+                ..entry(Action::Play)
+            },
+        );
+        controller.run_schedule(at + TimeDelta::minutes(20));
+        let s = state.lock().unwrap();
+        let notice = s.recording_notice.as_ref().expect("a notice");
+        assert_eq!(notice.text, "2 scheduled entries didn't run");
+        assert_eq!(notice.kind, NoticeKind::Scheduler);
+        assert_eq!(s.schedule_results.len(), 2);
+    }
+
+    #[test]
+    fn notices_have_the_kind_of_what_they_are_about() {
+        let (mut controller, state) = controller();
+        let notice = |state: &Arc<Mutex<AppSnapshot>>| {
+            let n = state.lock().unwrap().recording_notice.clone().unwrap();
+            (n.kind, n.is_error, n.kind.stays())
+        };
+        let status = |error: Option<&str>| RecordingStatus {
+            path: PathBuf::from("Jazz FM - 2026-10-02 19-30-00.mp3"),
+            bytes_written: 1,
+            duration: Duration::from_secs(45 * 60),
+            dropped_batches: 0,
+            error: error.map(String::from),
+        };
+        // Saved: passes, and opens the folder
+        controller.report_finished(&status(None));
+        assert_eq!(notice(&state), (NoticeKind::Saved, false, false));
+        // Failed: stays
+        controller.report_finished(&status(Some("no space left on device")));
+        assert_eq!(notice(&state), (NoticeKind::Error, true, true));
+        let text = state.lock().unwrap().recording_notice.clone().unwrap().text;
+        assert!(
+            text.starts_with("Recording stopped: no space left on device. Saved"),
+            "{text}"
+        );
+        // The Sleep Timer's news passes
+        controller.notify(
+            "Sleep Timer ended; recording continues",
+            NoticeKind::SleepTimer,
+        );
+        assert_eq!(notice(&state), (NoticeKind::SleepTimer, false, false));
+        // Each is a new notice for the window
+        assert_eq!(
+            state.lock().unwrap().recording_notice.as_ref().unwrap().seq,
+            3
+        );
+    }
+
+    #[test]
+    fn a_scheduled_recording_leaves_its_length_or_why_it_failed() {
+        let (mut controller, state) = controller();
+        let (id, at) = save(
+            &mut controller,
+            Entry {
+                end: End::After { minutes: 60 },
+                ..entry(Action::Record)
+            },
+        );
+        let status = |secs, error: Option<&str>| RecordingStatus {
+            path: PathBuf::from("Jazz FM.mp3"),
+            bytes_written: 1,
+            duration: Duration::from_secs(secs),
+            dropped_batches: 0,
+            error: error.map(String::from),
+        };
+        let run = RunId {
+            id,
+            at: at.timestamp(),
+        };
+        let last = |state: &Arc<Mutex<AppSnapshot>>| {
+            state.lock().unwrap().schedule_results[0].outcome.clone()
+        };
+
+        controller.recording_for = Some(run);
+        controller.report_finished(&status(44 * 60 + 40, None));
+        assert_eq!(last(&state), Outcome::Recorded { minutes: 45 });
+        // The recording is nobody's once it ended
+        assert_eq!(controller.recording_for, None);
+
+        // The next evening the disk fills up; a recording started again
+        // in the same run doesn't cover that up
+        let run = RunId {
+            at: run.at + 86_400,
+            ..run
+        };
+        controller.recording_for = Some(run);
+        controller.report_finished(&status(600, Some("No space left on device")));
+        let failed = Outcome::Failed {
+            reason: "no space left on device".into(),
+        };
+        assert_eq!(last(&state), failed);
+        controller.recording_for = Some(run);
+        controller.report_finished(&status(600, None));
+        assert_eq!(last(&state), failed);
+
+        // A recording made by hand says nothing about the entry
+        controller.report_finished(&status(60, None));
+        assert_eq!(last(&state), failed);
+    }
+
+    #[test]
+    fn the_last_result_survives_a_restart_and_goes_with_its_entry() {
+        let dir = std::env::temp_dir().join(format!("rt-schedule-last-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join(schedule::FILE_NAME);
+        let (controller_a, _) = controller();
+        let mut controller_a = controller_a.with_schedule(path.clone());
+        let id = missed_alarm(&mut controller_a);
+
+        // Started again: the row still says it was missed
+        let (controller_b, state_b) = controller();
+        let mut controller_b = controller_b.with_schedule(path.clone());
+        assert_eq!(controller_b.schedule_results, controller_a.schedule_results);
+        {
+            let s = state_b.lock().unwrap();
+            assert_eq!(s.schedule_results.len(), 1);
+            assert_eq!(s.schedule_results[0].id, id);
+            assert!(s.schedule_results[0]
+                .label(&Local::now())
+                .starts_with("Last: missed · "));
+        }
+
+        // Changing the entry keeps what its last run did
+        let entry = controller_b.schedule[0].clone();
+        save(
+            &mut controller_b,
+            Entry {
+                fade: true,
+                ..entry
+            },
+        );
+        assert_eq!(controller_b.schedule_results.len(), 1);
+
+        // Removed with its entry, in the file too
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        controller_b.handle_command(AppCommand::RemoveScheduleEntry {
+            id,
+            reply: Some(reply),
+        });
+        answer.blocking_recv().unwrap().unwrap();
+        assert!(state_b.lock().unwrap().schedule_results.is_empty());
+        let (controller_c, _) = controller();
+        assert!(controller_c.with_schedule(path).schedule_results.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
