@@ -233,9 +233,6 @@ export component Controls inherits Rectangle {
     // How loud a fade lets it play now, 0.0–1.0 (1 with no fade)
     in property <float> volume-level: 1.0;
     in-out property <bool> is-muted;
-    // Recording: the record button left of the volume
-    in property <bool> is-recording;
-    in property <bool> can-toggle-recording;
     // Off while a dialog is open: the bar's own buttons leave the Tab order
     // (the window ignores keys behind a dialog; see app.slint)
     in property <bool> enabled: true;
@@ -244,7 +241,6 @@ export component Controls inherits Rectangle {
     callback stop-clicked();
     callback volume-changed(float);        // 0.0–1.0
     callback mute-clicked();
-    callback toggle-recording();
 
     out property <bool> volume-dragging: vol-slider.touch-pressed;
 
@@ -484,43 +480,6 @@ export component Controls inherits Rectangle {
             }
         }
 
-        // ── Record button, left of the volume ──
-        VerticalLayout {
-            alignment: center;
-            record-button := IconButton {
-                // Idle, the grey record icon. While recording, a steady red
-                // dot with a soft red glow around it, drawn below; nothing
-                // moves (the header's REC chip counts the time).
-                width: Theme.control-field;
-                height: Theme.control-field;
-                icon: root.is-recording ? @image-url("") : @image-url("icons/record.svg");
-                icon-size: Theme.icon-lg;
-                label: root.is-recording ? "Stop Recording" : "Start Recording";
-                icon-color: Theme.text-secondary;
-                hover-color: Theme.text-primary;
-                enabled: root.can-toggle-recording;
-                clicked => { root.toggle-recording(); }
-
-                // The glow, fading out to the idle ring's outer edge (r 10
-                // of 24), so the button keeps its size
-                if root.is-recording: Rectangle {
-                    width: record-button.icon-size * 10 / 12;
-                    height: self.width;
-                    border-radius: self.width / 2;
-                    background: @radial-gradient(circle, Theme.danger.with-alpha(0.45) 0%, Theme.danger.with-alpha(0.3) 50%, Theme.danger.with-alpha(0) 100%);
-                    accessible-role: none;
-                }
-                // The dot, a little bigger than the idle one (r 4 of 24)
-                if root.is-recording: Rectangle {
-                    width: record-button.icon-size * 0.46;
-                    height: self.width;
-                    border-radius: self.width / 2;
-                    background: Theme.danger;
-                    accessible-role: none;
-                }
-            }
-        }
-
         // ── Volume controls (right, fixed size) ──
         // Scrolling anywhere here (icon and label too) changes the volume
         volume-area := TouchArea {
@@ -560,8 +519,10 @@ export component Controls inherits Rectangle {
                         // loudest wave isn't clipped by Icon's 1px edge trim
                         icon-size: Theme.icon-lg;
                         label: root.is-muted ? "Unmute" : "Mute";
-                        icon-color: Theme.text-secondary;
-                        hover-color: Theme.text-primary;
+                        // Red while muted (danger keeps 4.5:1 on the bar in
+                        // both themes; danger-text is its stronger hover)
+                        icon-color: root.is-muted ? Theme.danger : Theme.text-secondary;
+                        hover-color: root.is-muted ? Theme.danger-text : Theme.text-primary;
                         clicked => { root.mute-clicked(); }
                     }
                 }
