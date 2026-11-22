@@ -111,7 +111,7 @@ component EntryRow inherits Rectangle {
             Icon {
                 width: Theme.icon-sm;
                 height: Theme.icon-sm;
-                source: root.entry.action == "record" ? @image-url("../icons/circle.svg")
+                source: root.entry.action == "record" ? @image-url("../icons/record.svg")
                     : root.entry.action == "stop" ? @image-url("../icons/stop.svg")
                     : @image-url("../icons/play.svg");
                 colorize: !root.entry.enabled ? Theme.text-tertiary
@@ -144,7 +144,7 @@ component EntryRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             IconButton {
-                icon: @image-url("../icons/pencil.svg");
+                icon: @image-url("../icons/edit.svg");
                 label: "Edit " + root.entry.title;
                 icon-size: Theme.icon-compact;
                 clicked => { root.edit(); }
@@ -153,7 +153,7 @@ component EntryRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             IconButton {
-                icon: @image-url("../icons/trash-can.svg");
+                icon: @image-url("../icons/trash.svg");
                 label: root.confirm-remove ? "Press Again to Remove" : "Remove " + root.entry.title;
                 icon-size: Theme.icon-compact;
                 danger-armed: root.confirm-remove;
@@ -311,7 +311,7 @@ export component ScheduleDialog inherits Rectangle {
             StatusPanel {
                 width: parent.width;
                 height: parent.height;
-                icon: @image-url("../icons/calendar-days.svg");
+                icon: @image-url("../icons/calendar.svg");
                 title: "Nothing scheduled yet";
                 message: "Add an entry to play, record or stop at a set time.";
             }
@@ -358,7 +358,7 @@ export component ScheduleDialog inherits Rectangle {
                 Picker {
                     choices: [
                         { id: "play", label: "Play", icon: @image-url("../icons/play.svg") },
-                        { id: "record", label: "Record", icon: @image-url("../icons/circle.svg"), red-icon: true },
+                        { id: "record", label: "Record", icon: @image-url("../icons/record.svg"), red-icon: true },
                         { id: "stop", label: "Stop", icon: @image-url("../icons/stop.svg") },
                     ];
                     selected <=> root.action;

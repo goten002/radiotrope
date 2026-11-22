@@ -60,7 +60,7 @@ component DeviceRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             IconButton {
-                icon: @image-url("../icons/trash-can.svg");
+                icon: @image-url("../icons/trash.svg");
                 label: root.confirm-remove ? "Press Again to Remove" : "Remove " + root.device.name;
                 icon-size: Theme.icon-compact;
                 danger-armed: root.confirm-remove;
@@ -79,7 +79,7 @@ export component RemoteControlDialog inherits Rectangle {
     in property <string> status;
     in property <bool> status-error;
     // A short form of an error status for the row ("Can't start"), with
-    // the full status in the bubble. Empty: worked out here.
+    // the full status in the bubble; set from Rust
     in property <string> status-short;
     // Where phones reach the player, e.g. "192.168.1.20:8766"
     in property <string> address;
@@ -146,11 +146,7 @@ export component RemoteControlDialog inherits Rectangle {
                 VerticalLayout {
                     alignment: center;
                     Chip {
-                        // Without an address the server didn't start; with
-                        // one, only the announcement failed
-                        text: !root.status-error ? "Ready"
-                            : root.status-short != "" ? root.status-short
-                            : root.address == "" ? "Can't start" : "Can't announce";
+                        text: !root.status-error ? "Ready" : root.status-short;
                         variant: root.status-error ? ChipVariant.danger : ChipVariant.success;
                         dot: !root.status-error;
                         keep: true;

@@ -209,7 +209,20 @@ fn show_status_later(ui: &App) -> crate::remote::ShowStatus {
 fn show_status(ui: &App, status: &Status) {
     ui.set_remote_status(status.text.as_str().into());
     ui.set_remote_status_error(status.is_error);
+    ui.set_remote_status_short(short_status(status).into());
     ui.set_remote_address(status.addresses.join(", ").into());
+}
+
+/// The chip on the Remote Control row: a few words for an error, with the
+/// full reason in the bubble next to it. Empty when nothing went wrong.
+fn short_status(status: &Status) -> &'static str {
+    match (status.is_error, status.addresses.is_empty()) {
+        (false, _) => "",
+        // No address: the server itself didn't start
+        (true, true) => "Can't start",
+        // The server runs, only phones can't find it by themselves
+        (true, false) => "Not visible",
+    }
 }
 
 fn show_devices(ui: &App, devices: &[Device]) {
@@ -269,5 +282,35 @@ mod tests {
         assert_eq!(seen_label(0, 3 * 86_400), "Used 3 days ago");
         // A clock set back
         assert_eq!(seen_label(500, 100), "Used just now");
+    }
+
+    #[test]
+    fn short_status_keeps_the_row_short() {
+        let running = Status {
+            text: "Phones on this network can find the player".into(),
+            is_error: false,
+            addresses: vec!["192.168.1.20:8766".into()],
+        };
+        assert_eq!(short_status(&running), "");
+        assert_eq!(short_status(&Status::default()), "");
+
+        let no_server = Status {
+            text: "Can't start Remote Control: port 8766 is in use by another program. Close that program and try again.".into(),
+            is_error: true,
+            addresses: Vec::new(),
+        };
+        assert_eq!(short_status(&no_server), "Can't start");
+
+        let not_announced = Status {
+            text: "Phones can't find the player by themselves. Add it in the app by address. (no network)".into(),
+            is_error: true,
+            addresses: vec!["192.168.1.20:8766".into()],
+        };
+        assert_eq!(short_status(&not_announced), "Not visible");
+
+        // The full reason stays for the bubble
+        for status in [&no_server, &not_announced] {
+            assert!(status.text.len() > short_status(status).len());
+        }
     }
 }
