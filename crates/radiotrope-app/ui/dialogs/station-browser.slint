@@ -3,6 +3,7 @@ import { Theme, Defaults } from "../defaults.slint";
 import { DialogShell, Icon, ButtonKeys, FocusRing, Motion, StatusPanel, ChipVariant } from "../components.slint";
 import { StationState, StationRowSurface, StationLogo, StationStateMark } from "../station-row.slint";
 import { KeyListCursor } from "../key-list.slint";
+import { RecordingGuard } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -36,6 +37,8 @@ component StationRow inherits Rectangle {
     in property <bool> is-favorite;
     // The keyboard's row, while the list has the focus
     in property <bool> key-active;
+    // Picked once while recording: the next pick switches to it
+    in property <bool> armed;
     // The row in one sentence, for screen readers
     in property <string> description;
     in property <int> row-index;
@@ -111,10 +114,12 @@ component StationRow inherits Rectangle {
             }
 
             Text {
-                text: (root.state == StationState.loading || root.state == StationState.failed) && root.status != ""
+                text: root.armed ? RecordingGuard.text
+                    : (root.state == StationState.loading || root.state == StationState.failed) && root.status != ""
                     ? root.status : root.country;
-                color: root.state == StationState.failed ? Theme.danger-text : Theme.text-secondary;
+                color: root.armed || root.state == StationState.failed ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
+                font-weight: root.armed ? Theme.weight-semibold : Theme.weight-regular;
                 overflow: elide;
                 accessible-role: none;
             }
@@ -362,6 +367,15 @@ export component StationBrowserDialog inherits Rectangle {
     in property <bool> play-loading;
     in property <bool> play-error;
     in property <string> play-status;
+    // A recording is running: picking another station would end it, so
+    // the first pick only arms the row (see RecordingGuard)
+    in property <bool> recording;
+    property <string> armed: "";
+    changed recording => {
+        if !self.recording {
+            self.armed = "";
+        }
+    }
     // Row picked last (provider ID or URL); the played URL may differ
     // after resolving a playlist or matching a favorite
     property <string> picked: "";
@@ -374,6 +388,7 @@ export component StationBrowserDialog inherits Rectangle {
     changed show-dialog => {
         if !self.show-dialog {
             root.picked = "";
+            root.armed = "";
             root.closed();
         }
     }
@@ -416,16 +431,43 @@ export component StationBrowserDialog inherits Rectangle {
         }
     }
 
+    pure function key-of(station: BrowseStation) -> string {
+        return station.provider-id != "" ? station.provider-id : station.url;
+    }
+
+    // The station the player has now (the row picked here, or before any
+    // pick the one whose URL is loaded)
+    pure function is-current(station: BrowseStation) -> bool {
+        return root.picked != "" ? root.picked == root.key-of(station) : station.url == root.playing-url;
+    }
+
     function pick(station: BrowseStation) {
-        root.picked = station.provider-id != "" ? station.provider-id : station.url;
+        // While recording, a first pick of another station only arms its
+        // row; the same pick again in time switches (and ends the recording)
+        if root.recording && !root.is-current(station) && root.armed != root.key-of(station) {
+            root.armed = root.key-of(station);
+            arm-timer.running = true;
+            arm-timer.restart();
+            return;
+        }
+        root.armed = "";
+        arm-timer.running = false;
+        root.picked = root.key-of(station);
         root.station-selected(station);
+    }
+
+    arm-timer := Timer {
+        interval: RecordingGuard.confirm-time;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.armed = "";
+        }
     }
 
     // The row clicked here; before any click, the row whose URL is playing
     pure function state-of(station: BrowseStation) -> StationState {
-        return !(root.picked != ""
-                ? root.picked == (station.provider-id != "" ? station.provider-id : station.url)
-                : station.url == root.playing-url) ? StationState.none
+        return !root.is-current(station) ? StationState.none
             : root.play-error ? StationState.failed
             : root.play-loading ? StationState.loading
             : root.is-playing ? StationState.playing : StationState.none;
@@ -438,10 +480,11 @@ export component StationBrowserDialog inherits Rectangle {
     // A result in one sentence for screen readers: its status or country,
     // the codec, the bitrate, and whether it is a favorite
     pure function describe(station: BrowseStation, state: StationState) -> string {
-        return root.join(root.join(root.join(
+        return root.join(root.join(root.join(root.join(
+            root.armed != "" && root.armed == root.key-of(station) ? RecordingGuard.spoken : "",
             (state == StationState.loading || state == StationState.failed) && root.play-status != ""
                 ? root.play-status
-                : state == StationState.playing ? root.join("Playing", station.country) : station.country,
+                : state == StationState.playing ? root.join("Playing", station.country) : station.country),
             station.codec),
             station.bitrate > 0 ? "\{station.bitrate} kbps" : ""),
             station.is-favorite ? "in favorites" : "");
@@ -723,6 +766,7 @@ export component StationBrowserDialog inherits Rectangle {
                             state: root.state-of(station);
                             status: root.play-status;
                             is-favorite: station.is-favorite;
+                            armed: root.armed != "" && root.armed == root.key-of(station);
                             key-active: cursor.has-focus && root.active-row == self.idx;
                             description: root.describe(station, self.state);
                             row-index: self.idx;
