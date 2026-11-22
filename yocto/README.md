@@ -84,7 +84,7 @@ Without that file the release image has no SSH server.
 ### Time zone
 
 The image has no time zone setting on screen. It uses the zone in the kas
-file, which the Scheduler and the clock follow; the default is Athens.
+file, which the Scheduler and the clock follow; the default is UTC.
 Change it to yours before building, with a name from the tz database:
 
 ```yaml

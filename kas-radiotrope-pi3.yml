@@ -79,7 +79,7 @@ local_conf_header:
     # Local time zone, for the Scheduler and the clock: a name from the tz
     # database (/usr/share/zoneinfo), such as "Europe/London". The image
     # has no zone setting on screen, so set yours here before building
-    DEFAULT_TIMEZONE ?= "Europe/Athens"
+    DEFAULT_TIMEZONE ?= "UTC"
 
     # Accept all licenses for firmware blobs
     LICENSE_FLAGS_ACCEPTED = "synaptics-killswitch"
