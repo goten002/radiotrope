@@ -17,6 +17,11 @@ pub struct Args {
     #[arg(long, requires = "mcp")]
     pub standalone: bool,
 
+    /// Close the running player and wait for it to exit (installers use
+    /// this before an update). Succeeds when none is running.
+    #[arg(long, conflicts_with = "mcp")]
+    pub quit: bool,
+
     #[cfg(feature = "ui-snapshots")]
     #[arg(long, hide = true, conflicts_with = "mcp", value_name = "OUT_DIR")]
     pub ui_snapshots: Option<std::path::PathBuf>,

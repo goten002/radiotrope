@@ -50,11 +50,8 @@ fn path() -> io::Result<PathBuf> {
 /// The folder the token is kept in, with the other files only the user
 /// should read (the paired phones)
 pub fn private_dir() -> io::Result<PathBuf> {
-    #[cfg(windows)]
-    let dir = dirs::data_local_dir().map(|dir| dir.join(crate::config::app::NAME));
-    #[cfg(not(windows))]
-    let dir = storage::config_dir().ok();
-    dir.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no folder to keep the token in"))
+    storage::local_dir()
+        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, "no folder to keep the token in"))
 }
 
 /// Move the token kept at `old` to `new`, unless `new` has one already, so

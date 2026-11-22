@@ -107,6 +107,17 @@ fn main() {
         std::process::exit(mcp::local::run_relay());
     }
 
+    // `--quit` closes the running player, e.g. for an installer
+    if args.quit {
+        std::process::exit(match instance::ask_to_quit() {
+            Ok(_) => 0,
+            Err(e) => {
+                eprintln!("Can't close Radiotrope: {e}");
+                1
+            }
+        });
+    }
+
     // One player per user; a second launch brings the first one forward
     let instance = if args.standalone {
         None
@@ -240,10 +251,14 @@ fn main() {
         let show_window: mcp::local::ShowWindow = Arc::new(move || {
             let _ = window.upgrade_in_event_loop(|ui| bring_to_front(ui.window()));
         });
+        // `radiotrope --quit`: exit as the menu's Quit does
+        let quit: mcp::local::QuitApp = Arc::new(|| {
+            let _ = slint::invoke_from_event_loop(quit_app);
+        });
         std::thread::Builder::new()
             .name("mcp-local".into())
             .spawn(move || {
-                mcp::local::serve(&instance, tools, show_window);
+                mcp::local::serve(&instance, tools, show_window, quit);
             })
             .expect("Failed to spawn MCP thread");
         agents

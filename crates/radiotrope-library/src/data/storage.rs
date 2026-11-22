@@ -8,16 +8,114 @@ use serde::{de::DeserializeOwned, Serialize};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
 
-/// Get the application cache directory path
-///
-/// Uses the system cache directory:
-/// - Linux: `~/.cache/radiotrope/`
-/// - macOS: `~/Library/Caches/radiotrope/`
-/// - Windows: `C:\Users\<User>\AppData\Local\radiotrope\cache\`
+/// Files that, next to the program, turn on portable mode. Explorer hides
+/// file extensions by default, so a "portable" made from a new text file is
+/// really `portable.txt`: both count.
+pub const PORTABLE_MARKERS: [&str; 2] = ["portable", "portable.txt"];
+
+/// The folder beside the program that holds everything in portable mode
+pub const PORTABLE_DATA: &str = "data";
+
+/// Where the app keeps its files. Every place that saves something takes
+/// its folder from here, so portable mode moves all of it at once.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DataDirs {
+    /// Settings, favorites, stats, schedules: what to back up
+    pub config: Option<PathBuf>,
+    /// Logos and directory answers: safe to delete
+    pub cache: Option<PathBuf>,
+    /// Files that stay on this computer: the log, the instance lock, the
+    /// agent token, paired phones. The local (not roaming) app data folder
+    /// on Windows; the config folder elsewhere.
+    pub local: Option<PathBuf>,
+    /// In portable mode, the `data` folder beside the program
+    pub portable: Option<PathBuf>,
+}
+
+/// The system's folders, before portable mode is considered
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SystemDirs {
+    pub config: Option<PathBuf>,
+    pub cache: Option<PathBuf>,
+    pub local: Option<PathBuf>,
+}
+
+impl SystemDirs {
+    /// This user's folders, each with our own subfolder:
+    /// - Linux: `~/.config/radiotrope`, `~/.cache/radiotrope`, local = config
+    /// - macOS: `~/Library/Application Support/radiotrope`,
+    ///   `~/Library/Caches/radiotrope`, local = config
+    /// - Windows: `%APPDATA%\radiotrope`, `%LOCALAPPDATA%\radiotrope` for
+    ///   both the caches and the local files
+    pub fn current() -> Self {
+        let config = dirs::config_dir().map(|p| p.join(NAME));
+        #[cfg(windows)]
+        let local = dirs::data_local_dir().map(|p| p.join(NAME));
+        #[cfg(not(windows))]
+        let local = config.clone();
+        Self {
+            config,
+            cache: dirs::cache_dir().map(|p| p.join(NAME)),
+            local,
+        }
+    }
+}
+
+impl DataDirs {
+    /// The folders to use: all inside `portable` when given, the system's
+    /// otherwise
+    pub fn choose(portable: Option<&Path>, system: SystemDirs) -> Self {
+        match portable {
+            Some(root) => Self {
+                config: Some(root.join("config")),
+                cache: Some(root.join("cache")),
+                local: Some(root.join("local")),
+                portable: Some(root.to_path_buf()),
+            },
+            None => Self {
+                config: system.config,
+                cache: system.cache,
+                local: system.local,
+                portable: None,
+            },
+        }
+    }
+}
+
+/// The portable data folder for a program in `program_dir`: its `data`
+/// subfolder when a marker file sits next to the program
+pub fn portable_root_in(program_dir: &Path) -> Option<PathBuf> {
+    PORTABLE_MARKERS
+        .iter()
+        .any(|marker| program_dir.join(marker).is_file())
+        .then(|| program_dir.join(PORTABLE_DATA))
+}
+
+/// The portable data folder, when this program runs in portable mode.
+/// Only the Windows build has one: elsewhere the program sits in a shared
+/// system folder such as `/usr/bin`.
+fn portable_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let program = std::env::current_exe().ok()?;
+        portable_root_in(program.parent()?)
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+/// This process's folders, worked out once
+pub fn data_dirs() -> &'static DataDirs {
+    static DIRS: OnceLock<DataDirs> = OnceLock::new();
+    DIRS.get_or_init(|| DataDirs::choose(portable_root().as_deref(), SystemDirs::current()))
+}
+
+/// Get the application cache directory path (see [`data_dirs`])
 pub fn cache_dir() -> Result<PathBuf> {
-    dirs::cache_dir().map(|p| p.join(NAME)).ok_or_else(|| {
+    data_dirs().cache.clone().ok_or_else(|| {
         AppError::Config("Can't find the cache folder. Check that HOME is set.".to_string())
     })
 }
@@ -30,10 +128,19 @@ pub fn ensure_cache_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
-/// Get the application config directory path
+/// Get the application config directory path (see [`data_dirs`])
 pub fn config_dir() -> Result<PathBuf> {
-    dirs::config_dir().map(|p| p.join(NAME)).ok_or_else(|| {
+    data_dirs().config.clone().ok_or_else(|| {
         AppError::Config("Can't find the settings folder. Check that HOME is set.".to_string())
+    })
+}
+
+/// The folder for files that stay on this computer (see [`DataDirs::local`])
+pub fn local_dir() -> Result<PathBuf> {
+    data_dirs().local.clone().ok_or_else(|| {
+        AppError::Config(
+            "Can't find the local app data folder. Check that HOME is set.".to_string(),
+        )
     })
 }
 
@@ -421,6 +528,85 @@ mod tests {
     fn temp_path(name: &str) -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
         temp_dir().join(format!("radiotrope_test_{}_{}.json", id, name))
+    }
+
+    fn system() -> SystemDirs {
+        SystemDirs {
+            config: Some(PathBuf::from("/home/u/AppData/Roaming/radiotrope")),
+            cache: Some(PathBuf::from("/home/u/AppData/Local/radiotrope")),
+            local: Some(PathBuf::from("/home/u/AppData/Local/radiotrope")),
+        }
+    }
+
+    #[test]
+    fn without_a_marker_the_system_folders_are_used() {
+        let dirs = DataDirs::choose(None, system());
+        assert_eq!(dirs.config, system().config);
+        assert_eq!(dirs.cache, system().cache);
+        assert_eq!(dirs.local, system().local);
+        assert_eq!(dirs.portable, None);
+    }
+
+    #[test]
+    fn portable_mode_keeps_everything_beside_the_program() {
+        let root = PathBuf::from("/media/stick/Radiotrope/data");
+        let dirs = DataDirs::choose(Some(&root), system());
+        assert_eq!(dirs.portable.as_deref(), Some(root.as_path()));
+        // No folder of the user's profile is left
+        for dir in [&dirs.config, &dirs.cache, &dirs.local] {
+            let dir = dir.as_ref().unwrap();
+            assert!(dir.starts_with(&root), "{dir:?}");
+            assert!(!dir.to_string_lossy().contains("AppData"), "{dir:?}");
+        }
+        // Settings, cache and local files stay apart
+        assert_ne!(dirs.config, dirs.cache);
+        assert_ne!(dirs.cache, dirs.local);
+        assert_ne!(dirs.config, dirs.local);
+    }
+
+    #[test]
+    fn portable_mode_works_without_a_home_folder() {
+        let root = PathBuf::from("/opt/radiotrope/data");
+        let dirs = DataDirs::choose(Some(&root), SystemDirs::default());
+        assert_eq!(dirs.config, Some(root.join("config")));
+        assert_eq!(dirs.cache, Some(root.join("cache")));
+        assert_eq!(dirs.local, Some(root.join("local")));
+    }
+
+    #[test]
+    fn a_marker_file_next_to_the_program_turns_on_portable_mode() {
+        let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let program_dir =
+            temp_dir().join(format!("radiotrope_portable_{}_{id}", std::process::id()));
+        let _ = fs::remove_dir_all(&program_dir);
+        fs::create_dir_all(&program_dir).unwrap();
+
+        assert_eq!(portable_root_in(&program_dir), None);
+        // A folder of that name is not a marker
+        fs::create_dir(program_dir.join("portable")).unwrap();
+        assert_eq!(portable_root_in(&program_dir), None);
+        fs::remove_dir(program_dir.join("portable")).unwrap();
+
+        for marker in PORTABLE_MARKERS {
+            fs::write(program_dir.join(marker), b"").unwrap();
+            assert_eq!(
+                portable_root_in(&program_dir),
+                Some(program_dir.join(PORTABLE_DATA)),
+                "{marker}"
+            );
+            fs::remove_file(program_dir.join(marker)).unwrap();
+        }
+        let _ = fs::remove_dir_all(&program_dir);
+    }
+
+    #[test]
+    fn the_paths_used_everywhere_come_from_data_dirs() {
+        let dirs = data_dirs();
+        assert_eq!(config_dir().ok(), dirs.config);
+        assert_eq!(cache_dir().ok(), dirs.cache);
+        assert_eq!(local_dir().ok(), dirs.local);
+        // The test program has no marker beside it
+        assert_eq!(dirs.portable, None);
     }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq)]
