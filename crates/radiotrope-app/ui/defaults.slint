@@ -71,14 +71,18 @@ export global Theme {
     out property <color> on-accent: text-on(accent);
     out property <color> on-accent-hover: text-on(accent-hover);
     out property <color> on-accent-pressed: text-on(accent-pressed);
-    out property <color> play-icon: on-accent;
+    // Accent for graphics that carry meaning (switches, fills, the playing
+    // bars): the accent itself where it reaches 3:1 on every plain layer,
+    // else moved toward white (dark) or black (light) only as far as it
+    // takes. Buttons and text keep `accent` and `accent-text`.
+    out property <color> accent-graphic: visible(accent-base, dark-mode ? #ffffff : #000000);
+    out property <color> on-accent-graphic: text-on(accent-graphic);
     // Tints for badges, selected rows and header glows
     out property <color> accent-soft: accent-base.with-alpha(dark-mode ? 0.16 : 0.12);
     out property <color> accent-glow: accent-base.with-alpha(dark-mode ? 0.18 : 0.14);
 
     // ── Status ──
     out property <color> danger: dark-mode ? #ef5b5b : #d33b3b;
-    out property <color> danger-hover: danger.darker(0.15);
     out property <color> success: dark-mode ? #4cc38a : #1f9d5a;
     out property <color> warning: dark-mode ? #e6ae59 : #a16812;
     out property <color> danger-text: dark-mode ? #ff9c9c : #8c1616;
@@ -92,11 +96,13 @@ export global Theme {
     // A stronger tint for a destructive action awaiting a second press.
     out property <color> danger-armed: danger.with-alpha(0.22);
     out property <color> danger-pressed: danger.with-alpha(0.30);
-    // The Timer's label
-    out property <color> info: dark-mode ? #5aa9e6 : #2b78c2;
 
     // ── Buttons ──
-    out property <color> disabled-bg: dark-mode ? #3a3c40 : #e1e2e6;
+    // Unavailable controls are quieter than enabled ones: the card's own
+    // colour in the dark theme, a faint grey in the light one, with a
+    // border at half the hairline's strength
+    out property <color> disabled-bg: dark-mode ? #25272b : #f5f5f7;
+    out property <color> disabled-border: dark-mode ? #ffffff0a : #0000000a;
     out property <color> disabled-text: dark-mode ? #7a7d83 : #a3a6ac;
 
     // ── Keyboard focus ──
@@ -112,14 +118,13 @@ export global Theme {
     out property <color> popup-shadow: dark-mode ? #00000099 : #1a1b2040;
     out property <length> popup-shadow-blur: 12px;
     out property <length> popup-shadow-offset: 3px;
-    out property <color> popup-bg: popup-surface;
-    out property <color> menu-hover: dark-mode ? #33363b : #ebebef;
-    out property <color> menu-bar-hover: dark-mode ? #2d3034 : elevated;
-    out property <color> hover-bg: menu-bar-hover;
-    out property <color> pressed-bg: menu-hover;
+    out property <color> hover-bg: dark-mode ? #2d3034 : elevated;
+    out property <color> pressed-bg: dark-mode ? #33363b : #ebebef;
     out property <color> selected-bg: accent-soft;
     out property <color> selection-mark: accent-text;
-    out property <color> field-border: hairline;
+    // Edge of a text field or dropdown: 3:1 against the card, so the
+    // control can be found without relying on its fill
+    out property <color> field-border: dark-mode ? #75777c : #8e9096;
     out property <color> menu-text: dark-mode ? #c8c9cc : #3a3c41;
 
     // ── Visualizer ──
@@ -130,14 +135,13 @@ export global Theme {
     out property <color> viz-track: dark-mode ? #ffffff0d : #0000000d;
 
     // ── Text sizes ──
-    out property <length> font-2xs: 9px;       // equalizer scale, signal bars
-    out property <length> font-xs: 10px;       // captions and badges
-    out property <length> font-sm: 11px;       // second lines, stats, hints
+    out property <length> font-2xs: 10px;      // equalizer scale, signal bars
+    out property <length> font-xs: 11px;       // captions and badges
+    out property <length> font-sm: 12px;       // second lines, stats, hints
     out property <length> font-md: 12px;       // labels, list details
     out property <length> font-base: 13px;     // body text, menus, inputs
     out property <length> font-lg: 14px;       // buttons, section headings
     out property <length> font-xl: 15px;       // stats bubble total
-    out property <length> font-2xl: 16px;      // on-screen keyboard keys
     out property <length> font-title: 17px;    // dialog titles, stats tiles
     out property <length> font-station: 18px;  // station name in the header
     out property <length> font-hero: 22px;     // app name in About
@@ -267,6 +271,27 @@ export global Theme {
         let lo6 = reads-well(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
         return c.mix(to, 1 - lo6 - 0.015625);
     }
+
+    // A graphic shows at 3:1 on the plain layer closest to it in
+    // brightness: the card in the dark theme, inputs in the light one
+    pure function shows-well(c: color) -> bool {
+        return contrast(c, dark-mode ? card : elevated) >= 3.0;
+    }
+
+    // `c` if it shows well, else `c` moved toward `to` just far enough
+    // (the same search as `readable`)
+    pure function visible(c: color, to: color) -> color {
+        if shows-well(c) {
+            return c;
+        }
+        let lo1 = shows-well(c.mix(to, 0.5)) ? 0.0 : 0.5;
+        let lo2 = shows-well(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
+        let lo3 = shows-well(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
+        let lo4 = shows-well(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
+        let lo5 = shows-well(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
+        let lo6 = shows-well(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
+        return c.mix(to, 1 - lo6 - 0.015625);
+    }
 }
 
 export global Defaults {
@@ -300,10 +325,9 @@ export global Defaults {
     out property <length> import-favorites-width: dialog-width-form;
     out property <length> recording-width: 480px;
     out property <length> remote-control-width: 520px;
-    // A paired phone's row, and the Remote Control dialog's height without
-    // its list of phones (window margin, padding, title, settings), so the
-    // list scrolls once the window is too short for all of them
-    out property <length> remote-device-height: Theme.row-dense;
+    // The Remote Control dialog's height without its list of phones
+    // (window margin, padding, title, settings), so the list scrolls once
+    // the window is too short for all of them
     out property <length> remote-devices-chrome: 360px;
     out property <length> pairing-code-width: dialog-width-compact;
     // The pairing QR code (on a white tile in the dark theme); fits the Pi's 480 px height
@@ -312,13 +336,9 @@ export global Defaults {
     // The Scheduler's list is at least this tall (the empty box too) and
     // grows with its entries while the window has room, then scrolls
     out property <length> schedule-empty-height: 200px;
-    // The Scheduler's card around the list: title, footer, padding and
-    // the gap kept to the window's edges
-    out property <length> schedule-list-chrome: 160px;
     out property <length> sleep-timer-width: 520px;
     // Dropdowns show at most eight rows before scrolling. Give short
     // triggers room to show an option label and its check side by side.
-    out property <length> dropdown-row-height: Theme.row-menu;
     out property <length> dropdown-max-height: 8 * Theme.row-menu + 2 * Theme.space-4;
     out property <length> dropdown-min-popup-width: 136px;
     // The Sleep Timer's length in the middle, wide enough for "12 h 55 min"

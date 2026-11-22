@@ -1,6 +1,7 @@
 import { Theme } from "defaults.slint";
 
-// Always-visible vertical scrollbar for a Flickable. Place it next to (or over)
+// Vertical scrollbar for a Flickable, shown while the content is taller
+// than the view: a quiet thumb at rest, a track once the pointer is on it. Place it next to (or over)
 // the Flickable and bind:
 //     content-y <=> flick.content-y;
 //     content-height: flick.content-height;
@@ -26,7 +27,8 @@ export component ScrollBar inherits Rectangle {
     visible: root.max-scroll > 0;
     // Round ends
     border-radius: self.width / 2;
-    background: Theme.viz-track;
+    background: touch.has-hover || root.dragging ? Theme.viz-track : transparent;
+    animate background { duration: Theme.fast; }
 
     touch := TouchArea {
         pointer-event(e) => {
@@ -59,6 +61,7 @@ export component ScrollBar inherits Rectangle {
         width: parent.width;
         border-radius: self.width / 2;
         background: root.dragging ? Theme.selection-mark
-            : root.over-thumb ? Theme.text-primary : Theme.text-secondary;
+            : touch.has-hover ? Theme.text-secondary : Theme.text-tertiary.with-alpha(0.45);
+        animate background { duration: Theme.fast; }
     }
 }

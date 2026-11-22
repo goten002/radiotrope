@@ -3,6 +3,11 @@ import { IconButton, FocusRing } from "components.slint";
 
 export component StyledLineEdit inherits Rectangle {
     in property <string> placeholder-text;
+    // The field's name for screen readers (the same text as its Field
+    // label). Without one the placeholder is used.
+    in property <string> label;
+    // Must be filled in: said after the name
+    in property <bool> required: false;
     in-out property <string> text;
     in property <bool> enabled: true;
     // Show an ✕ button on the right that clears the text
@@ -17,24 +22,34 @@ export component StyledLineEdit inherits Rectangle {
     property <bool> show-clear: root.clearable && root.text != "" && root.enabled;
     // Space on the right for the text: the margin, plus the ✕ button when shown
     property <length> right-margin: root.show-clear ? 32px : root.margin;
+    // The focus came by Tab (the key is released in the field it moved to):
+    // the full focus ring shows. After a click the field only gets an
+    // accent edge.
+    property <bool> key-focus: false;
 
     height: Theme.control-field;
     border-radius: Theme.radius-sm;
     background: root.enabled ? Theme.elevated : Theme.disabled-bg;
-    border-width: 1px;
-    border-color: Theme.field-border;
+    border-width: input.has-focus ? 1.5px : 1px;
+    border-color: !root.enabled ? Theme.disabled-border
+        : input.has-focus ? Theme.accent-text : Theme.field-border;
+    animate border-color { duration: Theme.fast; }
     forward-focus: input;
     clip: true;
 
-    // Placeholder, until something is typed (also while the field has focus)
+    // Placeholder, until something is typed (also while the field has
+    // focus). It starts after the caret's width, so the caret never sits
+    // on its first letter.
     if input.text == "": Text {
         text: root.placeholder-text;
         color: Theme.text-tertiary;
         font-size: Theme.font-base;
         vertical-alignment: center;
-        x: root.margin + (input.has-focus ? Theme.space-4 : 0px);
-        width: root.width - root.margin - root.right-margin;
+        x: root.margin + input.text-cursor-width;
+        width: root.width - self.x - root.right-margin;
         height: root.height;
+        // The input says it
+        accessible-role: none;
     }
 
     input := TextInput {
@@ -53,6 +68,9 @@ export component StyledLineEdit inherits Rectangle {
         enabled: root.enabled;
         selection-background-color: Theme.selection-bg;
         selection-foreground-color: Theme.selection-fg;
+        accessible-label: (root.label != "" ? root.label : root.placeholder-text)
+            + (root.required ? ", required" : "");
+        accessible-placeholder-text: root.placeholder-text;
 
         cursor-position-changed(cursor-position) => {
             if cursor-position.x + self.computed-x < root.margin {
@@ -65,14 +83,22 @@ export component StyledLineEdit inherits Rectangle {
         changed has-focus => {
             if self.has-focus {
                 root.ensure-visible(ScrollBehavior.instant);
+            } else {
+                root.key-focus = false;
             }
+        }
+        key-released(event) => {
+            if event.text == Key.Tab || event.text == Key.Backtab {
+                root.key-focus = true;
+            }
+            return reject;
         }
         accepted => { root.accepted(root.text); }
         edited => { root.edited(root.text); }
     }
 
     // Draw inside the field so scrolling or clipping never hides the ring.
-    if input.has-focus: FocusRing {
+    if input.has-focus && root.key-focus: FocusRing {
         radius: root.border-radius;
         offset: 0px;
     }
