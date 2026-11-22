@@ -17,7 +17,7 @@ use radiotrope_app::{text, visual};
 
 use crate::app::delayed_save::DelayedSave;
 use crate::app::listening::ListenSession;
-use crate::app::picked_station::PendingPick;
+use crate::app::picked_station::{PendingPick, PickedStation};
 use crate::app::shown_station::ShownStation;
 use crate::app::state::AppSnapshot;
 use crate::app::ui_sender::UiSender;
@@ -28,7 +28,7 @@ use crate::recording_ui::{show_listeners, show_recording_state};
 use crate::stats_ui::{format_playtime, EngineStats};
 use crate::viz_ui::viz_wanted;
 use crate::window_settings::{
-    save_settings, show_filters, window_settings, write_settings, FilterSettings,
+    save_settings, show_filters, window_settings, write_settings, FilterSettings, WindowSettings,
 };
 use crate::{app, schedule_ui, App, Defaults, VizStyle};
 
@@ -190,6 +190,294 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     });
 }
 
+/// What the header and the playback bar show of the controller's state
+#[derive(Clone, Debug, PartialEq)]
+struct PlayerView {
+    station_name: slint::SharedString,
+    codec_info: slint::SharedString,
+    status_text: slint::SharedString,
+    is_error: bool,
+    is_loading: bool,
+    is_playing: bool,
+    alarm_beep: bool,
+    /// "Artist - Title", or empty
+    now_playing: slint::SharedString,
+    volume: f32,
+    is_muted: bool,
+    station_url: Option<slint::SharedString>,
+    /// Given with the Play, by the UI or an agent
+    station_logo: Option<String>,
+    station_country: Option<String>,
+    eq_gains: [f32; 10],
+    eq_preamp: f32,
+    eq_enabled: bool,
+    eq_preset: slint::SharedString,
+}
+
+impl PlayerView {
+    fn of(s: &AppSnapshot) -> Self {
+        Self {
+            station_name: s.station_name.as_deref().unwrap_or(UNNAMED_STATION).into(),
+            codec_info: format_codec_line(s).into(),
+            status_text: s.status_text.as_ref().into(),
+            is_error: s.is_error,
+            is_loading: s.is_resolving || s.status_text == status::CONNECTING,
+            is_playing: s.playback == PlaybackState::Playing,
+            alarm_beep: s.alarm_beep,
+            now_playing: if !s.title.is_empty() {
+                if !s.artist.is_empty() {
+                    format!("{} - {}", s.artist, s.title).into()
+                } else {
+                    s.title.as_str().into()
+                }
+            } else {
+                Default::default()
+            },
+            volume: s.volume,
+            is_muted: s.is_muted,
+            station_url: s.station_url.as_deref().map(Into::into),
+            station_logo: s.station_logo_url.clone(),
+            station_country: s.station_country.clone(),
+            eq_gains: s.eq_gains,
+            eq_preamp: s.eq_preamp,
+            eq_enabled: s.eq_enabled,
+            eq_preset: s.eq_preset_name.as_deref().unwrap_or("").into(),
+        }
+    }
+
+    /// A station picked here that the controller hasn't taken up yet shows
+    /// as starting: the state still holds the old one, playing
+    fn starting(&mut self, picked: &PickedStation) {
+        self.station_name = picked.name.as_deref().unwrap_or(UNNAMED_STATION).into();
+        self.codec_info = AWAITING_STREAM.into();
+        self.status_text = STARTING_STATUS.into();
+        self.is_error = false;
+        self.is_loading = true;
+        self.is_playing = false;
+        self.now_playing = Default::default();
+        self.station_url = Some(picked.url.as_str().into());
+    }
+}
+
+/// What the poll keeps from one tick to the next
+struct Poll {
+    ctx: AppContext,
+    viz_timer: std::rc::Rc<slint::Timer>,
+    engine_stats: EngineStats,
+    /// Logo of the station restored at startup, which may not be a favorite
+    restored_logo: Option<(String, String)>,
+    /// Recording notice on screen: its sequence number and when it appeared
+    notice: (u64, Instant),
+    /// Listening session of the station playing now, for favorite stats
+    listen: std::rc::Rc<std::cell::RefCell<Option<ListenSession>>>,
+    saver: DelayedSave,
+    /// The window's settings, saved a moment after they change rather than
+    /// only at exit, which a logoff or a crash never reaches
+    settings: app::settings_watch::SettingsWatch<WindowSettings>,
+}
+
+impl Poll {
+    /// Shared state → Slint properties (runs on the UI thread)
+    fn tick(&mut self, ui: &App) {
+        let ctx = &self.ctx;
+
+        // Commands that found the controller's queue full go out now
+        ctx.tx.flush();
+
+        // Check for external favorites changes (e.g. from MCP); the
+        // UI's own changes are drawn as they are made
+        if let Ok(f) = ctx.favorites.try_lock() {
+            let gen = f.generation();
+            drop(f);
+            if gen != FAVORITES_SHOWN.get() {
+                refresh_favorites(ui, &ctx.favorites, &ctx.logos);
+            }
+        }
+
+        // try_lock: skip this tick if controller holds the lock
+        let Ok(s) = ctx.state.try_lock() else { return };
+        let picked = PENDING_PICK.with(|p| {
+            p.borrow_mut()
+                .waiting(s.play_seq, Instant::now(), PLAY_TAKE_TIMEOUT)
+                .cloned()
+        });
+        // Copy all data under lock, then drop before touching UI
+        let mut view = PlayerView::of(&s);
+        let filters = FilterSettings::of(&s);
+        let recording = s.recording.clone();
+        let recording_notice = s.recording_notice.clone();
+        let listeners = s
+            .listen
+            .as_ref()
+            .map(|l| l.listener_names())
+            .unwrap_or_default();
+        let schedule_view = schedule_ui::View::of(&s);
+        let settings_now = window_settings(&s, ui);
+        drop(s);
+        if let Some(settings) = self.settings.note(settings_now, Instant::now()) {
+            write_settings(&settings);
+        }
+
+        if let Some(picked) = picked {
+            view.starting(&picked);
+        }
+
+        schedule_ui::show_state(ui, schedule_view);
+        show_listeners(ui, &listeners);
+        show_recording_state(
+            ui,
+            recording.as_ref(),
+            recording_notice.as_ref(),
+            view.is_playing,
+            &mut self.notice,
+        );
+
+        // Credit listening time to the favorite being played
+        // An alarm's beep isn't time on its station
+        let playing_url = view
+            .station_url
+            .as_deref()
+            .filter(|_| view.is_playing && !view.alarm_beep);
+        track_listening(
+            ui,
+            &ctx.favorites,
+            &self.saver,
+            &mut self.listen.borrow_mut(),
+            playing_url,
+        );
+
+        self.show(ui, view);
+
+        show_filters(ui, &filters);
+    }
+
+    /// The player's state into the window, without holding any lock
+    fn show(&self, ui: &App, view: PlayerView) {
+        ui.set_station_name(view.station_name);
+        ui.set_codec_info(view.codec_info);
+        ui.set_status_text(view.status_text);
+        ui.set_is_error(view.is_error);
+        ui.set_is_playing(view.is_playing);
+        // The play time beside "Playing", kept current here: the
+        // statistics dialog, which shows it too, is fed only while open
+        if view.is_playing {
+            if let Some(stats) = (self.engine_stats)() {
+                if let Ok(s) = stats.try_lock() {
+                    let started = s.play_started_at;
+                    drop(s);
+                    ui.set_stat_playtime(format_playtime(started).into());
+                }
+            }
+        }
+        // Playing started, or the window came back from being minimised
+        if viz_wanted(ui) && !self.viz_timer.running() {
+            self.viz_timer.restart();
+        }
+        ui.set_now_playing_title(view.now_playing);
+        if !ui.get_volume_dragging() {
+            ui.set_volume(view.volume);
+        }
+        ui.set_is_muted(view.is_muted);
+        if let Some(url) = view.station_url {
+            let url_changed = SHOWN_STATION.with(|s| s.borrow().changed(url.as_str()));
+            ui.set_station_url(url.clone());
+            // Update favorite star based on current station (while a
+            // save holds the favorites, the star stays as it was)
+            if let Ok(f) = self.ctx.favorites.try_lock() {
+                ui.set_is_station_favorited(f.is_favorite(url.as_str()));
+            }
+
+            // When station URL changes (e.g. MCP play), update logo
+            // and country
+            if url_changed {
+                self.show_station_details(ui, &url, view.station_logo, view.station_country);
+            }
+        }
+        ui.set_is_loading(view.is_loading);
+
+        // Sync EQ state (for MCP-driven changes)
+        ui.set_eq_enabled(view.eq_enabled);
+        ui.set_eq_preset_name(view.eq_preset);
+        ui.set_eq_preamp(view.eq_preamp);
+        ui.set_eq_band0(view.eq_gains[0]);
+        ui.set_eq_band1(view.eq_gains[1]);
+        ui.set_eq_band2(view.eq_gains[2]);
+        ui.set_eq_band3(view.eq_gains[3]);
+        ui.set_eq_band4(view.eq_gains[4]);
+        ui.set_eq_band5(view.eq_gains[5]);
+        ui.set_eq_band6(view.eq_gains[6]);
+        ui.set_eq_band7(view.eq_gains[7]);
+        ui.set_eq_band8(view.eq_gains[8]);
+        ui.set_eq_band9(view.eq_gains[9]);
+    }
+
+    /// The logo and country of a station the player wasn't showing yet.
+    /// `station_logo` and `station_country` came with the Play.
+    fn show_station_details(
+        &self,
+        ui: &App,
+        url: &str,
+        station_logo: Option<String>,
+        station_country: Option<String>,
+    ) {
+        let (poll_favs, poll_logo_svc) = (&self.ctx.favorites, &self.ctx.logos);
+        let shown = show_station(url);
+
+        // A favorite's details first, then the restored
+        // station's own logo, then what came with the Play
+        let (fav_logo, fav_country) = poll_favs
+            .lock()
+            .ok()
+            .and_then(|f| {
+                f.get_by_url(url)
+                    .map(|fav| (fav.station.logo_url.clone(), fav.station.country.clone()))
+            })
+            .unwrap_or_default();
+        let logo_url = fav_logo
+            .or_else(|| {
+                self.restored_logo
+                    .as_ref()
+                    .filter(|(u, _)| u == url)
+                    .map(|(_, logo)| logo.clone())
+            })
+            .or(station_logo)
+            .filter(|logo| !logo.is_empty());
+        let country = fav_country.or(station_country).unwrap_or_default();
+        ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
+        ui.set_station_country(country.as_str().into());
+
+        // Try cached logo first (works even without logo_url on favorite)
+        let tmp_station = Station::new(ui.get_station_name().as_str(), url);
+        if let Some((rgba, w, h)) = poll_logo_svc.get_cached_rgba(&tmp_station) {
+            set_header_logo(ui, rgba, w, h);
+        } else {
+            // Clear stale logo only when no cached replacement is available
+            ui.set_current_logo(Default::default());
+            // Not cached: fetch it
+            if let Some(logo) = logo_url {
+                let logo_svc = poll_logo_svc.clone();
+                let ui_weak2 = ui.as_weak();
+                let station_name = ui.get_station_name().to_string();
+                let station_url = url.to_string();
+                std::thread::Builder::new()
+                    .name("poll-logo-fetch".into())
+                    .spawn(move || {
+                        let tmp = Station::new(&station_name, &station_url).with_logo(&logo);
+                        if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                let Some(ui) = ui_weak2.upgrade() else { return };
+                                if is_current_station(shown, &station_url) {
+                                    set_header_logo(&ui, rgba, w, h);
+                                }
+                            });
+                        }
+                    })
+                    .ok();
+            }
+        }
+    }
+}
+
 /// Start the poll that shows the controller's state in the window, every
 /// 200 ms. It runs while the returned timer is kept.
 pub(crate) fn start_poll(
@@ -201,254 +489,29 @@ pub(crate) fn start_poll(
     listen_session: &std::rc::Rc<std::cell::RefCell<Option<ListenSession>>>,
     favorites_saver: &DelayedSave,
 ) -> slint::Timer {
-    let (ui_tx, shared_state) = (&ctx.tx, &ctx.state);
-    let (favorites, logo_service) = (&ctx.favorites, &ctx.logos);
-    // Poll shared state → Slint properties (runs on UI thread via Timer)
+    let mut poll = Poll {
+        ctx: ctx.clone(),
+        viz_timer: viz_timer.clone(),
+        engine_stats: engine_stats.clone(),
+        restored_logo: last_station
+            .and_then(|s| Some((s.url.clone(), s.logo_url.clone()?)))
+            .filter(|(_, logo)| !logo.is_empty()),
+        notice: (0u64, Instant::now()),
+        listen: listen_session.clone(),
+        saver: favorites_saver.clone(),
+        settings: app::settings_watch::SettingsWatch::new(SETTINGS_SAVE_DELAY),
+    };
     let ui_weak = ui.as_weak();
-    let poll_state = shared_state.clone();
-    let poll_favs = favorites.clone();
-    let poll_logo_svc = logo_service.clone();
-    let poll_tx = ui_tx.clone();
-    let poll_viz_timer = viz_timer.clone();
-    let poll_stats = engine_stats.clone();
-    // Logo of the station restored at startup, which may not be a favorite
-    let restored_logo: Option<(String, String)> = last_station
-        .and_then(|s| Some((s.url.clone(), s.logo_url.clone()?)))
-        .filter(|(_, logo)| !logo.is_empty());
-    // Recording notice on screen: its sequence number and when it appeared
-    let poll_notice = std::cell::RefCell::new((0u64, Instant::now()));
-    let poll_listen = listen_session.clone();
-    let poll_saver = favorites_saver.clone();
-    // The window's settings, saved a moment after they change rather than
-    // only at exit, which a logoff or a crash never reaches
-    let poll_settings =
-        std::cell::RefCell::new(app::settings_watch::SettingsWatch::new(SETTINGS_SAVE_DELAY));
-    let _timer = slint::Timer::default();
-    _timer.start(
+    let timer = slint::Timer::default();
+    timer.start(
         slint::TimerMode::Repeated,
         Duration::from_millis(200),
         move || {
             let Some(ui) = ui_weak.upgrade() else { return };
-
-            // Commands that found the controller's queue full go out now
-            poll_tx.flush();
-
-            // Check for external favorites changes (e.g. from MCP); the
-            // UI's own changes are drawn as they are made
-            if let Ok(f) = poll_favs.try_lock() {
-                let gen = f.generation();
-                drop(f);
-                if gen != FAVORITES_SHOWN.get() {
-                    refresh_favorites(&ui, &poll_favs, &poll_logo_svc);
-                }
-            }
-
-            // try_lock: skip this tick if controller holds the lock
-            let Ok(s) = poll_state.try_lock() else { return };
-            let picked = PENDING_PICK.with(|p| {
-                p.borrow_mut()
-                    .waiting(s.play_seq, Instant::now(), PLAY_TAKE_TIMEOUT)
-                    .cloned()
-            });
-            // Copy all data under lock, then drop before touching UI
-            let mut station_name: slint::SharedString =
-                s.station_name.as_deref().unwrap_or(UNNAMED_STATION).into();
-            let mut codec_info: slint::SharedString = format_codec_line(&s).into();
-            let mut status_text: slint::SharedString = s.status_text.as_ref().into();
-            let mut is_error = s.is_error;
-            let mut is_loading = s.is_resolving || s.status_text == status::CONNECTING;
-            let mut is_playing = s.playback == PlaybackState::Playing;
-            let alarm_beep = s.alarm_beep;
-            let mut now_playing: slint::SharedString = if !s.title.is_empty() {
-                if !s.artist.is_empty() {
-                    format!("{} - {}", s.artist, s.title).into()
-                } else {
-                    s.title.as_str().into()
-                }
-            } else {
-                Default::default()
-            };
-            let volume = s.volume;
-            let is_muted = s.is_muted;
-            let mut station_url: Option<slint::SharedString> =
-                s.station_url.as_deref().map(Into::into);
-            // Given with the Play, by the UI or an agent
-            let station_logo = s.station_logo_url.clone();
-            let station_country = s.station_country.clone();
-            let eq_gains = s.eq_gains;
-            let eq_preamp = s.eq_preamp;
-            let eq_enabled = s.eq_enabled;
-            let eq_preset: slint::SharedString = s.eq_preset_name.as_deref().unwrap_or("").into();
-            let filters = FilterSettings::of(&s);
-            let recording = s.recording.clone();
-            let recording_notice = s.recording_notice.clone();
-            let listeners = s
-                .listen
-                .as_ref()
-                .map(|l| l.listener_names())
-                .unwrap_or_default();
-            let schedule_view = schedule_ui::View::of(&s);
-            let settings_now = window_settings(&s, &ui);
-            drop(s);
-            if let Some(settings) = poll_settings
-                .borrow_mut()
-                .note(settings_now, Instant::now())
-            {
-                write_settings(&settings);
-            }
-
-            // A station picked here that the controller hasn't taken up
-            // yet shows as starting: the state still holds the old one,
-            // playing
-            if let Some(picked) = picked {
-                station_name = picked.name.as_deref().unwrap_or(UNNAMED_STATION).into();
-                codec_info = AWAITING_STREAM.into();
-                status_text = STARTING_STATUS.into();
-                is_error = false;
-                is_loading = true;
-                is_playing = false;
-                now_playing = Default::default();
-                station_url = Some(picked.url.as_str().into());
-            }
-
-            schedule_ui::show_state(&ui, schedule_view);
-            show_listeners(&ui, &listeners);
-            show_recording_state(
-                &ui,
-                recording.as_ref(),
-                recording_notice.as_ref(),
-                is_playing,
-                &mut poll_notice.borrow_mut(),
-            );
-
-            // Credit listening time to the favorite being played
-            // An alarm's beep isn't time on its station
-            let playing_url = station_url.as_deref().filter(|_| is_playing && !alarm_beep);
-            track_listening(
-                &ui,
-                &poll_favs,
-                &poll_saver,
-                &mut poll_listen.borrow_mut(),
-                playing_url,
-            );
-
-            // Set UI properties without holding any lock
-            ui.set_station_name(station_name);
-            ui.set_codec_info(codec_info);
-            ui.set_status_text(status_text);
-            ui.set_is_error(is_error);
-            ui.set_is_playing(is_playing);
-            // The play time beside "Playing", kept current here: the
-            // statistics dialog, which shows it too, is fed only while open
-            if is_playing {
-                if let Some(stats) = poll_stats() {
-                    if let Ok(s) = stats.try_lock() {
-                        let started = s.play_started_at;
-                        drop(s);
-                        ui.set_stat_playtime(format_playtime(started).into());
-                    }
-                }
-            }
-            // Playing started, or the window came back from being minimised
-            if viz_wanted(&ui) && !poll_viz_timer.running() {
-                poll_viz_timer.restart();
-            }
-            ui.set_now_playing_title(now_playing);
-            if !ui.get_volume_dragging() {
-                ui.set_volume(volume);
-            }
-            ui.set_is_muted(is_muted);
-            if let Some(url) = station_url {
-                let url_changed = SHOWN_STATION.with(|s| s.borrow().changed(url.as_str()));
-                ui.set_station_url(url.clone());
-                // Update favorite star based on current station (while a
-                // save holds the favorites, the star stays as it was)
-                if let Ok(f) = poll_favs.try_lock() {
-                    ui.set_is_station_favorited(f.is_favorite(url.as_str()));
-                }
-
-                // When station URL changes (e.g. MCP play), update logo
-                // and country
-                if url_changed {
-                    let shown = show_station(url.as_str());
-
-                    // A favorite's details first, then the restored
-                    // station's own logo, then what came with the Play
-                    let (fav_logo, fav_country) = poll_favs
-                        .lock()
-                        .ok()
-                        .and_then(|f| {
-                            f.get_by_url(url.as_str()).map(|fav| {
-                                (fav.station.logo_url.clone(), fav.station.country.clone())
-                            })
-                        })
-                        .unwrap_or_default();
-                    let logo_url = fav_logo
-                        .or_else(|| {
-                            restored_logo
-                                .as_ref()
-                                .filter(|(u, _)| u == url.as_str())
-                                .map(|(_, logo)| logo.clone())
-                        })
-                        .or(station_logo)
-                        .filter(|logo| !logo.is_empty());
-                    let country = fav_country.or(station_country).unwrap_or_default();
-                    ui.set_station_logo_url(logo_url.as_deref().unwrap_or("").into());
-                    ui.set_station_country(country.as_str().into());
-
-                    // Try cached logo first (works even without logo_url on favorite)
-                    let tmp_station = Station::new(ui.get_station_name().as_str(), url.as_str());
-                    if let Some((rgba, w, h)) = poll_logo_svc.get_cached_rgba(&tmp_station) {
-                        set_header_logo(&ui, rgba, w, h);
-                    } else {
-                        // Clear stale logo only when no cached replacement is available
-                        ui.set_current_logo(Default::default());
-                        // Not cached: fetch it
-                        if let Some(logo) = logo_url {
-                            let logo_svc = poll_logo_svc.clone();
-                            let ui_weak2 = ui.as_weak();
-                            let station_name = ui.get_station_name().to_string();
-                            let station_url = url.to_string();
-                            std::thread::Builder::new()
-                                .name("poll-logo-fetch".into())
-                                .spawn(move || {
-                                    let tmp =
-                                        Station::new(&station_name, &station_url).with_logo(&logo);
-                                    if let Some((rgba, w, h)) = logo_svc.get_rgba(&tmp) {
-                                        let _ = slint::invoke_from_event_loop(move || {
-                                            let Some(ui) = ui_weak2.upgrade() else { return };
-                                            if is_current_station(shown, &station_url) {
-                                                set_header_logo(&ui, rgba, w, h);
-                                            }
-                                        });
-                                    }
-                                })
-                                .ok();
-                        }
-                    }
-                }
-            }
-            ui.set_is_loading(is_loading);
-
-            // Sync EQ state (for MCP-driven changes)
-            ui.set_eq_enabled(eq_enabled);
-            ui.set_eq_preset_name(eq_preset);
-            ui.set_eq_preamp(eq_preamp);
-            ui.set_eq_band0(eq_gains[0]);
-            ui.set_eq_band1(eq_gains[1]);
-            ui.set_eq_band2(eq_gains[2]);
-            ui.set_eq_band3(eq_gains[3]);
-            ui.set_eq_band4(eq_gains[4]);
-            ui.set_eq_band5(eq_gains[5]);
-            ui.set_eq_band6(eq_gains[6]);
-            ui.set_eq_band7(eq_gains[7]);
-            ui.set_eq_band8(eq_gains[8]);
-            ui.set_eq_band9(eq_gains[9]);
-
-            show_filters(&ui, &filters);
+            poll.tick(&ui);
         },
     );
-    _timer
+    timer
 }
 
 /// The header logo's visualizer colours on each theme (dark, light),
@@ -730,5 +793,73 @@ mod tests {
             format_codec_line(&s),
             "MP3 \u{b7} 128 kbps \u{b7} 44.1 kHz \u{b7} Stereo"
         );
+    }
+    #[test]
+    fn the_view_reads_the_snapshot() {
+        let mut s = AppSnapshot::default();
+        let view = PlayerView::of(&s);
+        assert_eq!(view.station_name, UNNAMED_STATION);
+        assert_eq!(view.station_url, None);
+        assert_eq!(view.codec_info, AWAITING_STREAM);
+        assert_eq!(view.now_playing, "");
+        assert!(!view.is_playing && !view.is_loading);
+
+        s.station_name = Some("Kiss".into());
+        s.station_url = Some("http://kiss.example/live".into());
+        s.title = "Song".into();
+        assert_eq!(PlayerView::of(&s).now_playing, "Song");
+        s.artist = "Band".into();
+        s.playback = PlaybackState::Playing;
+        let view = PlayerView::of(&s);
+        assert_eq!(view.station_name, "Kiss");
+        assert_eq!(
+            view.station_url.as_deref(),
+            Some("http://kiss.example/live")
+        );
+        assert_eq!(view.now_playing, "Band - Song");
+        assert!(view.is_playing && !view.is_loading);
+    }
+
+    #[test]
+    fn the_view_is_loading_while_resolving_or_connecting() {
+        let mut s = AppSnapshot {
+            is_resolving: true,
+            ..Default::default()
+        };
+        assert!(PlayerView::of(&s).is_loading);
+        s.is_resolving = false;
+        s.status_text = status::CONNECTING.into();
+        assert!(PlayerView::of(&s).is_loading);
+        s.status_text = "Playing".into();
+        assert!(!PlayerView::of(&s).is_loading);
+    }
+
+    #[test]
+    fn a_picked_station_shows_as_starting_over_the_one_still_playing() {
+        let mut s = AppSnapshot {
+            station_name: Some("Old".into()),
+            station_url: Some("http://old.example/".into()),
+            title: "Song".into(),
+            playback: PlaybackState::Playing,
+            is_error: true,
+            ..Default::default()
+        };
+        s.status_text = "Playing".into();
+        let mut pending = PendingPick::default();
+        let now = Instant::now();
+        pending.pick(s.play_seq, "http://new.example/", None, now);
+        let picked = pending
+            .waiting(s.play_seq, now, PLAY_TAKE_TIMEOUT)
+            .cloned()
+            .expect("the controller hasn't taken it");
+
+        let mut view = PlayerView::of(&s);
+        view.starting(&picked);
+        assert_eq!(view.station_name, UNNAMED_STATION);
+        assert_eq!(view.station_url.as_deref(), Some("http://new.example/"));
+        assert_eq!(view.status_text, STARTING_STATUS);
+        assert_eq!(view.codec_info, AWAITING_STREAM);
+        assert_eq!(view.now_playing, "");
+        assert!(view.is_loading && !view.is_playing && !view.is_error);
     }
 }
