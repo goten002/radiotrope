@@ -34,7 +34,7 @@ fn volume_curve(linear: f32) -> f32 {
 use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
-use super::dsp::output_stage::{OutputStage, SharedVolume};
+use super::dsp::output_stage::{Leaving, OutputStage, SharedVolume};
 use super::dsp::sound::{
     FilterSwitches, HissLevel, HumReadout, LevelReadout, LevelTarget, SharedSoundParams,
     SoundParams,
@@ -43,7 +43,7 @@ use super::dsp::{
     CleanupSource, HissSource, HumSource, LevelSource, LimiterSource, ResampleSource,
 };
 use super::health::{FailureReason, HealthState, StreamHealthMonitor};
-use super::output::{DefaultWatch, DeviceOutputs, Devices, Output, SilentOutput};
+use super::output::{DefaultWatch, DeviceOutputs, Devices, Output, OutputPeak, SilentOutput};
 use super::pcm::{decode_ahead, PcmFeed, PcmOutput};
 use super::recording::{Listen, Recorder, RecordingTap, TapPoint};
 use super::stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
@@ -228,15 +228,17 @@ fn new_player(output: Option<&Output>) -> Player {
 /// The station playing, kept here so it can move to another device
 struct Station {
     feed: PcmFeed,
-    /// Set to fade it out (when another station starts)
-    fade: Arc<AtomicBool>,
+    /// Told when it is stopped or fades out (when another station starts):
+    /// from then on it keeps the volume it had, and the volume set
+    /// afterwards is the next station's
+    leaving: Arc<Leaving>,
 }
 
 impl Station {
     fn new(feed: PcmFeed) -> Self {
         Self {
             feed,
-            fade: Arc::new(AtomicBool::new(false)),
+            leaving: Leaving::new(),
         }
     }
 
@@ -249,7 +251,7 @@ impl Station {
         OutputStage::new(
             self.feed.output(),
             volume.clone(),
-            self.fade.clone(),
+            self.leaving.clone(),
             output.is_some_and(Output::takes_16_bit),
         )
     }
@@ -267,16 +269,18 @@ struct Fading {
 }
 
 impl Fading {
-    /// Fade `station` out on its player, leaving `sink` a new one
+    /// Fade `station` out on its player from `volume`, which it keeps
+    /// whatever the volume is set to meanwhile, leaving `sink` a new one
     fn start(
         station: Station,
+        volume: &SharedVolume,
         sink: &mut Player,
         output: Option<&Output>,
         cancel: Option<StreamCancel>,
         producer_probing_flag: Option<Arc<AtomicBool>>,
         producer_handle: Option<JoinHandle<()>>,
     ) -> Self {
-        station.fade.store(true, Ordering::SeqCst);
+        station.leaving.fade_out(volume.get());
         Self {
             sink: std::mem::replace(sink, new_player(output)),
             _station: station,
@@ -473,6 +477,8 @@ pub struct AudioEngine {
     eq_params: SharedEqParams,
     sound: SoundShared,
     recorder: Recorder,
+    /// How loud a silent output's audio is
+    output_peak: Arc<OutputPeak>,
     #[cfg(test)]
     output_lost: Arc<AtomicBool>,
 }
@@ -491,6 +497,8 @@ impl AudioEngine {
 
     /// [`AudioEngine::new`] with its own output and waits
     pub fn with_config(config: EngineConfig) -> Result<Self, RadioError> {
+        let output_peak = Arc::<OutputPeak>::default();
+        let peak = output_peak.clone();
         let outputs = match config.output {
             EngineOutput::Device => {
                 let mut device_outputs = DeviceOutputs::new();
@@ -507,13 +515,16 @@ impl AudioEngine {
             }
             EngineOutput::Silent { speed } => Outputs {
                 open: Box::new(move |_, _| {
-                    SilentOutput::open(speed).map(|output| (Output::Silent(output), None))
+                    SilentOutput::open(speed, peak.clone())
+                        .map(|output| (Output::Silent(output), None))
                 }),
                 default: None,
                 watch: None,
             },
         };
-        Self::with_output(outputs, config)
+        let mut engine = Self::with_output(outputs, config)?;
+        engine.output_peak = output_peak;
+        Ok(engine)
     }
 
     /// Create an engine that plays through what `outputs` opens: at start,
@@ -581,9 +592,18 @@ impl AudioEngine {
             eq_params,
             sound,
             recorder,
+            output_peak: Arc::default(),
             #[cfg(test)]
             output_lost,
         })
+    }
+
+    /// The loudest sample (0 to 1 at full scale) that [`EngineOutput::Silent`]
+    /// took since this was last asked: what a device would have played,
+    /// after the volume and the fades. Always 0 on a device. For tests of
+    /// what is heard.
+    pub fn take_output_peak(&self) -> f32 {
+        self.output_peak.take()
     }
 
     /// Act as if the output device had just gone away
@@ -964,6 +984,7 @@ impl AudioEngine {
                                 recorder.listen().fade_out();
                                 fading = Some(Fading::start(
                                     station,
+                                    &volume,
                                     &mut sink,
                                     stream.as_ref(),
                                     stream_cancel.take(),
@@ -971,7 +992,12 @@ impl AudioEngine {
                                     _producer_handle.take(),
                                 ));
                             }
-                            _ => {
+                            station => {
+                                // What its player still plays before it
+                                // ends isn't for the volume set next
+                                if let Some(station) = &station {
+                                    station.leaving.hold(volume.get());
+                                }
                                 if let Some(ref cancel) = stream_cancel {
                                     cancel.cancel();
                                 }
@@ -1088,6 +1114,7 @@ impl AudioEngine {
                                 recorder.listen().fade_out();
                                 fading = Some(Fading::start(
                                     station,
+                                    &volume,
                                     &mut sink,
                                     stream.as_ref(),
                                     stream_cancel.take(),
@@ -1095,7 +1122,12 @@ impl AudioEngine {
                                     _producer_handle.take(),
                                 ));
                             }
-                            _ => {
+                            station => {
+                                // What its player still plays before it
+                                // ends isn't for the volume set next
+                                if let Some(station) = &station {
+                                    station.leaving.hold(volume.get());
+                                }
                                 if let Some(ref cancel) = stream_cancel {
                                     cancel.cancel();
                                 }
@@ -1930,7 +1962,8 @@ mod tests {
         let open: OpenOutput = Box::new(move |_, _| {
             let attempt = counted.fetch_add(1, Ordering::SeqCst) + 1;
             if works(attempt) {
-                SilentOutput::open(TEST_SPEED).map(|output| (Output::Silent(output), None))
+                SilentOutput::open(TEST_SPEED, Arc::default())
+                    .map(|output| (Output::Silent(output), None))
             } else {
                 Err("no device".to_string())
             }
@@ -2163,7 +2196,8 @@ mod tests {
                 Opens::Elsewhere => Some("hdmi".to_string()),
                 Opens::Fails => return Err("no device".to_string()),
             };
-            SilentOutput::open(TEST_SPEED).map(|output| (Output::Silent(output), device))
+            SilentOutput::open(TEST_SPEED, Arc::default())
+                .map(|output| (Output::Silent(output), device))
         });
         let outputs = Outputs {
             open,
@@ -4655,6 +4689,100 @@ mod tests {
         assert!(cancel.is_cancelled());
     }
 
+    /// The loudest sample heard in the next `ms`
+    fn heard_for(engine: &AudioEngine, ms: u64) -> f32 {
+        engine.take_output_peak();
+        thread::sleep(Duration::from_millis(ms));
+        engine.take_output_peak()
+    }
+
+    /// A fade to a stop, as the Sleep Timer and a fading scheduled Stop
+    /// run it: the volume goes down, the station is stopped, and the
+    /// volume goes back to the user's for the next one. Returns how loud
+    /// the end of the fade was, and the loudest sample after the stop.
+    fn fade_to_stop(engine: &AudioEngine) -> (f32, f32) {
+        engine.set_volume(1.0);
+        engine.play_stream(resolved_stream(EndlessWav::new(), &StreamCancel::new()));
+        expect_playing(engine);
+        thread::sleep(Duration::from_millis(100));
+        let full = heard_for(engine, 100);
+        assert!(full > 0.1, "the station isn't heard: {full}");
+
+        engine.set_volume(0.1);
+        thread::sleep(Duration::from_millis(100));
+        let faded = heard_for(engine, 100);
+        assert!(faded > 0.0 && faded < full * 0.05, "not faded: {faded}");
+
+        engine.take_output_peak();
+        engine.stop();
+        engine.set_volume(1.0);
+        expect_stopped(engine);
+        // Anything still fading out or queued has played by then
+        thread::sleep(Duration::from_millis(300));
+        (faded, engine.take_output_peak())
+    }
+
+    #[test]
+    fn a_station_stopped_after_a_fade_isnt_heard_at_the_volume_put_back() {
+        let engine = test_engine();
+        let (faded, after) = fade_to_stop(&engine);
+        assert!(
+            after <= faded * 1.01,
+            "louder after the stop ({after}) than the fade ended at ({faded})"
+        );
+        assert_eq!(heard_for(&engine, 100), 0.0, "still heard");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn nor_when_a_stop_cuts_off() {
+        let engine = test_engine();
+        engine.set_smooth_switching(false);
+        let (faded, after) = fade_to_stop(&engine);
+        assert!(
+            after <= faded * 1.01,
+            "louder after the stop ({after}) than the fade ended at ({faded})"
+        );
+        engine.shutdown();
+    }
+
+    #[test]
+    fn the_station_after_a_fade_to_a_stop_plays_at_the_volume_put_back() {
+        let engine = test_engine();
+        fade_to_stop(&engine);
+        engine.play_stream(resolved_stream(EndlessWav::new(), &StreamCancel::new()));
+        expect_playing(&engine);
+        thread::sleep(Duration::from_millis(100));
+        let full = heard_for(&engine, 100);
+        assert!(full > 0.1, "the next station is quiet: {full}");
+        engine.shutdown();
+    }
+
+    #[test]
+    fn a_station_fading_out_keeps_its_volume_while_the_next_ones_changes() {
+        let engine = test_engine();
+        engine.set_volume(0.1);
+        engine.play_stream(resolved_stream(EndlessWav::new(), &StreamCancel::new()));
+        expect_playing(&engine);
+        thread::sleep(Duration::from_millis(100));
+        let quiet = heard_for(&engine, 100);
+        assert!(quiet > 0.0);
+
+        // An alarm with a volume of its own takes over from a quiet
+        // station: silent until it connects, so all that is heard is the
+        // old station fading out
+        engine.take_output_peak();
+        engine.play_stream(resolved_stream(
+            Box::new(SilentStation),
+            &StreamCancel::new(),
+        ));
+        engine.set_volume(1.0);
+        thread::sleep(Duration::from_millis(300));
+        let after = engine.take_output_peak();
+        assert!(after <= quiet * 1.01, "{after} after {quiet}");
+        engine.shutdown();
+    }
+
     #[test]
     fn the_level_readout_follows_the_station() {
         use crate::audio::dsp::LevelPhase;
@@ -4711,7 +4839,8 @@ mod tests {
         let outputs = Outputs {
             open: Box::new(move |_, _| {
                 let _ = release_rx.lock().unwrap().recv();
-                SilentOutput::open(TEST_SPEED).map(|output| (Output::Silent(output), None))
+                SilentOutput::open(TEST_SPEED, Arc::default())
+                    .map(|output| (Output::Silent(output), None))
             }),
             default: None,
             watch: None,

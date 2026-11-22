@@ -15,7 +15,7 @@
 //! and drops it, so the engine plays the same way (tests, headless use).
 
 use std::num::NonZero;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -65,6 +65,23 @@ impl Output {
     }
 }
 
+/// The loudest sample a [`SilentOutput`] took since it was last asked: what
+/// a device would have played, for tests of what is heard
+#[derive(Debug, Default)]
+pub(crate) struct OutputPeak(AtomicU32);
+
+impl OutputPeak {
+    fn heard(&self, peak: f32) {
+        // Bits of non-negative floats are in the floats' order
+        self.0.fetch_max(peak.to_bits(), Ordering::Relaxed);
+    }
+
+    /// The loudest sample since the last call, from 0
+    pub(crate) fn take(&self) -> f32 {
+        f32::from_bits(self.0.swap(0, Ordering::Relaxed))
+    }
+}
+
 /// An output with no device: a thread takes the mixed audio every
 /// `SILENT_PULL_INTERVAL`, `speed` times as fast as it would play, and
 /// drops it
@@ -78,7 +95,8 @@ pub(crate) struct SilentOutput {
 }
 
 impl SilentOutput {
-    pub(crate) fn open(speed: f32) -> Result<Self, String> {
+    /// `peak` is told how loud the audio it takes is
+    pub(crate) fn open(speed: f32, peak: Arc<OutputPeak>) -> Result<Self, String> {
         let channels = NonZero::new(2).expect("non-zero");
         let sample_rate = NonZero::new(44_100).expect("non-zero");
         let (mixer, mut source) = mixer::mixer(channels, sample_rate);
@@ -96,8 +114,14 @@ impl SilentOutput {
                 let mut next = Instant::now();
                 while !stopped.load(Ordering::Relaxed) {
                     // An empty mixer returns None until a player joins it
+                    let mut loudest = 0.0f32;
                     for _ in 0..samples {
-                        source.next();
+                        if let Some(sample) = source.next() {
+                            loudest = loudest.max(sample.abs());
+                        }
+                    }
+                    if loudest > 0.0 {
+                        peak.heard(loudest);
                     }
                     next += SILENT_PULL_INTERVAL;
                     let now = Instant::now();
@@ -574,7 +598,7 @@ mod tests {
             }
         }
 
-        let output = SilentOutput::open(1.0).unwrap();
+        let output = SilentOutput::open(1.0, Arc::default()).unwrap();
         // Count what it takes over half a second
         let pulled = Arc::new(AtomicU64::new(0));
         let rate = output.sample_rate;
