@@ -95,6 +95,7 @@ export component App inherits Window {
     callback toggle-favorite();
     callback play-favorite(FavoriteStation);
     callback step-favorite(/* forward */ bool);
+    pure callback locate-favorite([FavoriteStation], string, string, ShortcutAction, int) -> int;
     callback delete-favorite(FavoriteStation);
     // Saves an edited favorite; returns why it couldn't, or "" when saved
     callback edit-favorite(FavoriteStation) -> string;
@@ -425,11 +426,24 @@ export component App inherits Window {
             // Not a Tab stop itself: Tab goes round the controls only
             focus-on-tab-navigation: false;
             key-pressed(event) => {
-                if !DesktopShortcuts.enabled || root.dialog-open {
+                if root.dialog-open {
                     return reject;
                 }
                 let action = DesktopShortcuts.match-key(event);
-                if action == ShortcutAction.play-stop {
+                if action == ShortcutAction.favorite-up || action == ShortcutAction.favorite-down
+                    || action == ShortcutAction.favorite-first || action == ShortcutAction.favorite-last
+                    || action == ShortcutAction.favorite-page-up || action == ShortcutAction.favorite-page-down {
+                    if !favorites.move-highlight(action) {
+                        return reject;
+                    }
+                    self.focus();
+                } else if action == ShortcutAction.favorite-clear && favorites.has-highlight {
+                    favorites.clear-highlight();
+                } else if action == ShortcutAction.favorite-play && favorites.has-highlight {
+                    favorites.play-highlight();
+                } else if action == ShortcutAction.favorite-menu && favorites.has-highlight {
+                    favorites.open-highlight-menu();
+                } else if action == ShortcutAction.play-stop {
                     controls.play-or-stop();
                 } else if action == ShortcutAction.mute {
                     root.mute-clicked();
@@ -576,7 +590,10 @@ export component App inherits Window {
                     }
                     }
                 }
-                Favorites {
+                favorites := Favorites {
+                    locate-favorite(model, highlight, playing, action, page) => {
+                        return root.locate-favorite(model, highlight, playing, action, page);
+                    }
                     vertical-stretch: 1;
                     favorites: root.favorites-list;
                     favorite-logos: root.favorite-logos;

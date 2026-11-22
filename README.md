@@ -131,6 +131,11 @@ for the full list, including keys for focused controls.
 | M | Mute or unmute |
 | `+` or `=` / `-` | Raise or lower the volume by five percentage points |
 | N / P | Play the next or previous favorite, wrapping at the ends |
+| ↑ / ↓ | Move the highlight through favorites |
+| Enter | Play the highlighted favorite |
+| Home / End | Highlight the first or last favorite |
+| Page Up / Page Down | Move the favorites highlight by a visible page |
+| Shift+F10 / Menu key | Open the highlighted or focused favorite's actions |
 | R | Start or stop recording when available |
 | F | Add or remove the loaded station as a favorite |
 | Ctrl+F | Open Search Stations or focus its search field |
@@ -138,7 +143,7 @@ for the full list, including keys for focused controls.
 | Ctrl+W | Request to close the window, respecting Close to Tray |
 | Ctrl+Q | Quit Radiotrope |
 | F1 | Show Keyboard Shortcuts |
-| Esc | Close the current dialog or popup |
+| Esc | Close the current dialog or popup, or clear the favorites highlight in the main window |
 
 ### Where things are saved
 

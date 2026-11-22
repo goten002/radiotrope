@@ -199,6 +199,17 @@ fn main() {
     // Create Slint UI
     let ui = App::new().unwrap();
     shortcuts::install(&ui);
+    ui.on_locate_favorite(|model, highlighted, playing, action, page| {
+        shortcuts::favorite_highlight(
+            model.iter().map(|station| station.url),
+            highlighted.as_str(),
+            playing.as_str(),
+            action,
+            page.max(0) as usize,
+        )
+        .and_then(|index| i32::try_from(index).ok())
+        .unwrap_or(-1)
+    });
 
     // Wayland app_id / X11 WM_CLASS: desktops match it against the
     // `radiotrope.desktop` file (and its StartupWMClass) to find the icon.

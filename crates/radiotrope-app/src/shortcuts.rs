@@ -1,6 +1,7 @@
 //! Window-local desktop key bindings and their display labels.
 
 use crate::{App, DesktopShortcuts, ShortcutAction, ShortcutRow};
+use slint::platform::Key;
 use slint::{ComponentHandle, ModelRc, VecModel};
 use std::rc::Rc;
 
@@ -119,6 +120,44 @@ const BINDINGS: &[Binding] = &[
     ),
 ];
 
+// Paired keys share one reference row. An empty description omits the second key.
+const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, &str)] = &[
+    (FavoriteUp, Key::UpArrow, "↑ / ↓", "Move through favorites"),
+    (FavoriteDown, Key::DownArrow, "↑ / ↓", ""),
+    (
+        FavoriteFirst,
+        Key::Home,
+        "Home / End",
+        "Jump to the first or last favorite",
+    ),
+    (FavoriteLast, Key::End, "Home / End", ""),
+    (
+        FavoritePageUp,
+        Key::PageUp,
+        "Page Up / Page Down",
+        "Move through favorites by a page",
+    ),
+    (FavoritePageDown, Key::PageDown, "Page Up / Page Down", ""),
+    (
+        FavoritePlay,
+        Key::Return,
+        "Enter",
+        "Play the highlighted favorite",
+    ),
+    (
+        FavoriteMenu,
+        Key::Menu,
+        "Shift+F10 / Menu key",
+        "Open the highlighted or focused favorite’s actions",
+    ),
+    (
+        FavoriteClear,
+        Key::Escape,
+        "Esc",
+        "Clear the favorites highlight",
+    ),
+];
+
 #[derive(Default)]
 struct Modifiers {
     control: bool,
@@ -128,7 +167,7 @@ struct Modifiers {
     alt_graph: bool,
 }
 
-fn match_key(text: &str, modifiers: Modifiers, repeat: bool) -> ShortcutAction {
+fn match_key(text: &str, modifiers: Modifiers, repeat: bool, desktop: bool) -> ShortcutAction {
     if modifiers.alt || modifiers.meta || modifiers.alt_graph {
         return Unhandled;
     }
@@ -137,6 +176,34 @@ fn match_key(text: &str, modifiers: Modifiers, repeat: bool) -> ShortcutAction {
         return Unhandled;
     };
     let key = key.to_ascii_lowercase();
+    if !modifiers.control {
+        if modifiers.shift && key == char::from(Key::F10) && !repeat {
+            return FavoriteMenu;
+        }
+        if !modifiers.shift {
+            if let Some(&(action, _, _, _)) = FAVORITE_KEYS
+                .iter()
+                .find(|(_, named, _, _)| char::from(*named) == key)
+            {
+                if !repeat
+                    || matches!(
+                        action,
+                        FavoriteUp
+                            | FavoriteDown
+                            | FavoriteFirst
+                            | FavoriteLast
+                            | FavoritePageUp
+                            | FavoritePageDown
+                    )
+                {
+                    return action;
+                }
+            }
+        }
+    }
+    if !desktop {
+        return Unhandled;
+    }
     BINDINGS
         .iter()
         .find(|binding| {
@@ -153,16 +220,20 @@ fn label(action: ShortcutAction) -> &'static str {
     BINDINGS
         .iter()
         .find(|binding| binding.action == action)
-        .map_or("", |binding| binding.label)
+        .map(|binding| binding.label)
+        .or_else(|| {
+            FAVORITE_KEYS
+                .iter()
+                .find(|(id, _, _, _)| *id == action)
+                .map(|(_, _, label, _)| *label)
+        })
+        .unwrap_or("")
 }
 
 pub fn install(ui: &App) {
-    if !cfg!(all(feature = "desktop", not(feature = "embedded"))) {
-        return;
-    }
-
+    let desktop = cfg!(all(feature = "desktop", not(feature = "embedded")));
     let shortcuts = ui.global::<DesktopShortcuts>();
-    shortcuts.on_match_key(|event| {
+    shortcuts.on_match_key(move |event| {
         match_key(
             event.text.as_str(),
             Modifiers {
@@ -176,8 +247,12 @@ pub fn install(ui: &App) {
                 alt_graph: false,
             },
             event.repeat,
+            desktop,
         )
     });
+    if !desktop {
+        return;
+    }
     shortcuts.on_label(|action| label(action).into());
 
     let mut rows = Vec::new();
@@ -198,7 +273,13 @@ pub fn install(ui: &App) {
                 "Adjust focused volume slider or EQ fader",
                 "Arrows / Page Up / Page Down / Home / End",
             ),
-            "Favorites" => add("Open focused favorite’s actions", "Shift+F10 / Menu key"),
+            "Favorites" => {
+                for &(_, _, keys, description) in FAVORITE_KEYS {
+                    if !description.is_empty() {
+                        add(description, keys);
+                    }
+                }
+            }
             "Dialogs" => {
                 add("Move focus forward or backward", "Tab / Shift+Tab");
                 add("Activate focused button or row", "Enter / Space");
@@ -235,9 +316,126 @@ pub fn favorite_step(
     })
 }
 
+/// Resolve the highlight by URL so a new model can reorder or remove rows.
+pub fn favorite_highlight(
+    mut urls: impl ExactSizeIterator<Item = impl AsRef<str>>,
+    highlighted_url: &str,
+    playing_url: &str,
+    action: ShortcutAction,
+    page: usize,
+) -> Option<usize> {
+    let last = urls.len().checked_sub(1)?;
+    if action == FavoriteFirst {
+        return Some(0);
+    }
+    if action == FavoriteLast {
+        return Some(last);
+    }
+
+    let mut playing = None;
+    let highlighted = urls.by_ref().enumerate().find_map(|(index, url)| {
+        let url = url.as_ref();
+        if !playing_url.is_empty() && url == playing_url {
+            playing = Some(index);
+        }
+        (!highlighted_url.is_empty() && url == highlighted_url).then_some(index)
+    });
+    if action == Unhandled {
+        return highlighted;
+    }
+    // If the highlighted station disappeared, begin at the playing row (or row zero).
+    let Some(index) = highlighted else {
+        return Some(playing.unwrap_or(0));
+    };
+    Some(match action {
+        FavoriteUp => index.saturating_sub(1),
+        FavoriteDown => (index + 1).min(last),
+        FavoritePageUp => index.saturating_sub(page.max(1)),
+        FavoritePageDown => index.saturating_add(page.max(1)).min(last),
+        _ => index,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn highlight(
+        urls: &[&str],
+        selected: &str,
+        playing: &str,
+        action: ShortcutAction,
+        page: usize,
+    ) -> Option<usize> {
+        favorite_highlight(urls.iter().copied(), selected, playing, action, page)
+    }
+
+    #[test]
+    fn favorite_highlight_clamps_at_list_edges() {
+        let urls = ["a", "b", "c", "d"];
+        assert_eq!(highlight(&[], "", "", FavoriteDown, 2), None);
+        assert_eq!(highlight(&["a"], "a", "", FavoriteDown, 2), Some(0));
+        assert_eq!(highlight(&urls, "a", "", FavoriteUp, 2), Some(0));
+        assert_eq!(highlight(&urls, "d", "", FavoriteDown, 2), Some(3));
+        assert_eq!(highlight(&urls, "c", "", FavoriteFirst, 2), Some(0));
+        assert_eq!(highlight(&urls, "a", "", FavoriteLast, 2), Some(3));
+    }
+
+    #[test]
+    fn favorite_highlight_moves_by_a_page() {
+        let urls = ["a", "b", "c", "d", "e"];
+        assert_eq!(highlight(&urls, "b", "", FavoritePageDown, 2), Some(3));
+        assert_eq!(highlight(&urls, "d", "", FavoritePageUp, 2), Some(1));
+        assert_eq!(highlight(&urls, "d", "", FavoritePageDown, 2), Some(4));
+        assert_eq!(highlight(&urls, "b", "", FavoritePageUp, 2), Some(0));
+    }
+
+    #[test]
+    fn favorite_highlight_starts_at_playing_row_or_first() {
+        let urls = ["a", "b", "c"];
+        for action in [FavoriteUp, FavoriteDown] {
+            assert_eq!(highlight(&urls, "", "b", action, 2), Some(1));
+            assert_eq!(highlight(&urls, "", "other", action, 2), Some(0));
+            assert_eq!(highlight(&urls, "", "", action, 2), Some(0));
+        }
+    }
+
+    #[test]
+    fn favorite_highlight_follows_its_url_across_model_changes() {
+        for (urls, expected) in [
+            (&["a", "b", "c"][..], Some(1)),
+            (&["b", "a", "c"][..], Some(0)),
+            (&["new", "b", "a", "c"][..], Some(1)),
+            (&["b", "a"][..], Some(0)),
+            (&["a", "c"][..], None),
+        ] {
+            assert_eq!(highlight(urls, "b", "", Unhandled, 0), expected);
+        }
+        assert_eq!(highlight(&["a", "c"], "b", "c", FavoriteDown, 2), Some(1));
+    }
+
+    #[test]
+    fn kiosk_keeps_favorite_navigation() {
+        for &(action, key, _, _) in FAVORITE_KEYS {
+            assert_eq!(
+                super::match_key(
+                    &char::from(key).to_string(),
+                    Modifiers::default(),
+                    false,
+                    false
+                ),
+                action
+            );
+        }
+        assert_eq!(
+            super::match_key("m", Modifiers::default(), false, false),
+            Unhandled
+        );
+    }
+
+    fn match_key(text: &str, modifiers: Modifiers, repeat: bool) -> ShortcutAction {
+        super::match_key(text, modifiers, repeat, true)
+    }
 
     #[test]
     fn exact_modifiers() {
