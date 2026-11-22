@@ -2,6 +2,12 @@
 //! the fade-out when another station starts, and dither for devices that
 //! take 16-bit samples. Lock-free and allocation-free, as the audio thread
 //! must be.
+//!
+//! A station that is leaving (stopped, or replaced by the next one) keeps
+//! the volume it had then ([`Leaving`]): the volume set afterwards is for
+//! the next station. The Sleep Timer and a fading scheduled Stop turn the
+//! volume down, stop the station and put the volume back at once, and what
+//! is still to play of the stopped station must not be heard at that.
 
 use std::num::NonZero;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -37,6 +43,45 @@ impl SharedVolume {
     }
 }
 
+/// No volume is held: not one a volume can be
+const NOT_HELD: u32 = f32::NAN.to_bits();
+
+/// How a station leaves, told by the engine to the station's outputs
+#[derive(Debug)]
+pub(crate) struct Leaving {
+    /// The gain it keeps from then on, or `NOT_HELD`
+    held: AtomicU32,
+    /// It fades out and ends
+    fade: AtomicBool,
+}
+
+impl Leaving {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            held: AtomicU32::new(NOT_HELD),
+            fade: AtomicBool::new(false),
+        })
+    }
+
+    /// The station was stopped: what is left of it plays at `gain` (the
+    /// volume now), whatever the volume is set to afterwards
+    pub(crate) fn hold(&self, gain: f32) {
+        self.held.store(gain.to_bits(), Ordering::SeqCst);
+    }
+
+    /// The station fades out from `gain` (the volume now) and ends
+    pub(crate) fn fade_out(&self, gain: f32) {
+        // The gain first: an output that sees the fade has it
+        self.hold(gain);
+        self.fade.store(true, Ordering::SeqCst);
+    }
+
+    fn held(&self) -> Option<f32> {
+        let gain = f32::from_bits(self.held.load(Ordering::Relaxed));
+        (!gain.is_nan()).then_some(gain)
+    }
+}
+
 /// A `Source` adapter for a station's audio on its way to the device
 pub(crate) struct OutputStage<S> {
     inner: S,
@@ -44,8 +89,8 @@ pub(crate) struct OutputStage<S> {
     gain: f32,
     glide: f32,
     rate: u32,
-    /// Set when the station should fade out and end
-    fade: Arc<AtomicBool>,
+    /// Says when the station should keep its volume, fade out and end
+    leaving: Arc<Leaving>,
     /// Samples of the fade left, and in all, once it started
     fade_left: usize,
     fade_total: usize,
@@ -61,17 +106,17 @@ where
     pub(crate) fn new(
         inner: S,
         volume: Arc<SharedVolume>,
-        fade: Arc<AtomicBool>,
+        leaving: Arc<Leaving>,
         dither: bool,
     ) -> Self {
         let rate = inner.sample_rate().get();
         Self {
-            gain: volume.get(),
+            gain: leaving.held().unwrap_or_else(|| volume.get()),
             inner,
             volume,
             glide: glide(rate),
             rate,
-            fade,
+            leaving,
             fade_left: 0,
             fade_total: 0,
             dither,
@@ -101,7 +146,7 @@ where
     type Item = f32;
 
     fn next(&mut self) -> Option<f32> {
-        if self.fade_total == 0 && self.fade.load(Ordering::Relaxed) {
+        if self.fade_total == 0 && self.leaving.fade.load(Ordering::Relaxed) {
             let frames = (u64::from(self.rate) * FADE_OUT_MS / 1000).max(1) as usize;
             self.fade_total = frames * usize::from(self.inner.channels().get());
             self.fade_left = self.fade_total;
@@ -124,7 +169,8 @@ where
             self.rate = rate;
             self.glide = glide(rate);
         }
-        let target = self.volume.get();
+        // A leaving station isn't touched by the volume set after it left
+        let target = self.leaving.held().unwrap_or_else(|| self.volume.get());
         self.gain += (target - self.gain) * self.glide;
         if (target - self.gain).abs() < 1e-5 {
             self.gain = target;
@@ -174,7 +220,7 @@ mod tests {
                 samples,
             ),
             SharedVolume::new(volume),
-            Arc::new(AtomicBool::new(false)),
+            Leaving::new(),
             dither,
         )
     }
@@ -204,7 +250,7 @@ mod tests {
         for _ in 0..1_000 {
             s.next();
         }
-        s.fade.store(true, Ordering::Relaxed);
+        s.leaving.fade_out(1.0);
         let rest: Vec<f32> = s.collect();
         let fade = (48_000 * FADE_OUT_MS / 1000) as usize * 2;
         assert_eq!(rest.len(), fade);
@@ -213,6 +259,36 @@ mod tests {
         assert!(*rest.last().unwrap() < 0.001);
         // Gently: no step bigger than a smooth fade takes
         assert!(rest.windows(2).all(|w| (w[0] - w[1]).abs() < 0.001));
+    }
+
+    #[test]
+    fn a_fading_station_keeps_its_volume_when_the_volume_is_put_back() {
+        // The end of a Sleep Timer's fade: nearly silent, then stopped,
+        // and the volume back at the user's for the next station
+        let mut s = stage(vec![0.5; 96_000 * 2], 0.01, false);
+        for _ in 0..1_000 {
+            s.next();
+        }
+        s.leaving.fade_out(s.volume.get());
+        s.volume.set(1.0);
+        let rest: Vec<f32> = s.collect();
+        assert_eq!(rest.len(), (48_000 * FADE_OUT_MS / 1000) as usize * 2);
+        let loudest = rest.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+        assert!(loudest <= 0.005, "heard at the volume put back: {loudest}");
+    }
+
+    #[test]
+    fn a_stopped_station_keeps_its_volume_until_its_player_ends_it() {
+        let mut s = stage(vec![0.5; 96_000], 0.01, false);
+        for _ in 0..1_000 {
+            s.next();
+        }
+        s.leaving.hold(s.volume.get());
+        s.volume.set(1.0);
+        // Not faded, so it plays on until the player drops it
+        let rest: Vec<f32> = s.collect();
+        assert_eq!(rest.len(), 96_000 - 1_000);
+        assert!(rest.iter().all(|&x| x == 0.005));
     }
 
     #[test]
