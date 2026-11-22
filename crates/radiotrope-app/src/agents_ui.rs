@@ -70,6 +70,10 @@ pub(crate) fn setup(
                 eprintln!("Failed to save agent settings: {e}");
             }
             show_listen_choices(&ui, &settings, &listen_for_apply);
+            // A change of "Listen on" may have turned the token on
+            if let Some(auth) = McpAuth::ALL.iter().position(|a| *a == settings.mcp_auth) {
+                ui.set_agents_auth(auth as i32);
+            }
             agents.apply_network_later(&settings, show_agents_network_later(&ui));
         }
     };
@@ -79,12 +83,17 @@ pub(crate) fn setup(
         let apply = apply.clone();
         move |on| apply(&|s| s.mcp_network = on)
     });
+    // Authentication picked by hand in this session: listening on a
+    // network then leaves it as it is
+    let auth_picked = std::rc::Rc::new(std::cell::Cell::new(false));
     ui.on_agents_auth_changed({
         let apply = apply.clone();
+        let auth_picked = auth_picked.clone();
         move |index| {
             let Some(auth) = McpAuth::ALL.get(index as usize).copied() else {
                 return;
             };
+            auth_picked.set(true);
             apply(&|s| s.mcp_auth = auth)
         }
     });
@@ -96,8 +105,10 @@ pub(crate) fn setup(
                 return;
             };
             apply(&|s| {
+                let was_local = listens_locally(s);
                 s.mcp_address = std::net::SocketAddr::new(choice.ip, saved_port(s)).to_string();
                 s.mcp_interface = choice.interface.clone();
+                s.mcp_auth = safer_auth(s.mcp_auth, was_local, choice.ip, auth_picked.get());
             })
         }
     });
@@ -137,9 +148,17 @@ pub(crate) fn setup(
     });
     ui.on_agents_regenerate_token({
         let apply = apply.clone();
+        let ui_weak = ui.as_weak();
         move || {
-            if let Err(e) = radiotrope_app::data::agent_token::regenerate() {
-                eprintln!("Failed to make a new token: {e}");
+            let error = match radiotrope_app::data::agent_token::regenerate() {
+                Ok(_) => String::new(),
+                Err(e) => {
+                    eprintln!("Failed to make a new token: {e}");
+                    token_error(&e)
+                }
+            };
+            if let Some(ui) = ui_weak.upgrade() {
+                ui.set_agents_token_error(error.into());
             }
             apply(&|_| {})
         }
@@ -189,6 +208,7 @@ pub(crate) fn watch(ui: &App, presence: Option<mcp::presence::Presence>) -> slin
             if shown.as_ref() == Some(&rows) {
                 return;
             }
+            ui.set_agents_connected(connected_line(&rows).into());
             ui.set_agent_count(rows.len() as i32);
             ui.set_agent_list(std::rc::Rc::new(slint::VecModel::from(rows.clone())).into());
             shown = Some(rows);
@@ -316,10 +336,94 @@ fn default_port() -> u16 {
         .unwrap_or(8765)
 }
 
+/// What the Agents dialog says when a new token can't be made
+fn token_error(e: &std::io::Error) -> String {
+    format!(
+        "Can't make a new token: {}",
+        radiotrope_app::text::io_reason(e)
+    )
+}
+
+/// The line under THIS COMPUTER: the agents connected now, or that none is
+fn connected_line(rows: &[AgentRow]) -> String {
+    let names: Vec<&str> = rows
+        .iter()
+        .filter(|a| a.connected)
+        .map(|a| a.name.as_str())
+        .collect();
+    if names.is_empty() {
+        "No agent connected yet".into()
+    } else {
+        format!("Connected: {}", names.join(", "))
+    }
+}
+
+/// The saved address is this computer's own
+fn listens_locally(settings: &radiotrope_app::data::settings::Settings) -> bool {
+    settings.mcp_interface.is_none()
+        && mcp::network::split_address(&settings.mcp_address).is_none_or(|a| a.ip().is_loopback())
+}
+
+/// Authentication after "Listen on" changes: moving from this computer to
+/// a network with no token turns the token on, unless None was picked by
+/// hand
+fn safer_auth(
+    auth: radiotrope_app::data::settings::McpAuth,
+    was_local: bool,
+    now: std::net::IpAddr,
+    picked: bool,
+) -> radiotrope_app::data::settings::McpAuth {
+    use radiotrope_app::data::settings::McpAuth;
+    if auth == McpAuth::None && was_local && !now.is_loopback() && !picked {
+        McpAuth::Token
+    } else {
+        auth
+    }
+}
+
 fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
     change(&mut settings);
     if let Err(e) = settings.save() {
         eprintln!("Failed to save agent settings: {e}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radiotrope_app::data::settings::McpAuth;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    #[test]
+    fn token_failure_is_said_in_plain_words() {
+        let e = std::io::Error::from_raw_os_error(13);
+        assert_eq!(token_error(&e), "Can't make a new token: permission denied");
+    }
+
+    #[test]
+    fn connected_line_names_connected_agents() {
+        let row = |name: &str, connected: bool| AgentRow {
+            name: name.into(),
+            connected,
+            ..Default::default()
+        };
+        assert_eq!(connected_line(&[]), "No agent connected yet");
+        assert_eq!(
+            connected_line(&[row("Claude Code", true), row("Codex", false)]),
+            "Connected: Claude Code"
+        );
+    }
+
+    #[test]
+    fn leaving_this_computer_turns_the_token_on_once() {
+        let lan: IpAddr = Ipv4Addr::new(192, 168, 1, 20).into();
+        let local: IpAddr = Ipv4Addr::LOCALHOST.into();
+        assert_eq!(safer_auth(McpAuth::None, true, lan, false), McpAuth::Token);
+        // None picked by hand, already on a network, or staying local
+        assert_eq!(safer_auth(McpAuth::None, true, lan, true), McpAuth::None);
+        assert_eq!(safer_auth(McpAuth::None, false, lan, false), McpAuth::None);
+        assert_eq!(safer_auth(McpAuth::None, true, local, false), McpAuth::None);
+        assert_eq!(safer_auth(McpAuth::Token, true, lan, false), McpAuth::Token);
     }
 }
