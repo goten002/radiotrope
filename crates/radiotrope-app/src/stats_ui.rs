@@ -13,7 +13,7 @@ use radiotrope_app::text::{status, MISSING, SEPARATOR};
 
 use crate::app::state::AppSnapshot;
 use crate::context::lock;
-use crate::viz_wanted;
+use crate::viz_ui::viz_wanted;
 use crate::App;
 
 /// Reads the engine's statistics, once it has sent them
