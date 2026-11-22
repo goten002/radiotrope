@@ -1,5 +1,5 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Toggle, FocusRing, PopupCard, ChoiceRow, SectionHeader } from "../components.slint";
+import { DialogShell, Toggle, FocusRing, PopupCard, ChoiceRow, SectionHeader, Icon } from "../components.slint";
 
 component EqFader inherits Rectangle {
     in property <string> label;
@@ -11,7 +11,8 @@ component EqFader inherits Rectangle {
     in property <bool> enabled: true;
     callback value-changed(float);
 
-    property <color> tint: root.enabled ? Theme.accent : Theme.text-tertiary;
+    // The accent darkened or lightened just enough to show at 3:1
+    property <color> tint: root.enabled ? Theme.accent-graphic : Theme.text-tertiary;
 
     horizontal-stretch: 1;
     height: 220px;
@@ -30,8 +31,10 @@ component EqFader inherits Rectangle {
     forward-focus: keys;
     accessible-role: slider;
     accessible-enabled: root.enabled;
-    accessible-label: root.spoken;
-    accessible-value: root.signed-db(Math.round(root.value * 10));
+    // The unit in the label and a plain number as the value, so screen
+    // readers can tell the position within the range
+    accessible-label: root.spoken + ", decibels";
+    accessible-value: Math.round(root.value * 10) / 10;
     accessible-value-minimum: -12;
     accessible-value-maximum: 12;
     accessible-value-step: 0.5;
@@ -88,8 +91,8 @@ component EqFader inherits Rectangle {
                 y: 0.5px;
                 width: 5px;
                 height: parent.height - 1px;
-                // A firmer track in the light theme, where the well is faint
-                background: Theme.dark-mode ? Theme.viz-track : Theme.text-tertiary.with-alpha(0.3);
+                // Firm enough in both themes to show the fader's travel
+                background: Theme.text-tertiary.with-alpha(0.5);
                 border-radius: 2.5px;
             }
 
@@ -213,8 +216,8 @@ component EqFader inherits Rectangle {
         }
     }
 
-    // Up/Down (0.5 dB, 0.1 with Shift), Page Up/Down (3 dB) and Home/End
-    // once the fader has focus
+    // Up/Down (0.5 dB, 0.1 with Shift), Page Up/Down (3 dB), Home/End, and
+    // 0 or Delete back to 0 dB (as a double-click does) once the fader has focus
     keys := FocusScope {
         enabled: root.enabled;
         focus-on-click: false;
@@ -247,6 +250,10 @@ component EqFader inherits Rectangle {
             }
             if e.text == Key.End {
                 root.set(12);
+                return accept;
+            }
+            if e.text == "0" || e.text == Key.Delete {
+                root.set(0);
                 return accept;
             }
             return reject;
@@ -335,9 +342,9 @@ export component EqualizerDialog inherits Rectangle {
     callback preamp-changed(float);
     callback band-changed(int, float);
 
-    if show-dialog: DialogShell {
+    if show-dialog: shell := DialogShell {
         title: "Equalizer";
-        subtitle: "10-band EQ, applied live to the stream";
+        subtitle: "10-band equalizer, applied as you listen";
         card-width: Defaults.equalizer-width;
         close-requested => { root.show-dialog = false; }
 
@@ -433,24 +440,26 @@ export component EqualizerDialog inherits Rectangle {
                         accessible-role: none;
                     }
 
-                    // Chevron
+                    // The arrow turns while the menu is open, as in Dropdown
                     Rectangle {
                         width: Theme.icon-compact;
-
-                        Text {
-                            text: "\u{2304}";
-                            color: root.eq-enabled ? Theme.text-secondary : Theme.disabled-text;
-                            font-size: Theme.font-lg;
-                            y: (parent.height - self.preferred-height) / 2 - Theme.space-2;
-                            accessible-role: none;
+                        Icon {
+                            width: Theme.icon-sm;
+                            height: self.width;
+                            source: @image-url("../icons/chevron-down.svg");
+                            colorize: root.eq-enabled ? Theme.text-secondary : Theme.disabled-text;
+                            rotation: preset-popup.is-open ? 180deg : 0deg;
+                            animate rotation { duration: Theme.fast; }
                         }
                     }
                 }
 
                 // Flat on top, then the groups side by side, so the list
-                // stays short enough for an 800x480 screen
+                // stays short enough for an 800x480 screen. Kept inside the
+                // card: under the field, moved left as far as it must.
                 preset-popup := PopupWindow {
-                    x: 0;
+                    x: clamp(preset-field.absolute-position.x, shell.popup-bounds.left,
+                        shell.popup-bounds.right - self.width) - preset-field.absolute-position.x;
                     y: parent.height + Theme.space-2;
                     // The columns, the gaps between them and the padding
                     width: root.preset-groups.length * (root.preset-column-width + Theme.space-4) + Theme.space-4;

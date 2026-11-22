@@ -13,6 +13,7 @@ pub fn minimize(window: &slint::Window) {
 /// only flag the window as wanting attention, since they give focus only
 /// to what the user starts.
 pub fn bring_to_front(window: &slint::Window) {
+    MINIMIZED.set(false);
     window.with_winit_window(|w| {
         w.set_minimized(false);
         w.focus_window();
@@ -28,6 +29,32 @@ thread_local! {
         const { std::cell::Cell::new(None) };
     static ALT_GRAPH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     static CONTROL_ALT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Whether the window manager had the window minimized when last asked
+    static MINIMIZED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// When the window manager was last asked
+    static MINIMIZED_ASKED: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+    /// When the window's focus or cover last changed: it may be on its
+    /// way to or from the taskbar
+    static WINDOW_CHANGED: std::cell::Cell<Option<std::time::Instant>> =
+        const { std::cell::Cell::new(None) };
+    /// Called when the user does something in the window
+    static ON_ACTIVITY: std::cell::RefCell<Option<std::rc::Rc<dyn Fn()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Call `active` whenever the user does something in the window (a key, a
+/// click, the wheel, a touch) or it gets the focus: what rests while
+/// nothing happens wakes up on it. One listener; a second call replaces it.
+pub fn on_activity(active: impl Fn() + 'static) {
+    ON_ACTIVITY.with(|a| *a.borrow_mut() = Some(std::rc::Rc::new(active)));
+}
+
+fn note_activity() {
+    let active = ON_ACTIVITY.with(|a| a.borrow().clone());
+    if let Some(active) = active {
+        active();
+    }
 }
 
 /// Slint's public key event has no AltGr flag and can strip Ctrl+Alt from
@@ -44,6 +71,20 @@ pub fn watch_window(window: &slint::Window, new_window: impl Fn() + 'static) {
     let new_window = std::rc::Rc::new(new_window);
     window.on_winit_window_event(move |window, event| {
         use winit::event::WindowEvent;
+        match event {
+            WindowEvent::KeyboardInput { .. }
+            | WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_) => note_activity(),
+            // Minimized to the taskbar or restored from it, among others:
+            // the minimized flag is read again over the next moments, not
+            // only at the next sample
+            WindowEvent::Focused(_) | WindowEvent::Occluded(_) => {
+                WINDOW_CHANGED.set(Some(std::time::Instant::now()));
+                note_activity();
+            }
+            _ => {}
+        }
         match event {
             WindowEvent::Focused(false) => {
                 FOCUS_LOST.set(Some(std::time::Instant::now()));
@@ -110,12 +151,56 @@ pub fn raise(window: &slint::Window) {
 }
 
 /// Whether the window manager has the window minimized. Windows and X11
-/// say so; Wayland never does, which counts as no.
+/// say so; Wayland never does, which counts as no. On X11 this asks the X
+/// server and waits for the answer: what runs often reads [`minimized`].
 pub fn is_minimized(window: &slint::Window) -> bool {
     window
         .with_winit_window(|w| w.is_minimized())
         .flatten()
         .unwrap_or(false)
+}
+
+/// How often the window manager is asked whether the window is minimized
+const MINIMIZED_SAMPLE: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Ask the window manager whether the window is minimized and keep the
+/// answer for [`minimized`]
+pub fn sample_minimized(window: &slint::Window) -> bool {
+    let minimized = is_minimized(window);
+    MINIMIZED.set(minimized);
+    MINIMIZED_ASKED.set(Some(std::time::Instant::now()));
+    minimized
+}
+
+/// Keep [`minimized`] current. Called by the poll on every round; the
+/// window manager is asked once a second, and on each round for a moment
+/// after the window's focus or cover changed (minimizing and restoring
+/// both do that).
+pub fn refresh_minimized(window: &slint::Window) {
+    let now = std::time::Instant::now();
+    let recent = |at: Option<std::time::Instant>| {
+        at.is_some_and(|at| now.duration_since(at) < MINIMIZED_SAMPLE)
+    };
+    if recent(WINDOW_CHANGED.get()) || !recent(MINIMIZED_ASKED.get()) {
+        sample_minimized(window);
+    }
+}
+
+/// Whether the window was minimized when last sampled (see
+/// [`sample_minimized`]): costs nothing, for what asks every frame
+pub fn minimized() -> bool {
+    MINIMIZED.get()
+}
+
+/// A window on screen comes to the front (see [`raise`]), for a second
+/// launch or an agent. Returns false for a hidden or minimized one, which
+/// is shown the usual way instead.
+pub fn raise_shown(window: &slint::Window) -> bool {
+    if !window.is_visible() || sample_minimized(window) {
+        return false;
+    }
+    raise(window);
+    true
 }
 
 /// Hide a window the window manager has minimized. On X11 a minimized
@@ -126,6 +211,8 @@ pub fn hide_minimized(window: &slint::Window) {
     #[cfg(target_os = "linux")]
     let x11_id = x11_window(window);
     let _ = window.hide();
+    // Shown again, it isn't minimized: not hidden once more on a stale flag
+    MINIMIZED.set(false);
     #[cfg(target_os = "linux")]
     if let Some(id) = x11_id {
         withdraw_x11(id);

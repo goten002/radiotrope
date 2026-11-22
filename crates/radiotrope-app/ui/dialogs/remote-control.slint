@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle, InfoTip, IconButton, Icon, Chip, ChipVariant, SectionHeader } from "../components.slint";
+import { DialogShell, Toggle, InfoTip, IconButton, Icon, Chip, ChipVariant, SectionHeader, LinkRow } from "../components.slint";
 import { CopyLine, RowLabel } from "agents.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
@@ -32,7 +32,7 @@ component DeviceRow inherits Rectangle {
             Icon {
                 width: Theme.icon-compact;
                 height: Theme.icon-compact;
-                source: @image-url("../icons/mobile-screen-button.svg");
+                source: @image-url("../icons/phone.svg");
                 colorize: Theme.text-secondary;
             }
         }
@@ -89,6 +89,10 @@ export component RemoteControlDialog inherits Rectangle {
     in property <string> name-placeholder;
     in property <[RemoteDevice]> devices;
     in-out property <bool> share-recordings: false;
+    // Where to get the Radiotrope Remote app; empty hides the link
+    in property <string> app-url;
+    // A pairing code or QR code is shown over this dialog
+    in property <bool> covered;
     // The height the paired phones can take in this window
     property <length> list-room: max(Theme.row-dense,
         root.height - Defaults.remote-devices-chrome);
@@ -103,6 +107,7 @@ export component RemoteControlDialog inherits Rectangle {
     callback remove-device(string);
     callback pair-qr();
     callback share-toggled(bool);
+    callback open-url(string);
 
     public function open() {
         root.opened();
@@ -121,9 +126,25 @@ export component RemoteControlDialog inherits Rectangle {
 
     if show-dialog: shell := DialogShell {
         title: "Remote Control";
-        subtitle: "Control the player from the Radiotrope Remote app on your phone";
+        subtitle: "Control the player with the Radiotrope Remote app (not released yet)";
         card-width: Defaults.remote-control-width;
         close-requested => { root.close(); }
+
+        // The pairing overlay took the focus and is gone: take it back,
+        // so Esc and Tab work in this dialog again
+        property <bool> covered: root.covered;
+        changed covered => {
+            if !self.covered {
+                self.take-focus();
+            }
+        }
+
+        if root.app-url != "": LinkRow {
+            label: "App";
+            label-width: 84px;
+            links: [{ name: "Get the app", url: root.app-url }];
+            open-url(url) => { root.open-url(url); }
+        }
 
         // While on, what the server says at the right, as in Agents: a
         // short chip, and on a problem the full reason in the bubble
@@ -169,6 +190,7 @@ export component RemoteControlDialog inherits Rectangle {
             spacing: Theme.space-8;
             RowLabel { text: "Name"; }
             StyledLineEdit {
+                label: "Name";
                 height: Theme.control-button;
                 horizontal-stretch: 1;
                 text <=> root.edit-name;
@@ -186,6 +208,7 @@ export component RemoteControlDialog inherits Rectangle {
             spacing: Theme.space-8;
             RowLabel { text: "Address"; }
             CopyLine {
+                name: "Address";
                 text: root.enabled-on ? root.address : "";
                 placeholder: root.enabled-on ? "No network found" : "Shown when Remote Control is on";
                 enabled: root.enabled-on;
@@ -233,7 +256,7 @@ export component RemoteControlDialog inherits Rectangle {
             }
             SecondaryButton {
                 label: "Pair a Phone";
-                icon: @image-url("../icons/qrcode.svg");
+                icon: @image-url("../icons/qr-code.svg");
                 enabled: root.enabled-on;
                 clicked => {
                     root.confirm-remove = "";
@@ -268,6 +291,8 @@ export component RemoteControlDialog inherits Rectangle {
                             if root.confirm-remove == device.id {
                                 root.confirm-remove = "";
                                 root.remove-device(device.id);
+                                // The row and its button are gone
+                                shell.take-focus();
                             } else {
                                 root.confirm-remove = device.id;
                             }
@@ -292,6 +317,8 @@ export component PairingCodeDialog inherits Rectangle {
     in property <bool> show-dialog: false;
     in property <string> device-name;
     in property <string> code;
+    // The code digit by digit for screen readers: "4 8 3 6 2 1"
+    in property <string> code-spoken;
     // Seconds before the code runs out
     in property <int> seconds-left;
     callback cancel();
@@ -311,7 +338,9 @@ export component PairingCodeDialog inherits Rectangle {
             font-weight: 700;
             letter-spacing: 10px;
             horizontal-alignment: center;
-            accessible-label: "Code " + root.code;
+            accessible-label: "Code " + (root.code-spoken != "" ? root.code-spoken : root.code);
+            // It can appear at any time, asked for by a phone
+            accessible-live-region: assertive;
         }
 
         Text {

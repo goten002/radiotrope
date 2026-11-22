@@ -201,12 +201,8 @@ pub(crate) fn save_recording_settings(
     state: &Mutex<AppSnapshot>,
     change: impl FnOnce(&mut radiotrope_app::data::settings::Settings),
 ) {
-    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-    change(&mut settings);
+    let settings = crate::window_settings::update_settings(change);
     lock(state).recording_setup = app::state::RecordingSetup::from_settings(&settings);
-    if let Err(e) = settings.save() {
-        eprintln!("Failed to save recording settings: {e}");
-    }
 }
 
 /// The station's cached logo as PNG, for a recording's cover art: as the

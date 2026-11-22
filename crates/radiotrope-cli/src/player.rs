@@ -4,6 +4,7 @@
 //! own so the screen keeps going, a newer play makes an older resolve
 //! stale, and events about a station that was replaced are ignored.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, Sender};
@@ -17,17 +18,18 @@ use radiotrope::stream::{
     ResolvedStream, StreamCancel, StreamMetadata, StreamResolver, StreamType,
 };
 
+use radiotrope_library::text::{self, status};
+
 use crate::library::{RecordFormat, Settings, Station};
 use crate::recording;
 
 /// Longest wait for a station to resolve, a little over the resolver's own
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(RESOLVE_TIMEOUT_SECS + 3);
 
-/// How long a message (a saved recording, an error) stays at the bottom
-const NOTICE_TIME: Duration = Duration::from_secs(5);
-
-/// Shown while the output device hangs on opening
-const OUTPUT_NOT_RESPONDING: &str = "Audio device not responding";
+/// How long a message (an error, a favorite added) stays at the bottom
+pub const NOTICE_TIME: Duration = Duration::from_secs(5);
+/// How long "Saved to …" stays: long enough to read the folder
+const SAVED_NOTICE_TIME: Duration = Duration::from_secs(10);
 
 /// Volume step for `+` and `-`
 pub const VOLUME_STEP: f32 = 0.05;
@@ -54,6 +56,7 @@ pub struct Notice {
     pub text: String,
     pub is_error: bool,
     shown_at: Instant,
+    lasts: Duration,
 }
 
 type Resolved = (u64, Result<ResolvedStream, String>);
@@ -76,6 +79,10 @@ pub struct Player {
     pub muted: bool,
     pub recording: Option<Recording>,
     pub notice: Option<Notice>,
+    /// The recordings saved this session, printed when the player closes
+    pub saved: Vec<PathBuf>,
+    /// The status is about the sound device, not the station
+    pub output_trouble: bool,
     eq_enabled: bool,
 
     stream_id: Option<StreamId>,
@@ -98,7 +105,7 @@ impl Player {
             engine: Some(engine),
             station: None,
             phase: Phase::Stopped,
-            status: "Stopped".to_string(),
+            status: status::READY.to_string(),
             is_error: false,
             codec: None,
             bitrate: None,
@@ -110,6 +117,8 @@ impl Player {
             muted: settings.muted,
             recording: None,
             notice: None,
+            saved: Vec::new(),
+            output_trouble: false,
             eq_enabled: settings.eq_enabled,
             stream_id: None,
             generation: 0,
@@ -170,7 +179,7 @@ impl Player {
 
         self.station = Some(station.clone());
         self.phase = Phase::Resolving;
-        self.status = "Connecting".to_string();
+        self.status = status::CONNECTING.to_string();
         self.is_error = false;
         self.codec = None;
         self.bitrate = None;
@@ -201,7 +210,11 @@ impl Player {
                     .expect("Failed to spawn stream-resolve-inner thread");
                 let result = inner_rx.recv_timeout(RESOLVE_TIMEOUT).unwrap_or_else(|_| {
                     cancel.cancel();
-                    Err(format!("No answer after {}s", RESOLVE_TIMEOUT.as_secs()))
+                    // Worded so `playback_error` reads it as a timeout
+                    Err(format!(
+                        "Stream resolution timed out after {} s",
+                        RESOLVE_TIMEOUT.as_secs()
+                    ))
                 });
                 let _ = tx.send((generation, result));
             })
@@ -216,11 +229,15 @@ impl Player {
         self.metadata_rx = None;
         self.stream_failed = false;
         self.phase = Phase::Stopped;
-        self.status = "Stopped".to_string();
+        self.status = status::STOPPED.to_string();
         self.is_error = false;
         self.started_at = None;
         self.title.clear();
         self.artist.clear();
+        // The format line is about the stream that played
+        self.codec = None;
+        self.bitrate = None;
+        self.stream_type = None;
     }
 
     /// End the station resolving or playing, and make anything still on
@@ -277,7 +294,7 @@ impl Player {
         if self
             .notice
             .as_ref()
-            .is_some_and(|n| n.shown_at.elapsed() > NOTICE_TIME)
+            .is_some_and(|n| n.shown_at.elapsed() > n.lasts)
         {
             self.notice = None;
         }
@@ -305,9 +322,10 @@ impl Player {
                 self.stream_id = Some(self.engine().play_stream(stream));
             }
             Err(e) => {
+                log::warn!("Can't resolve the station: {e}");
                 self.cancel = None;
                 self.phase = Phase::Stopped;
-                self.status = e;
+                self.status = text::playback_error(&e);
                 self.is_error = true;
             }
         }
@@ -356,7 +374,7 @@ impl Player {
                 }
                 self.codec = Some(info);
                 self.started_at.get_or_insert_with(Instant::now);
-                self.set_status("Playing", false);
+                self.set_status(status::PLAYING, false);
                 self.stream_failed = false;
             }
             AudioEvent::CodecChanged(info) => {
@@ -369,35 +387,39 @@ impl Player {
                 self.started_at = None;
                 self.cancel = None;
                 if !std::mem::take(&mut self.stream_failed) {
-                    self.set_status("Stopped", false);
+                    self.set_status(status::STOPPED, false);
                 }
             }
-            AudioEvent::Paused => self.set_status("Paused", false),
-            AudioEvent::Resumed => self.set_status("Playing", false),
+            AudioEvent::Paused => self.set_status(status::PAUSED, false),
+            AudioEvent::Resumed => self.set_status(status::PLAYING, false),
             AudioEvent::Error(e) => {
-                self.status = e;
+                log::warn!("Engine error: {e}");
+                self.status = text::playback_error(&e);
                 self.is_error = true;
                 self.stream_failed = true;
             }
             AudioEvent::Buffering(pct) => {
                 if pct < 100 {
-                    self.set_status(&format!("Buffering {pct}%"), false);
+                    self.set_status(&status::buffering(pct), false);
                 } else {
-                    self.set_status("Playing", false);
+                    self.set_status(status::PLAYING, false);
                 }
             }
-            AudioEvent::StreamStalled => self.set_status("Stalled", true),
-            AudioEvent::StreamRecovered => self.set_status("Playing", false),
+            AudioEvent::StreamStalled => self.set_status(status::WAITING_FOR_DATA, true),
+            AudioEvent::StreamRecovered => self.set_status(status::PLAYING, false),
             AudioEvent::OutputLost => {
-                self.set_status("Audio output lost, waiting for a device", true)
+                self.set_status(status::OUTPUT_LOST, true);
+                self.output_trouble = true;
             }
             AudioEvent::OutputNotResponding => {
                 self.output_hang = Some((self.status.clone(), self.is_error));
-                self.set_status(OUTPUT_NOT_RESPONDING, true);
+                self.set_status(status::OUTPUT_NOT_RESPONDING, true);
+                self.output_trouble = true;
             }
             AudioEvent::OutputResponding => {
                 if let Some((status, is_error)) = self.output_hang.take() {
-                    if self.status == OUTPUT_NOT_RESPONDING {
+                    if self.status == status::OUTPUT_NOT_RESPONDING {
+                        self.output_trouble = status == status::OUTPUT_LOST;
                         self.status = status;
                         self.is_error = is_error;
                     }
@@ -405,14 +427,14 @@ impl Player {
             }
             AudioEvent::OutputRestored => {
                 let status = match self.phase {
-                    Phase::Stopped => "Stopped",
-                    _ => "Playing",
+                    Phase::Stopped => status::STOPPED,
+                    _ => status::PLAYING,
                 };
                 self.set_status(status, false);
             }
-            AudioEvent::ProbeTimeout => self.set_status("Format not recognised", true),
+            AudioEvent::ProbeTimeout => self.set_status(status::NOT_RESPONDING, true),
             AudioEvent::NoAudioTimeout => {
-                self.set_status("No audio", true);
+                self.set_status(status::NO_AUDIO, true);
                 self.stream_failed = true;
             }
             AudioEvent::FellBehind => {}
@@ -422,13 +444,26 @@ impl Player {
     fn set_status(&mut self, status: &str, is_error: bool) {
         self.status = status.to_string();
         self.is_error = is_error;
+        // Any later status means the device is back, or no longer the news
+        self.output_trouble = false;
+    }
+
+    /// The running time is worth showing: not while the sound device is
+    /// missing, when nothing is heard
+    pub fn shows_clock(&self) -> bool {
+        self.started_at.is_some() && !self.output_trouble
     }
 
     pub fn notify(&mut self, text: impl Into<String>, is_error: bool) {
+        self.notify_for(text, is_error, NOTICE_TIME);
+    }
+
+    fn notify_for(&mut self, text: impl Into<String>, is_error: bool, lasts: Duration) {
         self.notice = Some(Notice {
             text: text.into(),
             is_error,
             shown_at: Instant::now(),
+            lasts,
         });
     }
 
@@ -453,7 +488,7 @@ impl Player {
         };
         let folder = recording::folder(settings.recording_dir.as_deref());
         if let Err(e) = recording::prepare_dir(&folder) {
-            self.notify(format!("Recording folder not available. {e}"), true);
+            self.notify(e, true);
             return;
         }
         let format = match settings.recording_format {
@@ -492,7 +527,7 @@ impl Player {
                     duration: Duration::ZERO,
                 })
             }
-            Err(e) => self.notify(format!("Could not start recording: {e}"), true),
+            Err(e) => self.notify(text::cant_start_recording(&e.to_string()), true),
         }
     }
 
@@ -523,23 +558,79 @@ impl Player {
         });
     }
 
+    /// Say which folder the recording went to (a terminal can't open it,
+    /// so the path is what the user needs), and keep its path for the exit
     fn report_saved(&mut self, status: &RecordingStatus) {
-        let name = status
+        let folder = status
             .path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
+            .parent()
+            .map(recording::display_path)
             .unwrap_or_default();
+        self.saved.push(status.path.clone());
         match &status.error {
-            Some(e) => self.notify(format!("Recording stopped: {e}. Saved {name}"), true),
-            None => self.notify(format!("Saved {name}"), false),
+            Some(e) => self.notify_for(
+                format!("Recording stopped: {e}. Saved to {folder}"),
+                true,
+                SAVED_NOTICE_TIME,
+            ),
+            None => self.notify_for(format!("Saved to {folder}"), false, SAVED_NOTICE_TIME),
         }
     }
 
-    /// Save any recording and close the engine
-    pub fn shutdown(mut self) {
+    /// Save any recording and close the engine. Returns the recordings
+    /// saved this session.
+    pub fn shutdown(mut self) -> Vec<PathBuf> {
         self.stop_recording();
         if let Some(engine) = self.engine.take() {
             engine.shutdown();
         }
+        std::mem::take(&mut self.saved)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The texts the terminal shows for engine events are the app's: each
+    /// is written in the app's controller (as a literal or by name), so a
+    /// change there that isn't made here too fails
+    #[test]
+    fn status_texts_match_the_apps() {
+        let app = include_str!("../../radiotrope-app/src/app/controller.rs");
+        let source = |text: &str| format!("\"{}\"", text.replace('\u{2026}', "\\u{2026}"));
+        for (name, text) in [
+            ("CONNECTING", status::CONNECTING),
+            ("PLAYING", status::PLAYING),
+            ("STOPPED", status::STOPPED),
+            ("PAUSED", status::PAUSED),
+            ("WAITING_FOR_DATA", status::WAITING_FOR_DATA),
+            ("OUTPUT_LOST", status::OUTPUT_LOST),
+            ("OUTPUT_NOT_RESPONDING", status::OUTPUT_NOT_RESPONDING),
+            ("NOT_RESPONDING", status::NOT_RESPONDING),
+            ("NO_AUDIO", status::NO_AUDIO),
+        ] {
+            assert!(
+                app.contains(&source(text)) || app.contains(&format!("status::{name}")),
+                "the app no longer says {text:?}"
+            );
+        }
+        assert!(app.contains("\"Buffering {}%\"") || app.contains("status::buffering"));
+        assert_eq!(status::buffering(40), "Buffering 40%");
+        assert!(
+            app.contains("\"Can't start recording: {e}\"") || app.contains("cant_start_recording")
+        );
+        assert_eq!(
+            text::cant_start_recording("disk full"),
+            "Can't start recording: disk full"
+        );
+        // The resolve timeout reads as one
+        assert_eq!(
+            text::playback_error(&format!(
+                "Stream resolution timed out after {} s",
+                RESOLVE_TIMEOUT.as_secs()
+            )),
+            "Station not responding. Try again later."
+        );
     }
 }

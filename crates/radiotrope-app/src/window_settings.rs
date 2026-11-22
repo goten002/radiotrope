@@ -1,14 +1,18 @@
 //! The window's settings: shown at startup, changed from the Equalizer,
 //! Filters and Accent Color dialogs, and saved to settings.json
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
 use radiotrope::audio::{HissLevel, LevelTarget};
-use radiotrope_app::data::settings::Theme as ThemeSetting;
+use radiotrope::error::RadioError;
+use radiotrope_app::data::settings::{Settings, Theme as ThemeSetting};
 use radiotrope_app::data::types::Station;
+use radiotrope_app::error::AppError;
 
+use crate::app::delayed_save::{DelayedSave, SaveErrors, Saved, SAVE_RETRY};
 use crate::app::state::AppSnapshot;
 use crate::context::{lock, AppContext};
 use crate::{app, App, EqPresetGroup, VizStyle};
@@ -281,12 +285,46 @@ pub(crate) fn show_eq_presets(ui: &App) {
     ui.set_eq_preset_groups(ModelRc::new(VecModel::from(groups)));
 }
 
-/// Persist current app state to settings.json
+/// Persist current app state to settings.json (a moment later, off this
+/// thread: see [`write_settings`])
 pub(crate) fn save_settings(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
     // A copy: the controller and agents aren't kept waiting on the state
-    // while the file is read and written
     let s = lock(shared_state).clone();
     write_settings(&window_settings(&s, ui));
+}
+
+/// [`save_settings`] at exit: written before this returns
+pub(crate) fn save_settings_at_exit(shared_state: &Arc<Mutex<AppSnapshot>>, ui: &App) {
+    save_settings(shared_state, ui);
+    settings_saver().flush();
+}
+
+/// Change the saved settings: read the file, make `change`, write it back,
+/// on this thread. Returns the settings with the change. A file that can't
+/// be read is never written over (the change then lasts for this run), and
+/// a failed save is logged and shown by [`SaveErrors`].
+pub(crate) fn update_settings(change: impl FnOnce(&mut Settings)) -> Settings {
+    let (settings, saved) = Settings::update(change);
+    SaveErrors::shared().set(SETTINGS, saved.err().map(|e| save_reason(&e)));
+    settings
+}
+
+/// Why a save failed, in plain words: "permission denied", without the
+/// system's "(os error 13)"
+pub(crate) fn save_reason(e: &AppError) -> String {
+    if let AppError::Engine(RadioError::Io(e)) = e {
+        return radiotrope_app::text::io_reason(e);
+    }
+    let mut text = e.to_string();
+    if let Some(at) = text.rfind(" (os error ") {
+        let end = text[at..].find(')').map_or(text.len(), |end| at + end + 1);
+        text.replace_range(at..end, "");
+    }
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(c) => c.to_lowercase().chain(chars).collect(),
+        None => text,
+    }
 }
 
 /// What the window keeps in settings.json, as it is now
@@ -392,48 +430,96 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
     }
 }
 
-/// Write `w` into settings.json, keeping what the file has besides
+/// What [`SaveErrors`] calls a save of the settings
+const SETTINGS: &str = "settings";
+
+/// What [`write_settings`] was last given and the saving thread hasn't
+/// written yet
+static UNSAVED: Mutex<Option<WindowSettings>> = Mutex::new(None);
+
+/// The thread that writes [`UNSAVED`], started when first needed
+fn settings_saver() -> &'static DelayedSave {
+    static SAVER: OnceLock<DelayedSave> = OnceLock::new();
+    SAVER.get_or_init(|| {
+        DelayedSave::start_reporting(
+            "settings-save",
+            Duration::ZERO,
+            SETTINGS,
+            SaveErrors::shared().clone(),
+            SAVE_RETRY,
+            write_unsaved,
+        )
+    })
+}
+
+/// Write [`UNSAVED`] into settings.json. After a failure it stays there
+/// for the next try.
+fn write_unsaved() -> Result<Saved, String> {
+    let Some(w) = lock(&UNSAVED).clone() else {
+        return Ok(Saved::All);
+    };
+    let (_, saved) = Settings::update(|settings| w.apply_to(settings));
+    saved.map_err(|e| save_reason(&e))?;
+    let mut unsaved = lock(&UNSAVED);
+    if unsaved.as_ref() == Some(&w) {
+        *unsaved = None;
+        Ok(Saved::All)
+    } else {
+        Ok(Saved::More)
+    }
+}
+
+/// Write `w` into settings.json, keeping what the file has besides. The
+/// file is read and written on a thread of its own: this one (the
+/// window's) only hands `w` over.
 pub(crate) fn write_settings(w: &WindowSettings) {
-    let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-    settings.volume = w.volume;
-    settings.muted = w.muted;
-    settings.eq_gains = w.eq_gains;
-    settings.eq_preamp = w.eq_preamp;
-    settings.eq_preamp_moved = w.eq_preamp_moved;
-    settings.eq_enabled = w.eq_enabled;
-    settings.eq_preset_name = w.eq_preset_name.clone();
-    settings.match_volume = w.match_volume;
-    settings.match_level = w.match_level.as_str().to_string();
-    settings.hiss_reducer = w.hiss.as_str().to_string();
-    settings.hum_filter = w.hum_filter;
-    settings.rumble_filter = w.rumble_filter;
-    settings.smooth_switching = w.smooth_switching;
-    settings.accent_color = w.accent_color.clone();
-    settings.theme = w.theme;
-    settings.viz_mode = w.viz_mode.clone();
-    settings.viz_palette = w.viz_palette.clone();
-    settings.show_station_stats = w.show_station_stats;
-    settings.show_visualizer = w.show_visualizer;
-    settings.panel_gradient = w.panel_gradient;
-    if let Some((custom_title_bar, rounded_corners, always_on_top)) = w.frame {
-        settings.custom_title_bar = custom_title_bar;
-        settings.rounded_corners = rounded_corners;
-        settings.always_on_top = always_on_top;
+    *lock(&UNSAVED) = Some(w.clone());
+    settings_saver().request_now();
+}
+
+impl WindowSettings {
+    /// Put these into `settings`, which keeps what it has besides
+    fn apply_to(&self, settings: &mut Settings) {
+        let w = self;
+        settings.volume = w.volume;
+        settings.muted = w.muted;
+        settings.eq_gains = w.eq_gains;
+        settings.eq_preamp = w.eq_preamp;
+        settings.eq_preamp_moved = w.eq_preamp_moved;
+        settings.eq_enabled = w.eq_enabled;
+        settings.eq_preset_name = w.eq_preset_name.clone();
+        settings.match_volume = w.match_volume;
+        settings.match_level = w.match_level.as_str().to_string();
+        settings.hiss_reducer = w.hiss.as_str().to_string();
+        settings.hum_filter = w.hum_filter;
+        settings.rumble_filter = w.rumble_filter;
+        settings.smooth_switching = w.smooth_switching;
+        settings.accent_color = w.accent_color.clone();
+        settings.theme = w.theme;
+        settings.viz_mode = w.viz_mode.clone();
+        settings.viz_palette = w.viz_palette.clone();
+        settings.show_station_stats = w.show_station_stats;
+        settings.show_visualizer = w.show_visualizer;
+        settings.panel_gradient = w.panel_gradient;
+        if let Some((custom_title_bar, rounded_corners, always_on_top)) = w.frame {
+            settings.custom_title_bar = custom_title_bar;
+            settings.rounded_corners = rounded_corners;
+            settings.always_on_top = always_on_top;
+        }
+        if let Some((tray_icon, close_to_tray, start_in_tray, hide_on_minimize)) = w.tray {
+            settings.tray_icon = tray_icon;
+            settings.close_to_tray = close_to_tray;
+            settings.start_in_tray = start_in_tray;
+            settings.hide_on_minimize = hide_on_minimize;
+        }
+        if let Some(station) = &w.last_station {
+            settings.last_station = Some(station.clone());
+        }
+        if let Some((width, height)) = w.window_size {
+            settings.window_width = Some(width);
+            settings.window_height = Some(height);
+        }
     }
-    if let Some((tray_icon, close_to_tray, start_in_tray, hide_on_minimize)) = w.tray {
-        settings.tray_icon = tray_icon;
-        settings.close_to_tray = close_to_tray;
-        settings.start_in_tray = start_in_tray;
-        settings.hide_on_minimize = hide_on_minimize;
-    }
-    if let Some(station) = &w.last_station {
-        settings.last_station = Some(station.clone());
-    }
-    if let Some((width, height)) = w.window_size {
-        settings.window_width = Some(width);
-        settings.window_height = Some(height);
-    }
-    let _ = settings.save();
 }
 
 /// The filters as the Filters dialog shows them
