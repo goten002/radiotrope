@@ -114,8 +114,13 @@ pub(crate) fn start_timer(
 /// Whether the visualizer has something to show: a station playing, the
 /// visualizer on, and the window on screen
 pub(crate) fn viz_wanted(ui: &App) -> bool {
-    let window = ui.window();
-    ui.get_is_playing() && ui.get_show_visualizer() && window.is_visible() && !window.is_minimized()
+    // The minimized flag as the poll last sampled it: asking the window
+    // itself is a round trip to the X server, on every frame
+    #[cfg(feature = "desktop")]
+    let minimized = crate::window_frame::minimized();
+    #[cfg(not(feature = "desktop"))]
+    let minimized = ui.window().is_minimized();
+    ui.get_is_playing() && ui.get_show_visualizer() && ui.window().is_visible() && !minimized
 }
 
 /// Push one visualizer frame to the UI (levels already gated and smoothed).
