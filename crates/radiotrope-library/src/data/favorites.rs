@@ -14,7 +14,7 @@ use crate::data::types::{
 };
 use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
@@ -156,6 +156,9 @@ pub struct FavoritesManager {
     stats_seen: Option<FileStamp>,
     /// The stats as that read or write left them
     stats_base: HashMap<String, StationStats>,
+    /// The favorites removed in this run. Their stats are kept until the
+    /// next start whatever their age: Undo puts a favorite back with them.
+    removed_here: HashSet<String>,
     /// How many saves were run on this manager, so a save run on a copy
     /// (see [`begin_save`](Self::begin_save)) knows when it was overtaken
     saves: u64,
@@ -214,6 +217,7 @@ impl FavoritesManager {
             stats_dirty: false,
             stats_seen: None,
             stats_base: HashMap::new(),
+            removed_here: HashSet::new(),
             saves: 0,
         }
     }
@@ -421,6 +425,13 @@ impl FavoritesManager {
                 };
             }
         }
+        // Another player dropped the old stats of a favorite removed here:
+        // they stay here, for its Undo
+        for id in &self.removed_here {
+            if let Some(stats) = self.stats.get(id) {
+                merged.entry(id.clone()).or_insert(*stats);
+            }
+        }
         self.stats_base = theirs;
         if merged == self.stats {
             return false;
@@ -569,15 +580,19 @@ impl FavoritesManager {
     }
 
     /// Forget the stats of stations that are no longer favorites and
-    /// weren't played for [`ORPHAN_STATS_SECS`]
+    /// weren't played for [`ORPHAN_STATS_SECS`]. Not those of a favorite
+    /// removed in this run: its Undo puts it back with its stats, however
+    /// long ago it was played. They go at a save after the next start.
     fn drop_old_orphan_stats(&mut self) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs();
         let favorites = &self.favorites;
+        let removed_here = &self.removed_here;
         self.stats.retain(|id, stats| {
             favorites.contains_key(id)
+                || removed_here.contains(id)
                 || stats
                     .last_played
                     .is_some_and(|t| now.saturating_sub(t) < ORPHAN_STATS_SECS)
@@ -643,6 +658,7 @@ impl FavoritesManager {
             .remove(id)
             .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
 
+        self.removed_here.insert(id.to_string());
         self.dirty = true;
         self.generation += 1;
         Ok(favorite)
@@ -1855,6 +1871,72 @@ mod tests {
         remove_files(&path);
     }
 
+    #[test]
+    fn a_removed_favorite_keeps_its_old_stats_for_undo_until_the_next_start() {
+        let path = temp_path();
+        let old = "http://old.test";
+        let id = url_to_id(old);
+        let long_ago = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            - ORPHAN_STATS_SECS
+            - 24 * 60 * 60;
+
+        let mut manager = FavoritesManager::new();
+        manager.add(Favorite::new("Old", old)).unwrap();
+        manager
+            .add(Favorite::new("Other", "http://other.test"))
+            .unwrap();
+        manager.add_listening(old, 600, true).unwrap();
+        manager.stats.get_mut(&id).unwrap().last_played = Some(long_ago);
+        manager.save_to(&path).unwrap();
+
+        // Removed, and the stats are saved again (the other one plays), in
+        // one go and in two halves
+        let removed = manager.remove(&id).unwrap();
+        manager.save_to(&path).unwrap();
+        manager
+            .add_listening("http://other.test", 60, true)
+            .unwrap();
+        manager.save_to(&path).unwrap();
+        manager
+            .add_listening("http://other.test", 60, false)
+            .unwrap();
+        let done = manager.begin_save_to(&path).unwrap().write();
+        manager.finish_save(done).unwrap();
+        assert_eq!(manager.stats(&id).total_listen_time_secs, 600);
+
+        // Undo: back with its stats, here and in the file
+        manager.add(removed).unwrap();
+        manager.save_to(&path).unwrap();
+        assert_eq!(manager.stats(&id).play_count, 1);
+        let saved = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(saved.stats(&id).total_listen_time_secs, 600);
+        assert_eq!(saved.stats(&id).last_played, Some(long_ago));
+
+        // Removed and never put back: gone at a save after the next start
+        manager.remove(&id).unwrap();
+        manager
+            .add_listening("http://other.test", 60, false)
+            .unwrap();
+        manager.save_to(&path).unwrap();
+        assert!(!manager.stats(&id).is_empty());
+        let mut restarted = FavoritesManager::load_from(&path).unwrap();
+        assert!(!restarted.stats(&id).is_empty());
+        restarted
+            .add_listening("http://other.test", 60, true)
+            .unwrap();
+        restarted.save_to(&path).unwrap();
+        assert!(restarted.stats(&id).is_empty());
+        assert!(FavoritesManager::load_from(&path)
+            .unwrap()
+            .stats(&id)
+            .is_empty());
+
+        remove_files(&path);
+    }
+
     // =========================================================================
     // Play metadata resolution
     // =========================================================================
@@ -2339,7 +2421,8 @@ mod tests {
         manager.add(Favorite::new("A", "http://a.test")).unwrap();
         manager.add(Favorite::new("B", "http://b.test")).unwrap();
         manager.add_listening("http://a.test", 300, true).unwrap();
-        // Played long ago, then removed: forgotten at the next save
+        // Played long ago, then removed: kept for Undo in this run,
+        // forgotten at a save after the next start
         manager.stats.insert(
             url_to_id("http://b.test"),
             StationStats {
@@ -2353,10 +2436,13 @@ mod tests {
         manager.save_to(&path).unwrap();
 
         let mut manager = FavoritesManager::load_from(&path).unwrap();
-        assert!(manager.stats(&url_to_id("http://b.test")).is_empty());
+        assert!(!manager.stats(&url_to_id("http://b.test")).is_empty());
         manager.add(Favorite::new("A", "http://a.test")).unwrap();
         let a = manager.stats(&url_to_id("http://a.test"));
         assert_eq!(a.total_listen_time_secs, 300);
+        manager.add_listening("http://a.test", 60, true).unwrap();
+        manager.save_to(&path).unwrap();
+        assert!(manager.stats(&url_to_id("http://b.test")).is_empty());
         remove_files(&path);
     }
 
