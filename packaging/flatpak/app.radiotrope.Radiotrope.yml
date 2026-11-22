@@ -1,0 +1,83 @@
+# Flatpak manifest for the .flatpak bundle the release workflow builds
+# (package-linux.yml, job `flatpak`). Not for Flathub: the project doesn't
+# publish there.
+#
+# Build it locally (flatpak-builder and the freedesktop 26.08 Sdk with its
+# rust-stable extension installed):
+#
+#   packaging/flatpak/build.sh          (bundle in target/dist)
+#
+# or by hand:
+#   packaging/flatpak/cargo-sources.sh
+#   flatpak-builder --user --install --force-clean target/flatpak-build \
+#       packaging/flatpak/app.radiotrope.Radiotrope.yml
+#
+# The crates come from cargo-sources.json (made by cargo-sources.sh from
+# Cargo.lock), so the build needs no network.
+#
+# Known limits in the sandbox, until the app learns about Flatpak (see
+# RELEASING.md, "Flatpak"):
+# - a second `flatpak run` starts a second player instead of raising the
+#   first (the single-instance socket is under the per-instance
+#   $XDG_RUNTIME_DIR);
+# - the `--mcp` relay can't reach a running player for the same reason, and
+#   the Agents dialog shows /app/bin/radiotrope as the command;
+# - AAC+ (HE-AAC) plays as AAC-LC: the runtime has no libfdk-aac.
+id: app.radiotrope.Radiotrope
+runtime: org.freedesktop.Platform
+runtime-version: '26.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: radiotrope
+
+finish-args:
+  # The window: Wayland, or X11 where there is no Wayland; GPU drawing
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc
+  - --device=dri
+  # Streams, the station directory, and the agents and phone servers
+  # (listening on TCP 8765 and 8766, UDP 8767-8770, mDNS on UDP 5353)
+  - --share=network
+  # Sound: ALSA through the PulseAudio (or PipeWire) socket
+  - --socket=pulseaudio
+  # The tray icon (StatusNotifierItem). The app also asks this name whether a
+  # tray is there. No --own-name: tray-icon skips its well-known name in a
+  # sandbox.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # Recordings, in the default folder (~/Music/Radiotrope). Another folder
+  # comes through the file-chooser portal when the user picks it.
+  - --filesystem=xdg-music/Radiotrope:create
+  # No notification permission: the app sends no desktop notifications.
+  # Links and "open folder" use xdg-open, which goes through the portal.
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+
+cleanup:
+  - /share/doc
+
+modules:
+  - name: radiotrope
+    buildsystem: simple
+    build-options:
+      env:
+        CARGO_HOME: /run/build/radiotrope/cargo
+        CARGO_NET_OFFLINE: 'true'
+        # .cargo/config.toml names a cross linker for aarch64; build natively
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
+    build-commands:
+      # The programs, man pages and completions (see the Makefile)
+      - make all CARGO_FLAGS="--offline --locked"
+      - make install PREFIX=/app
+      - install -Dm644 LICENSE THIRD-PARTY-LICENSES -t /app/share/licenses/app.radiotrope.Radiotrope/
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - target
+          - build
+          - packaging/flatpak/.flatpak-builder
+      - cargo-sources.json

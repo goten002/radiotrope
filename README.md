@@ -34,9 +34,11 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 
 ## Install
 
-Packages are coming: the AUR (`radiotrope`) for Arch Linux and WinGet
-(`Radiotrope.Radiotrope`) for Windows, plus downloads on the GitHub releases
-page. Until then, build from source with Rust 1.95 or newer
+Linux and Windows builds are on the
+[releases page](https://github.com/goten002/radiotrope/releases), with
+packages for Debian, Ubuntu, Fedora and openSUSE, an AppImage, a Flatpak
+bundle and the AUR on Linux (below), and WinGet (`Radiotrope.Radiotrope`) on
+Windows. Or build from source with Rust 1.95 or newer
 ([rustup](https://rustup.rs)).
 
 > [!NOTE]
@@ -44,7 +46,66 @@ page. Until then, build from source with Rust 1.95 or newer
 > needs the FDK AAC library installed on the system: see
 > [AAC+ stations](#aac-stations-he-aac).
 
-### Linux
+### Linux packages
+
+Every release has these files for `x86_64` and `aarch64` (64-bit ARM, such
+as a Raspberry Pi 4 or 5 on a 64-bit system). Each one holds all three
+programs (see [the table below](#linux-build-from-source)). They are built on
+Ubuntu 22.04, so they need glibc 2.35 or newer: Debian 12, Ubuntu 22.04,
+Fedora 41, openSUSE Leap 15.6 / Tumbleweed or newer.
+
+| Format | File | Install | Updates |
+|--------|------|---------|---------|
+| Debian, Ubuntu, Mint, Raspberry Pi OS | `radiotrope_<version>-1_amd64.deb` (`arm64`) | `sudo apt install ./radiotrope_*.deb` | download the new one |
+| Fedora, openSUSE | `radiotrope-<version>-1.x86_64.rpm` (`aarch64`) | `sudo dnf install ./radiotrope-*.rpm` or `sudo zypper install --allow-unsigned-rpm ./radiotrope-*.rpm` | download the new one |
+| Arch, Manjaro, CachyOS | [AUR](https://aur.archlinux.org/packages/radiotrope): `radiotrope` (builds from source) or `radiotrope-bin` | `yay -S radiotrope` (or `paru`, or `makepkg -si`) | with the system |
+| Any distribution | `Radiotrope-<version>-x86_64.AppImage` (`aarch64`) | `chmod +x Radiotrope-*.AppImage` and run it | AppImageUpdate, Gear Lever or AppImageLauncher |
+| Any distribution with Flatpak | `Radiotrope-<version>-x86_64.flatpak` (`aarch64`) | `flatpak install --user ./Radiotrope-*.flatpak` | download the new one |
+| Any distribution, by hand | `radiotrope-<version>-linux-x86_64.tar.gz` (`aarch64`) | see below | download the new one |
+
+Notes on each:
+
+- **.deb and .rpm** pull in what the app needs (ALSA, fontconfig, the
+  display libraries). The packages aren't signed and there is no apt or dnf
+  repository yet, so updates are a new download.
+- **AppImage**: one file, nothing installed. It runs the desktop app; the
+  terminal tools are inside it too: `./Radiotrope-*.AppImage radiotrope-cli`
+  (or a link named `radiotrope-cli` pointing at the AppImage). For a menu
+  entry, use an integration tool such as Gear Lever or AppImageLauncher. The
+  system tray works as with any other install (GNOME needs the AppIndicator
+  extension). Without FUSE, add `--appimage-extract-and-run`.
+- **Flatpak bundle**: not on Flathub. It needs the freedesktop runtime from
+  Flathub (`flatpak remote-add --if-not-exists --user flathub
+  https://dl.flathub.org/repo/flathub.flatpakrepo`). Run the tools with
+  `flatpak run --command=radiotrope-cli app.radiotrope.Radiotrope`. In the
+  sandbox it keeps its own settings and favorites (under
+  `~/.var/app/app.radiotrope.Radiotrope/`), records only into
+  `~/Music/Radiotrope` unless you pick another folder, and plays AAC+ as plain
+  AAC (the runtime has no FDK AAC). A second launch opens a second window, and
+  agents can't use it over `--mcp` yet: use another format if you use agents.
+- **Tarball**: unpack it and copy `bin/` and `share/` into `~/.local` (or,
+  with `sudo`, `/usr/local`):
+
+  ```bash
+  tar -xzf radiotrope-*-linux-x86_64.tar.gz
+  cp -r radiotrope-*-linux-x86_64/{bin,share} ~/.local/
+  ```
+
+  It needs `libasound2` and `fontconfig`, which desktops have.
+
+For full-quality AAC+ in any of them except the Flatpak, also install the
+system's FDK AAC library (`libfdk-aac`): see
+[AAC+ stations](#aac-stations-he-aac). The .deb recommends `libfdk-aac2` and
+the .rpm `fdk-aac` (RPM Fusion) or `libfdk-aac2` (Packman), so they come
+along when those repositories are enabled; the AUR packages list it as
+optional.
+
+Check a download against the release's `SHA256SUMS` with
+`sha256sum --check --ignore-missing SHA256SUMS`, and that GitHub built it
+from this repository with
+`gh attestation verify <file> --repo goten002/radiotrope`.
+
+### Linux: build from source
 
 Install the build dependencies (ALSA for audio, fontconfig for the GUI, CMake
 and a C++ compiler for the bundled C libraries). OpenSSL is not needed: HTTPS

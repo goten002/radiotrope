@@ -103,3 +103,73 @@ ui-snapshots = ["slint/renderer-software"]
 slint-build = "1.18"
 # The Windows exe's icon and version details (Explorer, Task Manager)
 radiotrope-build = { path = "../radiotrope-build" }
+
+# The Linux packages: one `radiotrope` package with all three programs.
+# packaging/linux/dist.sh builds the programs, installs everything else into
+# target/dist-stage (`make install`, PREFIX=/usr) and then runs
+# `cargo deb --no-build` and `cargo generate-rpm`, which read these tables.
+# `target/release/...` is where the tools look for the built programs.
+[package.metadata.deb]
+name = "radiotrope"
+section = "sound"
+priority = "optional"
+maintainer = "George Alexiou <goten002@users.noreply.github.com>"
+copyright = "2026 George Alexiou"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+An internet radio player for the desktop. Play it yourself, from your phone, \
+or let your AI assistant drive it over the Model Context Protocol (MCP). \
+Includes radiotrope-cli, a terminal player, and radiotrope-probe, a station \
+checker."""
+# $auto: the libraries the programs link (from dpkg-shlibdeps). libxkbcommon,
+# the GL and display libraries are loaded at run time, so they are named here;
+# ca-certificates: HTTPS (rustls) checks servers against the system's roots.
+depends = "$auto, libxkbcommon0, ca-certificates"
+recommends = "libegl1, libgl1, libwayland-client0, libwayland-cursor0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2, libxkbcommon-x11-0, libfdk-aac2"
+# libfdk-aac2: full AAC+ (HE-AAC), loaded at run time when installed. It is in
+# Debian's non-free and Ubuntu's multiverse, so it can't be a hard dependency.
+assets = [
+    ["target/release/radiotrope", "usr/bin/", "755"],
+    ["target/release/radiotrope-cli", "usr/bin/", "755"],
+    ["target/release/radiotrope-probe", "usr/bin/", "755"],
+    # Launcher, metainfo, icons, man pages, completions, README and licences
+    ["../../target/dist-stage/usr/share/**/*", "usr/share/", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "radiotrope"
+summary = "Internet radio player, with a terminal player and a station checker"
+license = "GPL-3.0-or-later"
+url = "https://github.com/goten002/radiotrope"
+assets = [
+    { source = "target/release/radiotrope", dest = "/usr/bin/radiotrope", mode = "755" },
+    { source = "target/release/radiotrope-cli", dest = "/usr/bin/radiotrope-cli", mode = "755" },
+    { source = "target/release/radiotrope-probe", dest = "/usr/bin/radiotrope-probe", mode = "755" },
+    { source = "../../target/dist-stage/usr/share/applications/*", dest = "/usr/share/applications/", mode = "644" },
+    { source = "../../target/dist-stage/usr/share/metainfo/*", dest = "/usr/share/metainfo/", mode = "644" },
+    { source = "../../target/dist-stage/usr/share/icons/hicolor/*/apps/*", dest = "/usr/share/icons/hicolor/", mode = "644" },
+    { source = "../../target/dist-stage/usr/share/man/man1/*", dest = "/usr/share/man/man1/", mode = "644", doc = true },
+    { source = "../../target/dist-stage/usr/share/bash-completion/completions/*", dest = "/usr/share/bash-completion/completions/", mode = "644" },
+    { source = "../../target/dist-stage/usr/share/zsh/site-functions/*", dest = "/usr/share/zsh/site-functions/", mode = "644" },
+    { source = "../../target/dist-stage/usr/share/fish/vendor_completions.d/*", dest = "/usr/share/fish/vendor_completions.d/", mode = "644" },
+    { source = "../../README.md", dest = "/usr/share/doc/radiotrope/README.md", mode = "644", doc = true },
+    { source = "../../LICENSE", dest = "/usr/share/licenses/radiotrope/LICENSE", mode = "644", doc = true },
+    { source = "../../THIRD-PARTY-LICENSES", dest = "/usr/share/licenses/radiotrope/THIRD-PARTY-LICENSES", mode = "644", doc = true },
+]
+
+# Besides the libraries found in the programs (auto-req): the ones loaded at
+# run time. Sonames, so Fedora and openSUSE both resolve them.
+[package.metadata.generate-rpm.requires]
+"libxkbcommon.so.0()(64bit)" = "*"
+# HTTPS (rustls) checks servers against the system's certificates
+ca-certificates = "*"
+
+# Weak dependencies: installed by default when available, never required.
+# Full AAC+ (HE-AAC) needs the complete libfdk-aac: `fdk-aac` from RPM Fusion
+# (Fedora) or `libfdk-aac2` from Packman (openSUSE). Not the soname: Fedora's
+# own fdk-aac-free provides it too, without HE-AAC, and the app doesn't use it.
+[package.metadata.generate-rpm.recommends]
+"(fdk-aac or libfdk-aac2)" = ""
+"libEGL.so.1()(64bit)" = "*"
+"libwayland-client.so.0()(64bit)" = "*"
+"libxkbcommon-x11.so.0()(64bit)" = "*"

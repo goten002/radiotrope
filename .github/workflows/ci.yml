@@ -223,3 +223,34 @@ jobs:
           for p in radiotrope radiotrope-cli radiotrope-probe; do
             target/debug/$p.exe --version
           done
+
+  # The release packaging's scripts and recipes: shellcheck, the PKGBUILDs'
+  # .SRCINFO, the Flatpak manifest. (The packages themselves are built and
+  # tried by package-linux.yml, run by hand or by a release.)
+  packaging-scripts:
+    name: Packaging scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck --version
+          shellcheck -x packaging/linux/*.sh packaging/appimage/build.sh packaging/appimage/AppRun \
+            packaging/arch/aur-publish.sh packaging/flatpak/*.sh
+      - name: PKGBUILDs parse (makepkg --printsrcinfo)
+        run: |
+          docker run --rm -v "$PWD/packaging/arch:/arch:ro" archlinux:base-devel bash -c '
+            set -e
+            useradd -m builder
+            cp -r /arch /home/builder/arch && chown -R builder: /home/builder/arch
+            cd /home/builder/arch
+            su builder -c "makepkg --printsrcinfo"
+            su builder -c "makepkg --printsrcinfo -p PKGBUILD-bin"'
+      - name: Flatpak manifest is valid YAML with the app id
+        run: |
+          python3 -c '
+          import yaml
+          m = yaml.safe_load(open("packaging/flatpak/app.radiotrope.Radiotrope.yml"))
+          assert m["id"] == "app.radiotrope.Radiotrope", m["id"]
+          assert m["command"] == "radiotrope"
+          print("ok:", m["id"], m["runtime"], m["runtime-version"])'
