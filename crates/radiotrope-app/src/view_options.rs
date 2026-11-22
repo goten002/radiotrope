@@ -18,8 +18,9 @@ const SCALE_VAR: &str = "SLINT_SCALE_FACTOR";
 /// The zoom this run started with, in percent
 static ZOOM_IN_USE: AtomicU32 = AtomicU32::new(100);
 
-/// Plays of directory stations are reported (the menu's switch)
-static REPORT_PLAYS: AtomicBool = AtomicBool::new(true);
+/// Plays of directory stations are reported (the menu's switch): off until
+/// the user says yes in the Report Plays dialog
+static REPORT_PLAYS: AtomicBool = AtomicBool::new(false);
 
 /// How often the display's own scale is looked at (see [`watch_display_scale`])
 #[cfg(feature = "desktop")]
@@ -96,7 +97,12 @@ pub(crate) fn setup(ui: &App, settings: &Settings) {
 
     set_report_plays(settings.report_plays);
     options.set_report_plays(settings.report_plays);
-    options.on_report_plays_changed(set_report_plays);
+    // On only after Allow in the dialog, off at once; saved right away so
+    // the choice holds even if the app doesn't close normally
+    options.on_report_plays_changed(|on| {
+        set_report_plays(on);
+        crate::window_settings::update_settings(|settings| settings.allow_report_plays(on));
+    });
 
     #[cfg(feature = "desktop")]
     watch_display_scale(ui, settings.known_display_scale());
