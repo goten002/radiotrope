@@ -992,7 +992,7 @@ mod tests {
         let (server, requests) = serve_counted(ok(&png(8, 8), true), delay);
         let stations = (0..5)
             .map(|i| {
-                Station::new("Slow", &format!("http://slow.test/{i}"))
+                Station::new("Slow", format!("http://slow.test/{i}"))
                     .with_logo(format!("{server}/{i}.png").as_str())
             })
             .collect();

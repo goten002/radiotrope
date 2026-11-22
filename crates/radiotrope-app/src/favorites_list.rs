@@ -142,7 +142,7 @@ static LOADING_THREADS: LazyLock<Arc<Workers>> =
 /// The favorites (by id) whose logo a loader has been given, and whether
 /// the list asked for it again meanwhile: the favorite may have changed,
 /// so the list looks once more when that logo is done
-static LOADING: Mutex<HashMap<String, bool>> = Mutex::new(HashMap::new());
+static LOADING: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(Mutex::default);
 
 /// Logos the loaders are done with, for the UI thread to take (see
 /// [`show_loaded`])
@@ -267,7 +267,9 @@ fn notifier(
     Arc::new(move || {
         let favorites = favorites.clone();
         let logo_service = logo_service.clone();
-        let _ = ui.upgrade_in_event_loop(move |ui| show_loaded(&ui, &favorites, &logo_service));
+        let _ = ui.upgrade_in_event_loop(move |ui| {
+            show_loaded(&ui, &favorites, &logo_service);
+        });
     })
 }
 
