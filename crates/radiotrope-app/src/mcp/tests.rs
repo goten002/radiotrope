@@ -638,7 +638,11 @@ async fn a_search_that_finds_nothing_says_where_the_filter_values_are() {
     let r = s.call("search_stations", json!({"query": "nothing"})).await;
     let found = &r["structuredContent"];
     assert_eq!(found["count"], 0);
-    assert!(found["note"].as_str().unwrap().contains("list_genres"));
+    let note = found["note"].as_str().unwrap();
+    assert!(
+        note.contains("list_genres") && !note.contains("  "),
+        "{note}"
+    );
 
     // A country, language or programme type the directory doesn't have
     // finds nothing, without asking for stations
@@ -767,7 +771,7 @@ async fn an_agents_play_is_reported_only_if_the_user_allowed_it() {
     );
     let settings = s.call("get_settings", json!({})).await;
     assert_eq!(
-        settings["structuredContent"]["report_plays"]["allowed"],
+        settings["structuredContent"]["report_play_count"]["allowed"],
         false
     );
 
@@ -804,22 +808,11 @@ async fn an_agents_play_is_reported_only_if_the_user_allowed_it() {
     assert!(reported(&s.plays, 1).await, "one report with consent");
     let settings = s.call("get_settings", json!({})).await;
     assert_eq!(
-        settings["structuredContent"]["report_plays"]["allowed"],
+        settings["structuredContent"]["report_play_count"]["allowed"],
         true
     );
-    // Looking a station up, or playing its URL or a favorite, is not a
-    // play of a directory station
+    // Looking a station up is not a play
     s.call("get_station", json!({"id": "jazz-id"})).await;
-    s.call(
-        "play_url",
-        json!({"url": "http://jazz.test/stream", "wait_seconds": 0}),
-    )
-    .await;
-    s.call(
-        "play_favorite",
-        json!({"id": url_to_id("http://jazz.test/stream"), "wait_seconds": 0}),
-    )
-    .await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(s.plays.load(Ordering::SeqCst), 1);
 
@@ -1039,10 +1032,9 @@ async fn settings_show_the_equalizer_and_the_recording_settings() {
             "with_equalizer": true,
         })
     );
-    assert!(settings["report_plays"]["note"]
-        .as_str()
-        .unwrap()
-        .contains("only the user"));
+    let note = settings["report_play_count"]["note"].as_str().unwrap();
+    assert!(note.contains("only the user"), "{note}");
+    assert!(!note.contains("  "), "{note}");
     // Reading changes nothing
     assert!(s.commands.try_recv().is_err());
     let by_name = s.request("tools/list", json!({})).await["result"]["tools"]

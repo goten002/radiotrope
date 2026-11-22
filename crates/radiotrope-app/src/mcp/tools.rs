@@ -45,9 +45,14 @@ const MAX_PLAY_WAIT_SECS: f64 = 30.0;
 const DEFAULT_CATEGORY_LIMIT: usize = 50;
 const MAX_CATEGORY_LIMIT: usize = 500;
 /// What a search that found nothing says, so an agent checks its filters
-const NOTHING_FOUND: &str = "No station matches. Filter values must be ones the directory has:                              list_genres, list_countries, list_languages and list_categories                              list them.";
+const NOTHING_FOUND: &str = "No station matches. Filter values must be ones the directory has: \
+                             list_genres, list_countries, list_languages and list_categories \
+                             list them.";
 /// Where the user's consent to report plays is given
-const REPORT_PLAYS_NOTE: &str = "Whether plays of directory stations are counted in the                                  directory. This is the user's consent: only the user can                                  change it, in the window (Stations > Report Plays). No tool                                  can.";
+const REPORT_PLAYS_NOTE: &str = "Whether plays of directory stations are counted in the \
+                                 directory. This is the user's consent: only the user can \
+                                 change it, in the window (Stations > Report Play Count). No \
+                                 tool can.";
 
 /// Everything the tools reach into: the player, through the control layer
 /// the Remote API shares, and what agents alone keep
@@ -685,7 +690,7 @@ pub struct Settings {
     /// What start_recording and scheduled recordings use; changed in the
     /// window (Tools > Recording Settings)
     pub recording: RecordingSettings,
-    pub report_plays: ReportPlays,
+    pub report_play_count: ReportPlays,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -910,7 +915,7 @@ impl RadioTools {
         title = "Play a station",
         description = "Play a station found by search_stations, by its id, and wait until it \
                        plays or fails (wait_seconds, default 10). The play is counted in the \
-                       directory only if the user allowed Report Plays.",
+                       directory only if the user allowed Report Play Count.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1502,9 +1507,9 @@ impl RadioTools {
         title = "Settings",
         description = "Read the player's settings an agent may need: the equalizer (on or \
                        off, preset, the preset names), the recording settings (folder, \
-                       format, bitrate) and whether Report Plays is allowed. Read-only: \
+                       format, bitrate) and whether Report Play Count is allowed. Read-only: \
                        set_equalizer changes the equalizer; the recording settings and \
-                       Report Plays are changed by the user, in the window.",
+                       Report Play Count are changed by the user, in the window.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     async fn get_settings(&self) -> Json<Settings> {
@@ -1524,7 +1529,7 @@ impl RadioTools {
                 bitrate_kbps: setup.bitrate,
                 with_equalizer: setup.with_eq,
             },
-            report_plays: ReportPlays {
+            report_play_count: ReportPlays {
                 allowed: crate::view_options::report_plays(),
                 note: REPORT_PLAYS_NOTE.to_string(),
             },
