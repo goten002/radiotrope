@@ -254,10 +254,25 @@ mod tests {
         port
     }
 
+    /// A client that gives up after 300 ms, for answers that don't come
     fn client() -> reqwest::blocking::Client {
+        client_waiting(std::time::Duration::from_millis(300))
+    }
+
+    /// A client that waits as long as the engine's do for a connection
+    /// (`STREAM_CONNECT_TIMEOUT_SECS`). Windows tries a refused connect
+    /// again for about 2 s before it says so: a shorter wait ends as a
+    /// timeout there, which no client of the engine's has.
+    fn patient_client() -> reqwest::blocking::Client {
+        client_waiting(std::time::Duration::from_secs(
+            radiotrope::config::timeouts::STREAM_CONNECT_TIMEOUT_SECS,
+        ))
+    }
+
+    fn client_waiting(timeout: std::time::Duration) -> reqwest::blocking::Client {
         reqwest::blocking::Client::builder()
             .no_proxy()
-            .timeout(std::time::Duration::from_millis(300))
+            .timeout(timeout)
             .build()
             .unwrap()
     }
@@ -279,30 +294,19 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        // Windows retries a refused connect for about 2 s before it says so,
-        // longer than client()'s timeout
-        let refused = reqwest::blocking::Client::builder()
-            .no_proxy()
-            .timeout(std::time::Duration::from_secs(10))
-            .build()
-            .unwrap()
-            .get(format!("http://127.0.0.1:{port}/"))
-            .send()
-            .unwrap_err();
-        let (code, text) = as_text(refused);
-        assert!(text.starts_with("Can't connect to "), "{text}");
-        assert_eq!(code, ErrorCode::Connect, "{text}");
-        // The same through the probe's own client, whose timeout is shorter
-        // than Windows' retries (there it ends as a timeout)
-        if !cfg!(windows) {
-            let refused = client()
+        let refused = || {
+            patient_client()
                 .get(format!("http://127.0.0.1:{port}/"))
                 .send()
-                .unwrap_err();
-            let (code, _, message) = code_of(RadioError::Network(refused));
-            assert_eq!(code, ErrorCode::Connect);
-            assert_eq!(message, format!("Can't connect to 127.0.0.1:{port}"));
-        }
+                .unwrap_err()
+        };
+        let (code, text) = as_text(refused());
+        assert!(text.starts_with("Can't connect to "), "{text}");
+        assert_eq!(code, ErrorCode::Connect, "{text}");
+        // And as the error itself, on Windows too
+        let (code, _, message) = code_of(RadioError::Network(refused()));
+        assert_eq!(code, ErrorCode::Connect);
+        assert_eq!(message, format!("Can't connect to 127.0.0.1:{port}"));
 
         // No answer in time
         let port = one_shot_server(b"", std::time::Duration::from_secs(2));
