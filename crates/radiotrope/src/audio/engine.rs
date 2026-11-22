@@ -4696,6 +4696,22 @@ mod tests {
         engine.take_output_peak()
     }
 
+    /// How loud the station is once its level has settled: read until two
+    /// readings in a row agree, as a slow machine may still be bringing the
+    /// volume in, or catching up on its output, at the first one
+    fn steady_peak(engine: &AudioEngine) -> f32 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut last = heard_for(engine, 100);
+        loop {
+            let peak = heard_for(engine, 100);
+            let settled = last > 0.0 && (peak - last).abs() <= last * 0.005;
+            if settled || std::time::Instant::now() >= deadline {
+                return peak.max(last);
+            }
+            last = peak;
+        }
+    }
+
     /// A fade to a stop, as the Sleep Timer and a fading scheduled Stop
     /// run it: the volume goes down, the station is stopped, and the
     /// volume goes back to the user's for the next one. Returns how loud
@@ -4709,8 +4725,7 @@ mod tests {
         assert!(full > 0.1, "the station isn't heard: {full}");
 
         engine.set_volume(0.1);
-        thread::sleep(Duration::from_millis(100));
-        let faded = heard_for(engine, 100);
+        let faded = steady_peak(engine);
         assert!(faded > 0.0 && faded < full * 0.05, "not faded: {faded}");
 
         engine.take_output_peak();
@@ -4764,8 +4779,7 @@ mod tests {
         engine.set_volume(0.1);
         engine.play_stream(resolved_stream(EndlessWav::new(), &StreamCancel::new()));
         expect_playing(&engine);
-        thread::sleep(Duration::from_millis(100));
-        let quiet = heard_for(&engine, 100);
+        let quiet = steady_peak(&engine);
         assert!(quiet > 0.0);
 
         // An alarm with a volume of its own takes over from a quiet

@@ -314,7 +314,7 @@ async fn every_tool_has_a_title_and_behaviour_hints() {
     s.legacy_handshake("2025-11-25").await;
     let list = s.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 27);
+    assert_eq!(tools.len(), 26);
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
         assert!(tool["title"].is_string(), "{name} has no title");
@@ -739,19 +739,8 @@ async fn a_station_is_looked_up_by_id_without_playing_it() {
     assert!(text(&r).contains("search_stations"), "{r}");
 }
 
-/// Wait for a report, which nobody waits on
-async fn reported(plays: &AtomicUsize, count: usize) -> bool {
-    for _ in 0..200 {
-        if plays.load(Ordering::SeqCst) == count {
-            return true;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    false
-}
-
 #[tokio::test]
-async fn an_agents_play_is_reported_only_if_the_user_allowed_it() {
+async fn an_agents_play_is_counted_only_if_the_user_allowed_it() {
     let _switch = crate::control::REPORT_PLAYS_TEST.lock().await;
     let mut s = Session::start(Duration::ZERO).await;
     s.legacy_handshake("2025-11-25").await;
@@ -768,6 +757,15 @@ async fn an_agents_play_is_reported_only_if_the_user_allowed_it() {
         s.plays.load(Ordering::SeqCst),
         0,
         "no report without consent"
+    );
+    assert!(
+        crate::app::controller::play_report::play_to_report(
+            "http://jazz.test/stream",
+            crate::view_options::report_plays(),
+            &s.favorites.lock().unwrap(),
+        )
+        .is_none(),
+        "nor once it plays"
     );
     let settings = s.call("get_settings", json!({})).await;
     assert_eq!(
@@ -801,11 +799,12 @@ async fn an_agents_play_is_reported_only_if_the_user_allowed_it() {
     tokio::time::sleep(Duration::from_millis(150)).await;
     assert_eq!(s.plays.load(Ordering::SeqCst), 0);
 
-    // The user allows it in the window: now a play is counted, once
+    // The user allows it in the window. The play is counted by the
+    // controller once the station plays (app::controller::play_report,
+    // whose tests count it once), not by the tool as well
     crate::view_options::set_report_plays(true);
     s.call("play_station", json!({"id": "jazz-id", "wait_seconds": 0}))
         .await;
-    assert!(reported(&s.plays, 1).await, "one report with consent");
     let settings = s.call("get_settings", json!({})).await;
     assert_eq!(
         settings["structuredContent"]["report_play_count"]["allowed"],
@@ -814,69 +813,13 @@ async fn an_agents_play_is_reported_only_if_the_user_allowed_it() {
     // Looking a station up is not a play
     s.call("get_station", json!({"id": "jazz-id"})).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(s.plays.load(Ordering::SeqCst), 1);
-
-    crate::view_options::set_report_plays(false);
-}
-
-#[tokio::test]
-async fn next_and_previous_step_through_the_favorites() {
-    let mut s = Session::start(Duration::ZERO).await;
-    s.legacy_handshake("2025-11-25").await;
-    for name in ["News 24", "Rock FM"] {
-        let url = format!("http://{}.test/stream", name.replace(' ', "-"));
-        s.favorites
-            .lock()
-            .unwrap()
-            .add(Favorite::new(name, url))
-            .unwrap();
-    }
-    let played = |s: &Session| match s.commands.try_recv() {
-        Ok(AppCommand::Play { name, .. }) => name.unwrap_or_default(),
-        _ => panic!("no Play"),
-    };
-
-    // Nothing playing: the first favorite
-    s.call(
-        "step_favorite",
-        json!({"direction": "next", "wait_seconds": 0}),
-    )
-    .await;
-    assert_eq!(played(&s), "Jazz FM");
-    s.state.lock().unwrap().station_url = Some("http://jazz.test/stream".into());
-    let r = s
-        .call(
-            "step_favorite",
-            json!({"direction": "next", "wait_seconds": 0}),
-        )
-        .await;
-    assert!(text(&r).contains("News 24"), "{r}");
-    assert_eq!(played(&s), "News 24");
-    // Round the start to the last
-    s.call(
-        "step_favorite",
-        json!({"direction": "previous", "wait_seconds": 0}),
-    )
-    .await;
-    assert_eq!(played(&s), "Rock FM");
-    let status = s.call("get_status", json!({})).await;
     assert_eq!(
-        status["structuredContent"]["last_agent_change"]["action"],
-        "play Rock FM"
+        s.plays.load(Ordering::SeqCst),
+        0,
+        "the controller counts it"
     );
 
-    let r = s.call("step_favorite", json!({"direction": "up"})).await;
-    assert_eq!(r["isError"], true, "{r}");
-    {
-        let mut favs = s.favorites.lock().unwrap();
-        let ids: Vec<String> = favs.all().iter().map(|f| f.id()).collect();
-        for id in ids {
-            favs.remove(&id).unwrap();
-        }
-    }
-    let r = s.call("step_favorite", json!({"direction": "next"})).await;
-    assert_eq!(r["isError"], true, "{r}");
-    assert_eq!(text(&r), "There are no favorites");
+    crate::view_options::set_report_plays(false);
 }
 
 #[tokio::test]

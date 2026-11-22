@@ -225,25 +225,6 @@ pub struct ListFavoritesArgs {
     pub query: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Direction {
-    Next,
-    #[serde(alias = "prev")]
-    Previous,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct StepFavoriteArgs {
-    /// next or previous
-    pub direction: Direction,
-    /// Seconds to wait for the station to start playing (0-30, default 10;
-    /// 0 returns at once)
-    #[serde(default, deserialize_with = "lenient_optional_number")]
-    #[schemars(schema_with = "wait_schema")]
-    pub wait_seconds: Option<f64>,
-}
-
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ReorderFavoritesArgs {
     /// Favorite ids (from list_favorites) in the order wanted. Favorites
@@ -1384,40 +1365,6 @@ impl RadioTools {
         let removed = self.control.remove_favorite(id).await.map_err(agent_text)?;
         self.note_change(&ctx, format!("remove favorite {}", removed.name()));
         Ok(format!("Removed \"{}\" from favorites", removed.name()))
-    }
-
-    #[tool(
-        title = "Next or previous favorite",
-        description = "Play the favorite after or before the one playing, in the user's \
-                       order and going round at the ends (the window's Next and Previous); \
-                       the first favorite when none is playing. Waits until it plays or \
-                       fails (wait_seconds, default 10).",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            open_world_hint = true
-        )
-    )]
-    async fn step_favorite(
-        &self,
-        Parameters(args): Parameters<StepFavoriteArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<String, String> {
-        let forward = matches!(args.direction, Direction::Next);
-        let (url, name, logo, country) = self
-            .control
-            .favorite_step(forward)
-            .await
-            .map_err(agent_text)?;
-        self.play(
-            &ctx,
-            url,
-            Some(name),
-            logo,
-            country,
-            play_wait(args.wait_seconds),
-        )
-        .await
     }
 
     #[tool(

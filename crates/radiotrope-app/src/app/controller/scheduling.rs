@@ -385,7 +385,7 @@ impl AppController {
             (previous, same)
         };
         if !same_station {
-            self.start_stream(
+            self.start_new(
                 &station.url,
                 Some(station.name.clone()).filter(|n| !n.is_empty()),
                 station.logo_url.clone(),
@@ -1154,6 +1154,49 @@ mod tests {
         assert_eq!(state.lock().unwrap().play_seq, first + 1);
     }
 
+    // Report Play Count: a scheduled start is counted once when it plays,
+    // and its retries aren't counted again
+    #[test]
+    fn a_scheduled_start_is_reported_once() {
+        let (controller, state) = controller();
+        let reports = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut controller = controller.with_play_reporter({
+            let reports = reports.clone();
+            Arc::new(move |url: &str| reports.lock().unwrap().push(url.to_string()))
+        });
+        let codec = || radiotrope::audio::CodecInfo {
+            codec_name: "MP3".into(),
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: None,
+            bitrate: None,
+        };
+        let plays = |controller: &mut AppController| {
+            state.lock().unwrap().is_resolving = false;
+            controller.handle_engine_event(radiotrope::audio::EngineEvent {
+                stream: None,
+                event: AudioEvent::Playing(codec()),
+            });
+        };
+        let (_, at) = save(&mut controller, entry(Action::Play));
+        controller.run_schedule(at);
+        // It failed, and is tried again
+        {
+            let mut s = state.lock().unwrap();
+            s.is_resolving = false;
+            s.playback = PlaybackState::Stopped;
+        }
+        controller.run_schedule(at + TimeDelta::seconds(1));
+        controller.active.as_mut().unwrap().retry_at = Some(Instant::now());
+        controller.run_schedule(at + TimeDelta::seconds(2));
+        assert!(reports.lock().unwrap().is_empty(), "not before it plays");
+        plays(&mut controller);
+        assert_eq!(*reports.lock().unwrap(), [DEAD_URL]);
+        // It drops out and plays again: the same play
+        plays(&mut controller);
+        assert_eq!(reports.lock().unwrap().len(), 1);
+    }
+
     #[test]
     fn a_bedtime_stop_stops_any_station() {
         let (mut controller, state) = controller();
@@ -1291,6 +1334,22 @@ mod tests {
         engine.take_output_peak()
     }
 
+    /// How loud the output is once its volume has settled: read until two
+    /// readings in a row agree, as a busy machine may still be ramping the
+    /// volume, or catching up on its output, at the first one
+    fn steady(controller: &AppController) -> f32 {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut last = loudest(controller, 100);
+        loop {
+            let peak = loudest(controller, 100);
+            let settled = last > 0.0 && (peak - last).abs() <= last * 0.005;
+            if settled || Instant::now() >= deadline {
+                return peak.max(last);
+            }
+            last = peak;
+        }
+    }
+
     /// The fade to `stop_at` that `controller` runs ends there with no
     /// sample louder than the fade had got, and the next station plays at
     /// the user's volume
@@ -1307,8 +1366,7 @@ mod tests {
         let volume = controller.engine_volume.unwrap();
         assert!((volume - 0.08).abs() < 0.005, "{volume}");
         assert!((state.lock().unwrap().fade_gain - 0.1).abs() < 0.01);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let faded = loudest(&controller, 100);
+        let faded = steady(&controller);
         assert!(faded > 0.0 && faded < full * 0.05, "not faded: {faded}");
 
         // The end: stopped, and the volume put back in the same step

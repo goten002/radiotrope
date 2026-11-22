@@ -1291,11 +1291,12 @@ export component MenuBar inherits Rectangle {
                 }
             }
             MenuSeparator {}
-            // A play of a station from the directory (Search Stations)
-            // tells the directory its id, for its "most played" lists
+            // A play of a station from the directory (Search Stations or a
+            // favorite saved from it) tells the directory its id, for its
+            // "most played" lists
             CheckMenuItem {
                 slot: 4;
-                label: "Report Plays";
+                label: "Report Play Count";
                 icon: @image-url("icons/chart-column.svg");
                 description: "Tells the station directory which station you play, to rank popular stations.";
                 checked: ViewOptions.report-plays;

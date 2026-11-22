@@ -1,4 +1,4 @@
-//! View > Zoom and Stations > Report Plays
+//! View > Zoom and Stations > Report Play Count
 //!
 //! The zoom is the window's scale: Slint takes one for the whole run, so
 //! it is set before the window is made and a new choice applies at the
@@ -19,7 +19,7 @@ const SCALE_VAR: &str = "SLINT_SCALE_FACTOR";
 static ZOOM_IN_USE: AtomicU32 = AtomicU32::new(100);
 
 /// Plays of directory stations are reported (the menu's switch): off until
-/// the user says yes in the Report Plays dialog
+/// the user says yes in the Report Play Count dialog
 static REPORT_PLAYS: AtomicBool = AtomicBool::new(false);
 
 /// How often the display's own scale is looked at (see [`watch_display_scale`])
@@ -135,7 +135,7 @@ pub(crate) fn zoom_choice(ui: &App) -> u32 {
     nearest_zoom(ui.global::<ViewOptions>().get_zoom().max(0) as u32)
 }
 
-/// The menu's Report Plays switch
+/// The menu's Report Play Count switch
 pub(crate) fn report_plays_choice(ui: &App) -> bool {
     ui.global::<ViewOptions>().get_report_plays()
 }

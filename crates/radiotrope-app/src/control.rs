@@ -263,23 +263,12 @@ impl Control {
             .await
     }
 
-    /// A station by its directory id, looked up off the async thread. The
-    /// play is counted in the directory, as the GUI does (not with
-    /// Stations > Report Plays off); nobody waits on it.
+    /// A station by its directory id, looked up off the async thread, to
+    /// play it: its play is counted once it plays, with Stations > Report
+    /// Play Count allowed (see `play_report`)
     pub async fn station_to_play(&self, id: String) -> Result<Station, Error> {
         let station = self.station(id).await?;
-        if !crate::view_options::report_plays() {
-            return Ok(station);
-        }
-        let control = self.clone();
-        let clicked = station.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(providers) = control.providers() {
-                if let Some(p) = providers.get(&clicked.provider) {
-                    let _ = p.report_click(&clicked);
-                }
-            }
-        });
+        crate::app::controller::play_report::picked_from_directory(&station);
         Ok(station)
     }
 
@@ -298,34 +287,6 @@ impl Control {
     ) -> Result<(String, String, Option<String>, Option<String>), Error> {
         self.with_favorites(move |_, favorites| {
             let fav = favorites.get(&id).ok_or(Error::NoFavorite(id))?;
-            Ok((
-                fav.url().to_string(),
-                fav.name().to_string(),
-                fav.station.logo_url.clone(),
-                fav.station.country.clone(),
-            ))
-        })
-        .await?
-    }
-
-    /// The favorite after (or before) the one playing, in the user's
-    /// order and going round at the ends, as Next and Previous in the
-    /// window; the first one when no favorite is playing. Its URL, name,
-    /// logo and country, to play it.
-    pub async fn favorite_step(
-        &self,
-        forward: bool,
-    ) -> Result<(String, String, Option<String>, Option<String>), Error> {
-        let playing = self.snapshot().station_url;
-        self.with_favorites(move |_, favorites| {
-            let list = favorites.sorted(FavoriteSort::Manual);
-            let index = crate::shortcuts::favorite_step(
-                list.iter().map(|f| f.url()),
-                playing.as_deref(),
-                forward,
-            )
-            .ok_or_else(|| Error::Failed("There are no favorites".into()))?;
-            let fav = list[index];
             Ok((
                 fav.url().to_string(),
                 fav.name().to_string(),
@@ -1267,71 +1228,16 @@ mod tests {
         (control, plays, dir)
     }
 
-    /// Wait for the report, which nobody waits on
-    async fn reported(plays: &AtomicUsize, count: usize) -> bool {
-        for _ in 0..200 {
-            if plays.load(Ordering::SeqCst) == count {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        false
-    }
-
+    // The play is counted by the controller once the station plays
+    // (`play_report`), not here as well: Search Stations, a phone or an
+    // agent count it once
     #[tokio::test]
-    async fn a_play_is_not_reported_with_report_plays_off() {
-        let _switch = REPORT_PLAYS_TEST.lock().await;
+    async fn looking_up_a_station_to_play_does_not_count_it() {
         let (control, plays, dir) = control("report");
-
-        crate::view_options::set_report_plays(false);
         let station = control.station_to_play("jazz".into()).await.unwrap();
         assert_eq!(station.name, "Jazz FM", "the station still plays");
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(plays.load(Ordering::SeqCst), 0, "no report when off");
-
-        crate::view_options::set_report_plays(true);
-        control.station_to_play("jazz".into()).await.unwrap();
-        assert!(reported(&plays, 1).await, "one report when on");
-        crate::view_options::set_report_plays(false);
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[tokio::test]
-    async fn next_and_previous_go_round_the_favorites_in_the_users_order() {
-        let (control, _, dir) = control("step");
-        // None yet
-        assert!(matches!(
-            control.favorite_step(true).await,
-            Err(Error::Failed(text)) if text == "There are no favorites"
-        ));
-        for name in ["a", "b", "c"] {
-            let station = Station::new(name, format!("http://{name}.test/stream"))
-                .with_logo(format!("http://{name}.test/logo.png"));
-            control
-                .add_favorite(Favorite::from_station(station))
-                .await
-                .unwrap();
-        }
-        let step = |forward| {
-            let control = control.clone();
-            async move { control.favorite_step(forward).await.unwrap().1 }
-        };
-        // Nothing playing, or a station that isn't a favorite: the first
-        assert_eq!(step(true).await, "a");
-        assert_eq!(step(false).await, "a");
-        let playing = |name: &str| {
-            control.state.lock().unwrap().station_url = Some(format!("http://{name}.test/stream"));
-        };
-        playing("elsewhere");
-        assert_eq!(step(true).await, "a");
-        playing("a");
-        assert_eq!(step(true).await, "b");
-        assert_eq!(step(false).await, "c", "round the start");
-        playing("c");
-        assert_eq!(step(true).await, "a", "round the end");
-        // The logo goes with it, for the header
-        let (_, _, logo, _) = control.favorite_step(false).await.unwrap();
-        assert_eq!(logo.as_deref(), Some("http://b.test/logo.png"));
+        assert_eq!(plays.load(Ordering::SeqCst), 0, "counted when it plays");
         let _ = std::fs::remove_dir_all(dir);
     }
 

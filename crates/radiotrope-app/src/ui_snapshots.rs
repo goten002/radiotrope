@@ -963,7 +963,7 @@ const SHOTS: &[Shot] = &[
         "report-plays",
         "report-plays",
         "",
-        "Report Plays? asked when Stations > Report Plays is switched on, in plain words.",
+        "Report Play Count? asked when Stations > Report Play Count is switched on, in plain words.",
     ),
 ];
 
