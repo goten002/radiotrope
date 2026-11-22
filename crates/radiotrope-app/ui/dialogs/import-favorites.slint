@@ -44,8 +44,11 @@ export component ImportFavoritesDialog inherits Rectangle {
     in-out property <string> message;
     in-out property <string> message-detail;
     in-out property <bool> message-error;
+    // The import just done can be taken back: the result offers Undo
+    in-out property <bool> can-undo;
     callback add-missing();
     callback replace();
+    callback undo();
 
     // Replace was pressed once: the next press replaces. Replacing drops
     // favorites, so it always takes a second, deliberate press.
@@ -53,7 +56,9 @@ export component ImportFavoritesDialog inherits Rectangle {
     changed show-dialog => { root.confirm-replace = false; }
     changed message => { root.confirm-replace = false; }
 
-    if show-dialog: DialogShell {
+    // The buttons pressed go away as the result shows, so the dialog takes
+    // the focus back and Esc still closes it
+    if show-dialog: shell := DialogShell {
         title: root.title;
         subtitle: root.message == "" ? root.subtitle : "";
         card-width: Defaults.import-favorites-width;
@@ -67,11 +72,15 @@ export component ImportFavoritesDialog inherits Rectangle {
             if root.confirm-replace {
                 root.confirm-replace = false;
                 root.replace();
+                self.take-focus();
             } else {
                 root.confirm-replace = true;
             }
         }
-        primary-requested => { root.add-missing(); }
+        primary-requested => {
+            root.add-missing();
+            self.take-focus();
+        }
         close-requested => { root.show-dialog = false; }
 
         if root.message == "": VerticalLayout {
@@ -90,11 +99,15 @@ export component ImportFavoritesDialog inherits Rectangle {
         }
 
         if root.message != "": StatusPanel {
-            icon: root.message-error ? @image-url("../icons/circle-exclamation.svg")
-                : @image-url("../icons/tick.svg");
+            // The variant picks the alert or check circle
             variant: root.message-error ? ChipVariant.danger : ChipVariant.success;
             title: root.message;
             message: root.message-detail;
+            action-label: root.can-undo && !root.message-error ? "Undo Import" : "";
+            action => {
+                root.undo();
+                shell.take-focus();
+            }
         }
     }
 }
