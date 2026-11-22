@@ -781,6 +781,11 @@ export component Favorites inherits Rectangle {
     // containing the text. The rows on screen are `shown`; `favorites`
     // stays the whole list.
     out property <bool> find-open;
+    // The window's resize band along the right edge (our title bar, not
+    // maximized): the scroll bar keeps clear of it, so both can be grabbed
+    in property <length> edge-band;
+    // Right of the rows: the scroll bar, and the band
+    property <length> scroll-gutter: 14px + root.edge-band;
     in-out property <string> find-text;
     property <bool> finding: root.find-text != "";
     property <[FavoriteStation]> shown: root.finding
@@ -1110,7 +1115,7 @@ export component Favorites inherits Rectangle {
         find-field := StyledLineEdit {
             x: RowMetrics.list-padding;
             y: Theme.space-8;
-            width: parent.width - RowMetrics.list-padding - 14px;
+            width: parent.width - RowMetrics.list-padding - root.scroll-gutter;
             label: "Find in favorites";
             placeholder-text: "Find in favorites";
             clearable: true;
@@ -1209,7 +1214,7 @@ export component Favorites inherits Rectangle {
 
             fav-layout := VerticalLayout {
                 padding: RowMetrics.list-padding;
-                padding-right: 14px;
+                padding-right: root.scroll-gutter;
                 spacing: RowMetrics.row-spacing;
 
                 for station[idx] in root.shown: Rectangle {
@@ -1342,7 +1347,7 @@ export component Favorites inherits Rectangle {
             cursor := KeyListCursor {
                 x: RowMetrics.list-padding;
                 y: RowMetrics.list-padding + max(0, root.highlight-index) * RowMetrics.row-stride;
-                width: fav-layout.width - RowMetrics.list-padding - 14px;
+                width: fav-layout.width - RowMetrics.list-padding - root.scroll-gutter;
                 height: RowMetrics.row-height;
                 enabled: root.enabled && root.shown.length > 0 && root.drag-from-index < 0;
                 count: root.shown.length;
@@ -1381,8 +1386,10 @@ export component Favorites inherits Rectangle {
             }
         }
 
+        // Drawn just inside the band, with a wider zone to grab it by
         ScrollBar {
-            x: parent.width - self.width - 2px;
+            width: 16px;
+            x: parent.width - root.edge-band - self.width - 2px;
             y: 4px;
             height: parent.height - 8px;
             viewport-height: fav-flickable.height;
