@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use slint::ComponentHandle;
 
-use radiotrope_app::data::settings::{nearest_zoom, Settings, ZOOM_CHOICES};
+use radiotrope_app::data::settings::{nearest_zoom, Settings};
 
 use crate::{App, ViewOptions};
 
@@ -81,15 +81,17 @@ pub(crate) fn size_at_zoom(size: (u32, u32), chosen: u32) -> (u32, u32) {
 
 /// What a screen keeps besides the window, in its logical pixels: a
 /// panel or taskbar, and the system's title bar
+#[cfg(any(feature = "desktop", test))]
 const SCREEN_RESERVE: (f32, f32) = (16.0, 64.0);
 
 /// The largest zoom whose smallest window, `min` at 100%, fits a screen
 /// of `screen` logical pixels (at the display's own scale) with room for
 /// [`SCREEN_RESERVE`]. 100% and less always count as fitting: that window
 /// is the one the app has anyway.
+#[cfg(any(feature = "desktop", test))]
 fn zoom_that_fits(screen: (f32, f32), min: (f32, f32)) -> u32 {
     let room = (screen.0 - SCREEN_RESERVE.0, screen.1 - SCREEN_RESERVE.1);
-    ZOOM_CHOICES
+    radiotrope_app::data::settings::ZOOM_CHOICES
         .into_iter()
         .filter(|&percent| {
             let zoom = percent as f32 / 100.0;
