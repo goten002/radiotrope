@@ -583,6 +583,8 @@ component MenuPane inherits Rectangle {
     // Which menu this is (its place in `title-x`), or -1 for a menu that
     // is not in the bar (the window menu)
     in property <int> index: -1;
+    // The menu's name, for screen readers: its rows are read as a group
+    in property <string> label;
     // Where the titles are in the bar; empty for a menu not in the bar
     in property <[length]> title-x;
     in property <[length]> title-width;
@@ -633,6 +635,8 @@ component MenuPane inherits Rectangle {
         y: root.strip-height;
         width: rows.preferred-width;
         height: rows.preferred-height;
+        accessible-role: groupbox;
+        accessible-label: root.label;
 
         // A click between the rows (a line, a note) does nothing
         TouchArea { }
@@ -1085,6 +1089,7 @@ export component MenuBar inherits Rectangle {
 
         open-pane := MenuPane {
             index: 0;
+            label: "Open";
             title-x: root.title-x;
             title-width: root.title-width;
             usable: root.open-usable;
@@ -1157,6 +1162,7 @@ export component MenuBar inherits Rectangle {
 
         stations-pane := MenuPane {
             index: 1;
+            label: "Stations";
             title-x: root.title-x;
             title-width: root.title-width;
             usable: root.stations-usable;
@@ -1207,6 +1213,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         window-pane := MenuPane {
+            label: "Window";
             usable: root.window-usable;
             close => { window-popup.close(); }
 
@@ -1259,6 +1266,7 @@ export component MenuBar inherits Rectangle {
 
         view-pane := MenuPane {
             index: 2;
+            label: "View";
             title-x: root.title-x;
             title-width: root.title-width;
             usable: root.view-usable;
@@ -1458,6 +1466,7 @@ export component MenuBar inherits Rectangle {
 
         help-pane := MenuPane {
             index: 4;
+            label: "Help";
             title-x: root.title-x;
             title-width: root.title-width;
             usable: root.help-usable;
@@ -1496,6 +1505,7 @@ export component MenuBar inherits Rectangle {
 
         tools-pane := MenuPane {
             index: 3;
+            label: "Tools";
             title-x: root.title-x;
             title-width: root.title-width;
             usable: root.tools-usable;
