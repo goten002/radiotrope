@@ -114,3 +114,11 @@ jobs:
             sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
             exit 1
           fi
+      - name: Diagnose paced WAV on Windows
+        if: always()
+        shell: bash
+        run: |
+          for i in {1..5}; do
+            cargo test -p radiotrope a_full_event_queue_doesnt_stop_the_audio -- --nocapture || true
+          done
+          RADIOTROPE_PACED_16MS=1 cargo test -p radiotrope a_full_event_queue_doesnt_stop_the_audio -- --nocapture

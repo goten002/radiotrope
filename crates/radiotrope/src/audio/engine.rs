@@ -4939,7 +4939,12 @@ mod tests {
 
     impl<R: std::io::Read> std::io::Read for Paced<R> {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            thread::sleep(Duration::from_millis(10));
+            let ms = if std::env::var_os("RADIOTROPE_PACED_16MS").is_some() {
+                16
+            } else {
+                10
+            };
+            thread::sleep(Duration::from_millis(ms));
             let n = buf.len().min(self.bytes_per_sec / 100);
             self.inner.read(&mut buf[..n])
         }
@@ -4974,8 +4979,18 @@ mod tests {
         let samples = || engine.analysis().lock().unwrap().sample_count;
         thread::sleep(Duration::from_secs(2));
         let before = samples();
+        eprintln!(
+            "before={before} queued={} stats={:?}",
+            engine.event_receiver().len(),
+            engine.shared_stats().lock().unwrap()
+        );
         thread::sleep(Duration::from_secs(2));
         let after = samples();
+        eprintln!(
+            "after={after} queued={} stats={:?}",
+            engine.event_receiver().len(),
+            engine.shared_stats().lock().unwrap()
+        );
 
         // Let the engine finish sending, so it can shut down
         let events = engine.event_receiver().clone();
