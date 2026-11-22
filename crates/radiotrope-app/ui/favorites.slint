@@ -1212,6 +1212,8 @@ export component Favorites inherits Rectangle {
                             if self.menu-requested {
                                 root.menu-url = "";
                                 self.open-menu(58px, self.height - 8px);
+                                // Opened with a key: the first row is the keys'
+                                self.menu-active = 0;
                             }
                         }
                         pointer-moved(x, y) => {

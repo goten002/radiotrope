@@ -261,6 +261,14 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 };
                 fav = fav.with_metadata(country_opt, None, HashSet::new());
                 let _ = f.add(fav);
+                // Starred again by hand: its Undo has nothing left to do
+                let was_removed = REMOVED.with_borrow(|removed| {
+                    removed.as_ref().is_some_and(|r| r.favorite.url() == url)
+                });
+                if was_removed {
+                    REMOVED.set(None);
+                    ui.set_favorite_undo(0);
+                }
             }
             let is_fav = f.is_favorite(&url);
             drop(f);
@@ -755,7 +763,7 @@ mod tests {
         let mut favorites = FavoritesManager::new();
         for name in ["Jazz", "News", "Rock", "Talk"] {
             favorites
-                .add(Favorite::new(name, &format!("http://{name}.test")))
+                .add(Favorite::new(name, format!("http://{name}.test")))
                 .unwrap();
         }
         favorites
@@ -863,6 +871,28 @@ mod tests {
         row.listen_time = "5 min".into();
         rows.set_row_data(1, row);
         assert_eq!(found.row_data(0).unwrap().listen_time, "5 min");
+    }
+
+    /// A folder of this test's own
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "radiotrope-favorites-ui-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn saved_names(path: &Path) -> Vec<String> {
+        let mut names: Vec<String> = FavoritesManager::load_from(path)
+            .unwrap()
+            .sorted(FavoriteSort::Manual)
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]

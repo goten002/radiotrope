@@ -1695,3 +1695,7 @@ mod menu_keys_tests;
 #[cfg(test)]
 #[path = "key_lists_test.rs"]
 mod key_list_tests;
+
+#[cfg(test)]
+#[path = "favorites_keys_test.rs"]
+mod favorites_keys_tests;

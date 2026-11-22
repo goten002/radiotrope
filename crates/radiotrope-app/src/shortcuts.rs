@@ -823,11 +823,7 @@ mod tests {
             Unhandled
         );
         assert_eq!(
-            match_key(
-                &char::from(Key::Home).to_string(),
-                alt(),
-                false
-            ),
+            match_key(&char::from(Key::Home).to_string(), alt(), false),
             Unhandled
         );
     }
