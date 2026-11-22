@@ -148,12 +148,12 @@ mod tests {
         assert!(play_to_report(url, false, &favorites).is_none());
     }
 
+    /// The URLs reported, in order
+    type Reports = Arc<Mutex<Vec<String>>>;
+    type State = Arc<Mutex<crate::app::state::AppSnapshot>>;
+
     /// A controller with no engine, its reports noted
-    fn controller() -> (
-        super::super::AppController,
-        Arc<Mutex<crate::app::state::AppSnapshot>>,
-        Arc<Mutex<Vec<String>>>,
-    ) {
+    fn controller() -> (super::super::AppController, State, Reports) {
         let (cmd_tx, cmd_rx) = crossbeam_channel::unbounded();
         let (analysis_tx, _) = crossbeam_channel::unbounded();
         let (stats_tx, _) = crossbeam_channel::unbounded();
