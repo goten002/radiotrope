@@ -15,7 +15,7 @@ export component EditFavoriteDialog inherits Rectangle {
     // when the URL is edited
     property <string> error;
     // Remove was clicked once: the next click removes
-    property <bool> confirm-remove: false;
+    in-out property <bool> confirm-remove: false;
     property <bool> can-save: root.edit-name != "" && root.edit-url != "";
 
     // Saves the changes; returns why it couldn't (e.g. another favorite

@@ -497,6 +497,27 @@ export component MenuBar inherits Rectangle {
     // (x, y, pressed) -> whether the system shows its menu (on press or on
     // the release that follows)
     callback show-system-menu(length, length, bool) -> bool;
+    public function open-menu(menu: string, group: string) {
+        if menu == "open" { open-menu.clicked(); }
+        if menu == "stations" { stations-menu.clicked(); }
+        if menu == "view" {
+            root.snapshot-menu-group = group;
+            view-menu.clicked();
+        }
+        if menu == "tools" {
+            root.snapshot-menu-group = group;
+            tools-menu.clicked();
+        }
+        if menu == "help" { help-menu.clicked(); }
+        if menu == "window" {
+            root.window-menu-x = move-area.x + 2px;
+            root.window-menu-y = 29px;
+            window-popup.show();
+        }
+    }
+
+    in property <string> snapshot-bubble;
+    property <string> snapshot-menu-group;
     property <length> window-menu-x;
     // Where the first menu starts (the bar's left padding)
     property <length> menu-start: 4px;
@@ -585,6 +606,7 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.listeners.length;
+                snapshot-bubble: root.snapshot-bubble == "listeners";
                 icon: @image-url("icons/headphones.svg");
                 show-bubble(right, top) => {
                     root.listeners-bubble-right = right;
@@ -600,6 +622,7 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.agent-count;
+                snapshot-bubble: root.snapshot-bubble == "agents";
                 show-bubble(right, top) => {
                     root.agents-bubble-right = right;
                     root.agents-bubble-top = top;
@@ -845,7 +868,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         // The open group: "", "window" or "tray"; one at a time
-        property <string> group;
+        property <string> group: root.snapshot-menu-group;
 
         PopupCard {
             view-popup-layout := VerticalLayout {
@@ -1015,7 +1038,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         // The open group: "", "recordings" or "connections"; one at a time
-        property <string> group;
+        property <string> group: root.snapshot-menu-group;
 
         PopupCard {
             tools-popup-layout := VerticalLayout {

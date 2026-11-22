@@ -175,6 +175,7 @@ component DayChoice inherits PickerOption {
 // change one
 export component ScheduleDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    in property <string> snapshot-overlay;
     // The height the list can take in this window
     property <length> list-room: max(80px, root.height - Defaults.schedule-list-chrome);
     in property <[ScheduleRow]> rows;
@@ -211,7 +212,7 @@ export component ScheduleDialog inherits Rectangle {
     property <int> date;
     property <[bool]> days: [false, false, false, false, false, false, false];
     property <string> error;
-    property <int> confirm-remove: 0;
+    in-out property <int> confirm-remove: 0;
     property <[string]> day-labels: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
     property <[string]> day-names: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
@@ -222,7 +223,7 @@ export component ScheduleDialog inherits Rectangle {
         root.show-dialog = true;
     }
 
-    function start-edit(id: int) {
+    public function start-edit(id: int) {
         let draft = root.draft(id);
         root.edit-id = draft.id;
         root.action = draft.action;
@@ -388,6 +389,7 @@ export component ScheduleDialog inherits Rectangle {
                 horizontal-stretch: 1;
                 Dropdown {
                     height: 36px;
+                    show-popup: root.snapshot-overlay == "station";
                     items: root.stations.length > 0 ? root.stations : ["No favorites yet"];
                     selected <=> root.station;
                     enabled: root.action != "stop" && root.stations.length > 0;
@@ -480,6 +482,7 @@ export component ScheduleDialog inherits Rectangle {
                 if root.repeat == "once": Dropdown {
                     height: 36px;
                     horizontal-stretch: 1;
+                    show-popup: root.snapshot-overlay == "date";
                     items: root.dates;
                     selected <=> root.date;
                     changed => { root.error = ""; }
@@ -519,6 +522,7 @@ export component ScheduleDialog inherits Rectangle {
                 width: 150px;
                 Dropdown {
                     height: 36px;
+                    show-popup: root.snapshot-overlay == "volume";
                     items: ["Keep current", "Silent", "10%", "20%", "30%", "40%", "50%",
                         "60%", "70%", "80%", "90%", "100%"];
                     selected <=> root.volume;
@@ -552,6 +556,7 @@ export component ScheduleDialog inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         InfoTip {
+                            open: root.snapshot-overlay == "fallback-info";
                             text: "If the station hasn't started 30 seconds after the start time, for example because it is down or there's no internet, the Scheduler switches to alarm mode and beeps until you press Stop.";
                         }
                     }

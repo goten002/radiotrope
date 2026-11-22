@@ -145,8 +145,8 @@ component FavoriteRow inherits Rectangle {
     // clicked once already
     property <length> menu-x;
     property <length> menu-y;
-    property <bool> confirm-remove: false;
-    property <bool> confirm-reset: false;
+    in-out property <bool> confirm-remove: false;
+    in-out property <bool> confirm-reset: false;
     // The menu opened from a hold, so letting go must not also play
     property <bool> menu-held: false;
     // The pointer has rested on the stats long enough to explain them
@@ -691,6 +691,11 @@ component FavoriteRow inherits Rectangle {
 }
 
 export component Favorites inherits Rectangle {
+    // The empty list's intrinsic size otherwise collapses the headless layout.
+    in-out property <length> snapshot-empty-height;
+    min-height: root.snapshot-empty-height;
+    max-height: max(fav-layout.max-height, root.snapshot-empty-height);
+
     in-out property <[FavoriteStation]> favorites;
     in-out property <[image]> favorite-logos;
     in property <string> current-station-url;
@@ -703,7 +708,7 @@ export component Favorites inherits Rectangle {
     in property <bool> touch-scroll: false;
     in property <bool> show-stats: true;
     // The favorite whose stats bubble a tap opened (touch screens), or ""
-    property <string> pinned-stats-id;
+    in-out property <string> pinned-stats-id;
 
     callback favorite-clicked(FavoriteStation);
     callback favorite-edit-requested(FavoriteStation);
@@ -718,6 +723,7 @@ export component Favorites inherits Rectangle {
     property <int> highlight-index: root.highlight-url == "" ? -1
         : root.locate-favorite(root.favorites, root.highlight-url, "", ShortcutAction.unhandled, 0);
     out property <bool> has-highlight: root.highlight-index >= 0;
+    in property <string> snapshot-menu;
     property <string> menu-url;
     property <length> last-pointer-x: -1px;
     property <length> last-pointer-y: -1px;
@@ -885,6 +891,14 @@ export component Favorites inherits Rectangle {
                     z: root.drag-from-index == idx ? 1 : 0;
 
                     FavoriteRow {
+                        property <string> snapshot-menu: idx == 0 ? root.snapshot-menu : "";
+                        changed snapshot-menu => {
+                            if self.snapshot-menu != "" {
+                                self.open-menu(58px, self.height - 8px);
+                                self.confirm-reset = self.snapshot-menu == "reset";
+                                self.confirm-remove = self.snapshot-menu == "remove";
+                            }
+                        }
                         property <bool> menu-requested: root.menu-url != "" && root.menu-url == station.url;
                         changed menu-requested => {
                             if self.menu-requested {
