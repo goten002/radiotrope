@@ -46,4 +46,8 @@ reqwest = { workspace = true, features = ["system-proxy"] }
 [dev-dependencies]
 mpeg2ts = { workspace = true }
 proptest = { workspace = true }
+
+# The AAC+ tests encode their samples with FDK. Not on Windows ARM64: FDK's
+# header doesn't know MSVC's ARM64 macro and stops the build there.
+[target.'cfg(not(all(windows, target_arch = "aarch64")))'.dev-dependencies]
 fdk-aac = { workspace = true }

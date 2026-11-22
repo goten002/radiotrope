@@ -1,0 +1,8 @@
+# Template for winget-pkgs: manifests/r/Radiotrope/Radiotrope/@VERSION@/
+# Filled in by render.ps1; see ../README.md ("WinGet")
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.9.0.schema.json
+PackageIdentifier: Radiotrope.Radiotrope
+PackageVersion: "@VERSION@"
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.9.0

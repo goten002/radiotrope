@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 
 ### Added
 - `make install` for Linux (with `PREFIX` and `DESTDIR`): the programs, the launcher, icons up to 512 px, an AppStream entry for software centres, man pages, and bash, zsh and fish completions.
+- Windows downloads: a portable zip for x64 and for ARM64, and one installer for both (per-user by default, optional all-users, Start Menu entry, optional desktop icon, an uninstaller that offers to delete your data), listed in WinGet as `Radiotrope.Radiotrope`. Updates come through `winget upgrade`; the app never checks for updates itself.
+- Windows portable mode: an empty file named `portable` next to `radiotrope.exe` keeps all settings, favorites, cache and the log in a `data` folder beside it.
+- `radiotrope --quit` closes the running player, including one in the tray, and waits for it to exit. The installer uses it before an update.
 - Windows: `radiotrope-cli.exe` and `radiotrope-probe.exe` get the icon and version details too, and all three name "Radiotrope" as the publisher.
 - Desktop keyboard shortcuts for playback, volume, favorites, recording, search, opening a stream, and closing the window. Help > Keyboard Shortcuts (F1) lists the bindings, and menus show hints next to the corresponding commands.
 - The terminal player can search the station directory and add or remove favorites shared with the Radiotrope app.

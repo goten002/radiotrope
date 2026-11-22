@@ -279,7 +279,13 @@ mod tests {
             .local_addr()
             .unwrap()
             .port();
-        let refused = client()
+        // Windows retries a refused connect for about 2 s before it says so,
+        // longer than client()'s timeout
+        let refused = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap()
             .get(format!("http://127.0.0.1:{port}/"))
             .send()
             .unwrap_err();

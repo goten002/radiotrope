@@ -1,0 +1,44 @@
+name: WinGet
+
+# Opens the pull request to microsoft/winget-pkgs for a published release.
+#
+# OFF until the owner turns it on, after the FIRST version has been
+# submitted by hand and merged (packaging/windows/README.md, "WinGet"):
+#   1. Add the secret WINGET_TOKEN: a classic GitHub token with `public_repo`,
+#      from the account whose fork of winget-pkgs the PR comes from.
+#   2. Set the repository variable WINGET_ENABLED to `true`.
+# It then runs when a release is published, or by hand for a given version.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Released version to submit (e.g. 0.1.1)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  winget:
+    if: vars.WINGET_ENABLED == 'true' && (github.event_name != 'release' || !github.event.release.prerelease)
+    runs-on: windows-latest
+    steps:
+      - name: Submit the update
+        shell: pwsh
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+          VERSION: ${{ inputs.version || github.event.release.tag_name }}
+        run: |
+          if (-not $env:WINGET_TOKEN) { throw 'The WINGET_TOKEN secret is not set' }
+          $version = $env:VERSION -replace '^v', ''
+          $url = "https://github.com/goten002/radiotrope/releases/download/v$version/radiotrope-$version-setup.exe"
+          Invoke-WebRequest https://aka.ms/wingetcreate/latest -OutFile wingetcreate.exe
+          # One universal installer: the same file for each architecture and scope
+          .\wingetcreate.exe update Radiotrope.Radiotrope --version $version `
+            --urls "$url|x64|user" "$url|x64|machine" "$url|arm64|user" "$url|arm64|machine" `
+            --release-notes-url "https://github.com/goten002/radiotrope/releases/tag/v$version" `
+            --submit --token $env:WINGET_TOKEN

@@ -1473,6 +1473,9 @@ mod tests {
 
     // --- AAC and AAC+ ---
 
+    // The samples are encoded with FDK, which doesn't build with MSVC for
+    // ARM64 (see Cargo.toml)
+    #[cfg(not(all(windows, target_arch = "aarch64")))]
     mod aac_plus {
         use super::*;
         use fdk_aac::enc::{

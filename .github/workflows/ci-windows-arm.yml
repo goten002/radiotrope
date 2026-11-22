@@ -1,0 +1,63 @@
+name: CI (Windows ARM64)
+
+# Clippy and the tests natively on Windows 11 ARM64, so a change that breaks
+# the ARM64 build (a C library, aws-lc-sys's need for clang-cl) shows on the
+# pull request rather than on release day. Triggered like ci.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-windows-arm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-arm:
+    name: Windows ARM64
+    runs-on: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # aws-lc-sys (rustls's crypto) builds its ARM64 code with clang-cl,
+      # which it finds on PATH; MSVC's cl.exe can't
+      - name: clang-cl
+        shell: pwsh
+        run: |
+          if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
+            $llvm = "$env:ProgramFiles\LLVM\bin"
+            if (-not (Test-Path "$llvm\clang-cl.exe")) { Write-Output '::error::clang-cl not found'; exit 1 }
+            Add-Content $env:GITHUB_PATH $llvm
+            & "$llvm\clang-cl.exe" --version
+          } else { clang-cl --version }
+      - name: cargo clippy
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
+      - name: cargo test
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace 2>&1 | tee test.log; then
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
+      - name: Programs start
+        shell: bash
+        run: |
+          cargo build -p radiotrope-app -p radiotrope-cli -p radiotrope-probe
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            target/debug/$p.exe --version
+          done
