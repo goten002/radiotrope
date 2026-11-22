@@ -569,7 +569,8 @@ fn act(ui: &App, action: Action, click: bool) {
         }
         Action::Sleep(0) => ui.invoke_sleep_off(),
         Action::Sleep(minutes) => ui.invoke_sleep_start(minutes as i32),
-        Action::Quit => quit(),
+        // Asks first when a recording or a Scheduler entry would stop
+        Action::Quit => ui.invoke_quit_app(),
     }
     // Ticks set by the click itself are put right at once
     refresh_after(ui, true);

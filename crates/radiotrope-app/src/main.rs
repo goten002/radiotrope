@@ -16,8 +16,10 @@ mod favorites_ui;
 mod headless;
 mod import_ui;
 mod instance;
+mod log_file;
 mod mcp;
 mod player_ui;
+mod quit_ui;
 mod recording_ui;
 mod remote;
 mod remote_ui;
@@ -97,8 +99,9 @@ fn init_logging() {
 fn main() {
     #[cfg(windows)]
     windows_console::set_up();
-    init_logging();
+    log_file::log_panics();
 
+    init_logging();
     let args = Args::parse();
 
     #[cfg(feature = "ui-snapshots")]
@@ -131,6 +134,14 @@ fn main() {
                 1
             }
         });
+    }
+
+    // Started from the desktop, with no terminal to read it: the window's
+    // messages go to the log file. Not with `--mcp`, whose client reads
+    // what we print.
+    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    if !args.mcp {
+        log_file::set_up();
     }
 
     // One player per user; a second launch brings the first one forward
@@ -176,7 +187,12 @@ fn main() {
         }
     };
     let favorites = Arc::new(Mutex::new(favorites));
-    let logo_service = Arc::new(LogoService::new().expect("Failed to create logo service"));
+    // Only its web client can fail (a cache folder that can't be made
+    // leaves it without one); with no client nothing could be fetched
+    let logo_service = match LogoService::new() {
+        Ok(service) => Arc::new(service),
+        Err(e) => start_up_failed(&format!("Radiotrope can't start its web client: {e}")),
+    };
     // Listening time is saved a moment after it is added, on a thread of
     // its own: the UI doesn't wait on the disk once a minute
     let favorites_saver = favorites_ui::start_saver(&favorites);
@@ -222,7 +238,7 @@ fn main() {
     }
 
     // Create Slint UI
-    let ui = App::new().unwrap();
+    let ui = App::new().unwrap_or_else(|e| start_up_failed(&window_error(&e)));
     // What the window's handlers share
     let ctx = AppContext {
         ui: ui.as_weak(),
@@ -415,24 +431,29 @@ fn main() {
     quit_on_signals();
 
     // Closing the window ends the app, or only hides it when View > Close
-    // to Tray is on and the tray shows our icon
+    // to Tray is on and the tray shows our icon. Closing that would stop a
+    // recording or skip a Scheduler entry asks first, as Quit does.
+    quit_ui::setup(&ui, &shared_state);
     {
         let ui_weak = ui.as_weak();
+        let state = shared_state.clone();
         ui.window().on_close_requested(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                quit_app();
+                return slint::CloseRequestResponse::HideWindow;
+            };
             #[cfg(feature = "desktop")]
-            if ui_weak
-                .upgrade()
-                .is_some_and(|ui| tray::hides_on_close(&ui))
-            {
+            if tray::hides_on_close(&ui) {
                 return slint::CloseRequestResponse::HideWindow;
             }
-            let _ = &ui_weak;
-            quit_app();
-            slint::CloseRequestResponse::HideWindow
+            quit_ui::request_quit(&ui, &state);
+            if quit_ui::asking(&ui) {
+                slint::CloseRequestResponse::KeepWindowShown
+            } else {
+                slint::CloseRequestResponse::HideWindow
+            }
         });
     }
-    #[cfg(feature = "desktop")]
-    ui.on_quit_app(quit_app);
 
     // The tray icon, and whether the desktop shows one (GNOME only with
     // the AppIndicator extension)
@@ -467,8 +488,12 @@ fn main() {
     // that doesn't go to the tray; a hidden window keeps it going. An
     // error (the display went away, e.g. at logout) ends it like closing
     // the window does.
-    let shown = if start_hidden { Ok(()) } else { ui.show() };
-    if let Err(e) = shown.and_then(|()| slint::run_event_loop_until_quit()) {
+    if !start_hidden {
+        if let Err(e) = ui.show() {
+            start_up_failed(&window_error(&e));
+        }
+    }
+    if let Err(e) = slint::run_event_loop_until_quit() {
         eprintln!("Event loop ended: {e}");
     }
     let _ = ui.hide();
@@ -494,6 +519,32 @@ fn main() {
     while shutdown_sent && !controller.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// What to tell a user whose window didn't open (no display, no usable
+/// graphics driver: a remote session, a VM)
+fn window_error(error: &dyn std::fmt::Display) -> String {
+    format!(
+        "Radiotrope can't open its window: {error}. \
+         Try `SLINT_BACKEND=winit-software radiotrope`."
+    )
+}
+
+/// Say why the player can't start, in words rather than a panic, and end
+/// it. On Windows, whose release build has no terminal, in a message box
+/// too.
+fn start_up_failed(message: &str) -> ! {
+    eprintln!("{message}");
+    #[cfg(all(windows, feature = "desktop"))]
+    {
+        let _ = rfd::MessageDialog::new()
+            .set_title("Radiotrope")
+            .set_description(message)
+            .set_level(rfd::MessageLevel::Error)
+            .set_buttons(rfd::MessageButtons::Ok)
+            .show();
+    }
+    std::process::exit(1);
 }
 
 /// Quit the event loop on SIGTERM, SIGINT or SIGHUP. The signals are
