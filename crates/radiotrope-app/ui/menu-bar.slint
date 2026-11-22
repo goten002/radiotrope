@@ -1470,17 +1470,15 @@ export component MenuBar inherits Rectangle {
                     one-of-set: true;
                     // Greyed when its smallest window is larger than the screen
                     enabled: percent <= ViewOptions.zoom-fits;
-                    // Which one the window has now, while another is picked
-                    hint: percent > ViewOptions.zoom-fits ? "Too large for this screen"
-                        : ViewOptions.zoom != ViewOptions.zoom-in-use && percent == ViewOptions.zoom-in-use ? "In use" : "";
+                    hint: percent > ViewOptions.zoom-fits ? "Too large for this screen" : "";
                     checked: ViewOptions.zoom == percent;
                     clicked => { ViewOptions.zoom = percent; }
                 }
-                MenuNote {
+                // Only while a zoom other than the window's is picked;
+                // picking the window's own again cancels it
+                if ViewOptions.zoom-note != "": MenuNote {
                     indent: Theme.space-16;
-                    lines: [ViewOptions.zoom != ViewOptions.zoom-in-use
-                        ? "Restart Radiotrope to apply."
-                        : "Applies the next time Radiotrope starts."];
+                    lines: [ViewOptions.zoom-note];
                 }
             }
             // The set-once options, folded into groups (desktop only)
