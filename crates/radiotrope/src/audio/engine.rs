@@ -4725,8 +4725,7 @@ mod tests {
         assert!(full > 0.1, "the station isn't heard: {full}");
 
         engine.set_volume(0.1);
-        thread::sleep(Duration::from_millis(100));
-        let faded = heard_for(engine, 100);
+        let faded = steady_peak(engine);
         assert!(faded > 0.0 && faded < full * 0.05, "not faded: {faded}");
 
         engine.take_output_peak();
