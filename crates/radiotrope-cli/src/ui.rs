@@ -9,12 +9,17 @@ use std::time::Duration;
 use ratatui::buffer::Buffer;
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::UnicodeWidthStr;
 
 use radiotrope::stream::StreamType;
+use radiotrope_library::data::favorites::FavoriteEdit;
 
+use crate::favorites::{self, FavoritesWorker, Reply};
+use crate::input::{Confirmation, Effect};
 use crate::library::Station;
 use crate::player::{Phase, Player};
+use crate::search::Search;
 use crate::visual::{Spectrum, COLUMNS};
 
 /// The app's default accent (Theme.accent-default)
@@ -170,6 +175,11 @@ pub struct View {
     pub palette: Palette,
     pub accent: (u8, u8, u8),
     pub spectrum: Spectrum,
+    pub search: Search,
+    pub confirmation: Option<Confirmation>,
+    pub saving_favorites: bool,
+    pub favorites_error: Option<String>,
+    follow_error: Option<String>,
 }
 
 impl View {
@@ -184,6 +194,11 @@ impl View {
             palette,
             accent,
             spectrum: Spectrum::new(),
+            search: Search::default(),
+            confirmation: None,
+            saving_favorites: false,
+            favorites_error: None,
+            follow_error: None,
         }
     }
 
@@ -221,10 +236,62 @@ impl View {
             .or_else(|| {
                 self.list
                     .selected()
+                    .or(Some(0))
                     .map(|i| i.min(self.favorites.len().saturating_sub(1)))
             })
             .filter(|_| !self.favorites.is_empty());
         self.list.select(index);
+    }
+
+    pub fn highlighted(&self) -> Option<&Station> {
+        if self.search.open {
+            self.search.selected()
+        } else {
+            self.cursor().map(|i| &self.favorites[i])
+        }
+    }
+
+    pub fn begin_edit(&mut self, edit: FavoriteEdit) -> Effect {
+        self.favorites_error = None;
+        self.saving_favorites = true;
+        Effect::Edit(edit)
+    }
+
+    pub fn poll_favorites(&mut self, worker: &FavoritesWorker) {
+        use crossbeam_channel::TryRecvError;
+        loop {
+            match worker.replies.try_recv() {
+                Ok(reply) => self.apply_favorites(reply),
+                Err(TryRecvError::Disconnected) if self.saving_favorites => {
+                    self.apply_favorites(Reply::Edited(Err("Favorites worker unavailable".into())));
+                    break;
+                }
+                Err(_) => break,
+            }
+        }
+    }
+
+    pub fn apply_favorites(&mut self, reply: Reply) {
+        match reply {
+            Reply::Edited(result) => {
+                self.saving_favorites = false;
+                match result {
+                    Ok(favorites) => {
+                        self.favorites_error = None;
+                        self.follow_error = None;
+                        self.replace_favorites(favorites);
+                    }
+                    Err(error) => self.favorites_error = Some(error),
+                }
+            }
+            Reply::Followed(result) => match result {
+                Ok(favorites) => {
+                    self.follow_error = None;
+                    self.replace_favorites(favorites);
+                }
+                Err(error) => self.follow_error = Some(error),
+            },
+        }
     }
 }
 
@@ -239,7 +306,7 @@ pub fn draw(frame: &mut Frame, view: &mut View, player: &Player) {
     }
 
     // The key help under the box, when there is room
-    let (box_area, help_area) = if area.height >= 12 {
+    let (box_area, help_area) = if area.height >= 12 || (view.search.open && area.height >= 10) {
         let rows = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(area);
         (rows[0], Some(rows[1]))
     } else {
@@ -257,7 +324,9 @@ pub fn draw(frame: &mut Frame, view: &mut View, player: &Player) {
     let wide = inner.width >= WIDE;
     let header_rows: u16 = if wide { 3 } else { 2 };
     // Header, line, list (at least one row), line, bottom
-    let with_list = inner.height > header_rows + 3;
+    let body_rows = if view.search.open { 3 } else { 1 };
+    let with_list = inner.height >= header_rows + 3 + body_rows;
+    let compact_body = !with_list && inner.height > header_rows + 1;
     let rows = if with_list {
         Layout::vertical([
             Constraint::Length(header_rows),
@@ -279,15 +348,125 @@ pub fn draw(frame: &mut Frame, view: &mut View, player: &Player) {
     draw_header(frame, view, player, rows[0], wide);
     if with_list {
         separator(frame.buffer_mut(), box_area, rows[1].y, p);
-        draw_list(frame, view, player, rows[2]);
+        draw_body(frame, view, player, rows[2]);
         separator(frame.buffer_mut(), box_area, rows[3].y, p);
         draw_bottom(frame, view, player, rows[4]);
     } else {
+        if compact_body {
+            draw_body(frame, view, player, rows[1]);
+        }
         draw_bottom(frame, view, player, rows[2]);
     }
     if let Some(help) = help_area {
         draw_help(frame, view, help);
     }
+}
+
+fn draw_body(frame: &mut Frame, view: &mut View, player: &Player, area: Rect) {
+    if let Some(confirmation) = &view.confirmation {
+        let question = format!("Remove {}?", confirmation.name);
+        let width = area.width as usize;
+        let lines = if area.height >= 2 {
+            vec![
+                Line::raw(fit(&question, width)),
+                Line::raw(fit("Enter/y yes  Esc/n no", width)),
+            ]
+        } else {
+            vec![Line::raw(fit(&format!("Y/N · {question}"), width))]
+        };
+        frame.render_widget(
+            Paragraph::new(lines).style(view.palette.fg(view.palette.accent)),
+            area,
+        );
+        return;
+    }
+    let mut body = area;
+    let notice = view
+        .favorites_error
+        .as_ref()
+        .or(view.follow_error.as_ref())
+        .map(|error| format!("Favorites: {error}"))
+        .or_else(|| view.saving_favorites.then(|| "Saving favorites…".into()));
+    if let Some(notice) = notice {
+        body.height -= 1;
+        let row = Rect::new(area.x, body.bottom(), area.width, 1);
+        frame.render_widget(Paragraph::new(fit(&notice, area.width as usize)), row);
+        if body.height == 0 {
+            return;
+        }
+    }
+    if view.search.open {
+        let playing = player.station.as_ref().filter(|_| player.is_active());
+        draw_search(frame, view, playing, body);
+    } else {
+        draw_list(frame, view, player, body);
+    }
+}
+
+fn draw_search(frame: &mut Frame, view: &mut View, playing: Option<&Station>, area: Rect) {
+    let p = view.palette;
+    let search = &mut view.search;
+    let field = Rect::new(area.x, area.y, area.width, 1);
+    let label = "Find: ";
+    let text_width = area.width as usize - label.len();
+    let mut start = search.caret;
+    let mut caret_column = 0;
+    for (index, grapheme) in search.query[..search.caret].grapheme_indices(true).rev() {
+        let next = caret_column + grapheme.width();
+        if next >= text_width {
+            break;
+        }
+        start = index;
+        caret_column = next;
+    }
+    if !search.editing {
+        start = 0;
+    }
+    let field_text = format!("{label}{}", fit(&search.query[start..], text_width));
+    let style = if search.editing {
+        p.fg(p.accent)
+    } else {
+        p.fg(p.dim)
+    };
+    frame.render_widget(Paragraph::new(field_text).style(style), field);
+    if search.editing {
+        frame.set_cursor_position((field.x + (label.len() + caret_column) as u16, field.y));
+    }
+    if area.height < 2 {
+        return;
+    }
+    let status = Rect::new(area.x, area.bottom() - 1, area.width, 1);
+    frame.render_widget(
+        Paragraph::new(fit(&search.status(), area.width as usize)).style(p.fg(p.dim)),
+        status,
+    );
+    let results = Rect::new(area.x, area.y + 1, area.width, area.height - 2);
+    let items: Vec<_> = search
+        .rows
+        .iter()
+        .map(|station| {
+            let playing = playing.is_some_and(|current| current.url == station.url);
+            let saved = favorites::find_match(&view.favorites, station).is_some();
+            let country = station.country.as_deref().unwrap_or("");
+            let width = area.width as usize - 4;
+            let country_width = country.width().min(width / 3);
+            let name_width = width - country_width - 1;
+            let name = pad(&fit(&station.name, name_width), name_width);
+            ListItem::new(Line::from(vec![
+                Span::styled(if playing { "▌" } else { " " }, p.fg(p.accent)),
+                Span::styled(if saved { "★ " } else { "  " }, p.fg(p.accent)),
+                Span::raw(name),
+                Span::raw(" "),
+                Span::styled(fit(country, country_width), p.fg(p.dim)),
+            ]))
+        })
+        .collect();
+    let list = List::new(items).highlight_style(if search.editing {
+        Style::default()
+    } else {
+        Style::default().reversed()
+    });
+    frame.render_stateful_widget(list, results, &mut search.list);
 }
 
 /// A line across the box at row `y`, joined to its sides
@@ -445,7 +624,7 @@ fn draw_list(frame: &mut Frame, view: &mut View, player: &Player, area: Rect) {
             Line::from(""),
             Line::from(format!(" {}", fit("No favorites yet.", width))),
             Line::from(Span::styled(
-                format!(" {}", fit("Add stations in the Radiotrope app,", width)),
+                format!(" {}", fit("Press / to find a station", width)),
                 p.fg(p.dim),
             )),
             Line::from(Span::styled(
@@ -599,15 +778,35 @@ fn song(player: &Player) -> String {
 
 fn draw_help(frame: &mut Frame, view: &View, area: Rect) {
     let p = view.palette;
-    let keys: &[(&str, &str)] = &[
-        ("↑↓", "pick"),
-        ("Enter", "play"),
-        ("Space", "stop"),
-        ("r", "record"),
-        ("+-", "volume"),
-        ("m", "mute"),
-        ("q", "quit"),
-    ];
+    let keys: &[(&str, &str)] = if view.confirmation.is_some() {
+        &[("Enter/y", "remove"), ("Esc/n", "cancel")]
+    } else if view.search.open {
+        if view.search.editing {
+            &[("Enter", "search"), ("Tab", "results"), ("Esc", "back")]
+        } else if view.search.error.is_some() {
+            &[("Enter", "retry"), ("Tab", "query"), ("Esc", "back")]
+        } else {
+            &[
+                ("Enter", "play"),
+                ("f", "favorite"),
+                ("Tab", "query"),
+                ("Esc", "back"),
+                ("PgDn", "more"),
+            ]
+        }
+    } else {
+        &[
+            ("/", "search"),
+            ("f", "favorite"),
+            ("Enter", "play"),
+            ("Space", "play/stop"),
+            ("n/p", "next/prev"),
+            ("r", "record"),
+            ("+-", "volume"),
+            ("m", "mute"),
+            ("q", "quit"),
+        ]
+    };
     let mut spans = Vec::new();
     let mut used = 0;
     for (key, what) in keys {
@@ -644,6 +843,13 @@ fn host(url: &str) -> &str {
 
 /// Cut `text` to `width` terminal columns, ending in "…" when cut
 pub fn fit(text: &str, width: usize) -> String {
+    let sanitized;
+    let text = if text.chars().any(char::is_control) {
+        sanitized = text.replace(char::is_control, " ");
+        sanitized.as_str()
+    } else {
+        text
+    };
     if text.width() <= width {
         return text.to_string();
     }
@@ -652,12 +858,12 @@ pub fn fit(text: &str, width: usize) -> String {
     }
     let mut out = String::new();
     let mut used = 0;
-    for c in text.chars() {
-        let w = c.width().unwrap_or(0);
+    for grapheme in text.graphemes(true) {
+        let w = grapheme.width();
         if used + w > width - 1 {
             break;
         }
-        out.push(c);
+        out.push_str(grapheme);
         used += w;
     }
     out.push('…');
@@ -686,6 +892,110 @@ pub fn frame_interval(view: &View, player: &Player) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::Reply;
+    use radiotrope_library::providers::SearchResults;
+    use ratatui::backend::TestBackend;
+
+    fn render_search(
+        terminal: &mut Terminal<TestBackend>,
+        view: &mut View,
+        playing: Option<&Station>,
+    ) -> String {
+        terminal
+            .draw(|frame| {
+                draw_search(frame, view, playing, frame.area());
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(terminal.backend().buffer().area.width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn search_renders_hint_loading_empty_and_retry_states() {
+        let mut terminal = Terminal::new(TestBackend::new(44, 6)).unwrap();
+        let mut view = View::new(
+            vec![],
+            Palette::new(ColorMode::None, DEFAULT_ACCENT),
+            DEFAULT_ACCENT,
+        );
+        view.search.open();
+        let text = render_search(&mut terminal, &mut view, None);
+        assert!(text.contains("Find: ") && text.contains("Blank = most played"));
+        let request = view.search.submit();
+        assert!(render_search(&mut terminal, &mut view, None).contains("Loading stations"));
+        view.search.apply(Reply {
+            request,
+            result: Ok(SearchResults {
+                stations: vec![],
+                total: None,
+                has_more: true,
+            }),
+        });
+        assert!(render_search(&mut terminal, &mut view, None).contains("No playable rows"));
+        let request = view.search.move_cursor(10, true).unwrap();
+        assert!(render_search(&mut terminal, &mut view, None).contains("Loading more"));
+        view.search.apply(Reply {
+            request,
+            result: Err("offline".into()),
+        });
+        assert!(render_search(&mut terminal, &mut view, None).contains("Search error: offline"));
+        view.search.editing = false;
+        assert!(render_search(&mut terminal, &mut view, None).contains("Enter retry: offline"));
+        let request = view.search.retry().unwrap();
+        view.search.apply(Reply {
+            request,
+            result: Ok(SearchResults::empty()),
+        });
+        assert!(render_search(&mut terminal, &mut view, None).contains("No matches"));
+    }
+
+    #[test]
+    fn narrow_search_renders_country_star_playing_and_grapheme_caret() {
+        let mut terminal = Terminal::new(TestBackend::new(24, 5)).unwrap();
+        let mut saved = Station::new("Jazz", "https://old.test")
+            .with_provider("radiotrope", Some("jazz".into()));
+        saved.country = Some("Greece".into());
+        let mut playing = saved.clone();
+        playing.url = "https://new.test".into();
+        let plain = Station::new("News\nFM", "https://news.test");
+        let mut view = View::new(
+            vec![saved],
+            Palette::new(ColorMode::None, DEFAULT_ACCENT),
+            DEFAULT_ACCENT,
+        );
+        view.search.open();
+        for c in "界e\u{301}".chars() {
+            view.search.insert(c);
+        }
+        let request = view.search.submit();
+        view.search.apply(Reply {
+            request,
+            result: Ok(SearchResults {
+                stations: vec![playing.clone(), plain],
+                total: None,
+                has_more: false,
+            }),
+        });
+        let text = render_search(&mut terminal, &mut view, Some(&playing));
+        assert!(text.contains("▌★ Jazz") && text.contains("Greece"));
+        assert!(text.contains("News FM") && text.contains("End of list"));
+        assert_eq!(text.matches('★').count(), 1);
+        assert_eq!(
+            terminal.backend_mut().get_cursor_position().unwrap(),
+            Position::new(9, 0)
+        );
+        for _ in 0..40 {
+            view.search.insert('界');
+        }
+        render_search(&mut terminal, &mut view, None);
+        assert!(terminal.backend_mut().get_cursor_position().unwrap().x < 24);
+    }
 
     #[test]
     fn text_is_cut_to_terminal_columns() {

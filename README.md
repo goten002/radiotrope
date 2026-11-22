@@ -250,16 +250,29 @@ radiotrope-cli <URL>      # play a stream address
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` (or `k` `j`) | Pick a favorite |
-| `Enter` | Play it |
-| `Space` | Stop, or play again |
+| `↑` `↓` (or `k` `j`), `PgUp` `PgDn`, `Home` `End` | Move through favorites or results |
+| `Enter` | Play the highlighted station, submit a query, or retry a search error in the results |
+| `Space` | Play or stop |
 | `n` `p` | Next and previous favorite |
-| `+` `-` | Volume |
+| `+` / `=` and `-` / `_` | Raise and lower volume |
 | `m` | Mute |
 | `r` | Start or stop recording (with the app's recording settings) |
-| `q` | Quit |
+| `Ctrl+F` or `/` | Open station search |
+| `Tab` | Switch between the query field and results |
+| `f` | Add the highlighted station to favorites or ask to remove it |
+| `Enter` or `y` | Confirm favorite removal |
+| `Esc` or `n` | Cancel favorite removal |
+| `Esc` | Close the confirmation, leave search, or quit from favorites |
+| `q`, `Ctrl+C`, `Ctrl+Q` | Quit |
 
-It reads the app's favorites and settings and never changes them.
+Enter a name to search the station directory, or submit a blank query to see
+the most-played stations. Press Down or PgDn at the end of the results to load
+more. Stars mark favorites. Leaving search keeps playback and recording going.
+Letter shortcuts also accept uppercase. In the query field, plain keys such as
+`/` and `q` enter text.
+
+The terminal player shares favorites and the directory cache with the
+Radiotrope app. It reads the app's settings.
 
 ![Radiotrope terminal player](assets/radiotrope_cli.png)
 
