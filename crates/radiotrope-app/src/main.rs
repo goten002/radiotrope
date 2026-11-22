@@ -9,6 +9,7 @@ mod args;
 mod caches;
 mod context;
 mod control;
+mod favorites_list;
 #[cfg(any(test, feature = "ui-snapshots"))]
 mod headless;
 mod instance;
@@ -74,6 +75,10 @@ use app::ui_sender::UiSender;
 use args::Args;
 use caches::{migrate_logo_ids, prune_caches_daily};
 use context::lock;
+use favorites_list::{
+    invalidate_logo_image, note_favorites_shown, refresh_favorites, update_favorite_stats,
+    FAVORITES_SHOWN,
+};
 use recording_ui::{
     save_recording_settings, setup_recording, show_listeners, show_recording_state,
     station_cover_png,
@@ -2012,23 +2017,6 @@ fn mark_browse_favorites(ui: &App, favs: &FavoritesManager) {
     // Lists put aside for the other mode get theirs when shown again
 }
 
-fn favorite_to_slint(
-    f: &radiotrope_app::data::types::Favorite,
-    stats: radiotrope_app::data::types::StationStats,
-) -> FavoriteStation {
-    FavoriteStation {
-        id: f.id().into(),
-        name: f.name().into(),
-        url: f.url().into(),
-        logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
-        country: f.station.country.as_deref().unwrap_or("").into(),
-        listen_time: format_listen_time(stats.total_listen_time_secs).into(),
-        last_played: format_last_played(stats.last_played).into(),
-        play_count: stats.play_count.min(i32::MAX as u32) as i32,
-        session_time: format_listen_time(session_listen_secs(&f.id())).into(),
-    }
-}
-
 /// Stream URL and time of the last station started from the UI, so a
 /// double tap doesn't start it twice
 static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
@@ -2126,76 +2114,6 @@ fn add_listening(
     update_favorite_stats(ui, &favs);
 }
 
-/// Refresh the stats text of every favorites row in place, without
-/// rebuilding the list (which would interrupt a drag)
-fn update_favorite_stats(ui: &App, favs: &FavoritesManager) {
-    let model = ui.get_favorites_list();
-    for i in 0..model.row_count() {
-        let Some(mut row) = model.row_data(i) else {
-            continue;
-        };
-        if favs.get(&row.id).is_none() {
-            continue;
-        }
-        let stats = favs.stats(&row.id);
-        let listen_time: slint::SharedString =
-            format_listen_time(stats.total_listen_time_secs).into();
-        let last_played: slint::SharedString = format_last_played(stats.last_played).into();
-        let play_count = stats.play_count.min(i32::MAX as u32) as i32;
-        let session_time: slint::SharedString =
-            format_listen_time(session_listen_secs(&row.id)).into();
-        if row.listen_time != listen_time
-            || row.last_played != last_played
-            || row.play_count != play_count
-            || row.session_time != session_time
-        {
-            row.listen_time = listen_time;
-            row.last_played = last_played;
-            row.play_count = play_count;
-            row.session_time = session_time;
-            model.set_row_data(i, row);
-        }
-    }
-}
-
-/// Total listening time for a favorites row: "3 h 25 min", "40 min",
-/// "<1 min", or empty when never played
-fn format_listen_time(secs: u64) -> String {
-    text::minutes(secs)
-}
-
-/// When a favorite was last played, relative to now: "Just now",
-/// "12 min ago", "3 h ago", "Yesterday", "5 days ago", "2 weeks ago",
-/// "4 months ago", or empty when never played
-fn format_last_played(timestamp: Option<u64>) -> String {
-    let Some(ts) = timestamp else {
-        return String::new();
-    };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let ago = now.saturating_sub(ts);
-    let (min, hour, day) = (60, 3600, 86400);
-    match ago {
-        a if a < 2 * min => "Just now".into(),
-        a if a < hour => format!("{} min ago", a / min),
-        a if a < day => format!("{} h ago", a / hour),
-        a if a < 2 * day => "Yesterday".into(),
-        a if a < 14 * day => format!("{} days ago", a / day),
-        a if a < 60 * day => format!("{} weeks ago", a / (7 * day)),
-        a if a < 365 * day => format!("{} months ago", a / (30 * day)),
-        a => {
-            let years = a / (365 * day);
-            if years == 1 {
-                "1 year ago".into()
-            } else {
-                format!("{years} years ago")
-            }
-        }
-    }
-}
-
 // Decoded flag images keyed by country code. Flags are tiny and shared by many
 // rows, so each is decoded once. Runs on the Slint event-loop thread only.
 thread_local! {
@@ -2287,29 +2205,6 @@ fn flag_image(country_code: Option<&str>, country: Option<&str>) -> slint::Image
             })
             .clone()
     })
-}
-
-/// A favorite's decoded logo, and when the file it was decoded from was
-/// written: a newer file (a logo downloaded again) is decoded again
-type DecodedLogo = (slint::Image, Option<std::time::SystemTime>);
-
-// In-memory cache of decoded slint::Image keyed by favorite ID.
-// All callers run on the Slint event-loop thread, so thread_local is safe and avoids
-// threading slint::Image (which is !Send) through closures.
-thread_local! {
-    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, DecodedLogo>> =
-        std::cell::RefCell::new(HashMap::new());
-}
-
-thread_local! {
-    /// The favorites generation the list on screen shows. A change made
-    /// elsewhere (an agent) shows as a newer one, which the poll redraws.
-    static FAVORITES_SHOWN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// The favorites on screen are up to date with `favs`
-fn note_favorites_shown(favs: &FavoritesManager) {
-    FAVORITES_SHOWN.set(favs.generation());
 }
 
 /// A favorite just edited, in the window or from a phone
@@ -2456,13 +2351,6 @@ fn remote_window_hooks(
             });
         })),
     }
-}
-
-/// Remove a cached logo image, forcing re-decode on next refresh.
-fn invalidate_logo_image(id: &str) {
-    LOGO_IMAGE_CACHE.with(|cache| {
-        cache.borrow_mut().remove(id);
-    });
 }
 
 /// Show the favorites file dialog with only a message (an export done, or
@@ -2653,83 +2541,6 @@ fn import_favorites(
 ) {
 }
 
-/// Redraw the favorites list, and start fetching the logos it lacks
-fn refresh_favorites(
-    ui: &App,
-    favorites: &Arc<Mutex<FavoritesManager>>,
-    logo_service: &Arc<LogoService>,
-) {
-    // The logos are read and decoded after the lock is let go: an agent
-    // waiting on the favorites isn't held up by them
-    let (sorted, items): (
-        Vec<radiotrope_app::data::types::Favorite>,
-        Vec<FavoriteStation>,
-    ) = {
-        let favs = lock(favorites);
-        mark_browse_favorites(ui, &favs);
-        note_favorites_shown(&favs);
-        favs.sorted(FavoriteSort::Manual)
-            .into_iter()
-            .map(|f| (f.clone(), favorite_to_slint(f, favs.stats(&f.id()))))
-            .unzip()
-    };
-
-    // Build the parallel logo model, using in-memory cache to avoid
-    // re-decoding
-    let mut missing = Vec::new();
-    let logos: Vec<slint::Image> = LOGO_IMAGE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        sorted
-            .iter()
-            .map(|f| {
-                let key = f.id();
-                let written = logo_service.cached_modified(f);
-                let logo = match cache.get(&key) {
-                    Some((logo, at)) if *at == written => Some(logo.clone()),
-                    _ => logo_service
-                        .get_cached_rgba(f)
-                        .map(|(rgba, width, height)| {
-                            let logo = logo_image(rgba, width, height);
-                            cache.insert(key, (logo.clone(), written));
-                            logo
-                        }),
-                };
-                match logo {
-                    // An out of date logo shows until its new one arrives
-                    Some(logo) => {
-                        if logo_service.is_stale(f) {
-                            missing.push(f.clone());
-                        }
-                        logo
-                    }
-                    None => {
-                        if logo_service.is_missing(f) {
-                            missing.push(f.clone());
-                        }
-                        Default::default()
-                    }
-                }
-            })
-            .collect()
-    });
-
-    ui.set_favorites_list(ModelRc::from(std::rc::Rc::new(VecModel::from(items))));
-    ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
-
-    if !missing.is_empty() {
-        let ui_weak = ui.as_weak();
-        let favorites = favorites.clone();
-        let service = logo_service.clone();
-        logo_service.prefetch_in_background(missing, move || {
-            let _ = slint::invoke_from_event_loop(move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    refresh_favorites(&ui, &favorites, &service);
-                }
-            });
-        });
-    }
-}
-
 /// The name shown for a stream without one
 const UNNAMED_STATION: &str = "Radiotrope";
 
@@ -2781,12 +2592,6 @@ mod tests {
             format_codec_line(&s),
             "MP3 \u{b7} 128 kbps \u{b7} 44.1 kHz \u{b7} Stereo"
         );
-    }
-
-    #[test]
-    fn listening_time_says_min() {
-        assert_eq!(format_listen_time(40 * 60), "40 min");
-        assert_eq!(format_listen_time(3 * 3600 + 25 * 60), "3 h 25 min");
     }
 
     #[test]
