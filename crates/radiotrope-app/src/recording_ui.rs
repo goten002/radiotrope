@@ -1,6 +1,7 @@
 //! The Recording Settings dialog, the record button and its notices, and
 //! the recording folder
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -255,6 +256,12 @@ pub(crate) fn show_recording_state(
     if let Some(rec) = recording {
         ui.set_recording_text(text::clock(rec.duration.as_secs()).into());
         ui.set_recording_size(format_bytes(rec.bytes).into());
+        // Kept for the "Saved" notice's bubble, which says where
+        LAST_FILE.with(|last| {
+            if last.borrow().as_deref() != Some(rec.path.as_path()) {
+                *last.borrow_mut() = Some(rec.path.clone());
+            }
+        });
     }
 
     let now = Instant::now();
@@ -263,7 +270,9 @@ pub(crate) fn show_recording_state(
         match notice {
             Some(n) if n.seq != shown.0 => {
                 *shown = (n.seq, now);
-                notices.post(&n.text, n.kind, now);
+                let last_file = LAST_FILE.with(|last| last.borrow().clone());
+                let detail = notice_detail(&n.text, n.kind, last_file.as_deref());
+                notices.post(&n.text, n.kind, &detail, now);
                 true
             }
             _ => notices.pass(now),
@@ -279,6 +288,25 @@ pub(crate) fn show_recording_state(
 struct Notice {
     text: String,
     kind: NoticeKind,
+    /// More than the text says, for the bubble ("" for none)
+    detail: String,
+}
+
+/// What a notice's bubble adds to its text: where a recording was saved
+/// (`last_file` is the last file seen recording), or what a scheduled entry
+/// that didn't run was
+fn notice_detail(text: &str, kind: NoticeKind, last_file: Option<&Path>) -> String {
+    match kind {
+        NoticeKind::Saved => last_file
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| text == format!("Saved {}", name.to_string_lossy()))
+            })
+            .map(|path| path.display().to_string())
+            .unwrap_or_default(),
+        NoticeKind::Scheduler => crate::schedule_ui::notice_detail(text),
+        NoticeKind::SleepTimer | NoticeKind::Error => String::new(),
+    }
 }
 
 /// The notices under the station: one shows at a time. One that stays
@@ -299,10 +327,11 @@ impl Notices {
     const KEPT: usize = 8;
 
     /// Show a new notice
-    fn post(&mut self, text: &str, kind: NoticeKind, now: Instant) {
+    fn post(&mut self, text: &str, kind: NoticeKind, detail: &str, now: Instant) {
         let notice = Notice {
             text: text.to_string(),
             kind,
+            detail: detail.to_string(),
         };
         // Said twice (Open Folder pressed again): once is enough
         self.behind.retain(|n| *n != notice);
@@ -354,6 +383,7 @@ fn show_notice(ui: &App) {
         Some(notice) => {
             ui.set_recording_notice_kind(notice.kind.id().into());
             ui.set_recording_notice_stays(notice.kind.stays());
+            ui.set_recording_notice_detail(notice.detail.into());
             ui.set_recording_notice(notice.text.into());
         }
         None => ui.set_recording_notice(Default::default()),
@@ -370,7 +400,7 @@ fn show_folder_error(ui: &App, error: &str) {
     }
     NOTICES.with(|n| {
         n.borrow_mut()
-            .post(error, NoticeKind::Error, Instant::now())
+            .post(error, NoticeKind::Error, "", Instant::now())
     });
     show_notice(ui);
 }
@@ -478,6 +508,8 @@ thread_local! {
     static FOLDER_CHECK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     /// The notices under the station
     static NOTICES: std::cell::RefCell<Notices> = std::cell::RefCell::new(Notices::default());
+    /// The file last seen recording: where the "Saved" notice's recording is
+    static LAST_FILE: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -495,6 +527,37 @@ mod tests {
         assert_eq!(path(r"D:\Recordings"), r"D:\Recordings");
     }
 
+    #[test]
+    fn a_saved_notices_bubble_says_where_the_file_is() {
+        let file = Path::new("/home/me/Music/Radiotrope/Jazz FM - 2026-11-20 19-30-00.mp3");
+        assert_eq!(
+            notice_detail(
+                "Saved Jazz FM - 2026-11-20 19-30-00.mp3",
+                NoticeKind::Saved,
+                Some(file)
+            ),
+            file.display().to_string()
+        );
+        // Another file's notice (an agent's older recording): no guess
+        assert_eq!(
+            notice_detail("Saved Other.mp3", NoticeKind::Saved, Some(file)),
+            ""
+        );
+        assert_eq!(
+            notice_detail("Saved Other.mp3", NoticeKind::Saved, None),
+            ""
+        );
+        // An error's bubble is its own text, when the chip cuts it
+        assert_eq!(
+            notice_detail(
+                "Recording stopped: no space left on device",
+                NoticeKind::Error,
+                Some(file)
+            ),
+            ""
+        );
+    }
+
     fn text_of(notices: &Notices) -> Option<&str> {
         notices.on_screen().map(|n| n.text.as_str())
     }
@@ -504,13 +567,13 @@ mod tests {
         let start = Instant::now();
         let later = start + RECORDING_NOTICE_TIME;
         let mut notices = Notices::default();
-        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, start);
+        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, "", start);
         assert!(!notices.pass(later - std::time::Duration::from_millis(1)));
         assert!(notices.pass(later));
         assert_eq!(text_of(&notices), None);
 
         for kind in [NoticeKind::Error, NoticeKind::Scheduler] {
-            notices.post("Missed 07:00: Play Jazz FM", kind, start);
+            notices.post("Missed 07:00: Play Jazz FM", kind, "", start);
             assert!(
                 !notices.pass(start + RECORDING_NOTICE_TIME * 1000),
                 "{kind:?}"
@@ -524,6 +587,7 @@ mod tests {
         notices.post(
             "Sleep Timer ended; recording continues",
             NoticeKind::SleepTimer,
+            "",
             start,
         );
         assert!(notices.pass(later));
@@ -533,8 +597,13 @@ mod tests {
     fn a_notice_that_stays_comes_back_after_a_newer_one() {
         let start = Instant::now();
         let mut notices = Notices::default();
-        notices.post("Missed 07:00: Play Jazz FM", NoticeKind::Scheduler, start);
-        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, start);
+        notices.post(
+            "Missed 07:00: Play Jazz FM",
+            NoticeKind::Scheduler,
+            "",
+            start,
+        );
+        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, "", start);
         assert_eq!(text_of(&notices), Some("Saved Jazz FM.mp3"));
         assert!(notices.pass(start + RECORDING_NOTICE_TIME));
         assert_eq!(text_of(&notices), Some("Missed 07:00: Play Jazz FM"));
@@ -543,6 +612,7 @@ mod tests {
         notices.post(
             "Recording stopped: no space left on device",
             NoticeKind::Error,
+            "",
             start,
         );
         notices.close();
@@ -556,10 +626,10 @@ mod tests {
         let start = Instant::now();
         let mut notices = Notices::default();
         let error = "Can't open the recordings folder: permission denied";
-        notices.post(error, NoticeKind::Error, start);
-        notices.post(error, NoticeKind::Error, start);
-        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, start);
-        notices.post(error, NoticeKind::Error, start);
+        notices.post(error, NoticeKind::Error, "", start);
+        notices.post(error, NoticeKind::Error, "", start);
+        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, "", start);
+        notices.post(error, NoticeKind::Error, "", start);
         notices.close();
         assert_eq!(text_of(&notices), None);
     }

@@ -9,7 +9,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeDelta, Timelike};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeDelta, TimeZone, Timelike};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
 use radiotrope_app::data::schedule::{
@@ -31,6 +31,9 @@ const DEFAULT_MINUTES: u32 = 60;
 thread_local! {
     /// The stations the open dialog offers, in its list's order
     static STATIONS: RefCell<Vec<ScheduledStation>> = const { RefCell::new(Vec::new()) };
+    /// The entries and their last runs as last seen, for the bubbles of
+    /// the label and the notices under the station
+    static KNOWN: RefCell<(Vec<Entry>, Vec<LastRun>)> = const { RefCell::new((Vec::new(), Vec::new())) };
     /// The schedule shown, by `schedule_seq`
     static SHOWN_SEQ: std::cell::Cell<u64> = const { std::cell::Cell::new(u64::MAX) };
     /// The entry the label last counted down to, to say when it started
@@ -49,6 +52,8 @@ struct Label {
     bell: bool,
     /// Only news about what happened, so a click closes it
     closable: bool,
+    /// What the entry does and when, for the label's bubble
+    detail: String,
 }
 
 pub fn setup(
@@ -507,9 +512,16 @@ pub fn show_state(ui: &App, view: View) {
         ui.set_volume_level(view.fade_gain);
     }
 
-    let label = schedule_label(&view, &now);
+    // Kept first: the label's bubble tells about its entry
+    if let Some(entries) = &view.entries {
+        KNOWN.with(|k| *k.borrow_mut() = (entries.clone(), view.results.clone()));
+    }
+    let label = KNOWN.with(|k| schedule_label(&view, &k.borrow().0, &now));
     if ui.get_schedule_label() != label.text.as_str() {
         ui.set_schedule_label(label.text.into());
+    }
+    if ui.get_schedule_detail() != label.detail.as_str() {
+        ui.set_schedule_detail(label.detail.into());
     }
     if ui.get_schedule_label_bell() != label.bell {
         ui.set_schedule_label_bell(label.bell);
@@ -551,13 +563,14 @@ fn dismiss_label(bell: bool) {
 
 /// The Scheduler's label: a countdown before an entry, what started just
 /// after, or alarm mode (the fallback sound playing). The last two close on a click.
-fn schedule_label(view: &View, now: &DateTime<Local>) -> Label {
+fn schedule_label(view: &View, entries: &[Entry], now: &DateTime<Local>) -> Label {
     if view.alarm_beep {
         if !BEEP_DISMISSED.get() {
             return Label {
                 text: "Alarm mode".into(),
                 bell: true,
                 closable: true,
+                detail: "The station didn't start, so the alarm sound plays instead.".into(),
             };
         }
     } else {
@@ -572,6 +585,7 @@ fn schedule_label(view: &View, now: &DateTime<Local>) -> Label {
             let secs = (left + 999) / 1000;
             return Label {
                 text: format!("{} in {}", verb(next.action), clock_text(secs)),
+                detail: coming_detail(next, entries, now),
                 ..Label::default()
             };
         }
@@ -590,6 +604,7 @@ fn schedule_label(view: &View, now: &DateTime<Local>) -> Label {
                 },
                 bell: false,
                 closable: true,
+                detail: started_detail(&entry, entries),
             };
         }
         if since >= SCHEDULE_LABEL_SECS {
@@ -597,6 +612,116 @@ fn schedule_label(view: &View, now: &DateTime<Local>) -> Label {
         }
     }
     Label::default()
+}
+
+/// How often an entry runs, for a bubble: "repeats weekdays", "once"
+fn repeat_text(entry: &Entry) -> String {
+    match entry.days {
+        Days::ONCE => "once".into(),
+        Days::EVERY_DAY => "repeats every day".into(),
+        Days::WEEKDAYS => "repeats weekdays".into(),
+        Days::WEEKENDS => "repeats weekends".into(),
+        days => format!("repeats {}", days.label()),
+    }
+}
+
+/// What an entry does, for a bubble: "Play Jazz FM · for 45 min · repeats
+/// weekdays". A Stop says only how often when `with_title` is off.
+fn entry_text(entry: &Entry, with_title: bool) -> String {
+    let mut parts = Vec::new();
+    if with_title {
+        parts.push(entry.title());
+    }
+    let end = entry.end.label();
+    if entry.action != Action::Stop && !end.is_empty() {
+        parts.push(end);
+    }
+    parts.push(repeat_text(entry));
+    parts.join(" · ")
+}
+
+/// The bubble of the countdown label: "Today 19:30 · Record Jazz FM · for
+/// 45 min · repeats weekdays"
+fn coming_detail(next: &NextRun, entries: &[Entry], now: &DateTime<Local>) -> String {
+    let when = schedule::when_label(&next.at, now);
+    let when = if next.at.date_naive() == now.date_naive() {
+        format!("Today {when}")
+    } else {
+        when
+    };
+    match entries.iter().find(|e| e.id == next.id) {
+        Some(entry) => format!("{when} · {}", entry_text(entry, true)),
+        None => format!("{when} · {}", next.title),
+    }
+}
+
+/// The bubble of the label that says what started: "Started 19:30 · Play
+/// Jazz FM · until 20:15 · repeats weekdays"
+fn started_detail(run: &NextRun, entries: &[Entry]) -> String {
+    let at = run.at.format("%H:%M");
+    let entry = entries.iter().find(|e| e.id == run.id);
+    match (run.action, entry) {
+        (Action::Stop, Some(entry)) => format!("Stopped {at} · {}", entry_text(entry, false)),
+        (Action::Stop, None) => format!("Stopped {at}"),
+        (_, Some(entry)) => format!("Started {at} · {}", entry_text(entry, true)),
+        (_, None) => format!("Started {at} · {}", run.title),
+    }
+}
+
+/// The bubble of a Scheduler notice under the station (`text`, as the
+/// controller worded it): what didn't run, when, and why. "" when the
+/// entry isn't known any more.
+pub(crate) fn notice_detail(text: &str) -> String {
+    KNOWN.with(|k| {
+        let (entries, results) = &*k.borrow();
+        missed_detail(text, entries, results, &Local::now())
+    })
+}
+
+fn missed_detail(
+    text: &str,
+    entries: &[Entry],
+    results: &[LastRun],
+    now: &DateTime<Local>,
+) -> String {
+    if text.ends_with("scheduled entries didn't run") {
+        return "Their rows in the Scheduler say which.".into();
+    }
+    // The newest run that didn't happen and that the notice is about
+    let about = results
+        .iter()
+        .filter(|r| {
+            matches!(
+                r.outcome,
+                schedule::Outcome::Missed | schedule::Outcome::Skipped
+            )
+        })
+        .filter_map(|r| Some((r, entries.iter().find(|e| e.id == r.id)?)))
+        .filter(|(r, e)| {
+            let word = if r.outcome == schedule::Outcome::Missed {
+                "Missed"
+            } else {
+                "Skipped"
+            };
+            text.starts_with(&format!("{word} {}: {}", e.start, e.title()))
+        })
+        .max_by_key(|(r, _)| r.at);
+    let Some((run, entry)) = about else {
+        return String::new();
+    };
+    let (word, why) = match run.outcome {
+        schedule::Outcome::Missed => (
+            "Missed",
+            "Radiotrope wasn't running, or the computer was asleep.",
+        ),
+        _ => ("Skipped", "A scheduled recording was running."),
+    };
+    let when = Local
+        .timestamp_opt(run.at, 0)
+        .single()
+        .map(|at| schedule::past_label(&at, now))
+        .unwrap_or_else(|| entry.start.to_string());
+    format!("{word} {when} · {}\n{why}", entry_text(entry, true))
 }
 
 fn verb(action: Action) -> &'static str {
@@ -698,6 +823,128 @@ mod tests {
         );
     }
 
+    fn test_entry(id: u64, action: Action, days: Days, end: End) -> Entry {
+        Entry {
+            id,
+            enabled: true,
+            action,
+            station: (action != Action::Stop).then(|| ScheduledStation {
+                name: "Jazz FM".into(),
+                url: "https://jazz.example/stream".into(),
+                ..ScheduledStation::default()
+            }),
+            start: ClockTime::new(19, 30).unwrap(),
+            days,
+            date: None,
+            end,
+            volume: None,
+            fade: false,
+            fallback: true,
+            armed_from: 0,
+        }
+    }
+
+    #[test]
+    fn the_labels_bubble_says_what_the_entry_does_and_when() {
+        let at = Local.with_ymd_and_hms(2026, 10, 2, 19, 30, 0).unwrap();
+        let now = at - TimeDelta::seconds(20);
+        let record = test_entry(
+            4,
+            Action::Record,
+            Days::WEEKDAYS,
+            End::After { minutes: 45 },
+        );
+        let next = NextRun {
+            id: 4,
+            at,
+            title: record.title(),
+            action: Action::Record,
+            station: "Jazz FM".into(),
+        };
+        let entries = [record];
+        assert_eq!(
+            coming_detail(&next, &entries, &now),
+            "Today 19:30 · Record Jazz FM · for 45 min · repeats weekdays"
+        );
+        assert_eq!(
+            started_detail(&next, &entries),
+            "Started 19:30 · Record Jazz FM · for 45 min · repeats weekdays"
+        );
+        // An entry removed since: what the run itself knows
+        assert_eq!(
+            coming_detail(&next, &[], &now),
+            "Today 19:30 · Record Jazz FM"
+        );
+
+        let play = test_entry(5, Action::Play, Days::ONCE, End::Never);
+        assert_eq!(entry_text(&play, true), "Play Jazz FM · once");
+        let stop = test_entry(6, Action::Stop, Days::EVERY_DAY, End::Never);
+        let stopped = NextRun {
+            id: 6,
+            at,
+            title: stop.title(),
+            action: Action::Stop,
+            station: String::new(),
+        };
+        assert_eq!(
+            started_detail(&stopped, &[stop]),
+            "Stopped 19:30 · repeats every day"
+        );
+        // Just before midnight, for an entry right after it
+        let midnight = Local.with_ymd_and_hms(2026, 10, 3, 0, 0, 0).unwrap();
+        let late = NextRun {
+            at: midnight,
+            ..next.clone()
+        };
+        assert_eq!(
+            coming_detail(&late, &[], &(midnight - TimeDelta::seconds(30))),
+            "Tomorrow 00:00 · Record Jazz FM"
+        );
+    }
+
+    #[test]
+    fn a_missed_notices_bubble_says_what_when_and_why() {
+        let due = Local.with_ymd_and_hms(2026, 10, 2, 19, 30, 0).unwrap();
+        let now = due + TimeDelta::hours(2);
+        let entries = [
+            test_entry(4, Action::Play, Days::WEEKDAYS, End::After { minutes: 60 }),
+            test_entry(6, Action::Stop, Days::EVERY_DAY, End::Never),
+        ];
+        let run = |id, outcome| LastRun {
+            id,
+            at: due.timestamp(),
+            outcome,
+        };
+        let results = [
+            run(4, schedule::Outcome::Missed),
+            run(6, schedule::Outcome::Skipped),
+        ];
+        assert_eq!(
+            missed_detail("Missed 19:30: Play Jazz FM", &entries, &results, &now),
+            "Missed Fri 19:30 · Play Jazz FM · for 1 h · repeats weekdays\n\
+             Radiotrope wasn't running, or the computer was asleep."
+        );
+        assert_eq!(
+            missed_detail(
+                "Skipped 19:30: Stop playback, a recording is running",
+                &entries,
+                &results,
+                &now
+            ),
+            "Skipped Fri 19:30 · Stop playback · repeats every day\n\
+             A scheduled recording was running."
+        );
+        assert_eq!(
+            missed_detail("3 scheduled entries didn't run", &entries, &results, &now),
+            "Their rows in the Scheduler say which."
+        );
+        // Not about a known entry: the notice's own text is all there is
+        assert_eq!(
+            missed_detail("Missed 07:00: Play Other", &entries, &results, &now),
+            ""
+        );
+    }
+
     #[test]
     fn the_scheduler_label_counts_down_then_says_what_started() {
         let at = Local.with_ymd_and_hms(2026, 10, 3, 7, 0, 0).unwrap();
@@ -724,7 +971,8 @@ mod tests {
             results: Vec::new(),
         };
         COUNTED_DOWN.with(|c| *c.borrow_mut() = None);
-        let label = |v: &View, secs: i64| schedule_label(v, &(at + TimeDelta::seconds(secs))).text;
+        let label =
+            |v: &View, secs: i64| schedule_label(v, &[], &(at + TimeDelta::seconds(secs))).text;
 
         assert_eq!(label(&view(Some(next.clone()), None, false), -61), "");
         assert_eq!(
@@ -739,6 +987,7 @@ mod tests {
         assert!(
             !schedule_label(
                 &view(Some(next.clone()), None, false),
+                &[],
                 &(at - TimeDelta::seconds(5))
             )
             .closable
@@ -747,11 +996,16 @@ mod tests {
         assert_eq!(label(&view(None, Some(4), false), 0), "Play · Jazz FM");
         assert_eq!(label(&view(None, Some(4), false), 14), "Play · Jazz FM");
         assert!(
-            schedule_label(&view(None, Some(4), false), &(at + TimeDelta::seconds(3))).closable
+            schedule_label(
+                &view(None, Some(4), false),
+                &[],
+                &(at + TimeDelta::seconds(3))
+            )
+            .closable
         );
         assert_eq!(label(&view(None, Some(4), false), 15), "");
         assert_eq!(label(&view(None, Some(4), true), 30), "Alarm mode");
-        assert!(schedule_label(&view(None, None, true), &at).bell);
+        assert!(schedule_label(&view(None, None, true), &[], &at).bell);
 
         // Skipped: nothing claims it started
         label(&view(Some(next.clone()), None, false), -5);
