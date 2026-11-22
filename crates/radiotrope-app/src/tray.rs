@@ -21,7 +21,7 @@ use radiotrope_app::text::{status::CONNECTING, SEPARATOR};
 use crate::{App, Defaults};
 
 /// Our name on the D-Bus tray, which KDE keeps the icon's settings under
-const TRAY_ID: &str = "radiotrope";
+const TRAY_ID: &str = radiotrope_app::config::APP_ID;
 
 const SHOW: &str = "show";
 const PLAY: &str = "play";

@@ -6,8 +6,22 @@ members = [
     "crates/radiotrope-app",
     "crates/radiotrope-library",
     "crates/radiotrope-probe",
+    "crates/radiotrope-build",
+    "crates/xtask",
 ]
 exclude = ["build", "yocto"]
+
+# Shared by every crate (`version.workspace = true` and so on). The crates
+# are not published to crates.io: the name `radiotrope` there would be the
+# engine library, not the app.
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "GPL-3.0-or-later"
+authors = ["George Alexiou <goten002@gmail.com>"]
+repository = "https://github.com/goten002/radiotrope"
+publish = false
 
 [workspace.dependencies]
 # Audio
@@ -42,6 +56,9 @@ slint = { version = "1.18", default-features = false, features = [
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+# Man pages and shell completions, made by `cargo xtask` (not in the programs)
+clap_mangen = "0.2"
+clap_complete = "4.5"
 
 # Utilities
 thiserror = "2.0"

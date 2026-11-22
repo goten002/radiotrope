@@ -3,6 +3,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod args;
 mod control;
 mod instance;
 mod mcp;
@@ -61,32 +62,7 @@ use app::picked_station::PendingPick;
 use app::shown_station::ShownStation;
 use app::state::AppSnapshot;
 use app::ui_sender::UiSender;
-
-/// Radiotrope — Internet radio player
-#[derive(Parser)]
-#[command(version, about)]
-struct Args {
-    /// Connect an AI agent over MCP on stdio. Talks to the running player,
-    /// starting it first if needed, so all agents share one player.
-    #[arg(long)]
-    mcp: bool,
-
-    /// With --mcp: run a separate player for this agent alone instead
-    #[arg(long, requires = "mcp")]
-    standalone: bool,
-
-    #[cfg(feature = "ui-snapshots")]
-    #[arg(long, hide = true, conflicts_with = "mcp", value_name = "OUT_DIR")]
-    ui_snapshots: Option<std::path::PathBuf>,
-
-    #[cfg(feature = "ui-snapshots")]
-    #[arg(long, hide = true, requires = "ui_snapshots", value_enum)]
-    theme: Option<ui_snapshots::Theme>,
-
-    #[cfg(feature = "ui-snapshots")]
-    #[arg(long, hide = true, requires = "ui_snapshots", value_parser = ui_snapshots::parse_scale)]
-    scale: Option<f32>,
-}
+use args::Args;
 
 /// Our crates' messages from info up; other libraries' only when they fail
 const DEFAULT_LOG: &str = "error,radiotrope=info";
@@ -240,9 +216,9 @@ fn main() {
     });
 
     // Wayland app_id / X11 WM_CLASS: desktops match it against the
-    // `radiotrope.desktop` file (and its StartupWMClass) to find the icon.
-    // A no-op on Windows and macOS.
-    let _ = slint::set_xdg_app_id("radiotrope");
+    // `app.radiotrope.Radiotrope.desktop` file (and its StartupWMClass) to
+    // find the icon. A no-op on Windows and macOS.
+    let _ = slint::set_xdg_app_id(radiotrope_app::config::APP_ID);
 
     // Agents (`radiotrope --mcp`) and later launches reach us over a local
     // socket

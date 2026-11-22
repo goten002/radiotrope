@@ -1,12 +1,13 @@
 [package]
 name = "radiotrope-app"
-version = "0.1.0-dev"
-edition = "2021"
-rust-version = "1.92"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
 description = "Desktop internet radio player with Slint UI"
-license = "GPL-3.0-or-later"
-authors = ["George Alexiou <goten002@gmail.com>"]
-repository = "https://github.com/goten002/radiotrope"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
 readme = "../../README.md"
 keywords = ["radio", "gui", "slint", "internet-radio", "streaming"]
 categories = ["gui", "multimedia::audio"]
@@ -97,4 +98,4 @@ ui-snapshots = ["slint/renderer-software"]
 [build-dependencies]
 slint-build = "1.18"
 # The Windows exe's icon and version details (Explorer, Task Manager)
-winresource = "0.1"
+radiotrope-build = { path = "../radiotrope-build" }

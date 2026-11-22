@@ -2,6 +2,7 @@
 //!
 //! Plays favorites, searches the station directory, and records streams.
 
+mod args;
 mod favorites;
 mod input;
 mod library;
@@ -24,24 +25,13 @@ use ratatui::prelude::*;
 use radiotrope::audio::AudioEngine;
 use radiotrope_library::data::favorites::FavoritesManager;
 
+use args::Cli;
 use favorites::FavoritesWorker;
 use input::Effect;
 use library::{Settings, Station};
 use player::{Phase, Player, VOLUME_STEP};
 use search::SearchWorker;
 use ui::{ColorMode, Palette, View};
-
-#[derive(Parser)]
-#[command(
-    name = "radiotrope-cli",
-    about = "Play internet radio, search the station directory, and manage shared Radiotrope favorites",
-    version
-)]
-struct Cli {
-    /// A favorite's number, part of its name, or a stream URL to play at
-    /// start. Without it, the player opens on your favorites.
-    station: Option<String>,
-}
 
 /// Our crates' messages from info up; other libraries' only when they fail
 const DEFAULT_LOG: &str = "error,radiotrope=info";

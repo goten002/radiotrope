@@ -2,6 +2,12 @@
 
 pub use radiotrope_library::config::{app, providers};
 
+/// The application's identity on Linux desktops: the Wayland app_id and X11
+/// WM_CLASS, the desktop file's and icon's name, the AppStream id and the
+/// tray item's id. It must match `packaging/linux/app.radiotrope.Radiotrope.*`.
+/// The config and cache folders keep the name `radiotrope`.
+pub const APP_ID: &str = "app.radiotrope.Radiotrope";
+
 /// The disk caches (API responses, logos)
 pub mod caches {
     use std::time::Duration;

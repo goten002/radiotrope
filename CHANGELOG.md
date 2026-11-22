@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Added
+- `make install` for Linux (with `PREFIX` and `DESTDIR`): the programs, the launcher, icons up to 512 px, an AppStream entry for software centres, man pages, and bash, zsh and fish completions.
+- Windows: `radiotrope-cli.exe` and `radiotrope-probe.exe` get the icon and version details too, and all three name "Radiotrope" as the publisher.
 - Desktop keyboard shortcuts for playback, volume, favorites, recording, search, opening a stream, and closing the window. Help > Keyboard Shortcuts (F1) lists the bindings, and menus show hints next to the corresponding commands.
 - The terminal player can search the station directory and add or remove favorites shared with the Radiotrope app.
 - Scheduled playback in Tools > Scheduler: start a station at a set time with a fade-in, timed recordings, and stops, once on a chosen date or weekly on chosen days, with an end time or length and their own volume. If a station hasn't started 30 seconds after its start time, the Scheduler switches to alarm mode and plays a fallback sound until stopped (on by default, per entry). A Sleep Timer in Tools and the tray stops playback after 15 minutes to 6 hours or any length up to a day in 5 minute steps, opening on the length used last time, with a fade-out, and can be restarted or stopped while it runs. A grey Timer label with a moon under the station shows the time left; a grey Scheduler label counts down the last minute before an entry and says what started for 15 seconds, or until clicked. The player must be open; it does not wake the computer.
@@ -27,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - `radiotrope-probe` names itself to stations as `RadiotropeProbe/<version>`, and a program using it as a library can set its own User-Agent with `set_user_agent`.
 
 ### Changed
+- Version 0.1.0. `--version` names the program (`radiotrope 0.1.0`, not `radiotrope-app 0.1.0-dev`). Building needs Rust 1.95 or newer.
+- The Linux app id is `app.radiotrope.Radiotrope` (window, launcher, icon and tray). An older hand-installed `radiotrope.desktop` should be removed. Settings and favorites stay where they were.
 - Open > Network Stream asks for the stream URL first, and it is all a stream needs: the name, logo and country are optional. Without a name, the stream's own name is shown.
 - Search Stations has Country and Genre filters under the search box, combinable with a name search, and Reset filters to clear them. Stations > By Country is gone: pick a country in the filters instead.
 - Station search uses Radiotrope's own directory at api.radiotrope.app instead of radio-browser.info: typo-tolerant name search, countries, genres and languages, 256 px logos, and plays counted for its popular list. The Browse, phone Search and agent search all use it. Votes, trending and bitrate orders are gone (the phone's are treated as Most played); codec and bitrate filters for agents are checked on each page. Favorites saved from radio-browser keep playing as before.
