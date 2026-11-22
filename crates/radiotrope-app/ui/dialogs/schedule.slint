@@ -1,6 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { DialogShell, Field, Toggle, Dropdown, Picker, PickerOption, IconButton, Icon, InfoTip, StatusPanel } from "../components.slint";
+import { SecondaryButton } from "../buttons.slint";
+import { DialogShell, Field, Toggle, Dropdown, Picker, MultiPickerOption, IconButton, Icon, InfoTip, StatusPanel } from "../components.slint";
 
 // One entry, as the list shows it
 export struct ScheduleRow {
@@ -72,6 +73,13 @@ component EntryRow inherits Rectangle {
     callback edit();
     callback remove();
 
+    // What the entry does, for its controls' spoken labels: "07:00, Record
+    // Jazz FM", so two entries for one station sound different
+    property <string> spoken: root.entry.time + ", "
+        + (root.entry.action == "record" ? "Record " + root.entry.title
+            : root.entry.action == "play" ? "Play " + root.entry.title
+            : root.entry.title);
+
     height: Theme.row-dense;
     border-radius: Theme.radius-md;
     background: touch.has-hover ? Theme.hover-bg
@@ -91,7 +99,8 @@ component EntryRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
             RowSwitch {
-                label: root.entry.enabled ? "Switch off " + root.entry.title : "Switch on " + root.entry.title;
+                // The switch says on or off itself
+                label: root.spoken;
                 checked: root.entry.enabled;
                 toggled(on) => { root.toggled(on); }
             }
@@ -104,6 +113,8 @@ component EntryRow inherits Rectangle {
             font-size: Theme.font-title;
             font-weight: Theme.weight-semibold;
             vertical-alignment: center;
+            // Said by the switch
+            accessible-role: none;
         }
 
         VerticalLayout {
@@ -131,11 +142,15 @@ component EntryRow inherits Rectangle {
                 font-size: Theme.font-base;
                 font-weight: Theme.weight-semibold;
                 overflow: elide;
+                // Said by the switch
+                accessible-role: none;
             }
             Text {
                 text: root.confirm-remove ? "Press Again to Remove"
                     : root.entry.running ? "Running now · " + root.entry.details : root.entry.details;
-                color: root.confirm-remove ? Theme.danger-text : Theme.text-secondary;
+                // On the tinted running row the secondary grey is too faint
+                color: root.confirm-remove ? Theme.danger-text
+                    : root.entry.running ? Theme.text-primary : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
             }
@@ -145,7 +160,7 @@ component EntryRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("../icons/edit.svg");
-                label: "Edit " + root.entry.title;
+                label: "Edit " + root.entry.time + " " + root.entry.title;
                 icon-size: Theme.icon-compact;
                 clicked => { root.edit(); }
             }
@@ -154,7 +169,8 @@ component EntryRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("../icons/trash.svg");
-                label: root.confirm-remove ? "Press Again to Remove" : "Remove " + root.entry.title;
+                label: root.confirm-remove ? "Press Again to Remove"
+                    : "Remove " + root.entry.time + " " + root.entry.title;
                 icon-size: Theme.icon-compact;
                 danger-armed: root.confirm-remove;
                 clicked => { root.remove(); }
@@ -163,8 +179,8 @@ component EntryRow inherits Rectangle {
     }
 }
 
-// A day of the week to switch on or off
-component DayChoice inherits PickerOption {
+// A day of the week to switch on or off; several can be on (a checkbox)
+component DayChoice inherits MultiPickerOption {
     option-width: 40px;
     horizontal-stretch: 1;
 }
@@ -191,6 +207,8 @@ export component ScheduleDialog inherits Rectangle {
     callback toggled(int, bool);
     callback remove(int);
     callback opened();
+    // Search Stations, offered when there is no station to pick
+    callback search-stations();
 
     property <bool> editing: false;
     // The draft's fields, each bound to its control
@@ -234,6 +252,10 @@ export component ScheduleDialog inherits Rectangle {
         root.end-at = draft.end-at;
         root.volume = draft.volume;
         root.fade = draft.fade;
+        // No station to play or record: only Stop can be saved
+        if root.stations.length == 0 {
+            root.action = "stop";
+        }
         root.error = "";
         root.confirm-remove = 0;
         root.editing = true;
@@ -334,6 +356,8 @@ export component ScheduleDialog inherits Rectangle {
                     if root.confirm-remove == row.id {
                         root.confirm-remove = 0;
                         root.remove(row.id);
+                        // The row and its focused trash went away
+                        shell.take-focus();
                     } else {
                         root.confirm-remove = row.id;
                     }
@@ -341,11 +365,23 @@ export component ScheduleDialog inherits Rectangle {
             }
         }
 
-        if !root.editing && root.next != "": Text {
-            text: root.next;
-            color: Theme.text-secondary;
-            font-size: Theme.font-md;
-            overflow: elide;
+        if !root.editing: VerticalLayout {
+            spacing: Theme.space-4;
+
+            if root.next != "": Text {
+                text: root.next;
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                overflow: elide;
+            }
+
+            // Not an alarm clock: say so before an entry is relied on
+            Text {
+                text: "Runs only while Radiotrope is open. It doesn't wake a sleeping computer.";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-md;
+                wrap: word-wrap;
+            }
         }
 
         // ── The form ──
@@ -356,9 +392,13 @@ export component ScheduleDialog inherits Rectangle {
                 label: "Action";
                 horizontal-stretch: 0;
                 Picker {
+                    label: "Action";
                     choices: [
-                        { id: "play", label: "Play", icon: @image-url("../icons/play.svg") },
-                        { id: "record", label: "Record", icon: @image-url("../icons/record.svg"), red-icon: true },
+                        // Play and Record need a station
+                        { id: "play", label: "Play", icon: @image-url("../icons/play.svg"),
+                            disabled: root.stations.length == 0 },
+                        { id: "record", label: "Record", icon: @image-url("../icons/record.svg"), red-icon: true,
+                            disabled: root.stations.length == 0 },
                         { id: "stop", label: "Stop", icon: @image-url("../icons/stop.svg") },
                     ];
                     selected <=> root.action;
@@ -387,6 +427,24 @@ export component ScheduleDialog inherits Rectangle {
             }
         }
 
+        // A first run: nothing to play or record yet
+        if root.editing && root.stations.length == 0: HorizontalLayout {
+            spacing: Theme.space-8;
+
+            Text {
+                text: "Add a favorite first to play or record it.";
+                color: Theme.text-secondary;
+                font-size: Theme.font-md;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+            SecondaryButton {
+                label: "Search Stations";
+                clicked => { root.search-stations(); }
+            }
+        }
+
         if root.editing: HorizontalLayout {
             spacing: Theme.space-16;
 
@@ -396,6 +454,8 @@ export component ScheduleDialog inherits Rectangle {
                 // The form starts on the time; Enter in a field saves
                 StyledLineEdit {
                     init => { self.focus-input(); }
+                    label: root.action == "stop" ? "At" : "Start";
+                    required: true;
                     width: 80px;
                     placeholder-text: "07:00";
                     text <=> root.start;
@@ -410,6 +470,7 @@ export component ScheduleDialog inherits Rectangle {
                     spacing: Theme.space-8;
 
                     Picker {
+                        label: "Ends";
                         choices: [
                             // A recording always has an end
                             { id: "never", label: "Never", disabled: root.action == "record" },
@@ -422,6 +483,8 @@ export component ScheduleDialog inherits Rectangle {
                         changed => { root.error = ""; }
                     }
                     if root.end-kind == "after": StyledLineEdit {
+                        label: "Ends after, in minutes";
+                        required: true;
                         width: 70px;
                         enabled: root.action != "stop";
                         placeholder-text: "60";
@@ -436,6 +499,8 @@ export component ScheduleDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
                     if root.end-kind == "at": StyledLineEdit {
+                        label: "Ends at";
+                        required: true;
                         width: 80px;
                         enabled: root.action != "stop";
                         placeholder-text: "22:00";
@@ -456,6 +521,7 @@ export component ScheduleDialog inherits Rectangle {
                 spacing: Theme.space-8;
 
                 Picker {
+                    label: "Repeat";
                     choices: [
                         { id: "once", label: "Once" },
                         { id: "weekly", label: "Weekly" },
@@ -566,6 +632,8 @@ export component ScheduleDialog inherits Rectangle {
             color: Theme.danger-text;
             font-size: Theme.font-md;
             wrap: word-wrap;
+            // Save didn't go through: said at once
+            accessible-live-region: assertive;
         }
     }
 }

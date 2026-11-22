@@ -373,6 +373,13 @@ fn entry_at(
     entries: &[Entry],
     now: &DateTime<Local>,
 ) -> Result<Entry, String> {
+    // The controller refuses it too, but its answer isn't waited for
+    if draft.id <= 0 && entries.len() >= schedule::MAX_ENTRIES {
+        return Err(format!(
+            "The Scheduler is full ({} entries). Remove one to add another.",
+            schedule::MAX_ENTRIES
+        ));
+    }
     let action = Action::from_id(draft.action.as_str()).ok_or("Pick what to do")?;
     let start = ClockTime::parse(draft.start.as_str())
         .ok_or("Type the start as hours and minutes, like 07:30")?;
@@ -832,5 +839,18 @@ mod tests {
         first.id = 1;
         let error = entry_of(&draft("record", "after"), &[first]).unwrap_err();
         assert!(error.starts_with("Overlaps Record Jazz FM"), "{error}");
+
+        // A full Scheduler takes no new entry, but an edit still saves
+        let mut kept = entry_of(&draft("stop", "never"), &[]).unwrap();
+        kept.id = 1;
+        let full = vec![kept; schedule::MAX_ENTRIES];
+        let error = entry_of(&draft("stop", "never"), &full).unwrap_err();
+        assert!(
+            error.starts_with("The Scheduler is full (100 entries)"),
+            "{error}"
+        );
+        let mut edit = draft("stop", "never");
+        edit.id = 1;
+        assert!(entry_of(&edit, &full).is_ok());
     }
 }
