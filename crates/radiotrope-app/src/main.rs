@@ -6,6 +6,8 @@ mod about_ui;
 mod agents_ui;
 mod app;
 mod args;
+#[cfg(feature = "desktop")]
+mod autostart;
 mod browse_ui;
 mod caches;
 mod context;
@@ -466,6 +468,7 @@ fn main() {
             let _ = ui_weak.upgrade_in_event_loop(move |ui| ui.set_tray_available(available));
         });
         tray::start(&ui);
+        setup_start_at_login(&ui);
         let start_hidden = settings.start_in_tray && settings.tray_icon && available;
         if start_hidden {
             let ui_weak = ui.as_weak();
@@ -519,6 +522,22 @@ fn main() {
     while shutdown_sent && !controller.is_finished() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
+}
+
+/// View > System Tray > Start at Login: the tick shows what the autostart
+/// file or Run key says, also after a change that failed
+#[cfg(feature = "desktop")]
+fn setup_start_at_login(ui: &App) {
+    ui.set_start_at_login(autostart::is_enabled());
+    let ui_weak = ui.as_weak();
+    ui.on_start_at_login_changed(move |on| {
+        if let Err(e) = autostart::set_enabled(on) {
+            eprintln!("Start at Login: {e}");
+        }
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.set_start_at_login(autostart::is_enabled());
+        }
+    });
 }
 
 /// What to tell a user whose window didn't open (no display, no usable

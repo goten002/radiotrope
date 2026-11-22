@@ -597,6 +597,8 @@ export component App inherits Window {
                         tray-icon <=> root.tray-icon;
                         close-to-tray <=> root.close-to-tray;
                         start-in-tray <=> root.start-in-tray;
+                        start-at-login <=> root.start-at-login;
+                        start-at-login-changed(on) => { root.start-at-login-changed(on); }
                         hide-on-minimize <=> root.hide-on-minimize;
                         tray-available: root.tray-available;
                         quit-app => { root.quit-app(); }

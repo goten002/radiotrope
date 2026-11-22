@@ -841,6 +841,8 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> tray-icon;
     in-out property <bool> close-to-tray;
     in-out property <bool> start-in-tray;
+    in-out property <bool> start-at-login;
+    callback start-at-login-changed(bool);
     in-out property <bool> hide-on-minimize;
     in property <bool> tray-available: true;
     callback quit-app();
@@ -878,8 +880,10 @@ export component MenuBar inherits Rectangle {
         // 12 Window, 13 Use System Title Bar, 14 Rounded Corners, 15 Always on Top
         Platform.has-window-frame, root.window-open,
         root.window-open && root.custom-frame && root.corners-available, root.window-open,
-        // 16 System Tray, 17 Show Tray Icon, 18-20 the three tray choices
+        // 16 System Tray, 17 Show Tray Icon, 18-20 the three tray choices,
+        // 21 Start at Login
         Platform.has-tray, root.tray-open, root.tray-usable, root.tray-usable, root.tray-usable,
+        root.tray-open,
     ];
     property <[bool]> tools-usable: [
         // 0 Statistics, 1 Filters, 2 Equalizer, 3 Start Recording
@@ -1273,7 +1277,7 @@ export component MenuBar inherits Rectangle {
             // Left on a row of an open group folds it
             fold-to: root.style-open && MenuNav.active >= 6 && MenuNav.active <= 11 ? 5
                 : root.window-open && MenuNav.active >= 13 && MenuNav.active <= 15 ? 12
-                : root.tray-open && MenuNav.active >= 17 && MenuNav.active <= 20 ? 16 : -1;
+                : root.tray-open && MenuNav.active >= 17 && MenuNav.active <= 21 ? 16 : -1;
             fold => { root.view-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { view-popup.close(); }
@@ -1447,6 +1451,18 @@ export component MenuBar inherits Rectangle {
                     checked: root.start-in-tray;
                     clicked => {
                         root.start-in-tray = !root.start-in-tray;
+                    }
+                }
+                // Saved in the autostart file or the Run key, not the settings
+                CheckMenuItem {
+                    slot: 21;
+                    label: "Start at Login";
+                    icon: @image-url("icons/desktop.svg");
+                    indent: Theme.space-16;
+                    checked: root.start-at-login;
+                    clicked => {
+                        root.start-at-login = !root.start-at-login;
+                        root.start-at-login-changed(root.start-at-login);
                     }
                 }
                 if root.tray-icon && !root.tray-available: MenuNote {
