@@ -125,6 +125,9 @@ pub struct SearchPage {
     pub stations: Vec<Found>,
     /// More may follow at offset + stations.len()
     pub has_more: bool,
+    /// How many stations the directory has for the filter, when it says
+    /// (codec and bitrate, checked on each page, aren't counted in)
+    pub total: Option<usize>,
 }
 
 /// What the controller needs from outside callers, shared by all of them
@@ -305,8 +308,63 @@ impl Control {
         .await?
     }
 
+    /// The favorite after (or before) the one playing, in the user's
+    /// order and going round at the ends, as Next and Previous in the
+    /// window; the first one when no favorite is playing. Its URL, name,
+    /// logo and country, to play it.
+    pub async fn favorite_step(
+        &self,
+        forward: bool,
+    ) -> Result<(String, String, Option<String>, Option<String>), Error> {
+        let playing = self.snapshot().station_url;
+        self.with_favorites(move |_, favorites| {
+            let list = favorites.sorted(FavoriteSort::Manual);
+            let index = crate::shortcuts::favorite_step(
+                list.iter().map(|f| f.url()),
+                playing.as_deref(),
+                forward,
+            )
+            .ok_or_else(|| Error::Failed("There are no favorites".into()))?;
+            let fav = list[index];
+            Ok((
+                fav.url().to_string(),
+                fav.name().to_string(),
+                fav.station.logo_url.clone(),
+                fav.station.country.clone(),
+            ))
+        })
+        .await?
+    }
+
     pub fn stop(&self) -> Result<(), Error> {
         self.send(AppCommand::Stop)
+    }
+
+    /// Switch the equalizer on or off and pick a preset by its name, as
+    /// the window's Equalizer does; what is `None` stays. Tells the
+    /// preset's name as the player spells it.
+    pub fn set_equalizer(
+        &self,
+        enabled: Option<bool>,
+        preset: Option<&str>,
+    ) -> Result<Option<&'static str>, Error> {
+        let preset = match preset {
+            Some(name) => Some(
+                radiotrope::audio::find_preset(name.trim())
+                    .ok_or_else(|| {
+                        Error::Failed(format!("No equalizer preset named {:?}", name.trim()))
+                    })?
+                    .name,
+            ),
+            None => None,
+        };
+        if let Some(name) = preset {
+            self.send(AppCommand::SetEqPreset(name.to_string()))?;
+        }
+        if let Some(on) = enabled {
+            self.send(AppCommand::SetEqEnabled(on))?;
+        }
+        Ok(preset)
     }
 
     /// Set the volume (0 to 1); unmutes above 0. Tells whether it was muted.
@@ -362,6 +420,7 @@ impl Control {
             let providers = control.providers()?;
             let mut stations = Vec::new();
             let mut has_more = false;
+            let mut total = Some(0);
             let mut failed = None;
             for id in providers.list_ids() {
                 let Some(provider) = providers.get(id) else {
@@ -370,6 +429,7 @@ impl Control {
                 match provider.search_filtered(&filter, limit, offset) {
                     Ok(r) => {
                         has_more |= r.has_more;
+                        total = total.zip(r.total).map(|(sum, t)| sum + t);
                         stations.extend(r.stations);
                     }
                     Err(e) => failed = Some(e),
@@ -388,14 +448,19 @@ impl Control {
                     station,
                 })
                 .collect();
-            Ok(SearchPage { stations, has_more })
+            Ok(SearchPage {
+                stations,
+                has_more,
+                total,
+            })
         })
         .await
         .map_err(|e| Error::Failed(format!("Can't search: {e}")))?
     }
 
-    /// The directory's genres, countries or languages: those whose name
-    /// holds `filter` (or whose code is it), largest first, at most `limit`
+    /// The directory's genres, countries, languages or programme types:
+    /// those whose name holds `filter` (or whose code or slug is it),
+    /// largest first, at most `limit`
     pub async fn categories(
         &self,
         wanted: CategoryType,
@@ -433,6 +498,7 @@ impl Control {
             .filter(|c| {
                 filter.as_deref().is_none_or(|f| {
                     c.name.to_lowercase().contains(f)
+                        || c.id.eq_ignore_ascii_case(f)
                         || c.code
                             .as_deref()
                             .is_some_and(|code| code.eq_ignore_ascii_case(f))
@@ -1043,6 +1109,11 @@ impl Control {
     }
 }
 
+/// Held by each test that changes Stations > Report Plays, a switch the
+/// whole process shares
+#[cfg(test)]
+pub(crate) static REPORT_PLAYS_TEST: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// A favorite's fields as the window's Edit Favorite has them
 #[derive(Debug, Clone)]
 pub struct FavoriteEdit {
@@ -1207,9 +1278,9 @@ mod tests {
         false
     }
 
-    // The only test that changes the switch, which the whole process shares
     #[tokio::test]
     async fn a_play_is_not_reported_with_report_plays_off() {
+        let _switch = REPORT_PLAYS_TEST.lock().await;
         let (control, plays, dir) = control("report");
 
         crate::view_options::set_report_plays(false);
@@ -1221,7 +1292,75 @@ mod tests {
         crate::view_options::set_report_plays(true);
         control.station_to_play("jazz".into()).await.unwrap();
         assert!(reported(&plays, 1).await, "one report when on");
+        crate::view_options::set_report_plays(false);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn next_and_previous_go_round_the_favorites_in_the_users_order() {
+        let (control, _, dir) = control("step");
+        // None yet
+        assert!(matches!(
+            control.favorite_step(true).await,
+            Err(Error::Failed(text)) if text == "There are no favorites"
+        ));
+        for name in ["a", "b", "c"] {
+            let station = Station::new(name, format!("http://{name}.test/stream"))
+                .with_logo(format!("http://{name}.test/logo.png"));
+            control
+                .add_favorite(Favorite::from_station(station))
+                .await
+                .unwrap();
+        }
+        let step = |forward| {
+            let control = control.clone();
+            async move { control.favorite_step(forward).await.unwrap().1 }
+        };
+        // Nothing playing, or a station that isn't a favorite: the first
+        assert_eq!(step(true).await, "a");
+        assert_eq!(step(false).await, "a");
+        let playing = |name: &str| {
+            control.state.lock().unwrap().station_url = Some(format!("http://{name}.test/stream"));
+        };
+        playing("elsewhere");
+        assert_eq!(step(true).await, "a");
+        playing("a");
+        assert_eq!(step(true).await, "b");
+        assert_eq!(step(false).await, "c", "round the start");
+        playing("c");
+        assert_eq!(step(true).await, "a", "round the end");
+        // The logo goes with it, for the header
+        let (_, _, logo, _) = control.favorite_step(false).await.unwrap();
+        assert_eq!(logo.as_deref(), Some("http://b.test/logo.png"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_equalizer_takes_a_preset_by_name_and_refuses_an_unknown_one() {
+        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(8);
+        let control = Control::new(
+            cmd_tx,
+            Arc::new(Mutex::new(AppSnapshot::default())),
+            Arc::new(Mutex::new(FavoritesManager::new())),
+        );
+        let preset = radiotrope::audio::PRESETS[1].name;
+        let named = control
+            .set_equalizer(Some(true), Some(&preset.to_uppercase()))
+            .unwrap();
+        assert_eq!(named, Some(preset), "as the player spells it");
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(AppCommand::SetEqPreset(name)) if name == preset
+        ));
+        assert!(matches!(
+            cmd_rx.try_recv(),
+            Ok(AppCommand::SetEqEnabled(true))
+        ));
+        // Nothing is sent for a preset the player doesn't have
+        assert!(control
+            .set_equalizer(Some(false), Some("No Such Sound"))
+            .is_err());
+        assert!(cmd_rx.try_recv().is_err());
     }
 
     #[tokio::test]
