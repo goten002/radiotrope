@@ -303,8 +303,10 @@ export global ViewOptions {
     in property <int> zoom-in-use: 100;
     // The percentages offered
     out property <[int]> zoom-choices: [90, 100, 115, 130, 150];
-    // Stations > Report Plays
-    in-out property <bool> report-plays: true;
+    // Stations > Report Plays: off until the user allows it in its dialog
+    // (dialogs/report-plays.slint), which switching it on opens
+    in-out property <bool> report-plays: false;
+    in-out property <bool> report-plays-asking: false;
     callback report-plays-changed(bool);
 }
 

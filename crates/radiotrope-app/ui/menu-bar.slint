@@ -1301,9 +1301,15 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/chart-column.svg");
                 description: "Tells the station directory which station you play, to rank popular stations.";
                 checked: ViewOptions.report-plays;
+                // On asks first (the dialog sets it); off is at once
                 clicked => {
-                    ViewOptions.report-plays = !ViewOptions.report-plays;
-                    ViewOptions.report-plays-changed(ViewOptions.report-plays);
+                    if ViewOptions.report-plays {
+                        ViewOptions.report-plays = false;
+                        ViewOptions.report-plays-changed(false);
+                    } else {
+                        ViewOptions.report-plays-asking = true;
+                        stations-popup.close();
+                    }
                 }
             }
         }

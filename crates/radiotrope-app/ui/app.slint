@@ -25,6 +25,7 @@ import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { QuitDialog } from "dialogs/quit.slint";
+import { ReportPlaysDialog } from "dialogs/report-plays.slint";
 import { TextUtil, AgentsBubble, AgentRow, ListenersBubble, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 export { FavoritesFind }
@@ -101,6 +102,7 @@ export component App inherits Window {
         if screen == "accent" { accent-dialog.show-dialog = true; }
         if screen == "shortcuts" { shortcuts-dialog.show-dialog = true; }
         if screen == "quit" { root.quit-shown = true; }
+        if screen == "report-plays" { ViewOptions.report-plays-asking = true; }
     }
     // Taskbar / Alt+Tab icon on X11 and Windows (Wayland uses the app_id)
     icon: @image-url("../../../assets/icons/icon-256.png");
@@ -950,6 +952,16 @@ export component App inherits Window {
                 keep-running => { root.quit-keep-running(); }
             }
 
+            // Stations > Report Plays switched on: asks before it is
+            report-plays-dialog := ReportPlaysDialog {
+                show-dialog <=> ViewOptions.report-plays-asking;
+                allow => {
+                    ViewOptions.report-plays = true;
+                    ViewOptions.report-plays-changed(true);
+                }
+                open-url(url) => { root.open-url(url); }
+            }
+
             // Over every other dialog: a phone waits for this code
             PairingCodeDialog {
                 show-dialog: root.pairing-shown;
@@ -998,7 +1010,8 @@ export component App inherits Window {
         || accent-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || shortcuts-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
-        || root.pairing-shown || root.pairing-qr-shown || root.quit-shown;
+        || root.pairing-shown || root.pairing-qr-shown || root.quit-shown
+        || report-plays-dialog.show-dialog;
     changed dialog-open => {
         if !self.dialog-open {
             shortcuts.focus();
