@@ -12,9 +12,11 @@ mod search;
 mod ui;
 mod visual;
 
-use std::io;
-#[cfg(unix)]
-use std::sync::atomic::Ordering;
+use std::io::{self, IsTerminal};
+use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use crossterm::event::{self, Event, KeyEventKind};
@@ -44,10 +46,28 @@ fn init_logging() {
         .init();
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Shown when stdin or stdout is not a terminal (a pipe, cron, a script)
+const NEEDS_TERMINAL: &str =
+    "radiotrope-cli needs a terminal. To check stations from a script, use radiotrope-probe.";
+
+fn main() -> ExitCode {
     init_logging();
     let cli = Cli::parse();
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        eprintln!("{NEEDS_TERMINAL}");
+        return ExitCode::FAILURE;
+    }
+    match run(cli) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            restore_terminal();
+            eprintln!("radiotrope-cli: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
 
+fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let favorites_path = library::favorites_path();
     let loaded = favorites_path
         .as_deref()
@@ -87,13 +107,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let engine = match AudioEngine::new() {
-        Ok(engine) => engine,
-        Err(e) => {
-            eprintln!("Audio error: {e}");
-            std::process::exit(1);
-        }
-    };
+    let quitting = quit_on_signals();
+
+    // Audio libraries (ALSA, PulseAudio) print to stderr as the engine
+    // starts and while it runs, which would scribble over the screen. Only
+    // a stderr that is the terminal is silenced: one sent to a file
+    // (`2>log.txt`, with `RUST_LOG`) keeps the log.
+    #[cfg(unix)]
+    if io::stderr().is_terminal() {
+        SAVED_STDERR.store(quiet_stderr()?, Ordering::SeqCst);
+    }
+    // Release builds abort on panic, so drops don't run: restore the
+    // terminal (and stderr) before the panic message is printed
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        restore_terminal();
+        default_hook(info);
+    }));
+
+    let engine = AudioEngine::new().map_err(|e| format!("Can't open the audio output: {e}"))?;
     let analysis = engine.analysis();
     let mut player = Player::new(engine, &settings);
 
@@ -124,45 +156,68 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         view.favorites_error = favorites_error;
     }
 
-    // The guard puts the terminal back however this ends: a quit, an
-    // error returned by `?`, or a panic
+    // The guard puts the terminal back however this ends: a quit, a signal,
+    // an error, or a panic
     let terminal_guard = TerminalGuard::enter()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
+    let mut edit_waiting: Option<favorites::Change> = None;
 
-    loop {
-        player.poll();
-        if let Ok(worker) = &search_worker {
-            view.search.poll(worker);
-        }
-        if let Some(worker) = &favorites_worker {
-            view.poll_favorites(worker);
-        }
-        if player.phase == Phase::Playing {
-            let mut a = analysis.lock().unwrap_or_else(|e| e.into_inner());
-            view.spectrum.update(Some(&mut a));
-        } else {
-            view.spectrum.update(None);
-        }
-
-        terminal.draw(|f| ui::draw(f, &mut view, &player))?;
-
-        if event::poll(ui::frame_interval(&view, &player))? {
-            if let Event::Key(key) = event::read()? {
-                // Windows also reports key releases
-                if key.kind == KeyEventKind::Press
-                    && !apply_effect(
-                        input::route(key, &mut view),
-                        &mut view,
-                        &mut player,
-                        search_worker.as_ref().ok(),
-                        favorites_worker.as_ref(),
-                    )
-                {
-                    break;
+    // A failed draw or read (the terminal closed under us) ends the loop
+    // like a quit, so the recording is still saved below
+    let looped = (|| -> io::Result<()> {
+        while !quitting.load(Ordering::SeqCst) {
+            player.poll();
+            if let Ok(worker) = &search_worker {
+                view.search.poll(worker);
+            }
+            if let Some(worker) = &favorites_worker {
+                view.poll_favorites(worker);
+            }
+            if let Some(change) = edit_waiting.filter(|_| !view.saving_favorites) {
+                edit_waiting = None;
+                if view.favorites_error.is_none() {
+                    player.notify(change.notice(), false);
                 }
             }
+            if player.phase == Phase::Playing {
+                let mut a = analysis.lock().unwrap_or_else(|e| e.into_inner());
+                view.spectrum.update(Some(&mut a));
+            } else {
+                view.spectrum.update(None);
+            }
+
+            terminal.draw(|f| ui::draw(f, &mut view, &player))?;
+
+            match wait_for_event(ui::frame_interval(&view, &player))? {
+                Wait::Event => {}
+                Wait::Idle => continue,
+                // The terminal window closed: SIGHUP is on its way, or
+                // already here
+                Wait::Gone => break,
+            }
+            let key = match event::read() {
+                // Windows also reports key releases
+                Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => key,
+                Ok(_) => continue,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
+            let effect = input::route(key, &mut view, player.station.as_ref());
+            if let Effect::Edit(edit) = &effect {
+                edit_waiting = Some(favorites::Change::of(edit));
+            }
+            if !apply_effect(
+                effect,
+                &mut view,
+                &mut player,
+                search_worker.as_ref().ok(),
+                favorites_worker.as_ref(),
+            ) {
+                break;
+            }
         }
-    }
+        Ok(())
+    })();
     if let Some(worker) = favorites_worker {
         worker.finish();
     }
@@ -170,8 +225,113 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Save any recording and close the engine while the screen is still
     // ours (audio libraries may print on the way out)
     player.shutdown();
+    drop(terminal);
     drop(terminal_guard);
-    Ok(())
+    Ok(looped?)
+}
+
+/// A flag set by SIGTERM, SIGHUP (the terminal window closed) or SIGINT,
+/// which the main loop checks so it leaves the normal way: the recording
+/// is saved and the terminal restored. A second signal ends at once.
+#[cfg(unix)]
+fn quit_on_signals() -> Arc<AtomicBool> {
+    use signal_hook::consts::{SIGHUP, SIGINT, SIGTERM};
+
+    let quitting = Arc::new(AtomicBool::new(false));
+    for sig in [SIGTERM, SIGINT, SIGHUP] {
+        // Keep a signal ignored by whoever started us (`nohup`) ignored
+        // Safety: with no new action, sigaction only reads the current one
+        let mut old: libc::sigaction = unsafe { std::mem::zeroed() };
+        let read = unsafe { libc::sigaction(sig, std::ptr::null(), &mut old) } == 0;
+        if read && old.sa_sigaction == libc::SIG_IGN {
+            continue;
+        }
+        // Checked before it is set: only the second signal ends us
+        let _ = signal_hook::flag::register_conditional_shutdown(sig, 1, quitting.clone());
+        if let Err(e) = signal_hook::flag::register(sig, quitting.clone()) {
+            log::warn!("Can't watch for signal {sig}: {e}");
+        }
+    }
+    quitting
+}
+
+/// Windows: Ctrl+C reaches the player as a key, and there are no other
+/// signals to watch
+#[cfg(not(unix))]
+fn quit_on_signals() -> Arc<AtomicBool> {
+    Arc::new(AtomicBool::new(false))
+}
+
+/// What [`wait_for_event`] found
+#[derive(Debug, PartialEq, Eq)]
+enum Wait {
+    /// An event can be read without blocking
+    Event,
+    /// Nothing came in time, or a signal cut the wait short
+    Idle,
+    /// The terminal hung up
+    Gone,
+}
+
+/// Wait up to `timeout` for a key (or another terminal event)
+#[cfg(unix)]
+fn wait_for_event(timeout: Duration) -> io::Result<Wait> {
+    // crossterm reads a terminal that has hung up in an endless loop (each
+    // read returns 0 bytes), and the loop would never see the quit flag. So
+    // poll(2) looks first, and crossterm only reads a terminal still there.
+    if stdin_wait(Duration::ZERO)? == Some(Wait::Gone) {
+        return Ok(Wait::Gone);
+    }
+    // Events crossterm already holds, or bytes waiting now
+    if poll_events(Duration::ZERO)? {
+        return Ok(Wait::Event);
+    }
+    match stdin_wait(timeout)? {
+        Some(Wait::Gone) => Ok(Wait::Gone),
+        Some(_) if poll_events(Duration::ZERO)? => Ok(Wait::Event),
+        _ => Ok(Wait::Idle),
+    }
+}
+
+#[cfg(not(unix))]
+fn wait_for_event(timeout: Duration) -> io::Result<Wait> {
+    Ok(if poll_events(timeout)? {
+        Wait::Event
+    } else {
+        Wait::Idle
+    })
+}
+
+/// crossterm's poll, with a signal counted as no event
+fn poll_events(timeout: Duration) -> io::Result<bool> {
+    match event::poll(timeout) {
+        Err(e) if e.kind() == io::ErrorKind::Interrupted => Ok(false),
+        other => other,
+    }
+}
+
+/// poll(2) on stdin (the terminal, checked at start): `Some(Event)` when
+/// there is input, `Some(Gone)` when it hung up, `None` on timeout or signal
+#[cfg(unix)]
+fn stdin_wait(timeout: Duration) -> io::Result<Option<Wait>> {
+    let mut fd = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let millis = timeout.as_millis().min(libc::c_int::MAX as u128) as libc::c_int;
+    // Safety: one valid pollfd, for the length given
+    match unsafe { libc::poll(&mut fd, 1, millis) } {
+        -1 => match io::Error::last_os_error() {
+            e if e.kind() == io::ErrorKind::Interrupted => Ok(None),
+            e => Err(e),
+        },
+        0 => Ok(None),
+        _ if fd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 => {
+            Ok(Some(Wait::Gone))
+        }
+        _ => Ok(Some(Wait::Event)),
+    }
 }
 
 /// The app's settings, read fresh (the recording folder may have changed)
@@ -258,9 +418,12 @@ fn step_station(view: &mut View, player: &mut Player, delta: isize) {
     player.play(view.favorites[next].clone());
 }
 
-/// Raw mode, the alternate screen and (on Unix) a silenced stderr while it
-/// lives; dropping it, or a panic, restores all three
+/// Raw mode and the alternate screen while it lives; dropping it restores
+/// both, and stderr if it was silenced
 struct TerminalGuard;
+
+/// Whether raw mode and the alternate screen may be on, for the panic hook
+static SCREEN_TAKEN: AtomicBool = AtomicBool::new(false);
 
 /// The stderr saved by [`quiet_stderr`], or -1, for the panic hook
 #[cfg(unix)]
@@ -268,21 +431,8 @@ static SAVED_STDERR: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
-        // Suppress stderr during TUI — ALSA/PulseAudio and other libs write
-        // diagnostic messages to stderr which corrupt the ratatui display.
-        // Windows audio (WASAPI) doesn't, so there stderr is left alone.
-        #[cfg(unix)]
-        SAVED_STDERR.store(quiet_stderr()?, Ordering::SeqCst);
-
-        // Release builds abort on panic, so drops don't run: restore the
-        // terminal before the panic message is printed
-        let default_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(move |info| {
-            restore_terminal();
-            default_hook(info);
-        }));
-
         let guard = TerminalGuard;
+        SCREEN_TAKEN.store(true, Ordering::SeqCst);
         terminal::enable_raw_mode()?;
         io::stdout().execute(EnterAlternateScreen)?;
         Ok(guard)
@@ -296,10 +446,12 @@ impl Drop for TerminalGuard {
 }
 
 /// Leave raw mode and the alternate screen and give stderr back. Safe to
-/// call more than once.
+/// call more than once, and before the screen was taken.
 fn restore_terminal() {
-    let _ = terminal::disable_raw_mode();
-    let _ = io::stdout().execute(LeaveAlternateScreen);
+    if SCREEN_TAKEN.swap(false, Ordering::SeqCst) {
+        let _ = terminal::disable_raw_mode();
+        let _ = io::stdout().execute(LeaveAlternateScreen);
+    }
     #[cfg(unix)]
     restore_stderr(SAVED_STDERR.swap(-1, Ordering::SeqCst));
 }

@@ -1,4 +1,5 @@
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, Sender, TryRecvError};
 use radiotrope_library::data::types::Station;
@@ -7,6 +8,10 @@ use ratatui::widgets::ListState;
 use unicode_segmentation::UnicodeSegmentation;
 
 const PAGE_SIZE: usize = 30;
+/// A search slower than this shows how long it has been waiting
+const SHOW_WAIT_AFTER: Duration = Duration::from_secs(3);
+/// The one message for a failed search: the cause goes to the log
+pub const SEARCH_FAILED: &str = "Can't reach the station directory. Check your connection.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
@@ -85,6 +90,8 @@ pub struct Search {
     offset: usize,
     has_more: bool,
     pending: bool,
+    /// When the request in flight was sent
+    pending_since: Option<Instant>,
     started: bool,
 }
 
@@ -151,6 +158,7 @@ impl Search {
     fn request(&mut self) -> Request {
         self.error = None;
         self.pending = true;
+        self.pending_since = Some(Instant::now());
         Request {
             generation: self.generation,
             query: self.submitted.clone(),
@@ -177,14 +185,19 @@ impl Search {
     }
 
     pub fn status(&self) -> String {
-        if let Some(error) = &self.error {
-            let label = if self.editing {
-                "Search error"
-            } else {
-                "Enter retry"
-            };
-            return format!("{label}: {error}");
+        self.status_at(Instant::now())
+    }
+
+    fn status_at(&self, now: Instant) -> String {
+        if self.error.is_some() {
+            return SEARCH_FAILED.into();
         }
+        let waited = self
+            .pending_since
+            .map(|since| now.saturating_duration_since(since))
+            .filter(|waited| *waited >= SHOW_WAIT_AFTER)
+            .map(|waited| format!(" {} s", waited.as_secs()))
+            .unwrap_or_default();
         match (
             self.started,
             self.pending,
@@ -193,8 +206,8 @@ impl Search {
             self.rows.is_empty(),
         ) {
             (false, ..) => "Blank = most played".into(),
-            (_, true, 0, ..) => "Loading stations…".into(),
-            (_, true, ..) => "Loading more…".into(),
+            (_, true, 0, ..) => format!("Loading stations…{waited}"),
+            (_, true, ..) => format!("Loading more…{waited}"),
             (_, _, _, true, true) => "No playable rows · ↓ more".into(),
             (_, _, _, true, false) => "↓ or PgDn at end for more".into(),
             (_, _, _, false, true) => "No matches".into(),
@@ -207,7 +220,9 @@ impl Search {
             match worker.replies.try_recv() {
                 Ok(reply) => self.apply(reply),
                 Err(TryRecvError::Disconnected) if self.pending => {
+                    log::warn!("Station search failed: the search thread ended");
                     self.pending = false;
+                    self.pending_since = None;
                     self.error = Some("Search worker unavailable".into());
                     break;
                 }
@@ -225,6 +240,7 @@ impl Search {
             return;
         }
         self.pending = false;
+        self.pending_since = None;
         match reply.result {
             Ok(page) => {
                 self.offset += PAGE_SIZE;
@@ -234,7 +250,10 @@ impl Search {
                     self.list.select(Some(0));
                 }
             }
-            Err(error) => self.error = Some(error),
+            Err(error) => {
+                log::warn!("Station search failed: {error}");
+                self.error = Some(error);
+            }
         }
     }
 }
@@ -295,6 +314,9 @@ mod tests {
             result: Err("offline".into()),
         });
         assert!(search.move_cursor(1, true).is_none());
+        assert_eq!(search.status(), SEARCH_FAILED);
+        search.editing = false;
+        assert_eq!(search.status(), SEARCH_FAILED);
         let retry = search.retry().unwrap();
         assert_eq!(retry, second);
         search.apply(page(retry, vec![Station::new("A", "https://a.test")], true));
@@ -308,5 +330,42 @@ mod tests {
         assert_eq!(search.list.selected(), Some(0));
         assert_eq!(search.rows.len(), 2);
         assert_eq!(search.status(), "End of list");
+    }
+
+    #[test]
+    fn a_slow_search_shows_its_wait_after_three_seconds() {
+        let mut search = Search::default();
+        search.open();
+        let request = search.submit();
+        let since = search.pending_since.unwrap();
+        assert_eq!(search.status_at(since), "Loading stations…");
+        assert_eq!(
+            search.status_at(since + Duration::from_millis(2900)),
+            "Loading stations…"
+        );
+        assert_eq!(
+            search.status_at(since + Duration::from_secs(5)),
+            "Loading stations… 5 s"
+        );
+        search.apply(page(
+            request,
+            vec![Station::new("A", "https://a.test")],
+            true,
+        ));
+        assert!(search.pending_since.is_none());
+        let more = search.move_cursor(1, true).unwrap();
+        let since = search.pending_since.unwrap();
+        assert_eq!(
+            search.status_at(since + Duration::from_secs(12)),
+            "Loading more… 12 s"
+        );
+        search.apply(Reply {
+            request: more,
+            result: Err("timed out".into()),
+        });
+        assert_eq!(
+            search.status_at(since + Duration::from_secs(40)),
+            SEARCH_FAILED
+        );
     }
 }

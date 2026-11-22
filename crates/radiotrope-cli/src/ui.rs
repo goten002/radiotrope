@@ -944,9 +944,11 @@ mod tests {
             request,
             result: Err("offline".into()),
         });
-        assert!(render_search(&mut terminal, &mut view, None).contains("Search error: offline"));
+        assert!(render_search(&mut terminal, &mut view, None)
+            .contains("Can't reach the station directory"));
         view.search.editing = false;
-        assert!(render_search(&mut terminal, &mut view, None).contains("Enter retry: offline"));
+        assert!(render_search(&mut terminal, &mut view, None)
+            .contains("Can't reach the station directory"));
         let request = view.search.retry().unwrap();
         view.search.apply(Reply {
             request,
