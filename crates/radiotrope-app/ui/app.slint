@@ -79,6 +79,7 @@ export component App inherits Window {
             }
             stream-dialog.show-dialog = true;
             if detail == "armed" {
+                root.is-recording = true;
                 stream-dialog.url = "https://stream.example.com/radio";
                 stream-dialog.confirm-switch(stream-dialog.url);
             }
