@@ -181,7 +181,7 @@ const QR_QUIET: usize = 4;
 /// The QR code for `payload`, a pixel per module: black on transparent, so
 /// the light theme's card shows through and the dark theme puts a white
 /// tile behind it. Drawn pixelated at the size the dialog gives it
-fn qr_image(payload: &str) -> Option<slint::Image> {
+pub(crate) fn qr_image(payload: &str) -> Option<slint::Image> {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
     let code =
         qrcode::QrCode::with_error_correction_level(payload.as_bytes(), qrcode::EcLevel::M).ok()?;

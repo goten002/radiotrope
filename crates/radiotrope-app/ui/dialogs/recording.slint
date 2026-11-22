@@ -7,6 +7,7 @@ import { Platform } from "@platform/wifi.slint";
 // Recording format, folder, and whether recordings include the equalizer
 export component RecordingSettingsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    in property <string> snapshot-overlay;
     // The folder in use
     in property <string> folder;
     // The default folder, to offer Restore Default whenever the path differs
@@ -90,6 +91,7 @@ export component RecordingSettingsDialog inherits Rectangle {
                     // As tall as the Format picker beside it
                     height: 36px;
                     horizontal-stretch: 0;
+                    show-popup: root.snapshot-overlay == "bitrate";
                     items: ["Auto", "96 kbps", "128 kbps", "192 kbps", "256 kbps", "320 kbps"];
                     selected: root.bitrate-index;
                     // WAV is uncompressed, so it has no bitrate to pick

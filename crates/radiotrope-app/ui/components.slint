@@ -812,7 +812,7 @@ export component InfoTip inherits Rectangle {
     in property <bool> open-right: false;
     in property <bool> open-below: false;
 
-    property <bool> open: false;
+    in-out property <bool> open: false;
     // The press came from a touch screen, which leaves hover as the finger
     // lifts: a tap keeps the bubble open until the next tap
     property <bool> touch-press: false;
@@ -903,6 +903,15 @@ export component InfoTip inherits Rectangle {
 // (over the header under the menu bar), at the chip's right edge: a popup
 // would take the mouse and close it on any move.
 export component AgentsChip inherits Rectangle {
+    in property <bool> snapshot-bubble;
+    changed snapshot-bubble => {
+        if root.snapshot-bubble { root.open-bubble(); }
+    }
+
+    function open-bubble() {
+        root.show-bubble(root.absolute-position.x + root.width, root.absolute-position.y + root.height + 6px);
+    }
+
     in property <int> count;
     in property <image> icon: @image-url("icons/robot.svg");
     // Show the bubble with its top right corner here (window coordinates),
@@ -929,7 +938,7 @@ export component AgentsChip inherits Rectangle {
         running: false;
         triggered => {
             self.running = false;
-            root.show-bubble(root.absolute-position.x + root.width, root.absolute-position.y + root.height + 6px);
+            root.open-bubble();
         }
     }
 
@@ -1123,6 +1132,11 @@ component DropdownItem inherits Rectangle {
 // A dropdown like the EQ presets: a closed field showing the pick, and
 // the list in a popup (Agents dialog, recording bitrate)
 export component Dropdown inherits Rectangle {
+    in property <bool> show-popup;
+    changed show-popup => {
+        if root.show-popup { popup.show(); }
+    }
+
     in property <[string]> items;
     in-out property <int> selected;
     in property <bool> enabled: true;

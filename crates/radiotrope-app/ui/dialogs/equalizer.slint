@@ -331,6 +331,7 @@ export struct EqPresetGroup {
 
 export component EqualizerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    in property <bool> show-preset-menu;
     // The presets, from the engine's list (set from Rust): the ones shown
     // on their own at the top (Flat), then a column per group
     in property <[string]> top-presets;
@@ -376,6 +377,10 @@ export component EqualizerDialog inherits Rectangle {
             // Preset dropdown; Space, Enter or Down opens it once reached
             // with Tab. Greyed out while the EQ is off, like the faders.
             Rectangle {
+                property <bool> show-preset-menu: root.show-preset-menu;
+                changed show-preset-menu => {
+                    if self.show-preset-menu { preset-popup.show(); }
+                }
                 width: 160px;
                 height: 30px;
                 border-radius: Theme.radius-md;

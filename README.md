@@ -348,6 +348,26 @@ checks the Raspberry Pi build
 (`cargo check -p radiotrope-app --no-default-features --features embedded`).
 Changes are listed in [CHANGELOG.md](CHANGELOG.md).
 
+### UI snapshots
+
+Render the desktop UI into PNGs and an `index.md` with a description of each
+frame:
+
+```bash
+cargo run -p radiotrope-app --features ui-snapshots --bin radiotrope -- --ui-snapshots /tmp/radiotrope-snapshots
+```
+
+The command captures both themes at the default window size. Use
+`--theme dark` or `--theme light` for a single theme and `--scale 2` for
+double-resolution output. The hidden flag lets the capture reuse the compiled
+Slint `App` and its bundled Inter font with a headless software renderer.
+It uses fixture data and exits before starting player services or accessing
+user settings and favorites.
+
+WiFi Settings and the on-screen keyboard are embedded-only. Native file
+pickers and native tray and window menus belong to the operating system.
+The snapshots include Radiotrope's own window menu.
+
 ## License
 
 Copyright (C) 2026 George Alexiou

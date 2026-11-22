@@ -30,6 +30,75 @@ export { AboutInfo, Defaults, TextUtil, VizData, VizStyle, BrowseStation, Filter
 
 export component App inherits Window {
     title: "Radiotrope";
+
+    // Headless capture drives the same dialogs and popups as the live app.
+    in property <bool> snapshot-mode;
+    in property <string> snapshot-favorite-menu;
+    in property <string> snapshot-bubble;
+    in property <bool> snapshot-preset-menu;
+    in property <string> snapshot-overlay;
+    in-out property <image> snapshot-country-flag <=> browser-dialog.country-flag;
+
+    public function snapshot-open(screen: string, detail: string) {
+        if screen == "menu" { menu-bar.open-menu(detail, ""); }
+        if screen == "view-group" { menu-bar.open-menu("view", detail); }
+        if screen == "tools-group" { menu-bar.open-menu("tools", detail); }
+        if screen == "main" && detail == "empty" {
+            favorites.snapshot-empty-height = root.height - menu-bar.height - playback.height - controls.height;
+        }
+        if screen == "favorite-stats" { favorites.pinned-stats-id = root.favorites-list[0].id; }
+        if screen == "search" {
+            browser-dialog.search-query = detail == "empty" ? "no such station" : "jazz";
+            if detail == "filtered" || detail == "next-loading" || detail == "next-error" {
+                browser-dialog.country-code = "GB";
+                browser-dialog.country-name = "United Kingdom";
+                browser-dialog.genre-code = "jazz";
+                browser-dialog.genre-name = "Jazz";
+            }
+            browser-dialog.show-dialog = true;
+        }
+        if screen == "picker" {
+            root.show-filter-picker(detail == "genre" ? "genre" : "country");
+            picker-dialog.selected-code = detail == "genre" ? "jazz" : "GB";
+        }
+        if screen == "network-stream" {
+            if detail == "filled" {
+                stream-dialog.url = root.station-url;
+                stream-dialog.name = root.station-name;
+                stream-dialog.logo-url = root.station-logo-url;
+                stream-dialog.country = root.station-country;
+            }
+            stream-dialog.show-dialog = true;
+        }
+        if screen == "edit-favorite" {
+            edit-dialog.open(root.favorites-list[0]);
+            edit-dialog.confirm-remove = detail == "remove";
+        }
+        if screen == "statistics" { stats-dialog.show-dialog = true; }
+        if screen == "equalizer" { eq-dialog.show-dialog = true; }
+        if screen == "filters" {
+            filters-dialog.show-leveler-info = detail == "info";
+            filters-dialog.show-dialog = true;
+        }
+        if screen == "recording" { recording-dialog.open(); }
+        if screen == "sleep" { sleep-dialog.open(); }
+        if screen == "schedule" {
+            schedule-dialog.open();
+            if detail == "add" || detail == "station" || detail == "date" || detail == "volume" || detail == "fallback-info" {
+                schedule-dialog.start-edit(0);
+            }
+            if detail == "edit" { schedule-dialog.start-edit(1); }
+            if detail == "remove" { schedule-dialog.confirm-remove = 1; }
+        }
+        if screen == "agents" { agents-dialog.open(); }
+        if screen == "remote" {
+            remote-dialog.open();
+            if detail == "remove" { remote-dialog.confirm-remove = "phone-1"; }
+        }
+        if screen == "about" { about-dialog.show-dialog = true; }
+        if screen == "accent" { accent-dialog.show-dialog = true; }
+        if screen == "shortcuts" { shortcuts-dialog.show-dialog = true; }
+    }
     // Taskbar / Alt+Tab icon on X11 and Windows (Wayland uses the app_id)
     icon: @image-url("../../../assets/icons/icon-256.png");
     default-font-family: "Inter 18pt";
@@ -490,6 +559,7 @@ export component App inherits Window {
 
                     VerticalLayout {
                     menu-bar := MenuBar {
+                        snapshot-bubble: root.snapshot-bubble;
                         show-station-stats <=> root.show-station-stats;
                         show-visualizer <=> root.show-visualizer;
                         custom-frame: root.custom-frame;
@@ -591,6 +661,7 @@ export component App inherits Window {
                     }
                 }
                 favorites := Favorites {
+                    snapshot-menu: root.snapshot-favorite-menu;
                     locate-favorite(model, highlight, playing, action, page) => {
                         return root.locate-favorite(model, highlight, playing, action, page);
                     }
@@ -611,6 +682,7 @@ export component App inherits Window {
                     favorites-reordered(from, to) => { root.reorder-favorites(from, to); }
                 }
                 controls := Controls {
+                    snapshot-overlay: root.snapshot-overlay;
                     is-playing: root.is-playing;
                     is-loading: root.is-loading;
                     has-station: root.station-url != "";
@@ -666,6 +738,7 @@ export component App inherits Window {
             }
 
             eq-dialog := EqualizerDialog {
+                show-preset-menu: root.snapshot-preset-menu;
                 top-presets: root.eq-top-presets;
                 preset-groups: root.eq-preset-groups;
                 enabled-toggled(val) => { root.eq-enabled-toggled(val); }
@@ -734,6 +807,7 @@ export component App inherits Window {
             }
 
             recording-dialog := RecordingSettingsDialog {
+                snapshot-overlay: root.snapshot-overlay;
                 browse() => { root.browse-recording-folder(); }
                 apply-folder(path) => { root.apply-recording-folder(path); }
                 restore-default() => { root.restore-recording-folder(); }
@@ -757,6 +831,7 @@ export component App inherits Window {
             }
 
             schedule-dialog := ScheduleDialog {
+                snapshot-overlay: root.snapshot-overlay;
                 rows: root.schedule-rows;
                 next: root.schedule-next;
                 stations: root.schedule-stations;
@@ -770,6 +845,7 @@ export component App inherits Window {
             }
 
             agents-dialog := AgentsDialog {
+                snapshot-overlay: root.snapshot-overlay;
                 network-toggled(on) => { root.agents-network-toggled(on); }
                 apply-port(text) => { root.agents-apply-port(text); }
                 listen-changed(index) => { root.agents-listen-changed(index); }
@@ -780,6 +856,7 @@ export component App inherits Window {
             }
 
             remote-dialog := RemoteControlDialog {
+                snapshot-overlay: root.snapshot-overlay;
                 opened() => { root.remote-opened(); }
                 toggled(on) => { root.remote-toggled(on); }
                 apply-name(text) => { root.remote-apply-name(text); }
@@ -829,7 +906,7 @@ export component App inherits Window {
         // Steps the status animations (Motion), only while there is one to show
         Timer {
             interval: Defaults.motion-step;
-            running: root.is-playing || root.is-loading || root.is-recording;
+            running: !root.snapshot-mode && (root.is-playing || root.is-loading || root.is-recording);
             triggered => { Motion.tick += self.interval; }
         }
 

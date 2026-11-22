@@ -13,6 +13,8 @@ mod schedule_ui;
 mod shortcuts;
 #[cfg(feature = "desktop")]
 mod tray;
+#[cfg(feature = "ui-snapshots")]
+mod ui_snapshots;
 #[cfg(feature = "desktop")]
 mod window_frame;
 #[cfg(windows)]
@@ -71,6 +73,18 @@ struct Args {
     /// With --mcp: run a separate player for this agent alone instead
     #[arg(long, requires = "mcp")]
     standalone: bool,
+
+    #[cfg(feature = "ui-snapshots")]
+    #[arg(long, hide = true, conflicts_with = "mcp", value_name = "OUT_DIR")]
+    ui_snapshots: Option<std::path::PathBuf>,
+
+    #[cfg(feature = "ui-snapshots")]
+    #[arg(long, hide = true, requires = "ui_snapshots", value_enum)]
+    theme: Option<ui_snapshots::Theme>,
+
+    #[cfg(feature = "ui-snapshots")]
+    #[arg(long, hide = true, requires = "ui_snapshots", value_parser = ui_snapshots::parse_scale)]
+    scale: Option<f32>,
 }
 
 /// Our crates' messages from info up; other libraries' only when they fail
@@ -90,6 +104,19 @@ fn main() {
     init_logging();
 
     let args = Args::parse();
+
+    #[cfg(feature = "ui-snapshots")]
+    if let Some(out_dir) = args.ui_snapshots {
+        if let Err(error) = ui_snapshots::run(
+            &out_dir,
+            args.theme.unwrap_or_default(),
+            args.scale.unwrap_or(1.0),
+        ) {
+            eprintln!("UI snapshots: {error}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     // `--mcp` relays the agent to the running player and never opens a
     // window of its own
