@@ -247,6 +247,8 @@ export component App inherits Window {
     // and whether it stays until it is clicked away
     in-out property <string> recording-notice-kind: "saved";
     in-out property <bool> recording-notice-stays;
+    // More about the notice, for its bubble ("" for none)
+    in-out property <string> recording-notice-detail;
     callback dismiss-recording-notice();
     // The Recording Settings dialog is open (it shows its folder's errors)
     out property <bool> recording-dialog-open: recording-dialog.show-dialog;
@@ -295,6 +297,8 @@ export component App inherits Window {
     in-out property <bool> schedule-label-bell;
     // It says what started or the fallback sound: a click closes it
     in-out property <bool> schedule-label-closable;
+    // What the label's entry does and when, for its bubble
+    in-out property <string> schedule-detail;
     callback schedule-label-dismiss();
 
     // Agents (MCP)
@@ -701,6 +705,7 @@ export component App inherits Window {
                         recording-notice: root.recording-notice;
                         recording-notice-kind: root.recording-notice-kind;
                         recording-notice-stays: root.recording-notice-stays;
+                        recording-notice-detail: root.recording-notice-detail;
                         recording-notice-dismiss => { root.dismiss-recording-notice(); }
                         save-error: root.save-error;
                         can-open-recordings: Platform.has-file-manager;
@@ -711,9 +716,13 @@ export component App inherits Window {
                             }
                         }
                         sleep-left: root.sleep-active ? root.sleep-left : "";
+                        sleep-detail: root.sleep-until == "" ? ""
+                            : root.sleep-fade ? "Stops playback at " + root.sleep-until + ", fading out."
+                            : "Stops playback at " + root.sleep-until + ".";
                         schedule-label: root.schedule-label;
                         schedule-label-bell: root.schedule-label-bell;
                         schedule-label-closable: root.schedule-label-closable;
+                        schedule-detail: root.schedule-detail;
                         schedule-label-dismiss => { root.schedule-label-dismiss(); }
                         open-sleep-timer => { sleep-dialog.open(); }
                         open-schedule => { schedule-dialog.open(); }
