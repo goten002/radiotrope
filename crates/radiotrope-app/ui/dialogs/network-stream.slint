@@ -11,13 +11,26 @@ export component NetworkStreamDialog inherits Rectangle {
     in-out property <string> name: "";
     in-out property <string> logo-url: "";
     in-out property <string> country: "";
+    // The station playing, to clear the form once the stream sent plays
+    in property <string> playing-url;
+    in property <bool> is-playing;
     // url, name, logo url, country
     callback accepted(string, string, string, string);
 
     // Only the address is needed
     property <bool> can-play: root.url != "";
+    // The address last sent, until it plays: the fields stay meanwhile, so
+    // a typo can be fixed without typing everything again
+    property <string> sent;
+    property <bool> sent-plays: root.sent != "" && root.is-playing && root.playing-url == root.sent;
+    changed sent-plays => {
+        if root.sent-plays && !root.show-dialog {
+            root.reset();
+        }
+    }
 
     function reset() {
+        root.sent = "";
         root.url = "";
         root.name = "";
         root.logo-url = "";
@@ -31,11 +44,18 @@ export component NetworkStreamDialog inherits Rectangle {
         root.show-dialog = false;
     }
 
+    // The address without spaces, with "http://" when it has no scheme
+    pure function address(text: string) -> string {
+        let bare = text.replace-all(" ", "");
+        bare.replace-all("://", "") != bare ? bare : "http://" + bare
+    }
+
     function play() {
         if root.can-play {
+            root.url = root.address(root.url);
+            root.sent = root.url;
             root.show-dialog = false;
             root.accepted(root.url, root.name, root.logo-url, root.country);
-            root.reset();
         }
     }
 
@@ -55,17 +75,28 @@ export component NetworkStreamDialog inherits Rectangle {
             label: "Stream URL";
             required: true;
             StyledLineEdit {
+                label: "Stream URL";
+                required: true;
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.url;
                 accepted(text) => { root.play(); }
-                init => { self.focus-input(); }
+                // Reopened after a stream that didn't play: the address is
+                // selected, ready to fix or replace
+                init => {
+                    self.focus-input();
+                    if root.url != "" {
+                        self.select-all();
+                    }
+                }
             }
         }
 
         Field {
             label: "Name";
+            optional: true;
             StyledLineEdit {
-                placeholder-text: "Optional · uses the stream's name";
+                label: "Name";
+                placeholder-text: "Uses the stream's name";
                 text <=> root.name;
                 clearable: true;
                 accepted(text) => { root.play(); }
@@ -74,8 +105,10 @@ export component NetworkStreamDialog inherits Rectangle {
 
         Field {
             label: "Logo URL";
+            optional: true;
             StyledLineEdit {
-                placeholder-text: "Optional · https://example.com/logo.png";
+                label: "Logo URL";
+                placeholder-text: "https://example.com/logo.png";
                 text <=> root.logo-url;
                 clearable: true;
                 accepted(text) => { root.play(); }
@@ -84,8 +117,10 @@ export component NetworkStreamDialog inherits Rectangle {
 
         Field {
             label: "Country";
+            optional: true;
             StyledLineEdit {
-                placeholder-text: "Optional · United Kingdom";
+                label: "Country";
+                placeholder-text: "United Kingdom";
                 text <=> root.country;
                 clearable: true;
                 accepted(text) => { root.play(); }

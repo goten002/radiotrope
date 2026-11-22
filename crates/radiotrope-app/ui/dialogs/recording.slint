@@ -72,6 +72,7 @@ export component RecordingSettingsDialog inherits Rectangle {
             Field {
                 label: "Format";
                 Picker {
+                    label: "Format";
                     choices: [
                         { id: "mp3", label: "MP3" },
                         { id: "opus", label: "Opus" },
@@ -114,6 +115,8 @@ export component RecordingSettingsDialog inherits Rectangle {
         Field {
             label: root.edit-path == root.default-folder ? "Folder (default)" : "Folder";
             StyledLineEdit {
+                label: "Folder";
+                required: true;
                 text <=> root.edit-path;
                 placeholder-text: "Folder for recordings";
                 accepted(path) => { root.apply-folder(path); }
@@ -130,6 +133,8 @@ export component RecordingSettingsDialog inherits Rectangle {
             color: Theme.danger-text;
             font-size: Theme.font-md;
             wrap: word-wrap;
+            // The folder wasn't taken: said at once
+            accessible-live-region: assertive;
         }
 
         HorizontalLayout {
