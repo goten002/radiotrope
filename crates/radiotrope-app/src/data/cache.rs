@@ -884,7 +884,12 @@ mod tests {
 
     fn temp_cache_dir() -> PathBuf {
         let id = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        temp_dir().join(format!("radiotrope_cache_test_{}", id))
+        // The process id too: test runs in other checkouts share temp_dir()
+        temp_dir().join(format!(
+            "radiotrope_cache_test_{}_{}",
+            std::process::id(),
+            id
+        ))
     }
 
     fn cleanup_dir(dir: &Path) {
