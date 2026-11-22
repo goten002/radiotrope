@@ -3,6 +3,7 @@
 //! Handles audio playback, decoding, DSP processing, and visualization.
 //!
 
+pub mod aac;
 pub mod analyzer;
 pub mod decoder;
 pub mod dsp;
@@ -14,6 +15,7 @@ pub mod recording;
 pub mod stats;
 pub mod types;
 
+pub use aac::{aac_decoder, fdk_version, AacDecoderKind};
 pub use analyzer::AnalyzingSource;
 pub use decoder::SymphoniaSource;
 pub use dsp::equalizer::{

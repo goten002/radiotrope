@@ -11,7 +11,7 @@ publish.workspace = true
 readme = "../../README.md"
 
 [dependencies]
-radiotrope = { path = "../radiotrope" }
+radiotrope = { path = "../radiotrope", default-features = false }
 reqwest = { workspace = true }
 thiserror = { workspace = true }
 serde = { version = "1.0", features = ["derive"] }

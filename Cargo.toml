@@ -30,7 +30,6 @@ symphonia = { version = "0.6", default-features = false, features = [
     "ogg", "pcm", "mp3", "aac", "isomp4", "flac", "vorbis", "wav", "id3v1", "id3v2"
 ] }
 symphonia-adapter-libopus = { version = "0.3", features = ["bundled"] }
-symphonia-adapter-fdk-aac = "0.2"
 rustfft = "6.4"
 biquad = "0.6"
 mp3lame-encoder = "0.3"
@@ -42,9 +41,9 @@ m3u8-rs = "6.0"
 mpeg2ts = "0.6"
 crossbeam-channel = "0.5"
 
-# Network
+# Network (TLS by rustls, with the system's certificates: no OpenSSL)
 reqwest = { version = "0.13", default-features = false, features = [
-    "blocking", "native-tls", "http2", "form", "json"
+    "blocking", "rustls", "http2", "form", "json"
 ] }
 
 ### GUI
@@ -61,6 +60,8 @@ clap_mangen = "0.2"
 clap_complete = "4.5"
 
 # Utilities
+# Opening the system's libfdk-aac at run time
+libloading = "0.8"
 thiserror = "2.0"
 # The engine reports through the log facade; each program picks a logger
 log = "0.4"
@@ -72,8 +73,9 @@ sys-locale = "0.3"
 
 # Testing
 proptest = { version = "1.11", default-features = false, features = ["std"] }
-# FDK's AAC encoder, to make AAC and AAC+ test streams (the decoder already
-# comes with symphonia-adapter-fdk-aac)
+# FDK's AAC encoder, to make AAC and AAC+ test streams. For tests only: the
+# programs contain no FDK code (they load the system's libfdk-aac at run
+# time, see the engine's `system-fdk` feature)
 fdk-aac = "0.8"
 
 [profile.release]

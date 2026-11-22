@@ -17,7 +17,7 @@ name = "radiotrope"
 path = "src/main.rs"
 
 [dependencies]
-radiotrope = { path = "../radiotrope" }
+radiotrope = { path = "../radiotrope", default-features = false }
 radiotrope-library = { path = "../radiotrope-library" }
 env_logger = { workspace = true }
 slint = { workspace = true }
@@ -40,7 +40,7 @@ schemars = "1"
 interprocess = { version = "2.4", features = ["tokio"] }
 tokio = { version = "1", features = ["rt", "macros", "io-std", "io-util", "sync", "time", "net"] }
 tokio-util = "0.7"
-# Network MCP: Streamable HTTP, optionally over TLS (the system's TLS, as reqwest uses)
+# Network MCP: Streamable HTTP, optionally over TLS (rustls, as reqwest uses)
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http = "1"
@@ -89,7 +89,11 @@ x11rb = { version = "0.14", default-features = false, optional = true }
 widestring = "1"
 
 [features]
-default = ["desktop"]
+default = ["desktop", "system-fdk"]
+# AAC+ (HE-AAC) by the system's libfdk-aac, loaded at run time if it is
+# installed. Without it (`--no-default-features`) the build has no FDK code
+# at all and plays AAC with the built-in AAC-LC decoder.
+system-fdk = ["radiotrope/system-fdk"]
 desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:x11rb", "dep:zbus", "zbus/blocking-api", "zbus/async-io"]
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "zbus/tokio"]
 

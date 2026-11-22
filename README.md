@@ -40,14 +40,15 @@ page. Until then, build from source with Rust 1.95 or newer
 ([rustup](https://rustup.rs)).
 
 > [!NOTE]
-> AAC and AAC+ stations play in every build. Full-quality HE-AAC (AAC+)
-> decoding depends on the FDK AAC library, and how it is provided is still
-> changing; this note will say what to install once that settles.
+> AAC and AAC+ stations play in every build. Full-quality AAC+ (HE-AAC)
+> needs the FDK AAC library installed on the system: see
+> [AAC+ stations](#aac-stations-he-aac).
 
 ### Linux
 
 Install the build dependencies (ALSA for audio, fontconfig for the GUI, CMake
-and a C++ compiler for the bundled C libraries):
+and a C++ compiler for the bundled C libraries). OpenSSL is not needed: HTTPS
+uses rustls with the system's certificates.
 
 ```bash
 # Debian / Ubuntu
@@ -93,6 +94,38 @@ If you installed an earlier build by hand, remove its old launcher and icons,
 which used the name `radiotrope`:
 `/usr/share/applications/radiotrope.desktop` and
 `/usr/share/icons/hicolor/*/apps/radiotrope.png`.
+
+### AAC+ stations (HE-AAC)
+
+Radiotrope has its own decoder for plain AAC (AAC-LC). For AAC+ (HE-AAC v1
+and v2, which many low-bitrate stations use) it uses the Fraunhofer FDK AAC
+library when the system has it: the library is not part of Radiotrope, which
+looks for it when it first plays AAC. Without it an AAC+ station still plays,
+but only its AAC-LC core: half the bandwidth, so it sounds dull, and mono for
+HE-AAC v2. It then shows as "AAC" instead of "AAC+".
+
+To get full AAC+, install the library:
+
+| System | How |
+|--------|-----|
+| Arch / Manjaro | `sudo pacman -S libfdk-aac` |
+| Debian | `sudo apt install libfdk-aac2`, with the `non-free` component enabled |
+| Ubuntu up to 25.04 | `sudo apt install libfdk-aac2`, with `multiverse` enabled |
+| Ubuntu 25.10 and newer | The packaged `libfdk-aac2` is `fdk-aac-free`, without HE-AAC. Build [fdk-aac](https://github.com/mstorsjo/fdk-aac) and install its `libfdk-aac.so.2` |
+| Fedora | Fedora's own `fdk-aac-free` has no HE-AAC. Install `fdk-aac` from [RPM Fusion](https://rpmfusion.org) in its place |
+| Windows | Put a 64-bit `fdk-aac.dll` (an MSVC build, such as vcpkg's `fdk-aac`) or `libfdk-aac-2.dll` (MSYS2's `mingw-w64-x86_64-fdk-aac`, with the DLLs it needs) next to `radiotrope.exe` |
+
+On Linux the library is found by the name `libfdk-aac.so.2`, wherever the
+system looks for libraries. On Windows it is looked for next to the program
+and in the system folder, not on the `PATH`. A build of the library without
+HE-AAC is not used. To see which decoder is in use, start with
+`RUST_LOG=radiotrope=info`: the log says `AAC decoder: FDK (system)` or
+`AAC decoder: built-in AAC-LC` and why.
+
+To build without any FDK code at all, turn the `system-fdk` feature off:
+`cargo build --release --no-default-features --features desktop` for the app,
+and `--no-default-features` for `radiotrope-cli` and `radiotrope-probe`.
+Released binaries never contain or link FDK AAC either way.
 
 ### Windows
 
@@ -408,6 +441,10 @@ Fraunhofer FDK AAC library (libfdk-aac), or a modified version of that library,
 containing parts covered by the terms of the Fraunhofer FDK AAC Codec Library
 license, the licensors of Radiotrope grant you additional permission to convey
 the resulting work.
+
+Radiotrope itself contains no FDK AAC code. It can load the library from your
+system at run time (see [AAC+ stations](#aac-stations-he-aac)); the permission
+above covers that combination, and building Radiotrope with the library.
 
 This project includes third-party dependencies with different licenses.
 See [THIRD-PARTY-LICENSES](THIRD-PARTY-LICENSES) for details.

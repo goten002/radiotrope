@@ -99,6 +99,64 @@ jobs:
             exit 1
           fi
 
+  # AAC+ (HE-AAC) plays through the system's libfdk-aac, loaded at run time.
+  # The Test job has no such library, so there the AAC+ tests skip and the
+  # built-in decoder is what gets tested. This job covers the rest: the full
+  # library (Ubuntu 24.04 has it in multiverse; from 25.10 the package is
+  # fdk-aac-free, without HE-AAC), and the build with the loader left out.
+  aac:
+    name: AAC decoders
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: aac
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
+      - name: Without the system-fdk feature
+        run: cargo test -p radiotrope --no-default-features
+      - name: The programs build without it
+        run: cargo check -p radiotrope-cli -p radiotrope-probe --no-default-features
+      - name: Install libfdk-aac
+        run: |
+          sudo add-apt-repository -y multiverse
+          sudo apt-get update
+          sudo apt-get install -y libfdk-aac2
+      - name: With the system's libfdk-aac
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p radiotrope aac -- --nocapture 2>&1 | tee aac.log
+          # The library must have been found: no AAC+ test may have skipped
+          if grep -q "skipped: no libfdk-aac" aac.log; then
+            echo "::error::libfdk-aac with HE-AAC was not loaded"
+            exit 1
+          fi
+      - name: No FDK or OpenSSL in the programs
+        shell: bash
+        run: |
+          set -o pipefail
+          # Not in what the programs are built from (the fdk-aac crate is a
+          # dev-dependency, for making test streams)
+          for crate in fdk-aac fdk-aac-sys symphonia-adapter-fdk-aac openssl-sys native-tls; do
+            if cargo tree --workspace -e normal,build -i "$crate" 2>/dev/null | grep -q .; then
+              echo "::error::$crate is a dependency of the programs"
+              exit 1
+            fi
+          done
+          # And not in a built program: no FDK symbols, no linked library
+          cargo build -p radiotrope-probe
+          bin=target/debug/radiotrope-probe
+          if nm -a "$bin" | grep -E "aacDecoder_|aacEncoder_|sbrDecoder_|transportDec_|FDK"; then
+            echo "::error::FDK symbols in $bin"
+            exit 1
+          fi
+          if ldd "$bin" | grep -i -E "fdk|libssl|libcrypto"; then
+            echo "::error::$bin links FDK or OpenSSL"
+            exit 1
+          fi
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
