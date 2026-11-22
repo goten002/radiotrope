@@ -952,6 +952,12 @@ const SHOTS: &[Shot] = &[
         "",
         "Quit Radiotrope? while recording, with Scheduler entries due.",
     ),
+    Shot::new(
+        "report-plays",
+        "report-plays",
+        "",
+        "Report Plays? asked when Stations > Report Plays is switched on.",
+    ),
 ];
 
 /// The screens that open a dialog
@@ -973,6 +979,7 @@ const DIALOG_SCREENS: &[&str] = &[
     "accent",
     "shortcuts",
     "quit",
+    "report-plays",
 ];
 
 pub fn run(out_dir: &Path, options: &Options) -> Result<(), Box<dyn Error>> {
@@ -1985,3 +1992,7 @@ mod favorites_keys_tests;
 #[cfg(test)]
 #[path = "accent_drag_test.rs"]
 mod accent_drag_tests;
+
+#[cfg(test)]
+#[path = "report_plays_test.rs"]
+mod report_plays_tests;

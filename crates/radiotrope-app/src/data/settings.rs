@@ -31,6 +31,11 @@ const RETIRED_FIELDS: &[&str] = &[
     "always_on_top",
 ];
 
+/// The version of the Report Plays dialog's text. Plays are reported only
+/// with a yes to this version: when what is sent or kept changes, raise it
+/// and the dialog is asked again (with the switch off until then).
+pub const REPORT_PLAYS_CONSENT: u32 = 1;
+
 /// How long [`Settings::update`] waits for another player's update
 const LOCK_WAIT: Duration = Duration::from_secs(2);
 
@@ -228,9 +233,17 @@ pub struct Settings {
 
     // === Station directory ===
     /// Tell the station directory when one of its stations is played (the
-    /// station's id, for its "most played" lists)
-    #[serde(default = "default_true")]
+    /// station's id, for its "most played" lists). Off until the user says
+    /// yes in the Report Plays dialog; read as off without a yes to the
+    /// current dialog (see [`report_plays_consent`](Self::report_plays_consent)).
+    #[serde(default)]
     pub report_plays: bool,
+
+    /// The version of the Report Plays dialog the user said yes to
+    /// ([`REPORT_PLAYS_CONSENT`]); `None` with the switch off. Set both with
+    /// [`allow_report_plays`](Self::allow_report_plays).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report_plays_consent: Option<u32>,
 
     // === Remote Control (phones) ===
     /// Phones on the local network may find and pair with the player
@@ -370,7 +383,8 @@ impl Default for Settings {
             mcp_address: default_mcp_address(),
             mcp_interface: None,
             mcp_client: None,
-            report_plays: true,
+            report_plays: false,
+            report_plays_consent: None,
             remote_control: false,
             remote_name: None,
             remote_share_recordings: false,
@@ -396,7 +410,7 @@ impl Settings {
         for name in RETIRED_FIELDS {
             fields.remove(*name);
         }
-        let settings: Settings = match serde_json::from_value(Value::Object(fields.clone())) {
+        let mut settings: Settings = match serde_json::from_value(Value::Object(fields.clone())) {
             Ok(settings) => settings,
             Err(_) => {
                 let mut readable = Map::new();
@@ -414,8 +428,25 @@ impl Settings {
                 serde_json::from_value(Value::Object(readable)).unwrap_or_default()
             }
         };
+        settings.check_report_plays_consent();
         settings.note_newer_version();
         settings
+    }
+
+    /// Turn Report Plays on (the user said yes in its dialog) or off
+    pub fn allow_report_plays(&mut self, allowed: bool) {
+        self.report_plays = allowed;
+        self.report_plays_consent = allowed.then_some(REPORT_PLAYS_CONSENT);
+    }
+
+    /// Report Plays stays on only with a yes to this build's dialog. Files
+    /// from before the dialog (on by default then, with no yes) and a yes
+    /// to an older text read as off, so the user is asked again.
+    fn check_report_plays_consent(&mut self) {
+        if self.report_plays_consent != Some(REPORT_PLAYS_CONSENT) {
+            self.report_plays = false;
+            self.report_plays_consent = None;
+        }
     }
 
     /// Log, once per run, that the file was saved by a newer version
@@ -790,19 +821,60 @@ mod tests {
         let path = temp_path();
         let defaults = Settings::load_from(&path).unwrap();
         assert_eq!(defaults.zoom_percent(), 100);
-        assert!(defaults.report_plays, "on until switched off");
+        assert!(!defaults.report_plays, "off until the user says yes");
         assert_eq!(defaults.known_display_scale(), None);
 
         let (_, saved) = Settings::update_at(&path, |s| {
             s.zoom = 130;
             s.display_scale = Some(1.25);
-            s.report_plays = false;
+            s.allow_report_plays(true);
         });
         saved.unwrap();
         let loaded = Settings::load_from(&path).unwrap();
         assert_eq!(loaded.zoom_percent(), 130);
         assert_eq!(loaded.known_display_scale(), Some(1.25));
+        assert!(loaded.report_plays);
+        assert_eq!(loaded.report_plays_consent, Some(REPORT_PLAYS_CONSENT));
+
+        // Switching it off forgets the yes
+        let (_, saved) = Settings::update_at(&path, |s| s.allow_report_plays(false));
+        saved.unwrap();
+        let loaded = Settings::load_from(&path).unwrap();
         assert!(!loaded.report_plays);
+        assert_eq!(loaded.report_plays_consent, None);
+        assert!(!fs::read_to_string(&path)
+            .unwrap()
+            .contains("report_plays_consent"));
+    }
+
+    #[test]
+    fn report_plays_is_off_without_a_yes_to_this_dialog() {
+        let path = temp_path();
+        let read = |text: &str| {
+            fs::write(&path, text).unwrap();
+            Settings::load_from(&path).unwrap()
+        };
+        // Saved before the dialog, when it was on by default: off, and
+        // the user is asked again when they switch it on
+        let old = read(r#"{"zoom": 115, "report_plays": true}"#);
+        assert!(!old.report_plays);
+        assert_eq!(old.report_plays_consent, None);
+        assert_eq!(old.zoom_percent(), 115, "the rest is kept");
+        assert!(!read("{}").report_plays);
+        // A yes to an older text asks again
+        let older = read(r#"{"report_plays": true, "report_plays_consent": 0}"#);
+        assert!(!older.report_plays);
+        // A yes to this one is kept
+        let current =
+            format!(r#"{{"report_plays": true, "report_plays_consent": {REPORT_PLAYS_CONSENT}}}"#);
+        let yes = read(&current);
+        assert!(yes.report_plays);
+        assert_eq!(yes.report_plays_consent, Some(REPORT_PLAYS_CONSENT));
+        // A yes with the switch off stays off
+        let off = read(&format!(
+            r#"{{"report_plays": false, "report_plays_consent": {REPORT_PLAYS_CONSENT}}}"#
+        ));
+        assert!(!off.report_plays);
     }
 
     #[test]
