@@ -58,7 +58,6 @@ use radiotrope::audio::{AudioAnalysis, HissLevel, LevelTarget, SharedStats};
 
 use radiotrope_app::config::ui::{SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT};
 use radiotrope_app::data::favorites::FavoritesManager;
-use radiotrope_app::data::types::Station;
 use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 
@@ -71,7 +70,7 @@ use caches::{migrate_logo_ids, prune_caches_daily};
 use context::{lock, AppContext};
 use favorites_list::refresh_favorites;
 use favorites_ui::{credit_listening, show_edited_favorite, EditedFavorite};
-use recording_ui::{save_recording_settings, station_cover_png};
+use recording_ui::save_recording_settings;
 use window_settings::save_settings_at_exit;
 
 // What the snapshot tool takes from the crate root
@@ -201,6 +200,9 @@ fn main() {
     };
     // Listening time is saved a moment after it is added, on a thread of
     // its own: the UI doesn't wait on the disk once a minute
+    // Every recording's cover art, whoever starts it: the window, the
+    // schedule, the phone remote or MCP
+    let cover_source = recording_ui::cover_source(logo_service.clone());
     let favorites_saver = favorites_ui::start_saver(&favorites);
 
     // `--mcp --standalone`: serve this agent on stdio, in this process
@@ -311,7 +313,8 @@ fn main() {
     // Phones (Radiotrope Remote), when turned on, in the main player only
     let remote = instance.as_ref().map(|_| {
         Arc::new(remote::Remote::new(
-            control::Control::new(cmd_tx.clone(), shared_state.clone(), favorites.clone()),
+            control::Control::new(cmd_tx.clone(), shared_state.clone(), favorites.clone())
+                .with_cover_source(cover_source.clone()),
             Some(logo_service.clone()),
             remote_window_hooks(&ui, &favorites, &logo_service, &shared_state),
         ))
@@ -354,7 +357,7 @@ fn main() {
 
     about_ui::setup(&ui);
     setup_text_util(&ui);
-    recording_ui::setup(&ui, &ctx, &settings);
+    recording_ui::setup(&ui, &ctx, &settings, cover_source.clone());
     schedule_ui::setup(&ui, &settings, ui_tx.clone(), shared_state.clone());
 
     // Logos of the browser rows on screen, kept small on disk
@@ -389,11 +392,6 @@ fn main() {
     // Spawn controller on its own thread
     let ctrl_state = shared_state.clone();
     let ctrl_tx = cmd_tx.clone();
-    // A scheduled recording's cover art, as a recording started here gets
-    let cover_logos = logo_service.clone();
-    let cover_source: app::controller::CoverSource = Box::new(move |station| {
-        station_cover_png(&cover_logos, &Station::new(&station.name, &station.url))
-    });
     let schedule_path = radiotrope_app::data::data_path(radiotrope_app::data::schedule::FILE_NAME);
     let controller = std::thread::Builder::new()
         .name("controller".into())

@@ -27,9 +27,9 @@ pub(crate) fn setup(
     ui: &App,
     ctx: &AppContext,
     settings: &radiotrope_app::data::settings::Settings,
+    cover_source: app::controller::CoverSource,
 ) {
-    let (cmd_tx, shared_state, logo_service) =
-        (ctx.tx.clone(), ctx.state.clone(), ctx.logos.clone());
+    let (cmd_tx, shared_state) = (ctx.tx.clone(), ctx.state.clone());
     show_recording_folder(ui, settings.recording_dir.as_deref());
     ui.set_record_with_eq(settings.record_with_eq);
     ui.set_recording_format(settings.recording_format.id().into());
@@ -58,7 +58,7 @@ pub(crate) fn setup(
                 bitrate: setup.bitrate,
                 // The switch keeps its state but only counts with the EQ on
                 with_eq: setup.with_eq && ui.get_eq_enabled(),
-                cover: station_cover_png(&logo_service, &station),
+                cover: cover_source(&station),
             });
         }
     });
@@ -217,9 +217,17 @@ pub(crate) fn save_recording_settings(
     lock(state).recording_setup = app::state::RecordingSetup::from_settings(&settings);
 }
 
+/// Where every recording gets its cover art: the station's cached logo,
+/// as [`station_cover_png`] gives it. Built once at start up and handed to
+/// the window, the controller (schedule) and [`Control`](crate::control::Control)
+/// (phone remote and MCP).
+pub(crate) fn cover_source(logo_service: Arc<LogoService>) -> app::controller::CoverSource {
+    Arc::new(move |station| station_cover_png(&logo_service, station))
+}
+
 /// The station's cached logo as PNG, for a recording's cover art: as the
 /// player shows it, on its fog when it needs one
-pub(crate) fn station_cover_png(logo_service: &LogoService, station: &Station) -> Option<Vec<u8>> {
+fn station_cover_png(logo_service: &LogoService, station: &Station) -> Option<Vec<u8>> {
     let (rgba, w, h) = logo_service.get_cached_rgba(station)?;
     let (rgba, w, h) = visual::with_backdrop(rgba, w, h);
     let img = image::RgbaImage::from_raw(w, h, rgba)?;
@@ -515,6 +523,82 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A logo service over a cache folder of its own
+    fn logos(name: &str) -> (Arc<LogoService>, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "radiotrope-cover-test-{}-{name}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache = radiotrope_app::data::cache::ImageCache::with_dir(dir.join("logos")).unwrap();
+        (Arc::new(LogoService::with_cache(cache).unwrap()), dir)
+    }
+
+    #[test]
+    fn the_cover_source_gives_the_cached_logo_as_png() {
+        let (service, dir) = logos("png");
+        let cover = cover_source(service.clone());
+        let station = Station::new("Jazz FM", "http://jazz.test/stream");
+        assert_eq!(cover(&station), None, "not cached: no cover, no wait");
+
+        let mut logo = Vec::new();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([200, 30, 30, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut logo),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        service.cache().put_logo(&station, &logo).unwrap();
+        let png = cover(&station).expect("a cover once the logo is cached");
+        assert!(png.starts_with(b"\x89PNG"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The whole way: a cached logo, through the shared cover source, ends
+    /// up as the picture in the recorded file's tags
+    #[test]
+    fn a_recording_carries_the_station_logo() {
+        use radiotrope::audio::{
+            Recorder, RecordingFormat, RecordingOptions, RecordingTags, TapPoint,
+        };
+        let (service, dir) = logos("record");
+        let station = Station::new("Jazz FM", "http://jazz.test/stream");
+        let mut logo = Vec::new();
+        image::RgbaImage::from_pixel(8, 8, image::Rgba([30, 30, 200, 255]))
+            .write_to(
+                &mut std::io::Cursor::new(&mut logo),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        service.cache().put_logo(&station, &logo).unwrap();
+        let cover = cover_source(service)(&station).unwrap();
+
+        let path = dir.join("Jazz FM.mp3");
+        let recorder = Recorder::new();
+        recorder
+            .start(RecordingOptions {
+                path: path.clone(),
+                format: RecordingFormat::Mp3,
+                bitrate_kbps: 128,
+                tap: TapPoint::BeforeEq,
+                tags: RecordingTags {
+                    title: "Jazz FM".into(),
+                    artist: "Jazz FM".into(),
+                    cover: Some(cover.clone()),
+                    ..Default::default()
+                },
+            })
+            .unwrap();
+        recorder.stop();
+        let data = std::fs::read(&path).unwrap();
+        assert!(data.windows(4).any(|w| w == b"APIC"), "has a picture frame");
+        assert!(
+            data.windows(cover.len()).any(|w| w == cover),
+            "the picture is the logo's PNG"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn explorer_gets_backslashes() {
