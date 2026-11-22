@@ -712,6 +712,17 @@ fn is_current_station(shown: u64, url: &str) -> bool {
 /// Shared helper for all play actions. Enriches metadata from favorites if available,
 /// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
 pub(crate) fn play_station_with_metadata(ui: &App, ctx: &AppContext, req: PlayMetadata) {
+    start_station(ui, ctx, req, false);
+}
+
+/// [`play_station_with_metadata`] for a station stepped to with Next or
+/// Previous: it shows at once, and the player connects to it a moment
+/// later, so stepping on past it never starts it
+pub(crate) fn step_to_station(ui: &App, ctx: &AppContext, req: PlayMetadata) {
+    start_station(ui, ctx, req, true);
+}
+
+fn start_station(ui: &App, ctx: &AppContext, req: PlayMetadata, step: bool) {
     // A favorite's URL, name and logo take priority over the caller's
     let (
         PlayMetadata {
@@ -772,12 +783,21 @@ pub(crate) fn play_station_with_metadata(ui: &App, ctx: &AppContext, req: PlayMe
     });
 
     // Send play command
-    ctx.tx.send(app::state::AppCommand::Play {
-        url: url.clone(),
-        name: name.clone(),
-        logo_url: logo_url.clone(),
-        country: country.clone(),
-        taken: None,
+    ctx.tx.send(if step {
+        app::state::AppCommand::Step {
+            url: url.clone(),
+            name: name.clone(),
+            logo_url: logo_url.clone(),
+            country: country.clone(),
+        }
+    } else {
+        app::state::AppCommand::Play {
+            url: url.clone(),
+            name: name.clone(),
+            logo_url: logo_url.clone(),
+            country: country.clone(),
+            taken: None,
+        }
     });
     // Show it as starting right away, in the header, the favorites and the
     // Play button (it turns into Stop), not only at the next state poll

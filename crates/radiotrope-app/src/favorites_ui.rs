@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Model, ModelExt, ModelRc, VecModel};
 
-use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::{FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS};
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::types::{Favorite, FavoriteSort, Station};
@@ -22,7 +21,9 @@ use crate::context::{lock, AppContext};
 use crate::favorites_list::{
     invalidate_logo_image, note_favorites_shown, refresh_favorites, update_favorite_stats,
 };
-use crate::player_ui::{fetch_station_logo, play_station_with_metadata, SHOWN_STATION};
+use crate::player_ui::{
+    fetch_station_logo, play_station_with_metadata, step_to_station, SHOWN_STATION,
+};
 use crate::window_settings::save_reason;
 use crate::{shortcuts, App, FavoriteStation, FavoritesFind};
 
@@ -209,10 +210,31 @@ fn offer_undo(ui: &App, removed: Option<Removed>) {
     ui.set_favorite_undo(offer);
 }
 
+/// What to play for a favorite's row
+fn play_of(station: &FavoriteStation) -> PlayMetadata {
+    let filled = |text: &slint::SharedString| (!text.is_empty()).then(|| text.to_string());
+    PlayMetadata {
+        url: station.url.to_string(),
+        name: Some(station.name.to_string()),
+        logo_url: filled(&station.logo_url),
+        country: filled(&station.country),
+        provider_id: None,
+    }
+}
+
+/// The station Next and Previous step from: the one in the player,
+/// whatever it is doing. One still connecting, reconnecting or failed
+/// counts like one playing, so a press doesn't wait for it to play (it
+/// used to count only then, and a press before that went back to the
+/// first favorite). None while an alarm's fallback sound plays: that is
+/// no station.
+fn step_from(state: &AppSnapshot) -> Option<String> {
+    state.station_url.clone().filter(|_| !state.alarm_beep)
+}
+
 /// Wire what the favorites list and the header's star do: play, step,
 /// star, edit, remove, move and reorder, and reset a row's figures
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
-    let shared_state = &ctx.state;
     install_find(ui);
     // A save that failed, for the header to show until one works
     {
@@ -306,53 +328,27 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
         let ctx = ctx.clone();
         ui.on_play_favorite(move |station| {
             if let Some(ui) = ctx.ui.upgrade() {
-                let logo_url = station.logo_url.to_string();
-                let country = station.country.to_string();
-                play_station_with_metadata(
-                    &ui,
-                    &ctx,
-                    PlayMetadata {
-                        url: station.url.to_string(),
-                        name: Some(station.name.to_string()),
-                        logo_url: if logo_url.is_empty() {
-                            None
-                        } else {
-                            Some(logo_url)
-                        },
-                        country: if country.is_empty() {
-                            None
-                        } else {
-                            Some(country)
-                        },
-                        provider_id: None,
-                    },
-                );
+                play_station_with_metadata(&ui, &ctx, play_of(&station));
             }
         });
     }
 
+    // step-favorite callback: Next and Previous
     {
-        let ui_weak = ui.as_weak();
-        let state = shared_state.clone();
+        let ctx = ctx.clone();
         ui.on_step_favorite(move |forward| {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let playing_url = {
-                let state = lock(&state);
-                state
-                    .station_url
-                    .clone()
-                    .filter(|_| state.playback == PlaybackState::Playing && !state.alarm_beep)
-            };
+            let Some(ui) = ctx.ui.upgrade() else { return };
+            let current_url = step_from(&lock(&ctx.state));
             let favorites = ui.get_favorites_list();
             let index = shortcuts::favorite_step(
                 favorites.iter().map(|station| station.url),
-                playing_url.as_deref(),
+                current_url.as_deref(),
                 forward,
             );
             if let Some(station) = index.and_then(|index| favorites.row_data(index)) {
                 // While recording, the first press only arms the row
                 if ui.invoke_confirm_switch(station.url.clone()) {
-                    ui.invoke_play_favorite(station);
+                    step_to_station(&ui, &ctx, play_of(&station));
                 }
             }
         });
@@ -806,6 +802,34 @@ mod tests {
 
         // Not a favorite: nothing is removed
         assert!(remove_keeping_place(&mut favorites, "no-such-id").is_none());
+    }
+
+    #[test]
+    fn next_and_previous_step_from_the_station_in_the_player() {
+        use radiotrope::audio::PlaybackState;
+        let urls = ["http://a.test", "http://b.test", "http://c.test"];
+        let next = |state: &AppSnapshot| {
+            shortcuts::favorite_step(urls.into_iter(), step_from(state).as_deref(), true)
+        };
+        // Still connecting to the second: Next is the third, not the first
+        let mut state = AppSnapshot {
+            station_url: Some(urls[1].into()),
+            is_resolving: true,
+            ..Default::default()
+        };
+        assert_eq!(next(&state), Some(2));
+        // The same once it plays, and when it failed or was stopped
+        state.is_resolving = false;
+        state.playback = PlaybackState::Playing;
+        assert_eq!(next(&state), Some(2));
+        state.playback = PlaybackState::Stopped;
+        state.is_error = true;
+        assert_eq!(next(&state), Some(2));
+        // An alarm's fallback sound is no station: the first favorite
+        state.alarm_beep = true;
+        assert_eq!(next(&state), Some(0));
+        // Nothing in the player yet
+        assert_eq!(next(&AppSnapshot::default()), Some(0));
     }
 
     #[test]

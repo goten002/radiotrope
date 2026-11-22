@@ -44,6 +44,10 @@ const RESOLVE_TIMEOUT: Duration = Duration::from_secs(RESOLVE_TIMEOUT_SECS + 3);
 /// it about as often)
 const RECORDING_POLL: Duration = Duration::from_millis(200);
 
+/// How long a station stepped to (Next, Previous) is shown before it is
+/// connected to: stepping on within this time starts only the last one
+const STEP_SETTLE: Duration = Duration::from_millis(300);
+
 /// The status while the output device's driver is stuck in an open. Nothing
 /// plays until it returns, and if it never does only a restart helps.
 pub const OUTPUT_NOT_RESPONDING: &str =
@@ -107,7 +111,11 @@ pub struct AppController {
     /// The station that was playing when its reader gave up (the network
     /// was gone for too long), while it is started again and again
     outage: Option<resume::Outage>,
-    /// The time the outage's retries go by, when a test sets it
+    /// The station stepped to and when it is connected to, while it is
+    /// only shown (see [`STEP_SETTLE`])
+    settling: Option<(std::time::Instant, String)>,
+    /// The time the outage's retries and a step's wait go by, when a test
+    /// sets it
     #[cfg(test)]
     fake_now: Option<std::time::Instant>,
     /// How loud the stations played were, for volume matching
@@ -151,6 +159,7 @@ impl AppController {
             engine_volume: None,
             resume: None,
             outage: None,
+            settling: None,
             #[cfg(test)]
             fake_now: None,
             levels: Levels::default(),
@@ -213,6 +222,8 @@ impl AppController {
             let metadata = self.metadata_rx.clone().unwrap_or_else(never);
             // Wakes when the station an outage stopped is due again
             let outage_due = self.outage_due().map(at).unwrap_or_else(never);
+            // Wakes when the station stepped to is to be connected to
+            let step_due = self.step_due().map(at).unwrap_or_else(never);
             select! {
                 recv(commands) -> cmd => match cmd {
                     Ok(cmd) => {
@@ -236,7 +247,9 @@ impl AppController {
                 recv(if scheduled { &schedule_tick } else { &no_tick }) -> _ => {}
                 recv(if fading { &fade_tick } else { &no_tick }) -> _ => {}
                 recv(outage_due) -> _ => {}
+                recv(step_due) -> _ => {}
             }
+            self.connect_settled();
             self.retry_outage();
             if scheduled || self.schedule_armed() {
                 let now = chrono::Local::now();
@@ -300,6 +313,17 @@ impl AppController {
                     // An agent that stopped waiting has dropped its end
                     let _ = taken.send(seq);
                 }
+            }
+
+            AppCommand::Step {
+                url,
+                name,
+                logo_url,
+                country,
+            } => {
+                // The schedule's entry is over: the user picked a station
+                self.release_schedule();
+                self.step_to(&url, name, logo_url, country);
             }
             AppCommand::Stop => {
                 self.stopped_by_user();
@@ -540,13 +564,68 @@ impl AppController {
         self.open_stream(url, name, logo_url, country)
     }
 
-    /// Resolve the stream on a worker thread, then send the result back.
+    /// Step to a station (Next, Previous): it is the current one at once,
+    /// with the one before stopped, and is connected to [`STEP_SETTLE`]
+    /// later. A step, a Play or a Stop in between takes its place, so
+    /// stepping past stations connects to none of them.
+    /// Returns the station's `play_seq`.
+    fn step_to(
+        &mut self,
+        url: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    ) -> u64 {
+        self.outage = None;
+        // A recording waits for this very station: nothing to step past
+        if self.resumes(url) {
+            return self.resume_station_now();
+        }
+        self.stop_recording();
+        let seq = self.show_stream(url, name, logo_url, country);
+        self.settling = Some((self.now() + STEP_SETTLE, url.to_string()));
+        seq
+    }
+
+    /// When the station stepped to is connected to
+    fn step_due(&self) -> Option<std::time::Instant> {
+        self.settling.as_ref().map(|(due, _)| *due)
+    }
+
+    /// Connect to the station stepped to, once nothing took its place for
+    /// [`STEP_SETTLE`]
+    fn connect_settled(&mut self) {
+        let now = self.now();
+        if !self.step_due().is_some_and(|due| now >= due) {
+            return;
+        }
+        if let Some((_, url)) = self.settling.take() {
+            self.connect(&url);
+        }
+    }
+
+    /// Make a station the current one and connect to it.
     /// Returns the station's `play_seq`. A running recording carries on
     /// with the new stream's audio.
+    fn open_stream(
+        &mut self,
+        url: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    ) -> u64 {
+        let seq = self.show_stream(url, name, logo_url, country);
+        self.connect(url);
+        seq
+    }
+
+    /// Make a station the current one, as connecting, with the one before
+    /// stopped: [`Self::connect`] then connects to it.
+    /// Returns the station's `play_seq`.
     ///
     /// Each call increments `resolve_generation`; stale results from earlier
     /// calls are discarded in `handle_stream_resolved`.
-    fn open_stream(
+    fn show_stream(
         &mut self,
         url: &str,
         name: Option<String>,
@@ -563,11 +642,7 @@ impl AppController {
 
         self.stream_failed = false;
 
-        let generation = self.resolve_generation;
-        let cancel = StreamCancel::new();
-        self.stream_cancel = Some(cancel.clone());
-
-        let seq = {
+        {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.play_seq += 1;
             state.station_url = Some(url.to_string());
@@ -591,7 +666,15 @@ impl AppController {
             // like the rest of its events.
             state.playback = PlaybackState::Stopped;
             state.play_seq
-        };
+        }
+    }
+
+    /// Resolve the current station's stream on a worker thread, which
+    /// sends the result back
+    fn connect(&mut self, url: &str) {
+        let generation = self.resolve_generation;
+        let cancel = StreamCancel::new();
+        self.stream_cancel = Some(cancel.clone());
 
         let url: Arc<str> = Arc::from(url);
         let cmd_tx = self.cmd_tx.clone();
@@ -637,7 +720,6 @@ impl AppController {
             eprintln!("Can't start the stream-resolve thread: {e}");
             self.handle_stream_resolved(generation, Err(CANT_START.to_string()));
         }
-        seq
     }
 
     /// Stop the station being resolved or played, and make any resolve
@@ -648,6 +730,8 @@ impl AppController {
         }
         self.resolve_generation += 1;
         self.stream_id = None;
+        // A station stepped to and not connected to yet never is
+        self.settling = None;
     }
 
     /// Handle the resolved stream — start playback (or store error).
@@ -1490,6 +1574,122 @@ mod tests {
             // The engine ends it after its fade-out, not the stop
             controller.cancel_stream();
             assert!(!cancel.is_cancelled());
+            controller.handle_command(AppCommand::Stop);
+        }
+
+        /// A step to `url`, as the N and P keys send it
+        fn step(controller: &mut AppController, url: &str, name: &str) {
+            controller.handle_command(AppCommand::Step {
+                url: url.into(),
+                name: Some(name.into()),
+                logo_url: None,
+                country: None,
+            });
+        }
+
+        /// A controller whose clock a test moves, and that clock
+        fn stepping() -> (AppController, Arc<Mutex<AppSnapshot>>, std::time::Instant) {
+            let (mut controller, state) = controller();
+            let now = std::time::Instant::now();
+            controller.fake_now = Some(now);
+            (controller, state, now)
+        }
+
+        /// `ms` later: what is due by then is done
+        fn later(controller: &mut AppController, ms: u64) {
+            controller.fake_now = Some(controller.fake_now.unwrap() + Duration::from_millis(ms));
+            controller.connect_settled();
+        }
+
+        #[test]
+        fn stepping_three_times_starts_only_the_last_station() {
+            let (mut controller, state, _) = stepping();
+            controller.stream_id = Some(StreamId(1));
+            controller.handle_engine_event(on(1, playing()));
+            let station = silent_station();
+
+            step(&mut controller, "http://first.test/live", "First");
+            // It is the current station at once, with the old one stopped,
+            // and nothing is connected to yet
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.station_name.as_deref(), Some("First"));
+                assert_eq!(state.playback, PlaybackState::Stopped);
+                assert!(state.is_resolving);
+                assert_eq!(state.status_text, "Connecting…");
+            }
+            assert_eq!(controller.stream_id, None);
+            assert!(controller.stream_cancel.is_none());
+
+            later(&mut controller, 100);
+            step(&mut controller, "http://second.test/live", "Second");
+            later(&mut controller, 100);
+            step(&mut controller, &station, "Third");
+            // Each step waits its own time: the first two are long past
+            later(&mut controller, 299);
+            assert!(controller.stream_cancel.is_none());
+            assert!(controller.cmd_rx.is_empty(), "a skipped station started");
+
+            later(&mut controller, 1);
+            assert!(controller.stream_cancel.is_some(), "the last one starts");
+            assert_eq!(controller.step_due(), None);
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.station_name.as_deref(), Some("Third"));
+                assert_eq!(state.station_url.as_deref(), Some(station.as_str()));
+                assert!(state.is_resolving);
+                // Three steps, three stations: the window counts on it
+                assert_eq!(state.play_seq, 3);
+            }
+            // Only the third was resolved: nothing else comes back
+            controller.handle_command(AppCommand::Stop);
+            let resolved = cancelled_resolve(&controller);
+            assert!(controller.cmd_rx.is_empty());
+            controller.handle_command(resolved);
+            assert_eq!(state.lock().unwrap().status_text, "Stopped");
+        }
+
+        #[test]
+        fn a_stop_before_a_step_connects_starts_nothing() {
+            let (mut controller, state, _) = stepping();
+            step(&mut controller, &silent_station(), "Silent FM");
+            assert!(controller.step_due().is_some());
+
+            controller.handle_command(AppCommand::Stop);
+            assert_eq!(controller.step_due(), None);
+            later(&mut controller, 1_000);
+            assert!(controller.stream_cancel.is_none());
+            assert!(controller.cmd_rx.is_empty(), "the station started");
+            let state = state.lock().unwrap();
+            assert!(!state.is_resolving);
+            assert_eq!(state.status_text, "Stopped");
+            assert_eq!(state.station_name.as_deref(), Some("Silent FM"));
+        }
+
+        #[test]
+        fn a_play_takes_the_place_of_a_step_still_waiting() {
+            let (mut controller, state, _) = stepping();
+            step(&mut controller, "http://skipped.test/live", "Skipped");
+            // A station clicked starts at once
+            controller.start_stream(&silent_station(), Some("Clicked".into()), None, None);
+            assert_eq!(controller.step_due(), None);
+            let clicked = controller.stream_cancel.clone().unwrap();
+            later(&mut controller, 1_000);
+            assert!(!clicked.is_cancelled());
+            assert_eq!(
+                state.lock().unwrap().station_name.as_deref(),
+                Some("Clicked")
+            );
+            controller.handle_command(AppCommand::Stop);
+        }
+
+        #[test]
+        fn a_step_cancels_the_station_still_connecting() {
+            let (mut controller, _state, _) = stepping();
+            controller.start_stream(&silent_station(), Some("First".into()), None, None);
+            let first = controller.stream_cancel.clone().unwrap();
+            step(&mut controller, "http://second.test/live", "Second");
+            assert!(first.is_cancelled());
             controller.handle_command(AppCommand::Stop);
         }
 
