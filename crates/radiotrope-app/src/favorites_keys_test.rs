@@ -303,3 +303,65 @@ fn while_recording_a_search_result_needs_a_second_press() {
     keys(&ui, &time, &[DownArrow, Return]);
     assert_eq!(picked.borrow()[3..], [name(3)]);
 }
+
+#[test]
+fn while_recording_a_network_stream_needs_a_second_press() {
+    use Key::Return;
+
+    let (ui, time) = open("network-stream-empty");
+    let played = Rc::new(RefCell::new(Vec::<String>::new()));
+    ui.on_play_stream({
+        let played = played.clone();
+        move |url, _, _, _| played.borrow_mut().push(url.to_string())
+    });
+    ui.set_is_recording(true);
+    settle(&time);
+
+    // The first Play only says what a second one does
+    type_text(&ui, &time, "one.test/live");
+    keys(&ui, &time, &[Return]);
+    assert!(played.borrow().is_empty());
+    // Another address is asked about anew
+    type_text(&ui, &time, "2");
+    keys(&ui, &time, &[Return]);
+    assert!(played.borrow().is_empty());
+    // And the first press is forgotten after a while
+    wait(&time, 6_000);
+    keys(&ui, &time, &[Return]);
+    assert!(played.borrow().is_empty());
+    keys(&ui, &time, &[Return]);
+    assert_eq!(*played.borrow(), ["http://one.test/live2"]);
+}
+
+#[test]
+fn a_network_stream_plays_at_once_when_not_recording() {
+    use Key::Return;
+
+    // Not recording: one press
+    let (ui, time) = open("network-stream-empty");
+    let played = Rc::new(RefCell::new(Vec::<String>::new()));
+    ui.on_play_stream({
+        let played = played.clone();
+        move |url, _, _, _| played.borrow_mut().push(url.to_string())
+    });
+    type_text(&ui, &time, "one.test/live");
+    keys(&ui, &time, &[Return]);
+    assert_eq!(*played.borrow(), ["http://one.test/live"]);
+}
+
+#[test]
+fn the_station_recorded_plays_from_network_stream_without_asking() {
+    use Key::Return;
+
+    // The form holds the station in the player, which is being recorded
+    let (ui, time) = open("network-stream-filled");
+    let played = Rc::new(RefCell::new(Vec::<String>::new()));
+    ui.on_play_stream({
+        let played = played.clone();
+        move |url, _, _, _| played.borrow_mut().push(url.to_string())
+    });
+    ui.set_is_recording(true);
+    settle(&time);
+    keys(&ui, &time, &[Return]);
+    assert_eq!(*played.borrow(), [ui.get_station_url().to_string()]);
+}

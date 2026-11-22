@@ -323,7 +323,7 @@ fn browse_directory() -> radiotrope_app::error::Result<Arc<RadiotropeProvider>> 
 
 /// Count a play of a station browser result in the directory, which
 /// orders its lists by plays. Nobody waits on it, and a failure costs
-/// only the count. Not with Tools > Connections > Report Plays off.
+/// only the count. Not with Stations > Report Plays off.
 fn report_browse_play(item: &BrowseStation) {
     if item.provider_id.is_empty() || !crate::view_options::report_plays() {
         return;

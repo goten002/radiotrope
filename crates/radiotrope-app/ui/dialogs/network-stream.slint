@@ -1,4 +1,5 @@
-import { Defaults } from "../defaults.slint";
+import { Theme, Defaults } from "../defaults.slint";
+import { RecordingGuard } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { DialogShell, Field } from "../components.slint";
 
@@ -14,6 +15,28 @@ export component NetworkStreamDialog inherits Rectangle {
     // The station playing, to clear the form once the stream sent plays
     in property <string> playing-url;
     in property <bool> is-playing;
+    // A recording is running: playing another stream would end it, so the
+    // first Play only says so (see RecordingGuard), as in the favorites
+    // and the search results
+    in property <bool> recording;
+    // The address Play was pressed for once, while a second press plays it
+    out property <string> armed-url;
+    changed recording => {
+        if !self.recording {
+            self.disarm();
+        }
+    }
+    changed url => {
+        // Another address is another question
+        if self.armed-url != "" && root.address(self.url) != self.armed-url {
+            self.disarm();
+        }
+    }
+    changed show-dialog => {
+        if !self.show-dialog {
+            self.disarm();
+        }
+    }
     // url, name, logo url, country
     callback accepted(string, string, string, string);
 
@@ -50,8 +73,38 @@ export component NetworkStreamDialog inherits Rectangle {
         bare.replace-all("://", "") != bare ? bare : "http://" + bare
     }
 
+    function disarm() {
+        root.armed-url = "";
+        arm-timer.running = false;
+    }
+
+    // Whether Play goes ahead: while recording another station, only the
+    // second press within RecordingGuard's time does (and ends the
+    // recording). The station recorded plays on without asking.
+    public function confirm-switch(url: string) -> bool {
+        if !root.recording || url == root.playing-url || url == root.armed-url {
+            root.disarm();
+            return true;
+        }
+        root.armed-url = url;
+        arm-timer.running = true;
+        arm-timer.restart();
+        return false;
+    }
+
+    arm-timer := Timer {
+        interval: RecordingGuard.confirm-time;
+        running: false;
+        triggered => { root.disarm(); }
+    }
+
     function play() {
         if root.can-play {
+            // Asked about before the field is rewritten: the text stays
+            // as typed while it may still be changed
+            if !root.confirm-switch(root.address(root.url)) {
+                return;
+            }
             root.url = root.address(root.url);
             root.sent = root.url;
             root.show-dialog = false;
@@ -125,6 +178,16 @@ export component NetworkStreamDialog inherits Rectangle {
                 clearable: true;
                 accepted(text) => { root.play(); }
             }
+        }
+
+        // Play pressed once while recording: what a second press does
+        if root.armed-url != "": Text {
+            text: RecordingGuard.text;
+            color: Theme.danger-text;
+            font-size: Theme.font-md;
+            font-weight: Theme.weight-semibold;
+            wrap: word-wrap;
+            accessible-live-region: assertive;
         }
     }
 }

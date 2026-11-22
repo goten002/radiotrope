@@ -25,6 +25,8 @@ const RETIRED_FIELDS: &[&str] = &[
     "minimize_to_tray",
     "start_minimized",
     "show_notifications",
+    // View > Reduce Motion, which was taken out again
+    "reduce_motion",
 ];
 
 /// How long [`Settings::update`] waits for another player's update
@@ -129,10 +131,6 @@ pub struct Settings {
     /// made. `None` until a run has seen it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_scale: Option<f32>,
-
-    /// View > Reduce Motion; `None` follows the system's setting
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reduce_motion: Option<bool>,
 
     // === Accent Color ===
     /// Custom accent color as hex string (e.g. "#3584e4")
@@ -352,7 +350,6 @@ impl Default for Settings {
             always_on_top: false,
             zoom: default_zoom(),
             display_scale: None,
-            reduce_motion: None,
             accent_color: None,
             eq_gains: [0.0; 10],
             eq_preamp: 0.0,
@@ -796,28 +793,28 @@ mod tests {
         let path = temp_path();
         let defaults = Settings::load_from(&path).unwrap();
         assert_eq!(defaults.zoom_percent(), 100);
-        assert_eq!(defaults.reduce_motion, None, "follows the system");
         assert!(defaults.report_plays, "on until switched off");
         assert_eq!(defaults.known_display_scale(), None);
 
         let (_, saved) = Settings::update_at(&path, |s| {
             s.zoom = 130;
             s.display_scale = Some(1.25);
-            s.reduce_motion = Some(true);
             s.report_plays = false;
         });
         saved.unwrap();
         let loaded = Settings::load_from(&path).unwrap();
         assert_eq!(loaded.zoom_percent(), 130);
         assert_eq!(loaded.known_display_scale(), Some(1.25));
-        assert_eq!(loaded.reduce_motion, Some(true));
         assert!(!loaded.report_plays);
+    }
 
-        // Back to following the system: the field leaves the file
-        let (_, saved) = Settings::update_at(&path, |s| s.reduce_motion = None);
-        saved.unwrap();
-        assert!(!fs::read_to_string(&path).unwrap().contains("reduce_motion"));
-        assert_eq!(Settings::load_from(&path).unwrap().reduce_motion, None);
+    #[test]
+    fn an_old_reduce_motion_field_is_read_and_dropped() {
+        // Saved by the builds that had View > Reduce Motion
+        let Stored(old) = serde_json::from_str(r#"{"reduce_motion": true, "zoom": 115}"#).unwrap();
+        assert_eq!(old.zoom_percent(), 115);
+        let saved = serde_json::to_string(&old).unwrap();
+        assert!(!saved.contains("reduce_motion"));
     }
 
     #[test]
