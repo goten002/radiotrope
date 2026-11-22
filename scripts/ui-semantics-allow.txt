@@ -9,5 +9,3 @@ scroll-bar.slint ScrollBar touch        # pointer-only by design: the keyboard s
 # Open findings in files other round 3 packages own. Fix the control or image
 # there, then delete the line (the lint says when it has nothing left to allow).
 dialogs/about.slint AboutDialog image            # the app icon: decoration next to the name, wants accessible-role: none
-playback.slint Playback image                    # the station logo: decoration, the name is read next to it
-visualization.slint Visualization touch          # the style switch is mouse-only (B9, M7)
