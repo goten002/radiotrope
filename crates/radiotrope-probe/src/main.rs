@@ -65,6 +65,12 @@ fn run(args: Args) -> i32 {
         );
         return EXIT_UNKNOWN;
     }
+    if let Some(agent) = &args.user_agent {
+        if !radiotrope_probe::set_user_agent(agent.as_str()) {
+            eprintln!("radiotrope-probe: --user-agent must be one line of printable ASCII text");
+            return EXIT_UNKNOWN;
+        }
+    }
     let mut urls = args.urls.clone();
     if let Some(path) = &args.input {
         match read_list(path) {

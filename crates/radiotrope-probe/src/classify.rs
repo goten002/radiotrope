@@ -292,13 +292,17 @@ mod tests {
         let (code, text) = as_text(refused);
         assert!(text.starts_with("Can't connect to "), "{text}");
         assert_eq!(code, ErrorCode::Connect, "{text}");
-        let refused = client()
-            .get(format!("http://127.0.0.1:{port}/"))
-            .send()
-            .unwrap_err();
-        let (code, _, message) = code_of(RadioError::Network(refused));
-        assert_eq!(code, ErrorCode::Connect);
-        assert_eq!(message, format!("Can't connect to 127.0.0.1:{port}"));
+        // The same through the probe's own client, whose timeout is shorter
+        // than Windows' retries (there it ends as a timeout)
+        if !cfg!(windows) {
+            let refused = client()
+                .get(format!("http://127.0.0.1:{port}/"))
+                .send()
+                .unwrap_err();
+            let (code, _, message) = code_of(RadioError::Network(refused));
+            assert_eq!(code, ErrorCode::Connect);
+            assert_eq!(message, format!("Can't connect to 127.0.0.1:{port}"));
+        }
 
         // No answer in time
         let port = one_shot_server(b"", std::time::Duration::from_secs(2));
