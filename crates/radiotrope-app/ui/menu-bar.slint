@@ -4,6 +4,50 @@ import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Pick
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 
+// Where the arrow keys are in the open menu. Every row has a slot number
+// in its menu; one menu is open at a time, so one place holds the active
+// slot. A row takes the keyboard focus when its slot becomes the active
+// one, so the focus ring, Space and Enter and screen readers all follow.
+global MenuNav {
+    // -1: no row yet (a menu opened with the mouse)
+    in-out property <int> active: -1;
+
+    pure function hit(usable: [bool], slot: int) -> bool {
+        return slot >= 0 && slot < usable.length && usable[slot];
+    }
+    // The first usable slot from `from` on, going `dir` (1 or -1); -1 when
+    // none. Slint functions have no loops, so the search is written out:
+    // 4, 8, 16, then 32 slots, more than the longest menu has.
+    pure function scan4(usable: [bool], from: int, dir: int) -> int {
+        return hit(usable, from) ? from
+            : hit(usable, from + dir) ? from + dir
+            : hit(usable, from + 2 * dir) ? from + 2 * dir
+            : hit(usable, from + 3 * dir) ? from + 3 * dir : -1;
+    }
+    pure function scan8(usable: [bool], from: int, dir: int) -> int {
+        let near = scan4(usable, from, dir);
+        return near >= 0 ? near : scan4(usable, from + 4 * dir, dir);
+    }
+    pure function scan16(usable: [bool], from: int, dir: int) -> int {
+        let near = scan8(usable, from, dir);
+        return near >= 0 ? near : scan8(usable, from + 8 * dir, dir);
+    }
+    public pure function scan(usable: [bool], from: int, dir: int) -> int {
+        let near = scan16(usable, from, dir);
+        return near >= 0 ? near : scan16(usable, from + 16 * dir, dir);
+    }
+    // The slot one step from the active one, going round at the ends;
+    // rows that are greyed out or folded away are skipped
+    public pure function step(usable: [bool], dir: int) -> int {
+        let edge = dir > 0 ? 0 : usable.length - 1;
+        if active < 0 {
+            return scan(usable, edge, dir);
+        }
+        let next = scan(usable, active + dir, dir);
+        return next >= 0 ? next : scan(usable, edge, dir);
+    }
+}
+
 // What every menu row shows, laid out like the shared ChoiceRow: icon,
 // label, then an optional note, shortcut, swatch, tick or arrow on the right
 component MenuRowContent inherits HorizontalLayout {
@@ -16,12 +60,16 @@ component MenuRowContent inherits HorizontalLayout {
     in property <bool> lit;
     // A faint note or a keyboard shortcut on the right ("Ctrl+Q")
     in property <string> trailing-text;
+    // The text says why the row is greyed out, so it stays readable then
+    in property <bool> trailing-note;
     // A small colour square on the right (Accent Color shows the accent)
     in property <bool> has-swatch;
     in property <color> swatch;
     // Keeps room for a tick, shown while checked
     in property <bool> checkable;
     in property <bool> checked;
+    // A faint tick while not checked: an option to turn on, not a command
+    in property <bool> placeholder;
     // An arrow that turns as the group opens and folds
     in property <bool> expandable;
     in property <bool> expanded;
@@ -52,12 +100,18 @@ component MenuRowContent inherits HorizontalLayout {
         accessible-role: none;
     }
 
-    if root.trailing-text != "": Text {
-        text: root.trailing-text;
-        color: root.enabled ? Theme.text-tertiary : Theme.disabled-text;
-        font-size: Theme.font-sm;
-        vertical-alignment: center;
-        accessible-role: none;
+    // At least 24px after the label, so the shortcuts read as a column
+    if root.trailing-text != "": HorizontalLayout {
+        padding-left: Theme.space-16;
+        Text {
+            text: root.trailing-text;
+            // Tertiary text drops under 4.5:1 on a hovered or focused row
+            color: !root.enabled && !root.trailing-note ? Theme.disabled-text
+                : root.enabled && root.lit ? Theme.text-secondary : Theme.text-tertiary;
+            font-size: Theme.font-sm;
+            vertical-alignment: center;
+            accessible-role: none;
+        }
     }
 
     if root.has-swatch: VerticalLayout {
@@ -72,11 +126,12 @@ component MenuRowContent inherits HorizontalLayout {
 
     if root.checkable: Rectangle {
         width: Theme.icon-sm;
-        if root.checked: Icon {
+        if root.checked || root.placeholder: Icon {
             width: Theme.icon-sm;
             height: Theme.icon-sm;
             source: @image-url("icons/tick.svg");
-            colorize: root.enabled ? Theme.selection-mark : Theme.disabled-text;
+            colorize: !root.checked ? Theme.text-tertiary.with-alpha(0.3)
+                : root.enabled ? Theme.selection-mark : Theme.disabled-text;
         }
     }
 
@@ -98,9 +153,12 @@ component MenuRowBase inherits Rectangle {
     in property <bool> enabled: true;
     in property <bool> hovered;
     in property <bool> pressed;
+    // Its place in the menu for the arrow keys (see MenuNav); -1: none
+    in property <int> slot: -1;
+    out property <bool> current: root.slot >= 0 && MenuNav.active == root.slot;
 
     height: Theme.row-menu;
-    min-width: 160px;
+    min-width: 200px;
     border-radius: Theme.radius-sm;
     background: !root.enabled ? transparent
         : root.pressed ? Theme.pressed-bg
@@ -121,6 +179,13 @@ component MenuItem inherits MenuRowBase {
     hovered: touch.has-hover || keys.has-focus;
     pressed: touch.pressed;
 
+    changed current => {
+        if self.current { keys.focus(); }
+    }
+    init => {
+        if self.current { keys.focus(); }
+    }
+
     accessible-role: button;
     accessible-label: root.label;
     accessible-description: root.shortcut;
@@ -139,6 +204,10 @@ component MenuItem inherits MenuRowBase {
     keys := ButtonKeys {
         enabled: root.enabled;
         activated => { root.clicked(); }
+        // Reached with Tab: the arrow keys go on from here
+        changed has-focus => {
+            if self.has-focus && root.slot >= 0 { MenuNav.active = root.slot; }
+        }
     }
 
     MenuRowContent {
@@ -150,6 +219,11 @@ component MenuItem inherits MenuRowBase {
         trailing-text: root.shortcut;
         has-swatch: root.has-swatch;
         swatch: root.swatch;
+    }
+
+    if keys.has-focus: FocusRing {
+        offset: -1px;
+        radius: root.border-radius;
     }
 }
 
@@ -181,13 +255,24 @@ component CheckMenuItem inherits MenuRowBase {
     in property <bool> checked;
     // A faint note on the right, before the tick
     in property <string> hint;
+    // One of a set where another is always ticked (the visualizer styles):
+    // no faint tick while this one is off
+    in property <bool> one-of-set;
     callback clicked();
 
     hovered: touch.has-hover || keys.has-focus;
     pressed: touch.pressed;
 
+    changed current => {
+        if self.current { keys.focus(); }
+    }
+    init => {
+        if self.current { keys.focus(); }
+    }
+
     accessible-role: checkbox;
     accessible-label: root.label;
+    accessible-description: root.hint;
     accessible-enabled: root.enabled;
     accessible-checkable: true;
     accessible-checked: root.checked;
@@ -205,6 +290,10 @@ component CheckMenuItem inherits MenuRowBase {
     keys := ButtonKeys {
         enabled: root.enabled;
         activated => { root.clicked(); }
+        // Reached with Tab: the arrow keys go on from here
+        changed has-focus => {
+            if self.has-focus && root.slot >= 0 { MenuNav.active = root.slot; }
+        }
     }
 
     MenuRowContent {
@@ -214,8 +303,15 @@ component CheckMenuItem inherits MenuRowBase {
         enabled: root.enabled;
         lit: root.hovered;
         trailing-text: root.hint;
+        trailing-note: true;
         checkable: true;
         checked: root.checked;
+        placeholder: !root.one-of-set;
+    }
+
+    if keys.has-focus: FocusRing {
+        offset: -1px;
+        radius: root.border-radius;
     }
 }
 
@@ -230,6 +326,13 @@ component GroupMenuItem inherits MenuRowBase {
 
     hovered: touch.has-hover || keys.has-focus;
     pressed: touch.pressed;
+
+    changed current => {
+        if self.current { keys.focus(); }
+    }
+    init => {
+        if self.current { keys.focus(); }
+    }
 
     accessible-role: button;
     accessible-label: root.label;
@@ -252,6 +355,10 @@ component GroupMenuItem inherits MenuRowBase {
             }
             return reject;
         }
+        // Reached with Tab: the arrow keys go on from here
+        changed has-focus => {
+            if self.has-focus && root.slot >= 0 { MenuNav.active = root.slot; }
+        }
     }
 
     MenuRowContent {
@@ -269,9 +376,40 @@ component GroupMenuItem inherits MenuRowBase {
 }
 
 // View > Theme: the three choices in the row itself, one click each
+// The arrow keys stop on the row as on any other; Space or Enter there
+// moves to the next theme. Tab reaches the three choices themselves.
 component ThemeMenuRow inherits Rectangle {
+    in property <int> slot: -1;
+    property <bool> current: root.slot >= 0 && MenuNav.active == root.slot;
+    changed current => {
+        if self.current { keys.focus(); }
+    }
+    init => {
+        if self.current { keys.focus(); }
+    }
+
+    function next() {
+        Theme.theme-mode = Theme.theme-mode == "system" ? "dark"
+            : Theme.theme-mode == "dark" ? "light"
+            : Platform.has-system-theme ? "system" : "dark";
+    }
+
     height: Theme.control-button;
-    min-width: 160px;
+    min-width: 200px;
+    border-radius: Theme.radius-sm;
+
+    accessible-role: button;
+    accessible-label: "Theme";
+    accessible-description: Theme.theme-mode == "system" ? "System"
+        : Theme.theme-mode == "dark" ? "Dark" : "Light";
+    accessible-action-default => { root.next(); }
+
+    keys := ButtonKeys {
+        activated => { root.next(); }
+        changed has-focus => {
+            if self.has-focus && root.slot >= 0 { MenuNav.active = root.slot; }
+        }
+    }
 
     HorizontalLayout {
         padding-left: Theme.space-8;
@@ -301,6 +439,7 @@ component ThemeMenuRow inherits Rectangle {
             alignment: center;
             // System follows the OS; greyed where the OS can't say
             Picker {
+                label: "Theme";
                 compact: true;
                 option-width: 54px;
                 choices: [
@@ -313,19 +452,26 @@ component ThemeMenuRow inherits Rectangle {
             }
         }
     }
+
+    if keys.has-focus: FocusRing {
+        offset: -1px;
+        radius: root.border-radius;
+    }
 }
 
 // Window button in our own title bar (minimize, maximize, close). Like
 // system title bars, it is left out of the Tab order.
 component CaptionButton inherits Rectangle {
     in property <string> label;
+    // Close: turns red under the pointer, as window buttons do
+    in property <bool> danger;
     callback clicked();
-    out property <color> glyph: Theme.menu-text;
+    out property <color> glyph: root.danger && (touch.pressed || touch.has-hover) ? #ffffff : Theme.menu-text;
 
     width: 42px;
     height: 32px;
-    background: touch.pressed ? Theme.pressed-bg
-        : touch.has-hover ? Theme.hover-bg : transparent;
+    background: touch.pressed ? (root.danger ? Theme.danger.darker(0.2) : Theme.pressed-bg)
+        : touch.has-hover ? (root.danger ? Theme.danger : Theme.hover-bg) : transparent;
     animate background { duration: Theme.fast; }
 
     accessible-role: button;
@@ -340,35 +486,46 @@ component CaptionButton inherits Rectangle {
 }
 
 // A menu's name in the bar; opens the menu on click, or on Space, Enter
-// or Down once reached with Tab
+// or Down once reached with Tab or F10 (the first row then has the focus).
+// Left and Right go to the next title. It stays lit while its menu is open.
 component MenuTitle inherits Rectangle {
     in property <string> label;
     // Greyed out and not clickable when false
     in property <bool> enabled: true;
-    callback clicked();
+    in property <bool> open;
+    // true: with the keyboard
+    callback opened(bool);
+    // Left (-1) or Right (1) on the title
+    callback step(int);
 
     width: title.preferred-width + 20px;
     height: 32px;
-    background: root.enabled && (touch.has-hover || keys.has-focus) ? Theme.hover-bg : transparent;
+    background: !root.enabled ? transparent
+        : root.open || touch.pressed ? Theme.pressed-bg
+        : touch.has-hover || keys.has-focus ? Theme.hover-bg : transparent;
     animate background { duration: Theme.fast; }
+    forward-focus: keys;
 
     accessible-role: button;
     accessible-label: root.label;
     accessible-enabled: root.enabled;
+    accessible-expandable: true;
+    accessible-expanded: root.open;
     accessible-action-default => {
         if root.enabled {
-            root.clicked();
+            root.opened(true);
         }
     }
 
     touch := TouchArea {
         enabled: root.enabled;
-        clicked => { root.clicked(); }
+        clicked => { root.opened(false); }
     }
 
     title := Text {
         text: root.label;
-        color: root.enabled ? Theme.menu-text : Theme.disabled-text;
+        color: !root.enabled ? Theme.disabled-text
+            : root.open ? Theme.text-primary : Theme.menu-text;
         font-size: Theme.font-base;
         horizontal-alignment: center;
         vertical-alignment: center;
@@ -379,8 +536,15 @@ component MenuTitle inherits Rectangle {
         enabled: root.enabled;
         focus-on-click: false;
         key-pressed(event) => {
+            if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                return reject;
+            }
             if event.text == Key.Space || event.text == Key.Return || event.text == Key.DownArrow {
-                root.clicked();
+                root.opened(true);
+                return accept;
+            }
+            if event.text == Key.LeftArrow || event.text == Key.RightArrow {
+                root.step(event.text == Key.LeftArrow ? -1 : 1);
                 return accept;
             }
             return reject;
@@ -391,6 +555,118 @@ component MenuTitle inherits Rectangle {
     if keys.has-focus: FocusRing {
         offset: -Theme.focus-ring-width;
         radius: Theme.radius-sm;
+    }
+}
+
+// What an open menu shows. Its popup starts at the bar's top left corner
+// and covers the menu titles, so that moving onto another title opens that
+// menu, as menu bars do (the window gets no pointer events outside an open
+// popup). The card with the rows sits under its own title. A press on the
+// empty parts closes the menu, like a press outside it.
+//
+// The card owns the arrow keys: Up, Down, Home and End move through the
+// rows (see MenuNav), Left and Right open the neighbour menu, and Left on
+// a row inside an open group folds the group.
+component MenuPane inherits Rectangle {
+    // Which menu this is (its place in `title-x`), or -1 for a menu that
+    // is not in the bar (the window menu)
+    in property <int> index: -1;
+    // Where the titles are in the bar; empty for a menu not in the bar
+    in property <[length]> title-x;
+    in property <[length]> title-width;
+    in property <length> bar-height: 32px;
+    // Per slot: the row is shown and not greyed out
+    in property <[bool]> usable;
+    // While the active row is inside an open group: the group row's slot
+    in property <int> fold-to: -1;
+    callback fold();
+    // (menu, with the keyboard): open that menu instead
+    callback switch(int, bool);
+    callback close();
+
+    property <length> card-x: root.index >= 0 ? root.title-x[root.index] : 0;
+    property <length> strip-height: root.index >= 0 ? root.bar-height : 0;
+    property <length> titles-end: root.index >= 0
+        ? root.title-x[root.title-x.length - 1] + root.title-width[root.title-x.length - 1] : 0;
+    out property <length> wanted-width: max(root.titles-end, root.card-x + rows.preferred-width);
+    out property <length> wanted-height: root.strip-height + rows.preferred-height;
+
+    TouchArea {
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.close();
+            }
+        }
+    }
+
+    for x[i] in root.title-x: TouchArea {
+        x: x;
+        width: root.title-width[i];
+        height: root.strip-height;
+        changed has-hover => {
+            if self.has-hover && i != root.index {
+                root.switch(i, false);
+            }
+        }
+        // On its own title: closes the menu, as a second click does
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.close();
+            }
+        }
+    }
+
+    PopupCard {
+        x: root.card-x;
+        y: root.strip-height;
+        width: rows.preferred-width;
+        height: rows.preferred-height;
+
+        // A click between the rows (a line, a note) does nothing
+        TouchArea { }
+
+        FocusScope {
+            focus-on-click: false;
+            focus-on-tab-navigation: false;
+            // Opened with the mouse: the keys work at once, with no row
+            // marked until an arrow is pressed
+            init => {
+                if MenuNav.active < 0 { self.focus(); }
+            }
+            key-pressed(event) => {
+                if event.modifiers.control || event.modifiers.alt || event.modifiers.meta {
+                    return reject;
+                }
+                if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                    MenuNav.active = MenuNav.step(root.usable, event.text == Key.DownArrow ? 1 : -1);
+                    return accept;
+                }
+                if event.text == Key.Home {
+                    MenuNav.active = MenuNav.scan(root.usable, 0, 1);
+                    return accept;
+                }
+                if event.text == Key.End {
+                    MenuNav.active = MenuNav.scan(root.usable, root.usable.length - 1, -1);
+                    return accept;
+                }
+                if event.text == Key.LeftArrow && root.fold-to >= 0 {
+                    MenuNav.active = root.fold-to;
+                    root.fold();
+                    return accept;
+                }
+                if (event.text == Key.LeftArrow || event.text == Key.RightArrow) && root.index >= 0 {
+                    root.switch(Math.mod(root.index + (event.text == Key.LeftArrow ? -1 : 1) + root.title-x.length,
+                        root.title-x.length), true);
+                    return accept;
+                }
+                return reject;
+            }
+
+            rows := VerticalLayout {
+                padding: Theme.space-4;
+                @children
+            }
+        }
     }
 }
 
@@ -410,6 +686,8 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> show-station-stats: true;
     // The header visualizer tile (View > Visualizer)
     in-out property <bool> show-visualizer: true;
+    // Its style (View > Visualizer Style); a click on the tile changes it too
+    in-out property <string> viz-mode: "wave";
     callback open-wifi-settings();
     callback open-about();
     callback open-keyboard-shortcuts();
@@ -466,31 +744,82 @@ export component MenuBar inherits Rectangle {
     // (x, y, pressed) -> whether the system shows its menu (on press or on
     // the release that follows)
     callback show-system-menu(length, length, bool) -> bool;
+
+    // Open a menu, with one of its groups unfolded ("style", "window" or
+    // "tray" in View; "recordings" or "connections" in Tools)
     public function open-menu(menu: string, group: string) {
-        if menu == "open" { open-menu.clicked(); }
-        if menu == "stations" { stations-menu.clicked(); }
+        if menu == "open" { root.show-menu(0, false); }
+        if menu == "stations" { root.show-menu(1, false); }
         if menu == "view" {
-            root.snapshot-menu-group = group;
-            view-menu.clicked();
+            root.show-menu(2, false);
+            root.view-group = group;
         }
         if menu == "tools" {
-            root.snapshot-menu-group = group;
-            tools-menu.clicked();
+            root.show-menu(3, false);
+            root.tools-group = group;
         }
-        if menu == "help" { help-menu.clicked(); }
+        if menu == "help" { root.show-menu(4, false); }
         if menu == "window" {
             root.window-menu-x = move-area.x + 2px;
             root.window-menu-y = 29px;
+            MenuNav.active = -1;
             window-popup.show();
         }
     }
 
+    // F10: the keyboard goes to the first menu title
+    public function focus-menus() {
+        if root.menus-enabled {
+            open-menu.focus();
+        }
+    }
+
+    // Menus in the bar, by number: 0 Open, 1 Stations, 2 View, 3 Tools,
+    // 4 Help. Opening one closes the one that was open. With the keyboard
+    // the first row gets the focus.
+    function show-menu(index: int, keyboard: bool) {
+        MenuNav.active = -1;
+        root.view-group = "";
+        root.tools-group = "";
+        root.confirm-power-off = false;
+        root.confirm-restart = false;
+        if index == 0 { open-popup.show(); }
+        if index == 1 { stations-popup.show(); }
+        if index == 2 { view-popup.show(); }
+        if index == 3 { tools-popup.show(); }
+        if index == 4 { help-popup.show(); }
+        if keyboard {
+            MenuNav.active = MenuNav.scan(index == 0 ? root.open-usable
+                : index == 1 ? root.stations-usable
+                : index == 2 ? root.view-usable
+                : index == 3 ? root.tools-usable : root.help-usable, 0, 1);
+        }
+    }
+
+    function focus-title(index: int) {
+        if index == 0 { open-menu.focus(); }
+        if index == 1 { stations-menu.focus(); }
+        if index == 2 { view-menu.focus(); }
+        if index == 3 { tools-menu.focus(); }
+        if index == 4 { help-menu.focus(); }
+    }
+
     in property <string> snapshot-bubble;
-    property <string> snapshot-menu-group;
     property <length> window-menu-x;
     // Where the first menu starts (the bar's left padding)
     property <length> menu-start: 4px;
     property <length> window-menu-y;
+    // Where the titles are, for the open menu (see MenuPane)
+    property <[length]> title-x: [
+        root.menu-start,
+        root.menu-start + open-menu.width,
+        root.menu-start + open-menu.width + stations-menu.width,
+        root.menu-start + open-menu.width + stations-menu.width + view-menu.width,
+        root.menu-start + open-menu.width + stations-menu.width + view-menu.width + tools-menu.width,
+    ];
+    property <[length]> title-width: [
+        open-menu.width, stations-menu.width, view-menu.width, tools-menu.width, help-menu.width,
+    ];
     callback close-window();
     // System tray options (View menu) and Quit (Open menu)
     in-out property <bool> tray-icon;
@@ -505,6 +834,50 @@ export component MenuBar inherits Rectangle {
     property <bool> confirm-power-off: false;
     property <bool> confirm-restart: false;
 
+    // The unfolded group of the View menu ("", "style", "window" or
+    // "tray") and of the Tools menu ("", "recordings" or "connections"):
+    // one at a time, folded again when the menu is opened
+    property <string> view-group;
+    property <string> tools-group;
+    property <bool> style-open: root.view-group == "style";
+    property <bool> window-open: Platform.has-window-frame && root.view-group == "window";
+    property <bool> tray-open: Platform.has-tray && root.view-group == "tray";
+    property <bool> tray-usable: root.tray-open && root.tray-icon && root.tray-available;
+
+    // For the arrow keys: which rows of each menu are shown and not greyed
+    // out, by slot (the `slot` of each row below). Keep the two in step.
+    property <[bool]> open-usable: [
+        true, !Platform.has-power-off, Platform.has-power-off, Platform.has-power-off,
+    ];
+    property <[bool]> stations-usable: [true, Platform.has-file-manager, Platform.has-file-manager];
+    property <[bool]> window-usable: [true, true, true, true];
+    property <[bool]> view-usable: [
+        // 0 Theme, 1 Accent Color, 2 Show Listening Stats, 3 Visualizer
+        true, true, true, true,
+        // 4 Station Colors in Visualizer, 5 Visualizer Style, 6-11 its styles
+        root.show-visualizer, true,
+        root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
+        root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
+        root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
+        // 12 Window, 13 Use System Title Bar, 14 Rounded Corners, 15 Always on Top
+        Platform.has-window-frame, root.window-open,
+        root.window-open && root.custom-frame && root.corners-available, root.window-open,
+        // 16 System Tray, 17 Show Tray Icon, 18-20 the three tray choices
+        Platform.has-tray, root.tray-open, root.tray-usable, root.tray-usable, root.tray-usable,
+    ];
+    property <[bool]> tools-usable: [
+        // 0 Statistics, 1 Filters, 2 Equalizer, 3 Start Recording
+        true, true, true, root.can-toggle-recording,
+        // 4 Recordings, 5 Settings, 6 Open Folder
+        true, root.tools-group == "recordings", Platform.has-file-manager && root.tools-group == "recordings",
+        // 7 Sleep Timer, 8 Scheduler
+        true, true,
+        // 9 Connections, 10 Agents (MCP), 11 Remote Control
+        true, root.tools-group == "connections", root.tools-group == "connections",
+        // 12 Wi-Fi Settings
+        Platform.has-wifi,
+    ];
+    property <[bool]> help-usable: [DesktopShortcuts.enabled, true];
 
     HorizontalLayout {
         padding-left: 4px;
@@ -514,35 +887,41 @@ export component MenuBar inherits Rectangle {
         open-menu := MenuTitle {
             label: "Open";
             enabled: root.menus-enabled;
-            clicked => {
-                root.confirm-power-off = false;
-                root.confirm-restart = false;
-                open-popup.show();
-            }
+            open: open-popup.is-open;
+            opened(keyboard) => { root.show-menu(0, keyboard); }
+            step(by) => { root.focus-title(by < 0 ? 4 : 1); }
         }
 
         stations-menu := MenuTitle {
             label: "Stations";
             enabled: root.menus-enabled;
-            clicked => { stations-popup.show(); }
+            open: stations-popup.is-open;
+            opened(keyboard) => { root.show-menu(1, keyboard); }
+            step(by) => { root.focus-title(1 + by); }
         }
 
         view-menu := MenuTitle {
             label: "View";
             enabled: root.menus-enabled;
-            clicked => { view-popup.show(); }
+            open: view-popup.is-open;
+            opened(keyboard) => { root.show-menu(2, keyboard); }
+            step(by) => { root.focus-title(2 + by); }
         }
 
         tools-menu := MenuTitle {
             label: "Tools";
             enabled: root.menus-enabled;
-            clicked => { tools-popup.show(); }
+            open: tools-popup.is-open;
+            opened(keyboard) => { root.show-menu(3, keyboard); }
+            step(by) => { root.focus-title(3 + by); }
         }
 
         help-menu := MenuTitle {
             label: "Help";
             enabled: root.menus-enabled;
-            clicked => { help-popup.show(); }
+            open: help-popup.is-open;
+            opened(keyboard) => { root.show-menu(4, keyboard); }
+            step(by) => { root.focus-title(by < 0 ? 3 : 0); }
         }
 
         // Empty part of the bar: drag to move, double-click to maximize
@@ -561,6 +940,7 @@ export component MenuBar inherits Rectangle {
                         if !root.show-system-menu(self.absolute-position.x + self.mouse-x, self.absolute-position.y + self.mouse-y, true) {
                             root.window-menu-x = move-area.x + self.mouse-x + 2px;
                             root.window-menu-y = self.mouse-y + 2px;
+                            MenuNav.active = -1;
                             window-popup.show();
                         }
                     } else if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
@@ -575,6 +955,12 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.listeners.length;
+                label: root.listeners.length == 1 ? "1 phone listening" : root.listeners.length + " phones listening";
+                // The names in the bubble (the first three)
+                description: root.listeners[0]
+                    + (root.listeners.length > 1 ? ", " + root.listeners[1] : "")
+                    + (root.listeners.length > 2 ? ", " + root.listeners[2] : "")
+                    + (root.listeners.length > 3 ? " and " + (root.listeners.length - 3) + " more" : "");
                 snapshot-bubble: root.snapshot-bubble == "listeners";
                 icon: @image-url("icons/headphones.svg");
                 show-bubble(right, top) => {
@@ -591,6 +977,8 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.agent-count;
+                label: root.agent-count == 1 ? "1 agent using the player" : root.agent-count + " agents using the player";
+                description: "Tools > Connections > Agents (MCP) has the details";
                 snapshot-bubble: root.snapshot-bubble == "agents";
                 show-bubble(right, top) => {
                     root.agents-bubble-right = right;
@@ -655,6 +1043,7 @@ export component MenuBar inherits Rectangle {
 
             close := CaptionButton {
                 label: "Close";
+                danger: true;
                 clicked => { root.close-window(); }
 
                 Path {
@@ -674,65 +1063,73 @@ export component MenuBar inherits Rectangle {
     // popup's elements, and a statement after close() in an item under an
     // `if` (Quit, Restart, Power Off) never ran
     open-popup := PopupWindow {
-        x: root.menu-start;
-        y: 32px;
-        width: popup-layout.preferred-width;
+        x: 0;
+        y: 0;
+        width: open-pane.wanted-width;
+        height: open-pane.wanted-height;
         // Clicks inside don't close the menu: commands and dialogs close it
         // themselves, ticks stay open to show the change. Esc still closes.
         close-policy: close-on-click-outside;
 
-        PopupCard {
-            popup-layout := VerticalLayout {
-                padding: Theme.space-4;
+        open-pane := MenuPane {
+            index: 0;
+            title-x: root.title-x;
+            title-width: root.title-width;
+            usable: root.open-usable;
+            switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
+            close => { open-popup.close(); }
 
-                MenuItem {
-                    label: "Network Stream";
-                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.network-stream) : "";
-                    icon: @image-url("icons/link.svg");
-                    clicked => {
-                        root.open-network-stream();
+            MenuItem {
+                slot: 0;
+                label: "Network Stream";
+                shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.network-stream) : "";
+                icon: @image-url("icons/link.svg");
+                clicked => {
+                    root.open-network-stream();
+                    open-popup.close();
+                }
+            }
+            MenuSeparator {}
+            if !Platform.has-power-off: MenuItem {
+                slot: 1;
+                label: "Quit";
+                icon: @image-url("icons/power-off.svg");
+                shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.quit) : "";
+                clicked => {
+                    root.quit-app();
+                    open-popup.close();
+                }
+            }
+            // The Pi: Power Off and Restart ask twice, and the first
+            // press stays until the menu is opened again. Wide enough
+            // for the longer label, so asking doesn't move the menu
+            if Platform.has-power-off: MenuItem {
+                slot: 2;
+                label: root.confirm-restart ? "Press Again to Restart" : "Restart";
+                icon: @image-url("icons/rotate-right.svg");
+                min-width: 230px;
+                clicked => {
+                    if root.confirm-restart {
+                        root.restart();
                         open-popup.close();
+                    } else {
+                        root.confirm-restart = true;
+                        root.confirm-power-off = false;
                     }
                 }
-                MenuSeparator {}
-                if !Platform.has-power-off: MenuItem {
-                    label: "Quit";
-                    icon: @image-url("icons/power-off.svg");
-                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.quit) : "";
-                    clicked => {
-                        root.quit-app();
+            }
+            if Platform.has-power-off: MenuItem {
+                slot: 3;
+                label: root.confirm-power-off ? "Press Again to Power Off" : "Power Off";
+                icon: @image-url("icons/power-off.svg");
+                min-width: 230px;
+                clicked => {
+                    if root.confirm-power-off {
+                        root.power-off();
                         open-popup.close();
-                    }
-                }
-                // The Pi: Power Off and Restart ask twice, and the first
-                // press stays until the menu is opened again. Wide enough
-                // for the longer label, so asking doesn't move the menu
-                if Platform.has-power-off: MenuItem {
-                    label: root.confirm-restart ? "Press Again to Restart" : "Restart";
-                    icon: @image-url("icons/rotate-right.svg");
-                    min-width: 230px;
-                    clicked => {
-                        if root.confirm-restart {
-                            root.restart();
-                            open-popup.close();
-                        } else {
-                            root.confirm-restart = true;
-                            root.confirm-power-off = false;
-                        }
-                    }
-                }
-                if Platform.has-power-off: MenuItem {
-                    label: root.confirm-power-off ? "Press Again to Power Off" : "Power Off";
-                    icon: @image-url("icons/power-off.svg");
-                    min-width: 230px;
-                    clicked => {
-                        if root.confirm-power-off {
-                            root.power-off();
-                            open-popup.close();
-                        } else {
-                            root.confirm-power-off = true;
-                            root.confirm-restart = false;
-                        }
+                    } else {
+                        root.confirm-power-off = true;
+                        root.confirm-restart = false;
                     }
                 }
             }
@@ -740,43 +1137,50 @@ export component MenuBar inherits Rectangle {
     }
 
     stations-popup := PopupWindow {
-        x: root.menu-start + open-menu.width;
-        y: 32px;
-        width: stations-popup-layout.preferred-width;
+        x: 0;
+        y: 0;
+        width: stations-pane.wanted-width;
+        height: stations-pane.wanted-height;
         close-policy: close-on-click-outside;
 
-        PopupCard {
-            stations-popup-layout := VerticalLayout {
-                padding: Theme.space-4;
+        stations-pane := MenuPane {
+            index: 1;
+            title-x: root.title-x;
+            title-width: root.title-width;
+            usable: root.stations-usable;
+            switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
+            close => { stations-popup.close(); }
 
-                MenuItem {
-                    label: "Search Stations";
-                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.search) : "";
-                    icon: @image-url("icons/magnifying-glass.svg");
-                    clicked => {
-                        root.open-station-search();
-                        stations-popup.close();
-                    }
+            MenuItem {
+                slot: 0;
+                label: "Search Stations";
+                shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.search) : "";
+                icon: @image-url("icons/magnifying-glass.svg");
+                clicked => {
+                    root.open-station-search();
+                    stations-popup.close();
                 }
-                MenuSeparator {}
-                // Need a file dialog, which the kiosk build lacks
-                MenuItem {
-                    label: "Export Favorites";
-                    enabled: Platform.has-file-manager;
-                    icon: @image-url("icons/file-export.svg");
-                    clicked => {
-                        root.export-favorites();
-                        stations-popup.close();
-                    }
+            }
+            MenuSeparator {}
+            // Need a file dialog, which the kiosk build lacks
+            MenuItem {
+                slot: 1;
+                label: "Export Favorites";
+                enabled: Platform.has-file-manager;
+                icon: @image-url("icons/file-export.svg");
+                clicked => {
+                    root.export-favorites();
+                    stations-popup.close();
                 }
-                MenuItem {
-                    label: "Import Favorites";
-                    enabled: Platform.has-file-manager;
-                    icon: @image-url("icons/file-import.svg");
-                    clicked => {
-                        root.import-favorites();
-                        stations-popup.close();
-                    }
+            }
+            MenuItem {
+                slot: 2;
+                label: "Import Favorites";
+                enabled: Platform.has-file-manager;
+                icon: @image-url("icons/file-import.svg");
+                clicked => {
+                    root.import-favorites();
+                    stations-popup.close();
                 }
             }
         }
@@ -786,111 +1190,158 @@ export component MenuBar inherits Rectangle {
     window-popup := PopupWindow {
         x: root.window-menu-x;
         y: root.window-menu-y;
-        width: window-popup-layout.preferred-width;
+        width: window-pane.wanted-width;
+        height: window-pane.wanted-height;
         close-policy: close-on-click-outside;
 
-        PopupCard {
-            window-popup-layout := VerticalLayout {
-                padding: Theme.space-4;
+        window-pane := MenuPane {
+            usable: root.window-usable;
+            close => { window-popup.close(); }
 
-                MenuItem {
-                    label: "Minimize";
-                    icon: @image-url("icons/window-minimize.svg");
-                    clicked => {
-                        root.minimize();
-                        window-popup.close();
-                    }
+            MenuItem {
+                slot: 0;
+                label: "Minimize";
+                icon: @image-url("icons/window-minimize.svg");
+                clicked => {
+                    root.minimize();
+                    window-popup.close();
                 }
-                MenuItem {
-                    label: root.maximized ? "Restore" : "Maximize";
-                    icon: root.maximized ? @image-url("icons/window-restore.svg") : @image-url("icons/window-maximize.svg");
-                    clicked => {
-                        root.maximized = !root.maximized;
-                        window-popup.close();
-                    }
+            }
+            MenuItem {
+                slot: 1;
+                label: root.maximized ? "Restore" : "Maximize";
+                icon: root.maximized ? @image-url("icons/window-restore.svg") : @image-url("icons/window-maximize.svg");
+                clicked => {
+                    root.maximized = !root.maximized;
+                    window-popup.close();
                 }
-                CheckMenuItem {
-                    label: "Always on Top";
-                    icon: @image-url("icons/thumbtack.svg");
-                    checked: root.always-on-top;
-                    clicked => {
-                        root.always-on-top = !root.always-on-top;
-                    }
+            }
+            CheckMenuItem {
+                slot: 2;
+                label: "Always on Top";
+                icon: @image-url("icons/thumbtack.svg");
+                checked: root.always-on-top;
+                clicked => {
+                    root.always-on-top = !root.always-on-top;
                 }
-                MenuSeparator {}
-                MenuItem {
-                    label: "Close";
-                    icon: @image-url("icons/xmark.svg");
-                    clicked => {
-                        root.close-window();
-                        window-popup.close();
-                    }
+            }
+            MenuSeparator {}
+            MenuItem {
+                slot: 3;
+                label: "Close";
+                icon: @image-url("icons/xmark.svg");
+                clicked => {
+                    root.close-window();
+                    window-popup.close();
                 }
             }
         }
     }
 
     view-popup := PopupWindow {
-        x: root.menu-start + open-menu.width + stations-menu.width;
-        y: 32px;
-        width: view-popup-layout.preferred-width;
+        x: 0;
+        y: 0;
+        width: view-pane.wanted-width;
+        height: view-pane.wanted-height;
         close-policy: close-on-click-outside;
 
-        // The open group: "", "window" or "tray"; one at a time
-        property <string> group: root.snapshot-menu-group;
+        view-pane := MenuPane {
+            index: 2;
+            title-x: root.title-x;
+            title-width: root.title-width;
+            usable: root.view-usable;
+            // Left on a row of an open group folds it
+            fold-to: root.style-open && MenuNav.active >= 6 && MenuNav.active <= 11 ? 5
+                : root.window-open && MenuNav.active >= 13 && MenuNav.active <= 15 ? 12
+                : root.tray-open && MenuNav.active >= 17 && MenuNav.active <= 20 ? 16 : -1;
+            fold => { root.view-group = ""; }
+            switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
+            close => { view-popup.close(); }
 
-        PopupCard {
-            view-popup-layout := VerticalLayout {
-                padding: Theme.space-4;
-
-                ThemeMenuRow {}
-                MenuItem {
-                    label: "Accent Color";
-                    icon: @image-url("icons/palette.svg");
-                    has-swatch: true;
-                    swatch: Theme.accent;
-                    clicked => {
-                        root.open-accent-color();
-                        view-popup.close();
-                    }
+            ThemeMenuRow {
+                slot: 0;
+            }
+            MenuItem {
+                slot: 1;
+                label: "Accent Color";
+                icon: @image-url("icons/palette.svg");
+                has-swatch: true;
+                swatch: Theme.accent;
+                clicked => {
+                    root.open-accent-color();
+                    view-popup.close();
                 }
-                MenuSeparator {}
-                CheckMenuItem {
-                    label: "Show Listening Stats";
-                    icon: @image-url("icons/clock.svg");
-                    checked: root.show-station-stats;
-                    clicked => {
-                        root.show-station-stats = !root.show-station-stats;
-                    }
+            }
+            MenuSeparator {}
+            CheckMenuItem {
+                slot: 2;
+                label: "Show Listening Stats";
+                icon: @image-url("icons/clock.svg");
+                checked: root.show-station-stats;
+                clicked => {
+                    root.show-station-stats = !root.show-station-stats;
                 }
-                MenuSeparator {}
-                CheckMenuItem {
-                    label: "Visualizer";
-                    icon: @image-url("icons/visualizer.svg");
-                    checked: root.show-visualizer;
-                    clicked => {
-                        root.show-visualizer = !root.show-visualizer;
-                    }
+            }
+            MenuSeparator {}
+            CheckMenuItem {
+                slot: 3;
+                label: "Visualizer";
+                icon: @image-url("icons/visualizer.svg");
+                checked: root.show-visualizer;
+                clicked => {
+                    root.show-visualizer = !root.show-visualizer;
                 }
-                // Keeps its choice while the visualizer is off
-                CheckMenuItem {
-                    label: "Station Colors in Visualizer";
-                    icon: @image-url("icons/fill-drip.svg");
+            }
+            // Keeps its choice while the visualizer is off
+            CheckMenuItem {
+                slot: 4;
+                label: "Station Colors in Visualizer";
+                icon: @image-url("icons/fill-drip.svg");
+                enabled: root.show-visualizer;
+                checked: VizStyle.palette == "logo";
+                clicked => {
+                    VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
+                }
+            }
+            // The six styles a click on the tile goes through, in the same
+            // order; the choice is kept while the visualizer is off
+            GroupMenuItem {
+                slot: 5;
+                label: "Visualizer Style";
+                icon: @image-url("icons/wave-square.svg");
+                open: root.style-open;
+                toggled => { root.view-group = root.style-open ? "" : "style"; }
+            }
+            if root.style-open: VerticalLayout {
+                for style[i] in [
+                    { id: "wave", label: "Wave" },
+                    { id: "spectrum", label: "Spectrum" },
+                    { id: "mirror", label: "Mirror" },
+                    { id: "dots", label: "Dot Matrix" },
+                    { id: "vu", label: "VU" },
+                    { id: "hbars", label: "Horizontal VU" },
+                ]: CheckMenuItem {
+                    slot: 6 + i;
+                    label: style.label;
+                    indent: Theme.space-16;
                     enabled: root.show-visualizer;
-                    checked: VizStyle.palette == "logo";
-                    clicked => {
-                        VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
-                    }
+                    one-of-set: true;
+                    checked: root.viz-mode == style.id;
+                    clicked => { root.viz-mode = style.id; }
                 }
-                // The set-once options, folded into groups (desktop only)
-                if Platform.has-window-frame || Platform.has-tray: MenuSeparator {}
-                if Platform.has-window-frame: GroupMenuItem {
-                    label: "Window";
-                    icon: @image-url("icons/window-maximize.svg");
-                    open: view-popup.group == "window";
-                    toggled => { view-popup.group = view-popup.group == "window" ? "" : "window"; }
-                }
-                if Platform.has-window-frame && view-popup.group == "window": CheckMenuItem {
+            }
+            // The set-once options, folded into groups (desktop only)
+            if Platform.has-window-frame || Platform.has-tray: MenuSeparator {}
+            if Platform.has-window-frame: GroupMenuItem {
+                slot: 12;
+                label: "Window";
+                icon: @image-url("icons/window-maximize.svg");
+                open: root.window-open;
+                toggled => { root.view-group = root.window-open ? "" : "window"; }
+            }
+            if root.window-open: VerticalLayout {
+                CheckMenuItem {
+                    slot: 13;
                     // Chrome's wording: ticked means the system frame
                     label: "Use System Title Bar";
                     icon: @image-url("icons/window-maximize.svg");
@@ -901,7 +1352,8 @@ export component MenuBar inherits Rectangle {
                         view-popup.close();
                     }
                 }
-                if Platform.has-window-frame && view-popup.group == "window": CheckMenuItem {
+                CheckMenuItem {
+                    slot: 14;
                     // The system title bar has its own corners
                     label: "Rounded Corners";
                     icon: @image-url("icons/rounded-corner.svg");
@@ -914,13 +1366,27 @@ export component MenuBar inherits Rectangle {
                         root.rounded-corners-changed();
                     }
                 }
-                if Platform.has-tray: GroupMenuItem {
-                    label: "System Tray";
-                    icon: @image-url("icons/window-restore.svg");
-                    open: view-popup.group == "tray";
-                    toggled => { view-popup.group = view-popup.group == "tray" ? "" : "tray"; }
+                CheckMenuItem {
+                    slot: 15;
+                    label: "Always on Top";
+                    icon: @image-url("icons/thumbtack.svg");
+                    indent: Theme.space-16;
+                    checked: root.always-on-top;
+                    clicked => {
+                        root.always-on-top = !root.always-on-top;
+                    }
                 }
-                if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
+            }
+            if Platform.has-tray: GroupMenuItem {
+                slot: 16;
+                label: "System Tray";
+                icon: @image-url("icons/window-restore.svg");
+                open: root.tray-open;
+                toggled => { root.view-group = root.tray-open ? "" : "tray"; }
+            }
+            if root.tray-open: VerticalLayout {
+                CheckMenuItem {
+                    slot: 17;
                     label: "Show Tray Icon";
                     icon: @image-url("icons/window-restore.svg");
                     indent: Theme.space-16;
@@ -930,7 +1396,8 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 // Greyed with no tray to hide in; they keep their ticks
-                if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
+                CheckMenuItem {
+                    slot: 18;
                     label: "Close to Tray";
                     icon: @image-url("icons/rectangle-xmark.svg");
                     indent: Theme.space-16;
@@ -940,7 +1407,8 @@ export component MenuBar inherits Rectangle {
                         root.close-to-tray = !root.close-to-tray;
                     }
                 }
-                if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
+                CheckMenuItem {
+                    slot: 19;
                     label: "Minimize to Tray";
                     icon: @image-url("icons/square-minus.svg");
                     indent: Theme.space-16;
@@ -950,7 +1418,8 @@ export component MenuBar inherits Rectangle {
                         root.hide-on-minimize = !root.hide-on-minimize;
                     }
                 }
-                if Platform.has-tray && view-popup.group == "tray": CheckMenuItem {
+                CheckMenuItem {
+                    slot: 20;
                     label: "Start Hidden in Tray";
                     icon: @image-url("icons/eye-slash.svg");
                     indent: Theme.space-16;
@@ -960,7 +1429,7 @@ export component MenuBar inherits Rectangle {
                         root.start-in-tray = !root.start-in-tray;
                     }
                 }
-                if Platform.has-tray && view-popup.group == "tray" && root.tray-icon && !root.tray-available: MenuNote {
+                if root.tray-icon && !root.tray-available: MenuNote {
                     indent: Theme.space-16;
                     lines: ["This desktop doesn't show tray icons.", "On GNOME, turn on the AppIndicator extension."];
                 }
@@ -969,93 +1438,111 @@ export component MenuBar inherits Rectangle {
     }
 
     help-popup := PopupWindow {
-        x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width + tools-menu.width;
-        y: 32px;
-        width: help-popup-layout.preferred-width;
+        x: 0;
+        y: 0;
+        width: help-pane.wanted-width;
+        height: help-pane.wanted-height;
         close-policy: close-on-click-outside;
 
-        PopupCard {
-            help-popup-layout := VerticalLayout {
-                padding: Theme.space-4;
+        help-pane := MenuPane {
+            index: 4;
+            title-x: root.title-x;
+            title-width: root.title-width;
+            usable: root.help-usable;
+            switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
+            close => { help-popup.close(); }
 
-                if DesktopShortcuts.enabled: MenuItem {
-                    label: "Keyboard Shortcuts";
-                    icon: @image-url("icons/keyboard.svg");
-                    shortcut: DesktopShortcuts.label(ShortcutAction.help);
-                    // Open first: closing the popup takes this item with it
-                    clicked => {
-                        root.open-keyboard-shortcuts();
-                        help-popup.close();
-                    }
+            if DesktopShortcuts.enabled: MenuItem {
+                slot: 0;
+                label: "Keyboard Shortcuts";
+                icon: @image-url("icons/keyboard.svg");
+                shortcut: DesktopShortcuts.label(ShortcutAction.help);
+                // Open first: closing the popup takes this item with it
+                clicked => {
+                    root.open-keyboard-shortcuts();
+                    help-popup.close();
                 }
-                MenuItem {
-                    label: "About Radiotrope";
-                    icon: @image-url("icons/circle-info.svg");
-                    clicked => {
-                        root.open-about();
-                        help-popup.close();
-                    }
+            }
+            MenuItem {
+                slot: 1;
+                label: "About Radiotrope";
+                icon: @image-url("icons/circle-info.svg");
+                clicked => {
+                    root.open-about();
+                    help-popup.close();
                 }
             }
         }
     }
 
     tools-popup := PopupWindow {
-        x: root.menu-start + open-menu.width + stations-menu.width + view-menu.width;
-        y: 32px;
-        width: tools-popup-layout.preferred-width;
+        x: 0;
+        y: 0;
+        width: tools-pane.wanted-width;
+        height: tools-pane.wanted-height;
         close-policy: close-on-click-outside;
 
-        // The open group: "", "recordings" or "connections"; one at a time
-        property <string> group: root.snapshot-menu-group;
+        tools-pane := MenuPane {
+            index: 3;
+            title-x: root.title-x;
+            title-width: root.title-width;
+            usable: root.tools-usable;
+            fold-to: root.tools-group == "recordings" && MenuNav.active >= 5 && MenuNav.active <= 6 ? 4
+                : root.tools-group == "connections" && MenuNav.active >= 10 && MenuNav.active <= 11 ? 9 : -1;
+            fold => { root.tools-group = ""; }
+            switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
+            close => { tools-popup.close(); }
 
-        PopupCard {
-            tools-popup-layout := VerticalLayout {
-                padding: Theme.space-4;
-
+            MenuItem {
+                slot: 0;
+                label: "Statistics";
+                icon: @image-url("icons/chart-column.svg");
+                clicked => {
+                    root.open-statistics();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                slot: 1;
+                label: "Filters";
+                icon: @image-url("icons/wave-square.svg");
+                clicked => {
+                    root.open-filters();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                slot: 2;
+                label: "Equalizer";
+                icon: @image-url("icons/sliders.svg");
+                clicked => {
+                    root.open-equalizer();
+                    tools-popup.close();
+                }
+            }
+            MenuSeparator {}
+            MenuItem {
+                slot: 3;
+                label: root.is-recording ? "Stop Recording" : "Start Recording";
+                shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.record) : "";
+                // Greyed out until a station plays
+                enabled: root.can-toggle-recording;
+                icon: @image-url("icons/record.svg");
+                clicked => {
+                    root.toggle-recording();
+                    tools-popup.close();
+                }
+            }
+            GroupMenuItem {
+                slot: 4;
+                label: "Recordings";
+                icon: @image-url("icons/folder.svg");
+                open: root.tools-group == "recordings";
+                toggled => { root.tools-group = root.tools-group == "recordings" ? "" : "recordings"; }
+            }
+            if root.tools-group == "recordings": VerticalLayout {
                 MenuItem {
-                    label: "Statistics";
-                    icon: @image-url("icons/chart-column.svg");
-                    clicked => {
-                        root.open-statistics();
-                        tools-popup.close();
-                    }
-                }
-                MenuItem {
-                    label: "Filters";
-                    icon: @image-url("icons/wave-square.svg");
-                    clicked => {
-                        root.open-filters();
-                        tools-popup.close();
-                    }
-                }
-                MenuItem {
-                    label: "Equalizer";
-                    icon: @image-url("icons/sliders.svg");
-                    clicked => {
-                        root.open-equalizer();
-                        tools-popup.close();
-                    }
-                }
-                MenuSeparator {}
-                MenuItem {
-                    label: root.is-recording ? "Stop Recording" : "Start Recording";
-                    shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.record) : "";
-                    // Greyed out until a station plays
-                    enabled: root.can-toggle-recording;
-                    icon: @image-url("icons/record.svg");
-                    clicked => {
-                        root.toggle-recording();
-                        tools-popup.close();
-                    }
-                }
-                GroupMenuItem {
-                    label: "Recordings";
-                    icon: @image-url("icons/folder.svg");
-                    open: tools-popup.group == "recordings";
-                    toggled => { tools-popup.group = tools-popup.group == "recordings" ? "" : "recordings"; }
-                }
-                if tools-popup.group == "recordings": MenuItem {
+                    slot: 5;
                     label: "Settings";
                     icon: @image-url("icons/gear.svg");
                     indent: Theme.space-16;
@@ -1064,7 +1551,8 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                if Platform.has-file-manager && tools-popup.group == "recordings": MenuItem {
+                if Platform.has-file-manager: MenuItem {
+                    slot: 6;
                     label: "Open Folder";
                     icon: @image-url("icons/folder-open.svg");
                     indent: Theme.space-16;
@@ -1073,31 +1561,37 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                MenuSeparator {}
+            }
+            MenuSeparator {}
+            MenuItem {
+                slot: 7;
+                label: "Sleep Timer";
+                icon: @image-url("icons/moon.svg");
+                clicked => {
+                    root.open-sleep-timer();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                slot: 8;
+                label: "Scheduler";
+                icon: @image-url("icons/calendar.svg");
+                clicked => {
+                    root.open-schedule();
+                    tools-popup.close();
+                }
+            }
+            MenuSeparator {}
+            GroupMenuItem {
+                slot: 9;
+                label: "Connections";
+                icon: @image-url("icons/network-wired.svg");
+                open: root.tools-group == "connections";
+                toggled => { root.tools-group = root.tools-group == "connections" ? "" : "connections"; }
+            }
+            if root.tools-group == "connections": VerticalLayout {
                 MenuItem {
-                    label: "Sleep Timer";
-                    icon: @image-url("icons/moon.svg");
-                    clicked => {
-                        root.open-sleep-timer();
-                        tools-popup.close();
-                    }
-                }
-                MenuItem {
-                    label: "Scheduler";
-                    icon: @image-url("icons/calendar.svg");
-                    clicked => {
-                        root.open-schedule();
-                        tools-popup.close();
-                    }
-                }
-                MenuSeparator {}
-                GroupMenuItem {
-                    label: "Connections";
-                    icon: @image-url("icons/network-wired.svg");
-                    open: tools-popup.group == "connections";
-                    toggled => { tools-popup.group = tools-popup.group == "connections" ? "" : "connections"; }
-                }
-                if tools-popup.group == "connections": MenuItem {
+                    slot: 10;
                     label: "Agents (MCP)";
                     icon: @image-url("icons/bot.svg");
                     indent: Theme.space-16;
@@ -1106,7 +1600,8 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                if tools-popup.group == "connections": MenuItem {
+                MenuItem {
+                    slot: 11;
                     label: "Remote Control";
                     icon: @image-url("icons/mobile-screen-button.svg");
                     indent: Theme.space-16;
@@ -1115,14 +1610,15 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                if Platform.has-wifi: MenuSeparator {}
-                if Platform.has-wifi: MenuItem {
-                    label: "Wi-Fi Settings";
-                    icon: @image-url("icons/wifi.svg");
-                    clicked => {
-                        root.open-wifi-settings();
-                        tools-popup.close();
-                    }
+            }
+            if Platform.has-wifi: MenuSeparator {}
+            if Platform.has-wifi: MenuItem {
+                slot: 12;
+                label: "Wi-Fi Settings";
+                icon: @image-url("icons/wifi.svg");
+                clicked => {
+                    root.open-wifi-settings();
+                    tools-popup.close();
                 }
             }
         }

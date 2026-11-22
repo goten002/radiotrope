@@ -500,6 +500,11 @@ export component App inherits Window {
                 if root.dialog-open {
                     return reject;
                 }
+                // F10: to the menu bar (Shift+F10 is a favorite's menu)
+                if event.text == Key.F10 && !event.modifiers.shift && !event.modifiers.control && !event.modifiers.alt {
+                    menu-bar.focus-menus();
+                    return accept;
+                }
                 let action = DesktopShortcuts.match-key(event);
                 if action == ShortcutAction.favorite-up || action == ShortcutAction.favorite-down
                     || action == ShortcutAction.favorite-first || action == ShortcutAction.favorite-last
@@ -564,6 +569,7 @@ export component App inherits Window {
                         snapshot-bubble: root.snapshot-bubble;
                         show-station-stats <=> root.show-station-stats;
                         show-visualizer <=> root.show-visualizer;
+                        viz-mode <=> root.viz-mode;
                         custom-frame: root.custom-frame;
                         maximized <=> root.maximized;
                         always-on-top <=> root.keep-on-top;
