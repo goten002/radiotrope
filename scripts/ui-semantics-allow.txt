@@ -1,0 +1,7 @@
+# Exceptions to scripts/lint-ui-semantics.py, one per line:
+#   <file under crates/radiotrope-app/ui> <Component> <touch|image>   # why
+# A line that no longer matches anything fails the lint: delete it then.
+
+dialogs/schedule.slint EntryRow touch   # the row's click is a shortcut for its Edit button, which has the role
+menu-bar.slint MenuBar touch            # the empty part of the title bar: drag to move, double-click to maximize; the window buttons do the same
+scroll-bar.slint ScrollBar touch        # pointer-only by design: the keyboard scrolls with the arrows and Page keys
