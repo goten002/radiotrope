@@ -1334,6 +1334,22 @@ mod tests {
         engine.take_output_peak()
     }
 
+    /// How loud the output is once its volume has settled: read until two
+    /// readings in a row agree, as a busy machine may still be ramping the
+    /// volume, or catching up on its output, at the first one
+    fn steady(controller: &AppController) -> f32 {
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut last = loudest(controller, 100);
+        loop {
+            let peak = loudest(controller, 100);
+            let settled = last > 0.0 && (peak - last).abs() <= last * 0.005;
+            if settled || Instant::now() >= deadline {
+                return peak.max(last);
+            }
+            last = peak;
+        }
+    }
+
     /// The fade to `stop_at` that `controller` runs ends there with no
     /// sample louder than the fade had got, and the next station plays at
     /// the user's volume
@@ -1350,8 +1366,7 @@ mod tests {
         let volume = controller.engine_volume.unwrap();
         assert!((volume - 0.08).abs() < 0.005, "{volume}");
         assert!((state.lock().unwrap().fade_gain - 0.1).abs() < 0.01);
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        let faded = loudest(&controller, 100);
+        let faded = steady(&controller);
         assert!(faded > 0.0 && faded < full * 0.05, "not faded: {faded}");
 
         // The end: stopped, and the volume put back in the same step

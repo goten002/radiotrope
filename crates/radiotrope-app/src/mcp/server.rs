@@ -22,8 +22,7 @@ const INSTRUCTIONS: &str = "Radiotrope is an internet radio player running on th
 computer. Find stations with search_stations (by name, genre, country, language, programme \
 type, codec or bitrate; list_genres, list_countries, list_languages and list_categories give \
 the values the filters take) or list_favorites. Play one with play_station, play_favorite or \
-play_url: these wait until the station plays or fails and say which. step_favorite goes to \
-the next or previous favorite. Volume is 0-100. set_equalizer picks a sound preset; \
+play_url: these wait until the station plays or fails and say which. Volume is 0-100. set_equalizer picks a sound preset; \
 get_settings shows the equalizer and the recording settings. set_sleep_timer stops playback \
 later; add_schedule_entry plans alarms, recordings and bedtime stops at local times \
 (list_schedule shows them). Whether plays are reported to the directory is the user's choice, \
