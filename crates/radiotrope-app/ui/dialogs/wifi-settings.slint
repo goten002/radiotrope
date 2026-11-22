@@ -4,7 +4,7 @@
 // shows and asks; the iwd thread (src/wifi) answers through the app's
 // wifi-* properties.
 import { Theme } from "../defaults.slint";
-import { Icon, IconButton, Toggle } from "../components.slint";
+import { Icon, IconButton, Toggle, Chip, ChipVariant, ButtonKeys, FocusRing } from "../components.slint";
 import { AccentButton, SecondaryButton, DangerButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 import { VirtualKeyboard } from "../virtual-keyboard.slint";
@@ -92,7 +92,7 @@ export component WifiSettingsDialog inherits Rectangle {
     property <bool> has-selection: root.selected >= 0 && root.selected < root.networks.length;
     property <WifiNetworkEntry> picked: root.has-selection ? root.networks[root.selected] : {};
     property <string> headline: root.state == "connected" && root.current-ssid != ""
-        ? root.current-ssid + (root.ip != "" ? "  ·  " + root.ip : "")
+        ? root.current-ssid + (root.ip != "" ? " · " + root.ip : "")
         : root.state == "connecting" ? "Connecting to " + root.current-ssid
         : root.state == "off" ? "Wi-Fi is off"
         : root.state == "no-adapter" ? "No Wi-Fi adapter"
@@ -105,6 +105,11 @@ export component WifiSettingsDialog inherits Rectangle {
         root.disconnect-armed = false;
         root.show-dialog = false;
         root.close-requested();
+    }
+
+    function open-sheet(index: int) {
+        root.selected = index;
+        root.disconnect-armed = false;
     }
 
     function close-sheet() {
@@ -167,8 +172,8 @@ export component WifiSettingsDialog inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         Icon {
-                            width: 20px;
-                            height: 20px;
+                            width: Theme.icon-lg;
+                            height: Theme.icon-lg;
                             source: @image-url("../icons/wifi.svg");
                             colorize: root.powered ? Theme.accent-text : Theme.text-tertiary;
                         }
@@ -178,60 +183,33 @@ export component WifiSettingsDialog inherits Rectangle {
                         text: "Wi-Fi";
                         color: Theme.text-primary;
                         font-size: Theme.font-title;
-                        font-weight: 600;
+                        font-weight: Theme.weight-semibold;
                         vertical-alignment: center;
                     }
 
-                    // The connection, as a chip (a plain box takes the
-                    // layout's width; the chip sizes to its text inside it)
-                    Rectangle {
+                    // The connection, as a status chip: green when
+                    // connected, accent while connecting, grey otherwise
+                    HorizontalLayout {
                         horizontal-stretch: 1;
+                        alignment: start;
 
-                        Rectangle {
-                            x: 0;
-                            y: (parent.height - self.height) / 2;
-                            width: min(chip.preferred-width + 20px, parent.width);
-                            height: 28px;
-                            border-radius: Theme.radius-md;
-                            background: root.state == "connected" ? Theme.accent-soft : Theme.elevated;
-                            clip: true;
-
-                            chip := HorizontalLayout {
-                                padding-left: 10px;
-                                padding-right: 10px;
-                                spacing: 6px;
-                                alignment: start;
-
-                                if root.state == "connected" || root.state == "connecting": VerticalLayout {
-                                    alignment: center;
-                                    Rectangle {
-                                        width: 8px;
-                                        height: 8px;
-                                        border-radius: 4px;
-                                        background: root.state == "connected" ? Theme.success : Theme.accent;
-                                    }
-                                }
-
-                                Text {
-                                    text: root.headline;
-                                    color: root.state == "connected" ? Theme.accent-text : Theme.text-secondary;
-                                    font-size: Theme.font-md;
-                                    font-weight: 600;
-                                    vertical-alignment: center;
-                                    overflow: elide;
-                                }
+                        VerticalLayout {
+                            alignment: center;
+                            Chip {
+                                text: root.headline;
+                                variant: root.state == "connected" ? ChipVariant.success
+                                    : root.state == "connecting" ? ChipVariant.accent : ChipVariant.neutral;
+                                dot: root.state == "connected" || root.state == "connecting";
+                                pulse: root.state == "connecting";
                             }
                         }
                     }
 
                     VerticalLayout {
                         alignment: center;
-                        IconButton {
+                        SecondaryButton {
                             icon: @image-url("../icons/rotate-right.svg");
                             label: "Scan";
-                            icon-size: 15px;
-                            width: 34px;
-                            height: 34px;
                             enabled: root.powered && !root.is-scanning;
                             clicked => { root.scan-requested(); }
                         }
@@ -252,9 +230,9 @@ export component WifiSettingsDialog inherits Rectangle {
                         IconButton {
                             icon: @image-url("../icons/xmark.svg");
                             label: "Close";
-                            icon-size: 12px;
-                            width: 34px;
-                            height: 34px;
+                            icon-size: Theme.icon-sm;
+                            width: Theme.control-button;
+                            height: Theme.control-button;
                             clicked => { root.close(); }
                         }
                     }
@@ -263,17 +241,17 @@ export component WifiSettingsDialog inherits Rectangle {
 
             // ── Status line ──
             if root.connection-status != "": Rectangle {
-                height: 34px;
-                background: root.status-is-error ? Theme.danger.with-alpha(0.14) : Theme.accent-soft;
+                height: Theme.control-button;
+                background: root.status-is-error ? Theme.danger-tint : Theme.success-tint;
 
                 Text {
                     x: 14px;
                     width: parent.width - 28px;
                     height: parent.height;
                     text: root.connection-status;
-                    color: root.status-is-error ? Theme.danger : Theme.accent-text;
+                    color: root.status-is-error ? Theme.danger-text : Theme.success-text;
                     font-size: Theme.font-base;
-                    font-weight: 500;
+                    font-weight: Theme.weight-semibold;
                     vertical-alignment: center;
                     overflow: elide;
                 }
@@ -287,23 +265,23 @@ export component WifiSettingsDialog inherits Rectangle {
                 // Nothing to list: say why
                 if root.networks.length == 0: VerticalLayout {
                     alignment: center;
-                    spacing: 6px;
-                    padding: 24px;
+                    spacing: Theme.space-6;
+                    padding: Theme.space-24;
 
                     Text {
                         text: root.state == "no-adapter" ? "No Wi-Fi adapter found"
                             : root.state == "off" ? "Wi-Fi is off"
-                            : root.is-scanning ? "Looking for networks..."
+                            : root.is-scanning ? "Looking for networks…"
                             : "No networks found";
                         color: Theme.text-primary;
                         font-size: Theme.font-lg;
                         horizontal-alignment: center;
                     }
                     Text {
-                        text: root.state == "no-adapter" ? "iwd is not running, or the adapter is missing"
-                            : root.state == "off" ? "Turn Wi-Fi on to see networks"
+                        text: root.state == "no-adapter" ? "Check that the Wi-Fi adapter is connected."
+                            : root.state == "off" ? "Turn on Wi-Fi to see networks."
                             : root.is-scanning ? ""
-                            : "Tap the refresh button to look again";
+                            : "Tap Scan to look again.";
                         color: Theme.text-secondary;
                         font-size: Theme.font-base;
                         horizontal-alignment: center;
@@ -320,13 +298,23 @@ export component WifiSettingsDialog inherits Rectangle {
                         width: flick.width;
                         alignment: start;
 
-                        for network[i] in root.networks: Rectangle {
-                            height: 64px;
-                            background: row-ta.pressed ? Theme.menu-hover
+                        for network[i] in root.networks: row := Rectangle {
+                            property <bool> can-open: root.powered && root.selected < 0;
+                            height: Theme.row-touch;
+                            background: row-ta.pressed ? Theme.pressed-bg
+                                : row-ta.has-hover && self.can-open ? Theme.hover-bg
                                 : network.connected ? Theme.accent-soft.with-alpha(0.08)
                                 : transparent;
                             animate background { duration: Theme.fast; }
                             opacity: root.powered ? 1 : 0.45;
+
+                            accessible-role: button;
+                            accessible-label: network.ssid;
+                            accessible-description: network.connected ? "Connected" : network.known ? "Saved" : network.security;
+                            accessible-enabled: self.can-open;
+                            accessible-action-default => {
+                                if self.can-open { root.open-sheet(i); }
+                            }
 
                             Rectangle {
                                 y: parent.height - 1px;
@@ -335,17 +323,24 @@ export component WifiSettingsDialog inherits Rectangle {
                             }
 
                             row-ta := TouchArea {
-                                enabled: root.powered && root.selected < 0;
-                                clicked => {
-                                    root.selected = i;
-                                    root.disconnect-armed = false;
-                                }
+                                enabled: row.can-open;
+                                clicked => { root.open-sheet(i); }
+                            }
+
+                            // Tab reaches the rows; Enter or Space opens one
+                            row-keys := ButtonKeys {
+                                enabled: row.can-open;
+                                activated => { root.open-sheet(i); }
+                            }
+                            if row-keys.has-focus: FocusRing {
+                                offset: -Theme.focus-ring-width;
+                                radius: 0px;
                             }
 
                             HorizontalLayout {
                                 padding-left: 14px;
                                 padding-right: 10px;
-                                spacing: 12px;
+                                spacing: Theme.space-12;
 
                                 VerticalLayout {
                                     alignment: center;
@@ -363,12 +358,12 @@ export component WifiSettingsDialog inherits Rectangle {
                                         text: network.ssid;
                                         color: Theme.text-primary;
                                         font-size: Theme.font-xl;
-                                        font-weight: 500;
+                                        font-weight: Theme.weight-semibold;
                                         overflow: elide;
                                     }
                                     Text {
-                                        text: network.connected ? "Connected" + (root.ip != "" ? "  ·  " + root.ip : "")
-                                            : network.known ? "Saved  ·  " + network.security
+                                        text: network.connected ? "Connected" + (root.ip != "" ? " · " + root.ip : "")
+                                            : network.known ? "Saved · " + network.security
                                             : network.open ? "Open network"
                                             : network.security;
                                         color: Theme.text-secondary;
@@ -380,8 +375,8 @@ export component WifiSettingsDialog inherits Rectangle {
                                 if !network.open: VerticalLayout {
                                     alignment: center;
                                     Icon {
-                                        width: 14px;
-                                        height: 14px;
+                                        width: Theme.icon-compact;
+                                        height: Theme.icon-compact;
                                         source: @image-url("../icons/lock.svg");
                                         colorize: Theme.text-secondary;
                                     }
@@ -389,27 +384,18 @@ export component WifiSettingsDialog inherits Rectangle {
 
                                 if network.connected: VerticalLayout {
                                     alignment: center;
-                                    Rectangle {
-                                        width: badge.preferred-width + 14px;
-                                        height: 22px;
-                                        border-radius: Theme.radius-sm;
-                                        background: Theme.accent-soft;
-                                        badge := Text {
-                                            text: "Connected";
-                                            color: Theme.accent-text;
-                                            font-size: Theme.font-xs;
-                                            font-weight: 600;
-                                            horizontal-alignment: center;
-                                            vertical-alignment: center;
-                                        }
+                                    Chip {
+                                        text: "Connected";
+                                        variant: ChipVariant.success;
+                                        keep: true;
                                     }
                                 }
 
                                 VerticalLayout {
                                     alignment: center;
                                     Icon {
-                                        width: 14px;
-                                        height: 14px;
+                                        width: Theme.icon-compact;
+                                        height: Theme.icon-compact;
                                         source: @image-url("../icons/chevron-right.svg");
                                         colorize: Theme.text-tertiary;
                                     }
@@ -462,10 +448,10 @@ export component WifiSettingsDialog inherits Rectangle {
             TouchArea {}
 
             sheet := VerticalLayout {
-                padding: 16px;
-                padding-left: 20px;
-                padding-right: 20px;
-                spacing: 12px;
+                padding: Theme.space-16;
+                padding-left: Theme.space-20;
+                padding-right: Theme.space-20;
+                spacing: Theme.space-12;
 
                 HorizontalLayout {
                     spacing: 12px;
@@ -481,7 +467,7 @@ export component WifiSettingsDialog inherits Rectangle {
                         text: root.picked.ssid;
                         color: Theme.text-primary;
                         font-size: Theme.font-station;
-                        font-weight: 600;
+                        font-weight: Theme.weight-semibold;
                         vertical-alignment: center;
                         overflow: elide;
                         horizontal-stretch: 1;
@@ -489,19 +475,10 @@ export component WifiSettingsDialog inherits Rectangle {
 
                     if root.picked.connected: VerticalLayout {
                         alignment: center;
-                        Rectangle {
-                            width: sheet-badge.preferred-width + 14px;
-                            height: 22px;
-                            border-radius: Theme.radius-sm;
-                            background: Theme.accent-soft;
-                            sheet-badge := Text {
-                                text: "Connected";
-                                color: Theme.accent-text;
-                                font-size: Theme.font-xs;
-                                font-weight: 600;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
+                        Chip {
+                            text: "Connected";
+                            variant: ChipVariant.success;
+                            keep: true;
                         }
                     }
                 }
@@ -562,23 +539,18 @@ export component WifiSettingsDialog inherits Rectangle {
                     wrap: word-wrap;
                 }
 
-                // Three buttons of the same width across the sheet
+                // Three touch-size buttons of the same width, in the
+                // footer order: Forget at the left, then Cancel and the
+                // main action
                 actions := HorizontalLayout {
-                    spacing: 10px;
-                    padding-top: 4px;
+                    spacing: Theme.space-8;
+                    padding-top: Theme.space-4;
                     property <length> button-width: (self.width - 2 * self.spacing) / 3;
-
-                    SecondaryButton {
-                        label: "Cancel";
-                        height: 44px;
-                        width: actions.button-width;
-                        clicked => { root.close-sheet(); }
-                    }
 
                     // Greyed when there is nothing saved to forget
                     SecondaryButton {
                         label: "Forget";
-                        height: 44px;
+                        height: Theme.control-touch;
                         width: actions.button-width;
                         enabled: root.picked.known;
                         clicked => {
@@ -587,9 +559,18 @@ export component WifiSettingsDialog inherits Rectangle {
                         }
                     }
 
+                    SecondaryButton {
+                        label: "Cancel";
+                        height: Theme.control-touch;
+                        width: actions.button-width;
+                        clicked => { root.close-sheet(); }
+                    }
+
                     if root.picked.connected: DangerButton {
-                        label: root.disconnect-armed ? "Press Again to Disconnect" : "Disconnect";
-                        height: 44px;
+                        label: "Disconnect";
+                        armed: root.disconnect-armed;
+                        armed-label: "Press Again to Disconnect";
+                        height: Theme.control-touch;
                         width: actions.button-width;
                         clicked => {
                             if root.playing && !root.disconnect-armed {
@@ -602,8 +583,8 @@ export component WifiSettingsDialog inherits Rectangle {
                     }
 
                     if !root.picked.connected: AccentButton {
-                        label: root.picked.open || root.picked.known ? "Connect" : "Connect...";
-                        height: 44px;
+                        label: "Connect";
+                        height: Theme.control-touch;
                         width: actions.button-width;
                         enabled: root.state != "connecting";
                         clicked => { root.connect-picked(); }
@@ -622,8 +603,12 @@ export component WifiSettingsDialog inherits Rectangle {
         // ── Password: the field and the keyboard ──
         if root.show-password: Rectangle {
             background: Theme.scrim;
+            // Same as Cancel and Esc: the draft goes
             TouchArea {
-                clicked => { root.show-password = false; }
+                clicked => {
+                    root.show-password = false;
+                    root.password-draft = "";
+                }
             }
         }
 
@@ -660,17 +645,17 @@ export component WifiSettingsDialog inherits Rectangle {
                 }
 
                 HorizontalLayout {
-                    padding: 6px;
-                    padding-left: 12px;
-                    padding-right: 12px;
-                    spacing: 10px;
+                    padding: Theme.space-6;
+                    padding-left: Theme.space-12;
+                    padding-right: Theme.space-12;
+                    spacing: Theme.space-8;
 
                     Rectangle {
-                        height: 44px;
+                        height: Theme.control-touch;
                         horizontal-stretch: 1;
                         border-radius: Theme.radius-md;
                         border-width: 1px;
-                        border-color: Theme.accent;
+                        border-color: Theme.accent-text;
                         background: Theme.elevated;
 
                         HorizontalLayout {
@@ -682,7 +667,7 @@ export component WifiSettingsDialog inherits Rectangle {
                                     : root.password-visible ? keyboard.text
                                     : root.mask-requested(keyboard.text);
                                 color: keyboard.text == "" ? Theme.text-tertiary : Theme.text-primary;
-                                font-size: 18px;
+                                font-size: Theme.font-station;
                                 letter-spacing: keyboard.text != "" && !root.password-visible ? 2px : 0;
                                 vertical-alignment: center;
                                 overflow: elide;
@@ -693,18 +678,18 @@ export component WifiSettingsDialog inherits Rectangle {
                         IconButton {
                             x: parent.width - self.width - 6px;
                             y: (parent.height - self.height) / 2;
-                            width: 34px;
-                            height: 34px;
+                            width: Theme.control-button;
+                            height: Theme.control-button;
                             icon: root.password-visible ? @image-url("../icons/eye-slash.svg") : @image-url("../icons/eye.svg");
                             label: root.password-visible ? "Hide password" : "Show password";
-                            icon-size: 16px;
+                            icon-size: Theme.icon-md;
                             clicked => { root.password-visible = !root.password-visible; }
                         }
                     }
 
                     SecondaryButton {
                         label: "Cancel";
-                        height: 44px;
+                        height: Theme.control-touch;
                         clicked => {
                             root.show-password = false;
                             root.password-draft = "";
@@ -713,7 +698,7 @@ export component WifiSettingsDialog inherits Rectangle {
 
                     AccentButton {
                         label: "Connect";
-                        height: 44px;
+                        height: Theme.control-touch;
                         enabled: keyboard.text.character-count >= 8;
                         clicked => { keyboard.submitted(keyboard.text); }
                     }

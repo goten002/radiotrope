@@ -11,10 +11,11 @@ component ColorSwatch inherits Rectangle {
 
     width: 38px;
     height: 38px;
-    border-radius: 19px;
-    // Ring around the selected color
+    border-radius: self.height / 2;
+    // Selected: a card-coloured gap, then a ring in the text colour, so it
+    // shows around any colour in either theme
     border-width: 2px;
-    border-color: root.is-selected ? root.swatch-color : transparent;
+    border-color: root.is-selected ? Theme.text-primary : transparent;
     animate border-color { duration: Theme.fast; }
     forward-focus: keys;
 
@@ -44,11 +45,14 @@ component ColorSwatch inherits Rectangle {
         height: self.size;
         border-radius: self.size / 2;
         background: root.swatch-color;
+        // Keeps light colours apart from a white card
+        border-width: 1px;
+        border-color: Theme.hairline;
     }
 
     if root.is-selected: Icon {
-        width: 12px;
-        height: 12px;
+        width: Theme.icon-sm;
+        height: Theme.icon-sm;
         source: @image-url("../icons/tick.svg");
         colorize: Theme.text-on(root.swatch-color);
     }
@@ -97,7 +101,7 @@ component ColorPicker inherits VerticalLayout {
     init => { root.sync(); }
     changed current => { root.sync(); }
 
-    spacing: 10px;
+    spacing: Theme.space-12;
 
     // Saturation left to right, brightness bottom to top
     sv := Rectangle {
@@ -169,7 +173,7 @@ component ColorPicker inherits VerticalLayout {
             border-width: 3px;
             border-color: #ffffff;
             drop-shadow-blur: 4px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.shadow;
         }
     }
 
@@ -183,7 +187,7 @@ component ColorPicker inherits VerticalLayout {
 
         Rectangle {
             height: 16px;
-            border-radius: 8px;
+            border-radius: Theme.radius-lg;
             background: @linear-gradient(90deg, #ff0000 0%, #ffff00 16.67%, #00ff00 33.33%, #00ffff 50%, #0000ff 66.67%, #ff00ff 83.33%, #ff0000 100%);
             border-width: 1px;
             border-color: Theme.hairline;
@@ -221,7 +225,7 @@ component ColorPicker inherits VerticalLayout {
 
         if hue-keys.has-focus: FocusRing {
             height: 16px;
-            radius: 8px;
+            radius: Theme.radius-lg;
         }
 
         Rectangle {
@@ -233,7 +237,7 @@ component ColorPicker inherits VerticalLayout {
             border-width: 3px;
             border-color: #ffffff;
             drop-shadow-blur: 4px;
-            drop-shadow-color: #00000080;
+            drop-shadow-color: Theme.shadow;
         }
     }
 }
@@ -252,11 +256,11 @@ export component AccentColorDialog inherits Rectangle {
 
         // Swatches, two rows of five
         VerticalLayout {
-            spacing: 6px;
+            spacing: Theme.space-6;
 
             for row in [0, 1]: HorizontalLayout {
                 alignment: center;
-                spacing: 10px;
+                spacing: Theme.space-12;
 
                 for i in [0, 1, 2, 3, 4]: ColorSwatch {
                     swatch-color: root.swatches[row * 5 + i];
@@ -272,7 +276,7 @@ export component AccentColorDialog inherits Rectangle {
 
         // Custom color
         VerticalLayout {
-            spacing: 6px;
+            spacing: Theme.space-6;
 
             SectionHeader { title: "CUSTOM"; }
 
@@ -289,12 +293,12 @@ export component AccentColorDialog inherits Rectangle {
 
         // Accent glow on the panels and dialogs, and Restore Default beside it
         VerticalLayout {
-            spacing: 6px;
+            spacing: Theme.space-6;
 
             SectionHeader { title: "STYLE"; }
 
             HorizontalLayout {
-                spacing: 12px;
+                spacing: Theme.space-12;
 
                 Toggle {
                     label: "Gradient on panels";

@@ -6,6 +6,10 @@ component StatTile inherits Rectangle {
     in property <string> label;
     in property <string> value;
     in property <color> tone: Theme.text-primary;
+    // Status colours as their readable text tone
+    property <color> foreground: root.tone == Theme.success ? Theme.success-text
+        : root.tone == Theme.danger ? Theme.danger-text
+        : root.tone == Theme.warning ? Theme.warning-text : root.tone;
 
     // Equal share of the row whatever the text, so tiles don't jump as
     // values change
@@ -19,24 +23,25 @@ component StatTile inherits Rectangle {
     border-color: Theme.hairline;
 
     VerticalLayout {
-        padding: 10px;
-        padding-left: 12px;
-        spacing: 2px;
+        padding: Theme.space-8;
+        padding-left: Theme.space-12;
+        spacing: Theme.space-2;
         alignment: center;
 
+        // The same caps heading as the groups below
         Text {
             text: root.label;
-            color: Theme.text-secondary;
+            color: Theme.accent-text;
             font-size: Theme.font-xs;
-            font-weight: 600;
-            letter-spacing: 0.5px;
+            font-weight: Theme.weight-semibold;
+            letter-spacing: 1px;
         }
 
         Text {
             text: root.value;
-            color: root.tone;
+            color: root.foreground;
             font-size: Theme.font-title;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             overflow: elide;
         }
     }
@@ -55,8 +60,8 @@ component StatGroup inherits Rectangle {
     border-color: Theme.hairline;
 
     VerticalLayout {
-        padding: 12px;
-        padding-top: 4px;
+        padding: Theme.space-12;
+        padding-top: Theme.space-4;
         spacing: 0;
         alignment: start;
 
@@ -68,23 +73,23 @@ component StatGroup inherits Rectangle {
 export component StatisticsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
 
-    in property <string> stat-health: "--";
-    in property <string> stat-playtime: "--";
-    in property <string> stat-codec: "--";
-    in property <string> stat-bitrate: "--";
-    in property <string> stat-sample-rate: "--";
-    in property <string> stat-channels: "--";
-    in property <string> stat-received: "--";
-    in property <string> stat-segments: "--";
-    in property <string> stat-throughput: "--";
-    in property <string> stat-buffer-level: "--";
-    in property <string> stat-buffer-capacity: "--";
-    in property <string> stat-frames-played: "--";
-    in property <string> stat-decode-errors: "--";
-    in property <string> stat-underruns: "--";
-    in property <string> stat-leveler: "--";
-    in property <string> stat-hum: "--";
-    in property <string> stat-hiss: "--";
+    in property <string> stat-health: "—";
+    in property <string> stat-playtime: "—";
+    in property <string> stat-codec: "—";
+    in property <string> stat-bitrate: "—";
+    in property <string> stat-sample-rate: "—";
+    in property <string> stat-channels: "—";
+    in property <string> stat-received: "—";
+    in property <string> stat-segments: "—";
+    in property <string> stat-throughput: "—";
+    in property <string> stat-buffer-level: "—";
+    in property <string> stat-buffer-capacity: "—";
+    in property <string> stat-frames-played: "—";
+    in property <string> stat-decode-errors: "—";
+    in property <string> stat-underruns: "—";
+    in property <string> stat-leveler: "—";
+    in property <string> stat-hum: "—";
+    in property <string> stat-hiss: "—";
 
     if show-dialog: DialogShell {
         title: "Statistics";
@@ -93,7 +98,7 @@ export component StatisticsDialog inherits Rectangle {
         close-requested => { root.show-dialog = false; }
 
         HorizontalLayout {
-            spacing: 10px;
+            spacing: Theme.space-12;
 
             StatTile {
                 label: "STREAM";
@@ -109,11 +114,11 @@ export component StatisticsDialog inherits Rectangle {
 
         // Two equal columns lined up with the tiles above; rows share a height
         GridLayout {
-            spacing: 10px;
+            spacing: Theme.space-12;
 
             Row {
                 StatGroup {
-                    title: "CODEC";
+                    title: "AUDIO";
                     InfoRow { label: "Codec"; value: root.stat-codec; }
                     InfoRow { label: "Bitrate"; value: root.stat-bitrate; }
                     InfoRow { label: "Sample rate"; value: root.stat-sample-rate; }
@@ -123,7 +128,7 @@ export component StatisticsDialog inherits Rectangle {
                 // What the filters do to the station playing
                 StatGroup {
                     title: "SOUND";
-                    InfoRow { label: "Leveler"; value: root.stat-leveler; }
+                    InfoRow { label: "Volume leveler"; value: root.stat-leveler; }
                     InfoRow { label: "Hum filter"; value: root.stat-hum; }
                     InfoRow { label: "Hiss reducer"; value: root.stat-hiss; }
                 }

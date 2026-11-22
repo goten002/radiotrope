@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle, InfoTip, Dropdown } from "../components.slint";
+import { DialogShell, Toggle, InfoTip, Dropdown, Chip, ChipVariant, SectionHeader, ButtonKeys, FocusRing } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or a command that adds Radiotrope
@@ -12,17 +12,18 @@ export component CopyLine inherits Rectangle {
 
     property <bool> copied: false;
 
-    height: 34px;
+    height: Theme.control-button;
     horizontal-stretch: 1;
     border-radius: Theme.radius-sm;
+    // Unavailable: no outline, so it reads apart from a field in use
     border-width: 1px;
-    border-color: Theme.hairline;
+    border-color: root.enabled ? Theme.field-border : transparent;
     background: Theme.elevated;
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 4px;
-        spacing: 8px;
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-4;
+        spacing: Theme.space-8;
 
         // Read-only but selectable, so part of a line can be copied too;
         // a long line scrolls with the cursor, as in StyledLineEdit
@@ -34,7 +35,7 @@ export component CopyLine inherits Rectangle {
             if root.text == "": Text {
                 width: 100%;
                 text: root.placeholder;
-                color: Theme.disabled-text;
+                color: root.enabled ? Theme.text-tertiary : Theme.disabled-text;
                 font-size: Theme.font-md;
                 overflow: elide;
                 vertical-alignment: center;
@@ -71,35 +72,52 @@ export component CopyLine inherits Rectangle {
             alignment: center;
             copy := Rectangle {
                 property <bool> can-copy: root.enabled && root.text != "";
-                width: copy-label.preferred-width + 16px;
+                width: copy-label.preferred-width + Theme.space-16;
                 height: 24px;
                 border-radius: Theme.radius-sm;
-                background: self.can-copy && copy-touch.has-hover ? Theme.menu-hover : transparent;
+                background: !self.can-copy ? transparent
+                    : copy-touch.pressed ? Theme.pressed-bg
+                    : copy-touch.has-hover ? Theme.hover-bg : transparent;
                 animate background { duration: Theme.fast; }
+
+                accessible-role: button;
+                accessible-label: root.copied ? "Copied" : "Copy";
+                accessible-enabled: self.can-copy;
+                accessible-action-default => { root.copy-text(); }
 
                 copy-touch := TouchArea {
                     enabled: copy.can-copy;
                     mouse-cursor: copy.can-copy ? pointer : default;
-                    clicked => {
-                        clipboard.select-all();
-                        clipboard.copy();
-                        clipboard.clear-selection();
-                        root.copied = true;
-                        copied-timer.running = false;
-                        copied-timer.running = true;
-                    }
+                    clicked => { root.copy-text(); }
+                }
+                copy-keys := ButtonKeys {
+                    enabled: copy.can-copy;
+                    activated => { root.copy-text(); }
+                }
+                if copy-keys.has-focus: FocusRing {
+                    radius: copy.border-radius;
                 }
                 copy-label := Text {
                     text: root.copied ? "Copied" : "Copy";
                     color: !copy.can-copy ? Theme.disabled-text
                         : copy-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
                     font-size: Theme.font-sm;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     horizontal-alignment: center;
                     vertical-alignment: center;
+                    accessible-role: none;
                 }
             }
         }
+    }
+
+    function copy-text() {
+        clipboard.select-all();
+        clipboard.copy();
+        clipboard.clear-selection();
+        root.copied = true;
+        copied-timer.running = false;
+        copied-timer.running = true;
     }
 
     copied-timer := Timer {
@@ -191,7 +209,7 @@ export component AgentsDialog inherits Rectangle {
         root.show-dialog = false;
     }
 
-    if show-dialog: DialogShell {
+    if show-dialog: shell := DialogShell {
         title: "Agents (MCP)";
         subtitle: "AI agents can play stations, search and manage favorites";
         card-width: Defaults.agents-width;
@@ -207,7 +225,7 @@ export component AgentsDialog inherits Rectangle {
         }
 
         if !root.available: Text {
-            text: "This player serves one agent alone (--standalone). Agents connect to the main player.";
+            text: "This copy of Radiotrope serves only one agent. To connect more agents, use the main player.";
             color: Theme.text-secondary;
             font-size: Theme.font-md;
             wrap: word-wrap;
@@ -215,157 +233,172 @@ export component AgentsDialog inherits Rectangle {
 
         // Agents on this computer need no setting: whoever runs them can
         // use the player anyway
-        HorizontalLayout {
-            spacing: 8px;
-            RowLabel { text: "Agent"; }
-            Dropdown {
-                show-popup: root.snapshot-overlay == "agent";
-                items: root.apps;
-                selected <=> root.app;
-                changed(index) => { root.app-changed(index); }
-            }
-        }
+        VerticalLayout {
+            spacing: Theme.space-8;
 
-        HorizontalLayout {
-            spacing: 8px;
-            RowLabel { text: "Command"; }
-            CopyLine {
-                text: root.local-command;
-                enabled: root.available;
-            }
-            if root.local-note != "": VerticalLayout {
-                alignment: center;
-                InfoTip {
-                    text: root.local-note;
-                    open: root.snapshot-overlay == "local-info";
+            SectionHeader { title: "THIS COMPUTER"; }
+
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                RowLabel { text: "Agent"; }
+                Dropdown {
+                    label: "Agent";
+                    popup-bounds: shell.popup-bounds;
+                    show-popup: root.snapshot-overlay == "agent";
+                    items: root.apps;
+                    selected <=> root.app;
+                    changed(index) => { root.app-changed(index); }
                 }
             }
-        }
 
-        Rectangle {
-            height: 1px;
-            background: Theme.hairline;
-        }
-
-        // While on, what the server says at the right: where it
-        // listens, in the accent colour, or why it can't
-        HorizontalLayout {
-            spacing: 12px;
-
-            Toggle {
-                label: "Allow agents over the network";
-                enabled: root.available;
-                checked <=> root.network-on;
-                toggled(on) => { root.network-toggled(on); }
-            }
-            if root.network-on && root.available && root.status != "": HorizontalLayout {
-                horizontal-stretch: 1;
-                alignment: end;
-                spacing: 6px;
-
-                if !root.status-error: VerticalLayout {
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                RowLabel { text: "Command"; }
+                CopyLine {
+                    text: root.local-command;
+                    enabled: root.available;
+                }
+                if root.local-note != "": VerticalLayout {
                     alignment: center;
-                    Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        border-radius: 3.5px;
-                        background: Theme.accent;
+                    InfoTip {
+                        popup-bounds: shell.popup-bounds;
+                        text: root.local-note;
+                        open: root.snapshot-overlay == "local-info";
                     }
                 }
-                Text {
-                    text: root.status;
-                    color: root.status-error ? Theme.danger : Theme.accent-text;
+            }
+        }
+
+        VerticalLayout {
+            spacing: Theme.space-8;
+
+            SectionHeader { title: "NETWORK"; }
+
+            // While on, what the server says at the right: a green chip
+            // while it listens, a red one (the reason in the bubble) when
+            // it can't
+            HorizontalLayout {
+                spacing: Theme.space-12;
+
+                Toggle {
+                    label: "Allow agents over the network";
+                    enabled: root.available;
+                    checked <=> root.network-on;
+                    toggled(on) => { root.network-toggled(on); }
+                }
+                if root.network-on && root.available && root.status != "": HorizontalLayout {
+                    horizontal-stretch: 1;
+                    alignment: end;
+                    spacing: Theme.space-6;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Chip {
+                            text: root.status-error ? "Can't start" : root.status;
+                            variant: root.status-error ? ChipVariant.danger : ChipVariant.success;
+                            dot: !root.status-error;
+                        }
+                    }
+                    if root.status-error: VerticalLayout {
+                        alignment: center;
+                        InfoTip {
+                            popup-bounds: shell.popup-bounds;
+                            text: root.status;
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                RowLabel { text: "Listen on"; }
+                Dropdown {
+                    label: "Listen on";
+                    popup-bounds: shell.popup-bounds;
+                    show-popup: root.snapshot-overlay == "interface";
+                    items: root.listen-options;
+                    selected <=> root.listen;
+                    enabled: root.network-fields;
+                    changed(index) => { root.listen-changed(index); }
+                }
+                port-label := Text {
+                    text: "Port";
+                    color: Theme.text-secondary;
                     font-size: Theme.font-md;
-                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+                port-edit := StyledLineEdit {
+                    width: 72px;
+                    height: Theme.control-button;
+                    enabled: root.network-fields;
+                    text <=> root.edit-port;
+                    placeholder-text: "8765";
+                    accepted(text) => { root.apply-port(text); }
+                    changed has-focus => {
+                        if !self.has-focus && root.edit-port != root.port {
+                            root.apply-port(root.edit-port);
+                        }
+                    }
+                }
+            }
+
+            // The token sits beside its choice; with None there is none
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                RowLabel { text: "Authentication"; }
+                // Wide enough for "Access token"
+                Dropdown {
+                    label: "Authentication";
+                    width: Defaults.dropdown-min-popup-width;
+                    horizontal-stretch: 0;
+                    popup-bounds: shell.popup-bounds;
+                    show-popup: root.snapshot-overlay == "auth";
+                    items: root.auths;
+                    selected <=> root.auth;
+                    enabled: root.network-fields;
+                    changed(index) => { root.auth-changed(index); }
+                }
+                if root.token-on: CopyLine {
+                    text: root.token;
+                    placeholder: "Created when first needed";
+                    enabled: root.network-fields;
+                }
+                // Under Port, so the token ends where Listen on does
+                if root.token-on: SecondaryButton {
+                    width: port-label.width + Theme.space-8 + port-edit.width;
+                    label: "New Token";
+                    enabled: root.network-fields && root.token != "";
+                    clicked => { root.regenerate-token(); }
+                }
+                // Listening on a network with no token: said in red
+                if !root.token-on: Text {
+                    horizontal-stretch: 1;
+                    text: root.listen-local ? "Only agents on this computer can connect"
+                        : root.open-to-network ? "Anyone on this network can control the player"
+                        : "Anyone who can reach the address can use the player";
+                    color: !root.network-fields ? Theme.disabled-text
+                        : root.open-to-network ? Theme.danger-text : Theme.text-secondary;
+                    font-size: Theme.font-md;
                     vertical-alignment: center;
                     overflow: elide;
                 }
             }
-        }
 
-        HorizontalLayout {
-            spacing: 8px;
-            RowLabel { text: "Listen on"; }
-            Dropdown {
-                show-popup: root.snapshot-overlay == "interface";
-                items: root.listen-options;
-                selected <=> root.listen;
-                enabled: root.network-fields;
-                changed(index) => { root.listen-changed(index); }
-            }
-            port-label := Text {
-                text: "Port";
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
-                vertical-alignment: center;
-            }
-            port-edit := StyledLineEdit {
-                width: 72px;
-                height: 34px;
-                enabled: root.network-fields;
-                text <=> root.edit-port;
-                placeholder-text: "8765";
-                accepted(text) => { root.apply-port(text); }
-                changed has-focus => {
-                    if !self.has-focus && root.edit-port != root.port {
-                        root.apply-port(root.edit-port);
-                    }
+            HorizontalLayout {
+                spacing: Theme.space-8;
+                RowLabel { text: "Command"; }
+                CopyLine {
+                    text: root.token-on && root.token == "" ? "" : root.command;
+                    placeholder: root.network-placeholder;
+                    enabled: root.network-fields;
                 }
-            }
-        }
-
-        // The token sits beside its choice; with None there is none
-        HorizontalLayout {
-            spacing: 8px;
-            RowLabel { text: "Authentication"; }
-            Dropdown {
-                width: 96px;
-                horizontal-stretch: 0;
-                show-popup: root.snapshot-overlay == "auth";
-                items: root.auths;
-                selected <=> root.auth;
-                enabled: root.network-fields;
-                changed(index) => { root.auth-changed(index); }
-            }
-            if root.token-on: CopyLine {
-                text: root.token;
-                placeholder: "Made when network agents first need one";
-                enabled: root.network-fields;
-            }
-            // Under Port, so the token ends where Listen on does
-            if root.token-on: SecondaryButton {
-                width: port-label.width + 8px + port-edit.width;
-                label: "New token";
-                enabled: root.network-fields && root.token != "";
-                clicked => { root.regenerate-token(); }
-            }
-            // Listening on a network with no token: said in red
-            if !root.token-on: Text {
-                horizontal-stretch: 1;
-                text: root.listen-local ? "Only agents on this computer can connect"
-                    : root.open-to-network ? "Anyone on this network can control the player"
-                    : "Anyone who can reach the address can use the player";
-                color: !root.network-fields ? Theme.disabled-text
-                    : root.open-to-network ? Theme.danger : Theme.text-secondary;
-                font-size: Theme.font-md;
-                vertical-alignment: center;
-                overflow: elide;
-            }
-        }
-
-        HorizontalLayout {
-            spacing: 8px;
-            RowLabel { text: "Command"; }
-            CopyLine {
-                text: root.token-on && root.token == "" ? "" : root.command;
-                placeholder: root.network-placeholder;
-                enabled: root.network-fields;
-            }
-            if root.network-note != "": VerticalLayout {
-                alignment: center;
-                InfoTip {
-                    text: root.network-note;
-                    open: root.snapshot-overlay == "network-info";
+                if root.network-note != "": VerticalLayout {
+                    alignment: center;
+                    InfoTip {
+                        popup-bounds: shell.popup-bounds;
+                        text: root.network-note;
+                        open: root.snapshot-overlay == "network-info";
+                    }
                 }
             }
         }

@@ -1,5 +1,4 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { SecondaryButton, DangerButton, AccentButton } from "../buttons.slint";
 import { DialogShell, Toggle, ButtonKeys, FocusRing } from "../components.slint";
 
 // A round − or + next to the length
@@ -9,14 +8,14 @@ component StepButton inherits Rectangle {
     in property <bool> enabled: true;
     callback clicked();
 
-    width: 36px;
-    height: 36px;
-    border-radius: 18px;
+    width: Theme.control-field;
+    height: Theme.control-field;
+    border-radius: self.height / 2;
     border-width: 1px;
-    border-color: Theme.hairline;
+    border-color: Theme.field-border;
     background: !root.enabled ? Theme.disabled-bg
-        : touch.pressed ? Theme.menu-hover.darker(0.05)
-        : touch.has-hover ? Theme.menu-hover
+        : touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg
         : Theme.elevated;
     animate background { duration: Theme.fast; }
     forward-focus: keys;
@@ -34,8 +33,8 @@ component StepButton inherits Rectangle {
     Image {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
-        width: 14px;
-        height: 14px;
+        width: Theme.icon-compact;
+        height: Theme.icon-compact;
         source: root.icon;
         colorize: root.enabled ? Theme.text-primary : Theme.disabled-text;
         accessible-role: none;
@@ -67,9 +66,10 @@ component LengthChip inherits Rectangle {
     width: chip-text.preferred-width + 30px;
     border-radius: Theme.radius-md;
     border-width: 1px;
-    border-color: root.selected ? Theme.accent : Theme.hairline;
-    background: root.selected ? Theme.accent-soft
-        : touch.has-hover ? Theme.menu-hover
+    border-color: root.selected ? Theme.selection-mark : Theme.field-border;
+    background: root.selected ? Theme.selected-bg
+        : touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg
         : transparent;
     animate background, border-color { duration: Theme.fast; }
     forward-focus: keys;
@@ -84,7 +84,7 @@ component LengthChip inherits Rectangle {
         text: root.label;
         color: root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         font-size: Theme.font-lg;
-        font-weight: 500;
+        font-weight: root.selected ? Theme.weight-semibold : Theme.weight-regular;
         horizontal-alignment: center;
         vertical-alignment: center;
         accessible-role: none;
@@ -171,13 +171,23 @@ export component SleepTimerDialog inherits Rectangle {
 
     if show-dialog: DialogShell {
         title: "Sleep Timer";
+        subtitle: "Stops playback after a set time";
         card-width: Defaults.sleep-timer-width;
         close-requested => { root.show-dialog = false; }
+
+        // Footer: Start when off; Stop Timer at the left and Restart at
+        // the right while it runs
+        primary-label: root.active ? "" : "Start " + root.length-label(root.length);
+        primary-requested => { root.start(root.length); }
+        destructive-label: root.active ? "Stop Timer" : "";
+        destructive-requested => { root.turn-off(); }
+        cancel-label: root.active ? "Restart " + root.length-label(root.length-minutes) : "";
+        cancel-requested => { root.start(root.length-minutes); }
 
         // ── Off: pick a length ──
         if !root.active: HorizontalLayout {
             alignment: center;
-            spacing: 14px;
+            spacing: Theme.space-12;
 
             VerticalLayout {
                 alignment: center;
@@ -191,7 +201,7 @@ export component SleepTimerDialog inherits Rectangle {
 
             readout := FocusScope {
                 width: Defaults.sleep-readout-width;
-                height: 44px;
+                height: Theme.control-touch;
                 accessible-role: spinbox;
                 accessible-label: "Length";
                 accessible-value: root.length-label(root.length);
@@ -232,8 +242,8 @@ export component SleepTimerDialog inherits Rectangle {
                 Text {
                     text: root.length-label(root.length);
                     color: Theme.text-primary;
-                    font-size: 30px;
-                    font-weight: 600;
+                    font-size: Theme.font-timer;
+                    font-weight: Theme.weight-semibold;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     accessible-role: none;
@@ -257,7 +267,7 @@ export component SleepTimerDialog inherits Rectangle {
 
         if !root.active: HorizontalLayout {
             alignment: center;
-            spacing: 8px;
+            spacing: Theme.space-8;
 
             for minutes in root.lengths: LengthChip {
                 label: root.length-label(minutes);
@@ -266,27 +276,15 @@ export component SleepTimerDialog inherits Rectangle {
             }
         }
 
-        // Full width: the one way to begin
-        if !root.active: Rectangle {
-            height: 34px;
-
-            AccentButton {
-                width: parent.width;
-                label: "Start " + root.length-label(root.length);
-                icon: @image-url("../icons/play.svg");
-                clicked => { root.start(root.length); }
-            }
-        }
-
         // ── Running: the time left ──
         if root.active: VerticalLayout {
-            spacing: 4px;
+            spacing: Theme.space-4;
 
             Text {
                 text: root.left;
                 color: Theme.text-primary;
-                font-size: 34px;
-                font-weight: 600;
+                font-size: Theme.font-timer;
+                font-weight: Theme.weight-semibold;
                 horizontal-alignment: center;
             }
             Text {
@@ -299,36 +297,15 @@ export component SleepTimerDialog inherits Rectangle {
 
         if root.active: Rectangle {
             height: 4px;
-            border-radius: 2px;
+            border-radius: self.height / 2;
             background: Theme.elevated;
 
             Rectangle {
                 x: 0;
                 width: parent.width * clamp(root.left-secs / max(1, root.length-minutes * 60), 0, 1);
-                border-radius: 2px;
+                border-radius: parent.border-radius;
                 background: Theme.accent;
             }
-        }
-
-        if root.active: HorizontalLayout {
-            spacing: 8px;
-
-            SecondaryButton {
-                label: "Restart " + root.length-label(root.length-minutes);
-                icon: @image-url("../icons/rotate-right.svg");
-                clicked => { root.start(root.length-minutes); }
-            }
-            Rectangle { horizontal-stretch: 1; }
-            DangerButton {
-                label: "Stop Timer";
-                icon: @image-url("../icons/stop.svg");
-                clicked => { root.turn-off(); }
-            }
-        }
-
-        Rectangle {
-            height: 1px;
-            background: Theme.hairline;
         }
 
         Toggle {
