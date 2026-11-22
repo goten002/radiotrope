@@ -15,7 +15,7 @@ use radiotrope_app::error::AppError;
 use crate::app::delayed_save::{DelayedSave, SaveErrors, Saved, SAVE_RETRY};
 use crate::app::state::AppSnapshot;
 use crate::context::{lock, AppContext};
-use crate::{app, App, EqPresetGroup, VizStyle};
+use crate::{app, App, EqPresetGroup, HexColor, VizStyle};
 #[cfg(feature = "desktop")]
 use crate::{tray, window_frame};
 
@@ -246,19 +246,31 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     }
 
     // Accent color callbacks
+    setup_hex_color(ui);
     {
         let state = shared_state.clone();
         ui.on_accent_color_changed(move |color| {
-            let hex = format!(
-                "#{:02x}{:02x}{:02x}",
+            let hex = radiotrope_app::hex_color::format_hex_color(
                 color.red(),
                 color.green(),
-                color.blue()
+                color.blue(),
             );
             let mut s = lock(&state);
             s.accent_color = Some(hex);
         });
     }
+}
+
+/// The Accent Color dialog's hex field: format, check and parse in Rust
+pub(crate) fn setup_hex_color(ui: &App) {
+    use radiotrope_app::hex_color::{format_hex_color, parse_hex_color};
+    let hex = ui.global::<HexColor>();
+    hex.on_to_hex(|c| format_hex_color(c.red(), c.green(), c.blue()).into());
+    hex.on_is_valid(|text| parse_hex_color(&text).is_some());
+    hex.on_to_color(|text| {
+        let (r, g, b) = parse_hex_color(&text).unwrap_or_default();
+        slint::Color::from_rgb_u8(r, g, b)
+    });
 }
 
 /// The equalizer's preset menu, from the engine's preset list: the presets
