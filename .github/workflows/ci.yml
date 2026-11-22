@@ -119,11 +119,16 @@ jobs:
         run: cargo test -p radiotrope --no-default-features
       - name: The programs build without it
         run: cargo check -p radiotrope-cli -p radiotrope-probe --no-default-features
-      - name: Install libfdk-aac
+      # Ubuntu's libfdk-aac2 is the build with HE-AAC taken out, so the
+      # full library is built from the upstream source (test only; nothing
+      # of it is shipped)
+      - name: Install libfdk-aac (with HE-AAC)
         run: |
-          sudo add-apt-repository -y multiverse
-          sudo apt-get update
-          sudo apt-get install -y libfdk-aac2
+          git clone --depth 1 --branch v2.0.3 https://github.com/mstorsjo/fdk-aac.git /tmp/fdk-aac
+          cmake -S /tmp/fdk-aac -B /tmp/fdk-aac/build -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=ON
+          cmake --build /tmp/fdk-aac/build -j "$(nproc)"
+          sudo cmake --install /tmp/fdk-aac/build
+          sudo ldconfig
       - name: With the system's libfdk-aac
         shell: bash
         run: |
