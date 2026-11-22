@@ -814,11 +814,6 @@ export component MenuBar inherits Rectangle {
     // buttons (desktop only, when the system frame is turned off)
     in property <bool> custom-frame;
     in-out property <bool> maximized;
-    in-out property <bool> always-on-top;
-    // Wayland has no way for an app to keep its window on top, so the item
-    // is greyed there with this note; the saved choice is kept
-    in property <bool> on-top-available: true;
-    in property <string> on-top-hint;
     callback minimize();
     callback toggle-custom-frame();
     in-out property <bool> rounded-corners;
@@ -938,7 +933,7 @@ export component MenuBar inherits Rectangle {
         true, !Platform.has-power-off, Platform.has-power-off, Platform.has-power-off,
     ];
     property <[bool]> stations-usable: [true, root.has-favorites, Platform.has-file-manager, Platform.has-file-manager, true];
-    property <[bool]> window-usable: [true, true, root.on-top-available, true];
+    property <[bool]> window-usable: [true, true, true];
     property <[bool]> view-usable: [
         // 0 Theme, 1 Accent Color, 2 Show Listening Stats, 3 Visualizer
         true, true, true, true,
@@ -950,12 +945,11 @@ export component MenuBar inherits Rectangle {
         // 12 Zoom, 13-17 its percentages
         Platform.has-window-frame,
         root.zoom-open, root.zoom-open, root.zoom-open, root.zoom-open, root.zoom-open,
-        // 18 Window, 19 Use System Title Bar, 20 Rounded Corners, 21 Always on Top
+        // 18 Window, 19 Use System Title Bar, 20 Rounded Corners
         Platform.has-window-frame, root.window-open,
         root.window-open && root.custom-frame && root.corners-available,
-        root.window-open && root.on-top-available,
-        // 22 System Tray, 23 Show Tray Icon, 24-26 the three tray choices,
-        // 27 Start at Login
+        // 21 System Tray, 22 Show Tray Icon, 23-25 the three tray choices,
+        // 26 Start at Login
         Platform.has-tray, root.tray-open, root.tray-usable, root.tray-usable, root.tray-usable,
         root.tray-open,
     ];
@@ -1340,20 +1334,9 @@ export component MenuBar inherits Rectangle {
                     window-popup.close();
                 }
             }
-            CheckMenuItem {
-                slot: 2;
-                label: "Always on Top";
-                icon: @image-url("icons/thumbtack.svg");
-                enabled: root.on-top-available;
-                hint: root.on-top-available ? "" : root.on-top-hint;
-                checked: root.always-on-top;
-                clicked => {
-                    root.always-on-top = !root.always-on-top;
-                }
-            }
             MenuSeparator {}
             MenuItem {
-                slot: 3;
+                slot: 2;
                 label: "Close";
                 icon: @image-url("icons/xmark.svg");
                 clicked => {
@@ -1381,8 +1364,8 @@ export component MenuBar inherits Rectangle {
             // Left on a row of an open group folds it
             fold-to: root.style-open && MenuNav.active >= 6 && MenuNav.active <= 11 ? 5
                 : root.zoom-open && MenuNav.active >= 13 && MenuNav.active <= 17 ? 12
-                : root.window-open && MenuNav.active >= 19 && MenuNav.active <= 21 ? 18
-                : root.tray-open && MenuNav.active >= 23 && MenuNav.active <= 27 ? 22 : -1;
+                : root.window-open && MenuNav.active >= 19 && MenuNav.active <= 20 ? 18
+                : root.tray-open && MenuNav.active >= 22 && MenuNav.active <= 26 ? 21 : -1;
             fold => { root.view-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { view-popup.close(); }
@@ -1523,21 +1506,9 @@ export component MenuBar inherits Rectangle {
                         root.rounded-corners-changed();
                     }
                 }
-                CheckMenuItem {
-                    slot: 21;
-                    label: "Always on Top";
-                    icon: @image-url("icons/thumbtack.svg");
-                    indent: Theme.space-16;
-                    enabled: root.on-top-available;
-                    hint: root.on-top-available ? "" : root.on-top-hint;
-                    checked: root.always-on-top;
-                    clicked => {
-                        root.always-on-top = !root.always-on-top;
-                    }
-                }
             }
             if Platform.has-tray: GroupMenuItem {
-                slot: 22;
+                slot: 21;
                 label: "System Tray";
                 icon: @image-url("icons/window-restore.svg");
                 open: root.tray-open;
@@ -1545,7 +1516,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.tray-open: VerticalLayout {
                 CheckMenuItem {
-                    slot: 23;
+                    slot: 22;
                     label: "Show Tray Icon";
                     icon: @image-url("icons/window-restore.svg");
                     indent: Theme.space-16;
@@ -1556,7 +1527,7 @@ export component MenuBar inherits Rectangle {
                 }
                 // Greyed with no tray to hide in; they keep their ticks
                 CheckMenuItem {
-                    slot: 24;
+                    slot: 23;
                     label: "Close to Tray";
                     icon: @image-url("icons/rectangle-xmark.svg");
                     indent: Theme.space-16;
@@ -1567,7 +1538,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 25;
+                    slot: 24;
                     label: "Minimize to Tray";
                     icon: @image-url("icons/square-minus.svg");
                     indent: Theme.space-16;
@@ -1578,7 +1549,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 26;
+                    slot: 25;
                     label: "Start Hidden in Tray";
                     icon: @image-url("icons/eye-slash.svg");
                     indent: Theme.space-16;
@@ -1590,7 +1561,7 @@ export component MenuBar inherits Rectangle {
                 }
                 // Saved in the autostart file or the Run key, not the settings
                 CheckMenuItem {
-                    slot: 27;
+                    slot: 26;
                     label: "Start at Login";
                     icon: @image-url("icons/desktop.svg");
                     indent: Theme.space-16;
