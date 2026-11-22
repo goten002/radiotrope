@@ -1,0 +1,103 @@
+// The parts a station row is made of, shared by the favorites list and the
+// search results so the two can't drift apart: the background, the logo
+// and the playback mark after the name.
+
+import { Theme } from "defaults.slint";
+import { Icon, NowPlayingBars, Motion } from "components.slint";
+
+// What the player is doing with a row's station
+export enum StationState { none, loading, playing, failed }
+
+// Background of a station row in a list: the current station (playing,
+// connecting or failed) has a tint and a rail on the left. A failure shows
+// only in the danger alert mark, so the name stays neutral then. The list
+// decides what is highlighted (pointer or arrow keys, both look the same)
+// and what is lifted (dragged).
+export component StationRowSurface inherits Rectangle {
+    in property <bool> current;
+    in property <bool> failed;
+    in property <bool> highlighted;
+    in property <bool> lifted;
+    out property <color> name-color: root.current && !root.failed ? Theme.accent-text : Theme.text-primary;
+    // Faint text on this row: tertiary drops under 4.5:1 on the highlight
+    // and on the tint
+    out property <color> faint-color: root.current || root.highlighted || root.lifted
+        ? Theme.text-secondary : Theme.text-tertiary;
+
+    border-radius: Theme.radius-md;
+    // The current row keeps an accent tint while highlighted, a stronger one
+    background: root.lifted ? Theme.elevated
+        : root.highlighted && root.current ? Theme.accent-base.with-alpha(Theme.dark-mode ? 0.24 : 0.18)
+        : root.highlighted ? Theme.pressed-bg
+        : root.current ? Theme.accent-soft : transparent;
+    animate background { duration: Theme.fast; }
+
+    if root.current: Rectangle {
+        x: 0;
+        y: Theme.space-8;
+        width: 3px;
+        height: parent.height - 2 * self.y;
+        background: Theme.selection-mark;
+        border-radius: self.width / 2;
+    }
+}
+
+// A station's logo in a list row, or a radio in its place
+export component StationLogo inherits Rectangle {
+    in property <image> logo;
+    in property <bool> has-logo;
+
+    width: 40px;
+    height: 40px;
+    background: Theme.elevated;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    clip: true;
+
+    if root.has-logo: Image {
+        source: root.logo;
+        width: parent.width;
+        height: parent.height;
+        image-fit: contain;
+        // Decoration: the row says the station's name
+        accessible-role: none;
+    }
+
+    if !root.has-logo: Icon {
+        source: @image-url("icons/radio.svg");
+        width: 18px;
+        height: 18px;
+        colorize: Theme.selection-mark;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+// The mark after a station's name: bars only while audio plays, a spinner
+// while connecting, a red alert on errors. Takes no room otherwise.
+export component StationStateMark inherits VerticalLayout {
+    in property <StationState> state;
+
+    alignment: center;
+    horizontal-stretch: 0;
+    visible: root.state != StationState.none;
+    width: root.state == StationState.none ? 0px : Theme.icon-compact;
+
+    if root.state == StationState.playing: NowPlayingBars {}
+
+    if root.state == StationState.loading: Icon {
+        source: @image-url("icons/spinner.svg");
+        width: Theme.icon-sm;
+        height: Theme.icon-sm;
+        colorize: Theme.selection-mark;
+        rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
+    }
+
+    if root.state == StationState.failed: Icon {
+        source: @image-url("icons/circle-alert.svg");
+        width: Theme.icon-compact;
+        height: Theme.icon-compact;
+        colorize: Theme.danger-text;
+    }
+}

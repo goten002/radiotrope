@@ -1,7 +1,12 @@
 import { ShortcutAction } from "shortcuts.slint";
 import { Theme, Defaults } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { IconButton, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, PopupCard, MenuSeparator, ChoiceRow, StatusPanel } from "components.slint";
+import { Icon, ButtonKeys, FocusRing, PopupCard, MenuSeparator, ChoiceRow } from "components.slint";
+import { AccentButton } from "buttons.slint";
+import { DesktopShortcuts } from "shortcuts.slint";
+import { Platform } from "@platform/wifi.slint";
+import { StationState, StationRowSurface, StationLogo, StationStateMark } from "station-row.slint";
+import { KeyListCursor } from "key-list.slint";
 
 export struct FavoriteStation {
     id: string,
@@ -18,31 +23,53 @@ export struct FavoriteStation {
     session-time: string,
 }
 
-// Background of a station row in a list, styled like the search results:
-// the current station (playing, connecting or failed) has a tint and a
-// rail on the left. A failure shows only in the danger alert mark, so the
-// name stays neutral then. The list decides what is highlighted (pointer
-// or arrow keys, both look the same) and what is lifted (dragged).
-export component StationRowSurface inherits Rectangle {
-    in property <bool> current;
-    in property <bool> failed;
-    in property <bool> highlighted;
-    in property <bool> lifted;
-    out property <color> name-color: root.current && !root.failed ? Theme.accent-text : Theme.text-primary;
+// A quiet action under a primary button: accent text, underlined while
+// hovered or focused
+component TextButton inherits Rectangle {
+    in property <string> label;
+    // A Tab stop (off while a dialog covers the window)
+    in property <bool> focusable: true;
+    callback clicked();
 
-    border-radius: Theme.radius-md;
-    background: root.lifted ? Theme.elevated
-        : root.highlighted ? Theme.pressed-bg
-        : root.current ? Theme.accent-soft : transparent;
-    animate background { duration: Theme.fast; }
+    height: Theme.row-menu;
+    width: text.preferred-width + 2 * Theme.space-8;
+    border-radius: Theme.radius-sm;
+    forward-focus: keys;
 
-    if root.current: Rectangle {
-        x: 0;
-        y: Theme.space-8;
-        width: 3px;
-        height: parent.height - 2 * self.y;
-        background: Theme.selection-mark;
-        border-radius: self.width / 2;
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-action-default => { root.clicked(); }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    text := Text {
+        text: root.label;
+        color: Theme.accent-text;
+        font-size: Theme.font-base;
+        font-weight: Theme.weight-semibold;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        accessible-role: none;
+    }
+
+    if touch.has-hover || keys.has-focus: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height + text.preferred-height) / 2 - 1px;
+        width: text.preferred-width;
+        height: 1px;
+        background: Theme.accent-text;
+    }
+
+    keys := ButtonKeys {
+        enabled: root.focusable;
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 }
 
@@ -65,15 +92,17 @@ component FavoriteRow inherits Rectangle {
     in property <string> country;
     in property <bool> is-current;
     in property <bool> highlighted;
-    in property <bool> list-has-highlight;
     callback pointer-moved(length, length);
-    // Playback state when current: "playing", "loading", "error" or ""
-    in property <string> state;
+    // What the player is doing with it, when current
+    in property <StationState> state;
+    // The row in one sentence, for screen readers
+    in property <string> description;
     in property <image> logo-image;
     in property <bool> has-logo;
     in property <bool> is-drag-source;
     in property <bool> dragging;
     in property <int> row-index;
+    in property <int> row-count;
     in property <string> listen-time;
     in property <string> last-played;
     in property <int> play-count;
@@ -130,13 +159,14 @@ component FavoriteRow inherits Rectangle {
         menu.show();
     }
 
-    forward-focus: keys;
+    // Not a Tab stop: the list has one, which stands for the highlighted row
     accessible-role: list-item;
     accessible-label: root.name;
-    accessible-description: !root.is-current || root.state == "" ? root.country
-        : root.state == "loading" ? "Connecting"
-        : root.state == "error" ? "Playback error" : "Playing";
+    accessible-description: root.description;
     accessible-item-index: root.row-index;
+    accessible-item-count: root.row-count;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.is-current;
     accessible-action-default => { root.clicked(); }
 
     height: RowMetrics.row-height;
@@ -151,7 +181,7 @@ component FavoriteRow inherits Rectangle {
 
     row-surface := StationRowSurface {
         current: root.is-current;
-        failed: root.is-current && root.state == "error";
+        failed: root.is-current && root.state == StationState.failed;
         highlighted: root.highlighted;
         lifted: root.is-drag-source;
     }
@@ -211,30 +241,9 @@ component FavoriteRow inherits Rectangle {
             alignment: center;
             width: 40px;
 
-            Rectangle {
-                width: 40px;
-                height: 40px;
-                background: Theme.elevated;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.hairline;
-                clip: true;
-
-                if root.has-logo: Image {
-                    source: root.logo-image;
-                    width: 40px;
-                    height: 40px;
-                    image-fit: contain;
-                }
-
-                if !root.has-logo: Icon {
-                    source: @image-url("icons/radio.svg");
-                    width: 18px;
-                    height: 18px;
-                    colorize: Theme.selection-mark;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+            StationLogo {
+                logo: root.logo-image;
+                has-logo: root.has-logo;
             }
         }
 
@@ -254,37 +263,13 @@ component FavoriteRow inherits Rectangle {
                     font-size: Theme.font-base;
                     font-weight: Theme.weight-semibold;
                     overflow: elide;
+                    // The row says it all in one description
+                    accessible-role: none;
                 }
 
-                // Same state marks as in search: bars only while audio
-                // plays, a spinner while connecting, a red mark on errors
-                if root.is-current && root.state == "playing": VerticalLayout {
-                    horizontal-stretch: 0;
-                    alignment: center;
-                    NowPlayingBars {}
-                }
-
-                if root.is-current && root.state == "loading": VerticalLayout {
-                    horizontal-stretch: 0;
-                    alignment: center;
-                    Icon {
-                        source: @image-url("icons/spinner.svg");
-                        width: Theme.icon-sm;
-                        height: Theme.icon-sm;
-                        colorize: Theme.selection-mark;
-                        rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
-                    }
-                }
-
-                if root.is-current && root.state == "error": VerticalLayout {
-                    horizontal-stretch: 0;
-                    alignment: center;
-                    Icon {
-                        source: @image-url("icons/circle-alert.svg");
-                        width: Theme.icon-compact;
-                        height: Theme.icon-compact;
-                        colorize: Theme.danger-text;
-                    }
+                // Same state mark as in search
+                if root.is-current && root.state != StationState.none: StationStateMark {
+                    state: root.state;
                 }
 
                 Rectangle { horizontal-stretch: 1; }
@@ -295,6 +280,7 @@ component FavoriteRow inherits Rectangle {
                 color: Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
+                accessible-role: none;
             }
         }
 
@@ -310,44 +296,16 @@ component FavoriteRow inherits Rectangle {
                 font-size: Theme.font-md;
                 font-weight: Theme.weight-semibold;
                 horizontal-alignment: right;
+                accessible-role: none;
             }
             Text {
                 text: root.last-played != "" ? root.last-played : "Not played yet";
-                color: Theme.text-tertiary;
+                color: row-surface.faint-color;
                 font-size: Theme.font-sm;
                 horizontal-alignment: right;
+                accessible-role: none;
             }
         }
-    }
-
-    // Enter or Space plays the station; the Menu key or Shift+F10 opens
-    // the row's menu under the name
-    keys := FocusScope {
-        focus-on-click: false;
-        key-pressed(event) => {
-            // Enter and the context-menu keys act on the list's highlight
-            // when it differs from the row reached with Tab.
-            if root.list-has-highlight && (event.text == Key.Return || event.text == Key.Menu
-                || (event.text == Key.F10 && event.modifiers.shift)) {
-                return reject;
-            }
-            if (event.text == Key.Space || event.text == Key.Return)
-                && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
-                if !event.repeat {
-                    root.clicked();
-                }
-                return accept;
-            }
-            if event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift) {
-                root.open-menu(58px, root.height - 8px);
-                return accept;
-            }
-            return reject;
-        }
-    }
-
-    if keys.has-focus: FocusRing {
-        radius: root.border-radius;
     }
 
     // Hovering the stats explains them in a bubble to their left. Clicks
@@ -665,6 +623,8 @@ export component Favorites inherits Rectangle {
     // would eat quick reorder drags
     in property <bool> touch-scroll: false;
     in property <bool> show-stats: true;
+    // Off while a dialog covers the window: nothing here takes the focus
+    in property <bool> enabled: true;
     // The favorite whose stats bubble a tap opened (touch screens), or ""
     in-out property <string> pinned-stats-id;
 
@@ -674,6 +634,9 @@ export component Favorites inherits Rectangle {
     callback favorite-remove-requested(FavoriteStation);
     callback favorite-reset-stats-requested(FavoriteStation);
     callback favorites-reordered(/* from */ int, /* to */ int);
+    // The empty list's two ways to fill it
+    callback search-requested();
+    callback import-requested();
 
     pure callback locate-favorite([FavoriteStation], string, string, ShortcutAction, int) -> int;
     property <string> highlight-url;
@@ -685,6 +648,28 @@ export component Favorites inherits Rectangle {
     property <string> menu-url;
     property <length> last-pointer-x: -1px;
     property <length> last-pointer-y: -1px;
+    // What the player is doing with the current station
+    property <StationState> play-state: root.play-error ? StationState.failed
+        : root.play-loading ? StationState.loading
+        : root.is-playing ? StationState.playing : StationState.none;
+    // Where the focus starts in the list: the current station, else the top
+    property <int> current-index: root.current-station-url == "" ? -1
+        : root.locate-favorite(root.favorites, root.current-station-url, "", ShortcutAction.unhandled, 0);
+
+    // A row in one sentence for screen readers: its state, the country,
+    // and the listening figures when they are shown
+    pure function describe(station: FavoriteStation, state: StationState) -> string {
+        let status = state == StationState.loading ? "Connecting"
+            : state == StationState.failed ? "Playback error"
+            : state == StationState.playing ? "Playing" : "";
+        let place = status != "" && station.country != "" ? "\{status}, \{station.country}"
+            : status != "" ? status : station.country;
+        let stats = !root.show-stats ? ""
+            : station.last-played == "" ? "not played yet"
+            : station.listen-time != "" ? "listened \{station.listen-time}, last played: \{station.last-played}"
+            : "last played: \{station.last-played}";
+        return place != "" && stats != "" ? "\{place}, \{stats}" : place != "" ? place : stats;
+    }
 
     changed highlight-index => {
         if !root.has-highlight {
@@ -704,6 +689,10 @@ export component Favorites inherits Rectangle {
         root.keyboard-highlight = true;
         root.highlight-url = root.favorites[index].url;
         list.reveal(index);
+        // The list takes the focus, so a screen reader says the row
+        if cursor.enabled && !cursor.has-focus {
+            cursor.focus();
+        }
         return true;
     }
 
@@ -742,16 +731,75 @@ export component Favorites inherits Rectangle {
     property <length> drag-grab-y;
     background: Theme.surface;
 
-    // Empty state
-    if favorites.length == 0: StatusPanel {
-        icon: @image-url("icons/book-bookmark.svg");
-        title: "No favorites yet";
-        message: "Stations you add to Favorites appear here.";
+    // Empty state: what to do first, with the two ways to fill the list
+    if favorites.length == 0: VerticalLayout {
+        padding: Theme.space-16;
+        spacing: Theme.space-8;
+        alignment: center;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Icon {
+                width: 32px;
+                height: 32px;
+                source: @image-url("icons/star-regular.svg");
+                colorize: Theme.accent-text;
+            }
+        }
+
+        Text {
+            text: "No favorites yet";
+            color: Theme.text-primary;
+            font-size: Theme.font-lg;
+            font-weight: Theme.weight-semibold;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "Search the directory, or open a stream address from Open > Network Stream.";
+            color: Theme.text-secondary;
+            font-size: Theme.font-base;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            padding-top: Theme.space-8;
+
+            AccentButton {
+                label: "Search Stations";
+                icon: @image-url("icons/magnifying-glass.svg");
+                clicked => { root.search-requested(); }
+            }
+        }
+
+        if DesktopShortcuts.enabled: Text {
+            text: "or press \{DesktopShortcuts.label(ShortcutAction.search)}";
+            color: Theme.text-secondary;
+            font-size: Theme.font-sm;
+            horizontal-alignment: center;
+        }
+
+        // Needs a file dialog, which the kiosk build lacks
+        if Platform.has-file-manager: HorizontalLayout {
+            alignment: center;
+
+            TextButton {
+                label: "Import Favorites";
+                focusable: root.enabled;
+                clicked => { root.import-requested(); }
+            }
+        }
     }
 
     // Favorites list
     list := Rectangle {
         visible: root.favorites.length > 0;
+        accessible-role: AccessibleRole.list;
+        accessible-label: "Favorites";
 
         function reveal(index: int) {
             let top = RowMetrics.list-padding + index * RowMetrics.row-stride;
@@ -848,10 +896,10 @@ export component Favorites inherits Rectangle {
                                 root.last-pointer-y = y;
                                 root.keyboard-highlight = false;
                                 root.highlight-url = station.url;
+                                cursor.leave-tab-focus();
                             }
                         }
                         highlighted: root.highlight-url == station.url && root.highlight-url != "";
-                        list-has-highlight: root.has-highlight;
 
                         // Dragged row follows the pointer; rows between its
                         // old and new place slide over to open a gap
@@ -871,9 +919,8 @@ export component Favorites inherits Rectangle {
                         name: station.name;
                         country: station.country;
                         is-current: station.url == root.current-station-url;
-                        state: root.play-error ? "error"
-                            : root.play-loading ? "loading"
-                            : root.is-playing ? "playing" : "";
+                        state: root.play-state;
+                        description: root.describe(station, self.is-current ? root.play-state : StationState.none);
                         logo-image: idx < root.favorite-logos.length ? root.favorite-logos[idx] : @image-url("");
                         has-logo: idx < root.favorite-logos.length
                             ? root.favorite-logos[idx].width > 0
@@ -881,6 +928,7 @@ export component Favorites inherits Rectangle {
                         is-drag-source: root.drag-from-index == idx;
                         dragging: root.drag-from-index >= 0;
                         row-index: idx;
+                        row-count: root.favorites.length;
                         clicked => { root.activate(station); }
                         listen-time: station.listen-time;
                         last-played: station.last-played;
@@ -924,6 +972,46 @@ export component Favorites inherits Rectangle {
                             root.drag-offset = 0;
                         }
                     }
+                }
+            }
+
+            // The list's one Tab stop, over the highlighted row. Tab comes
+            // in on the highlighted row, else the current station, else
+            // the first; the arrows move the highlight, which looks the
+            // same as under the pointer, and the ring shows only after Tab.
+            // Space stays the play shortcut unless the focus came by Tab.
+            cursor := KeyListCursor {
+                x: RowMetrics.list-padding;
+                y: RowMetrics.list-padding + max(0, root.highlight-index) * RowMetrics.row-stride;
+                width: fav-layout.width - RowMetrics.list-padding - 14px;
+                height: RowMetrics.row-height;
+                enabled: root.enabled && root.favorites.length > 0 && root.drag-from-index < 0;
+                count: root.favorites.length;
+                active: root.highlight-index;
+                start: max(0, root.current-index);
+                page: max(1, floor(fav-flickable.height / RowMetrics.row-stride));
+                item-label: root.favorites[root.highlight-index].name;
+                item-description: root.describe(root.favorites[root.highlight-index],
+                    root.favorites[root.highlight-index].url == root.current-station-url
+                        ? root.play-state : StationState.none);
+                item-selected: root.highlight-url == root.current-station-url;
+                space-activates: self.tab-focus;
+                ring-on-tab-only: true;
+                ring-radius: Theme.radius-md;
+                ring-offset: Theme.focus-ring-offset;
+                move-to(index) => {
+                    root.keyboard-highlight = true;
+                    root.highlight-url = root.favorites[index].url;
+                    list.reveal(index);
+                }
+                activated => { root.play-highlight(); }
+                key(event) => {
+                    if root.has-highlight
+                        && (event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift)) {
+                        root.open-highlight-menu();
+                        return accept;
+                    }
+                    return reject;
                 }
             }
         }
