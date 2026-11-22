@@ -1443,8 +1443,10 @@ async fn a_paired_phone_listens_over_webrtc_and_hangs_up() {
     assert!(sdp.contains("red/48000/2"), "{sdp}");
     let call = answer["call"].as_str().unwrap().to_string();
 
-    // Silence comes while nothing plays: 50 packets a second
-    let calling = std::thread::spawn(move || phone.run(&sdp, Duration::from_secs(2)));
+    // Silence comes while nothing plays: 50 packets a second. The call
+    // setup takes most of a second on slow CI machines (Windows), so the
+    // phone stays on long enough for 40 to arrive after it
+    let calling = std::thread::spawn(move || phone.run(&sdp, Duration::from_secs(3)));
     let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
     assert_eq!(state["listeners"], json!(["Pixel"]));
     let (packets, hung_up) = calling.join().unwrap();
