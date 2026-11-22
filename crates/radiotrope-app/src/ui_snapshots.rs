@@ -246,6 +246,30 @@ const SHOTS: &[Shot] = &[
         "Favorites that can't be saved: a red chip until a save works.",
     ),
     Shot::new(
+        "main-chips",
+        "main",
+        "chips",
+        "Playing, with a saved recording's notice and the Scheduler's countdown: each chip whole.",
+    ),
+    Shot::new(
+        "main-chips-crowded",
+        "main",
+        "chips-crowded",
+        "More chips than fit: Playing and REC stay whole, the others end in \"…\".",
+    ),
+    Shot::new(
+        "main-error-long",
+        "main",
+        "error-long",
+        "A long connection error, whole in its chip.",
+    ),
+    Shot::new(
+        "main-schedule-bubble",
+        "main",
+        "schedule-bubble",
+        "The Scheduler label's bubble: what the entry does and when.",
+    ),
+    Shot::new(
         "main-schedule-started",
         "main",
         "schedule-started",
@@ -1136,8 +1160,8 @@ fn after_open(ui: &App, shot: &Shot) {
         }
         _ => {}
     }
-    if shot.screen == "main" && shot.state == "chip-bubble" {
-        // The pointer on the notice chip under the station
+    if shot.screen == "main" && matches!(shot.state, "chip-bubble" | "schedule-bubble") {
+        // The pointer on the chip after the status, under the station
         ui.window().dispatch_event(WindowEvent::PointerMoved {
             position: slint::LogicalPosition::new(300.0, 112.0),
         });
@@ -1488,7 +1512,7 @@ fn seed_statistics(ui: &App) {
 fn configure(ui: &App, shot: &Shot) {
     match shot.screen {
         "main" => match shot.state {
-            "stopped" | "loading" | "error" | "empty" => {
+            "stopped" | "loading" | "error" | "error-long" | "empty" => {
                 ui.set_is_playing(false);
                 let viz = ui.global::<VizData>();
                 viz.set_active(false);
@@ -1506,6 +1530,12 @@ fn configure(ui: &App, shot: &Shot) {
                         ui.set_is_error(true);
                         ui.set_status_text("Can't connect to radio.example".into());
                     }
+                    "error-long" => {
+                        ui.set_is_error(true);
+                        ui.set_status_text(
+                            "Can't connect to stream.harbour-jazz-radio.example".into(),
+                        );
+                    }
                     "empty" => {
                         ui.set_station_url("".into());
                         ui.set_station_name(crate::UNNAMED_STATION.into());
@@ -1522,14 +1552,30 @@ fn configure(ui: &App, shot: &Shot) {
             "sleep" => {
                 configure_sleep(ui);
             }
-            "schedule" => {
-                ui.set_schedule_label("Record in 0:12".into());
+            "schedule" | "schedule-bubble" => configure_countdown(ui),
+            "chips" => {
+                configure_countdown(ui);
+                configure_saved(ui);
+            }
+            "chips-crowded" => {
+                configure_countdown(ui);
+                configure_saved(ui);
+                configure_sleep(ui);
+                ui.set_is_recording(true);
+                ui.set_recording_text("2:36".into());
+                ui.set_recording_size("3.6 MB".into());
             }
             "schedule-started" => {
                 ui.set_schedule_label("Play · Harbour Jazz".into());
                 ui.set_schedule_label_closable(true);
+                ui.set_schedule_detail(
+                    "Started 19:30 · Play Harbour Jazz · until 20:15 · repeats weekdays".into(),
+                );
             }
             "alarm" => {
+                ui.set_schedule_detail(
+                    "The station didn't start, so the alarm sound plays instead.".into(),
+                );
                 ui.set_schedule_label("Alarm mode".into());
                 ui.set_schedule_label_bell(true);
                 ui.set_schedule_label_closable(true);
@@ -1540,7 +1586,7 @@ fn configure(ui: &App, shot: &Shot) {
                 ui.set_recording_text("2:36".into());
                 ui.set_recording_size("3.6 MB".into());
             }
-            "recording-saved" => ui.set_recording_notice("Saved · 3.6 MB".into()),
+            "recording-saved" => configure_saved(ui),
             "recording-error" => {
                 ui.set_recording_notice("Recording failed".into());
                 ui.set_recording_notice_kind("error".into());
@@ -1555,6 +1601,11 @@ fn configure(ui: &App, shot: &Shot) {
             }
             "notice-missed" => {
                 ui.set_recording_notice("Missed 07:00: Play Harbour Jazz".into());
+                ui.set_recording_notice_detail(
+                    "Missed Fri 07:00 · Play Harbour Jazz · for 1 h · repeats weekdays\n\
+                     Radiotrope wasn't running, or the computer was asleep."
+                        .into(),
+                );
                 ui.set_recording_notice_kind("scheduler".into());
                 ui.set_recording_notice_stays(true);
             }
@@ -1815,6 +1866,22 @@ fn configure_long_names(ui: &App) {
     )));
     ui.set_station_name(LONG[0].into());
     ui.set_station_country("United Kingdom of Great Britain and Northern Ireland".into());
+}
+
+/// The Scheduler's label counting down to a recording, with its bubble
+fn configure_countdown(ui: &App) {
+    ui.set_schedule_label("Record in 0:12".into());
+    ui.set_schedule_detail(
+        "Today 19:30 · Record Harbour Jazz · for 45 min · repeats weekdays".into(),
+    );
+}
+
+/// The notice of a recording just saved, with its bubble (the full path)
+fn configure_saved(ui: &App) {
+    ui.set_recording_notice("Saved Harbour Jazz - 2026-11-20 19-30-00.mp3".into());
+    ui.set_recording_notice_detail(
+        "/home/alex/Music/Radiotrope/Harbour Jazz - 2026-11-20 19-30-00.mp3".into(),
+    );
 }
 
 fn configure_sleep(ui: &App) {
