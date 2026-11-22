@@ -27,9 +27,9 @@ export component StationRowSurface inherits Rectangle {
     border-radius: Theme.radius-md;
     // The current row keeps an accent tint while highlighted, a stronger one
     background: root.lifted ? Theme.elevated
-        : root.highlighted && root.current ? Theme.accent-base.with-alpha(Theme.dark-mode ? 0.24 : 0.18)
+        : root.highlighted && root.current ? Theme.accent-tint-strong
         : root.highlighted ? Theme.pressed-bg
-        : root.current ? Theme.accent-soft : transparent;
+        : root.current ? Theme.accent-tint : transparent;
     animate background { duration: Theme.fast; }
 
     if root.current: Rectangle {
@@ -37,22 +37,32 @@ export component StationRowSurface inherits Rectangle {
         y: Theme.space-8;
         width: 3px;
         height: parent.height - 2 * self.y;
-        background: Theme.selection-mark;
+        background: Theme.accent-graphic;
         border-radius: self.width / 2;
     }
 }
 
-// A station's logo in a list row, or a radio in its place
+// A station's logo, or a radio in its place: the one tile of the header,
+// the favorites list and the search results. Always the same background,
+// hairline edge and corners; the radio is in the accent for graphics and
+// scales with the tile. Only the size differs, and the header's is raised.
 export component StationLogo inherits Rectangle {
     in property <image> logo;
-    in property <bool> has-logo;
+    in property <bool> has-logo: root.logo.width > 0;
+    // Side of the square tile
+    in property <length> size: 40px;
+    // A soft shadow under the tile (the header's)
+    in property <bool> raised: false;
 
-    width: 40px;
-    height: 40px;
-    background: Theme.elevated;
-    border-radius: Theme.radius-sm;
+    width: root.size;
+    height: root.size;
+    background: Theme.logo-tile;
+    border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.hairline;
+    drop-shadow-blur: root.raised ? 14px : 0px;
+    drop-shadow-offset-y: root.raised ? 3px : 0px;
+    drop-shadow-color: root.raised ? Theme.shadow-soft : transparent;
     clip: true;
 
     if root.has-logo: Image {
@@ -60,15 +70,16 @@ export component StationLogo inherits Rectangle {
         width: parent.width;
         height: parent.height;
         image-fit: contain;
-        // Decoration: the row says the station's name
+        // Decoration: the station's name is the text beside it
         accessible-role: none;
     }
 
     if !root.has-logo: Icon {
         source: @image-url("icons/radio.svg");
-        width: 18px;
-        height: 18px;
-        colorize: Theme.selection-mark;
+        // 18px in a row's 40px tile, 34px in the header's 76px one
+        width: Math.round(root.size * 0.44 / 2px) * 2px;
+        height: self.width;
+        colorize: Theme.accent-graphic;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
@@ -90,7 +101,7 @@ export component StationStateMark inherits VerticalLayout {
         source: @image-url("icons/spinner.svg");
         width: Theme.icon-sm;
         height: Theme.icon-sm;
-        colorize: Theme.selection-mark;
+        colorize: Theme.accent-graphic;
         rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
     }
 

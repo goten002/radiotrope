@@ -1,6 +1,7 @@
 import { Theme, Defaults } from "defaults.slint";
 import { Visualization } from "visualization.slint";
 import { Chip, ChipVariant, IconButton, Icon, PopupCard } from "components.slint";
+import { StationLogo } from "station-row.slint";
 
 // A chip of the status row. The primary ones (`keep`: the status, REC)
 // always show their whole text; the others share the width that is left and
@@ -255,35 +256,10 @@ export component Playback inherits Rectangle {
         // Station logo / placeholder
         VerticalLayout {
             alignment: center;
-            Rectangle {
-                width: 76px;
-                height: 76px;
-                background: Theme.elevated;
-                border-radius: Theme.radius-md;
-                border-width: 1px;
-                border-color: Theme.hairline;
-                drop-shadow-blur: 14px;
-                drop-shadow-offset-y: 3px;
-                drop-shadow-color: Theme.shadow-soft;
-                clip: true;
-
-                if root.station-logo.width > 0: Image {
-                    source: root.station-logo;
-                    width: 76px;
-                    height: 76px;
-                    image-fit: contain;
-                    // Decoration: the station name is the text beside it
-                    accessible-role: none;
-                }
-
-                if root.station-logo.width == 0: Icon {
-                    source: @image-url("icons/radio.svg");
-                    width: 30px;
-                    height: 30px;
-                    colorize: Theme.accent;
-                    x: (parent.width - self.width) / 2;
-                    y: (parent.height - self.height) / 2;
-                }
+            StationLogo {
+                logo: root.station-logo;
+                size: 76px;
+                raised: true;
             }
         }
 
@@ -484,8 +460,8 @@ export component Playback inherits Rectangle {
                     : @image-url("icons/star-regular.svg");
                 label: root.is-station-favorited ? "Remove from Favorites" : "Add to Favorites";
                 icon-size: Theme.icon-lg;
-                icon-color: root.is-station-favorited ? Theme.selection-mark : Theme.text-secondary;
-                hover-color: root.is-station-favorited ? Theme.selection-mark : Theme.text-primary;
+                icon-color: root.is-station-favorited ? Theme.accent-graphic : Theme.text-secondary;
+                hover-color: root.is-station-favorited ? Theme.accent-graphic : Theme.text-primary;
                 clicked => { root.toggle-favorite(); }
             }
         }

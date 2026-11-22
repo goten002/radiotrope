@@ -27,7 +27,7 @@ export global VizStyle {
     // from left to right, or the accent when there are none
     public pure function bar-color(t: float) -> color {
         if palette != "logo" || logo-colors.length == 0 {
-            return Theme.accent;
+            return Theme.accent-graphic;
         }
         if logo-colors.length == 1 {
             return logo-colors[0];
@@ -67,7 +67,7 @@ export global VizStyle {
 // is where the fill grows from: "bottom", "center" or "left".
 component Bar inherits Rectangle {
     in property <float> level;
-    in property <color> tint: Theme.accent;
+    in property <color> tint: Theme.accent-graphic;
     in property <string> anchor: "bottom";
     // Colour the bar with all the palette colours along its length (the
     // VU meters) instead of one tint
@@ -454,7 +454,7 @@ export component Visualization inherits Rectangle {
         background: Theme.viz-bg;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: touch.has-hover || root.snapshot-name ? Theme.selection-mark : Theme.hairline;
+        border-color: touch.has-hover || root.snapshot-name ? Theme.accent-graphic : Theme.hairline;
         animate border-color { duration: Theme.fast; }
         clip: true;
 

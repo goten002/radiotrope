@@ -317,7 +317,7 @@ export component Controls inherits Rectangle {
     // Same soft accent glow from the left as the header
     Rectangle {
         visible: Theme.panel-gradient;
-        background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 45%);
+        background: @linear-gradient(90deg, Theme.accent-glow 0%, Theme.accent-glow.with-alpha(0) 45%);
     }
 
     // 1px top separator — shadow edge at bottom of favorites groove
@@ -345,13 +345,13 @@ export component Controls inherits Rectangle {
                 height: Theme.control-touch;
                 border-radius: self.width / 2;
                 background: !can-interact ? Theme.disabled-bg
-                    : play-touch.pressed ? Theme.accent-pressed
-                    : play-touch.has-hover ? Theme.accent-hover
-                    : Theme.accent;
+                    : play-touch.pressed ? Theme.accent-fill-pressed
+                    : play-touch.has-hover ? Theme.accent-fill-hover
+                    : Theme.accent-fill;
                 animate background { duration: Theme.fast; }
                 // Glow while playing or hovered
                 drop-shadow-blur: can-interact && (self.shows-stop || play-touch.has-hover) ? 16px : 0px;
-                drop-shadow-color: Theme.accent.with-alpha(0.45);
+                drop-shadow-color: Theme.accent-fill.with-alpha(0.45);
                 animate drop-shadow-blur { duration: Theme.normal; }
 
                 accessible-role: button;
