@@ -1,11 +1,13 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { SecondaryButton } from "../buttons.slint";
+import { SecondaryButton, DangerButton } from "../buttons.slint";
 import { DialogShell, Toggle, InfoTip, Dropdown, Chip, ChipVariant, SectionHeader, ButtonKeys, FocusRing } from "../components.slint";
 import { Platform } from "@platform/wifi.slint";
 
 // A value to read and copy: the token, or a command that adds Radiotrope
 export component CopyLine inherits Rectangle {
+    // What the line holds, for screen readers: "Command", "Address", "Token"
+    in property <string> name;
     in property <string> text;
     in property <string> placeholder;
     in property <bool> enabled: true;
@@ -42,7 +44,7 @@ export component CopyLine inherits Rectangle {
             }
             // Always there, so the focus stays when the line empties;
             // an empty line can't take the focus
-            TextInput {
+            value-input := TextInput {
                 property <length> scroll;
 
                 x: min(0px, max(view.width - self.width - self.text-cursor-width, self.scroll));
@@ -64,6 +66,10 @@ export component CopyLine inherits Rectangle {
                 selection-foreground-color: Theme.selection-fg;
                 font-size: Theme.font-md;
                 vertical-alignment: center;
+                // A Tab stop: named after its row and read as text that
+                // can't be changed
+                accessible-label: root.name;
+                accessible-read-only: true;
             }
         }
 
@@ -81,7 +87,7 @@ export component CopyLine inherits Rectangle {
                 animate background { duration: Theme.fast; }
 
                 accessible-role: button;
-                accessible-label: root.copied ? "Copied" : "Copy";
+                accessible-label: root.copied ? "Copied" : "Copy " + root.name.to-lowercase();
                 accessible-enabled: self.can-copy;
                 accessible-action-default => { root.copy-text(); }
 
@@ -109,6 +115,10 @@ export component CopyLine inherits Rectangle {
                 }
             }
         }
+    }
+
+    if value-input.has-focus: FocusRing {
+        radius: root.border-radius;
     }
 
     function copy-text() {
@@ -189,13 +199,27 @@ export component AgentsDialog inherits Rectangle {
     // Look for network interfaces again (they come and go)
     callback refresh-listen();
     callback regenerate-token();
+    // Why the last New Token failed, empty when it didn't
+    in property <string> token-error;
+    // Who uses the player now: "Connected: Claude Code", or that none is
+    in property <string> connected;
+    // New Token was pressed once: the next press replaces the token
+    in-out property <bool> confirm-new-token: false;
 
     property <bool> network-fields: root.available && root.network-on;
     property <bool> token-on: root.auth == 1;
     // Listening on a network with no token: anyone there gets in
     property <bool> open-to-network: root.network-fields && !root.token-on && !root.listen-local;
 
+    // The snapshot tool shows the armed New Token
+    changed snapshot-overlay => {
+        if self.snapshot-overlay == "new-token" {
+            root.confirm-new-token = true;
+        }
+    }
+
     public function open() {
+        root.confirm-new-token = false;
         root.refresh-listen();
         root.edit-port = root.port;
         root.show-dialog = true;
@@ -206,6 +230,7 @@ export component AgentsDialog inherits Rectangle {
         if root.edit-port != root.port {
             root.apply-port(root.edit-port);
         }
+        root.confirm-new-token = false;
         root.show-dialog = false;
     }
 
@@ -255,6 +280,7 @@ export component AgentsDialog inherits Rectangle {
                 spacing: Theme.space-8;
                 RowLabel { text: "Command"; }
                 CopyLine {
+                    name: "Command";
                     text: root.local-command;
                     enabled: root.available;
                 }
@@ -265,6 +291,20 @@ export component AgentsDialog inherits Rectangle {
                         text: root.local-note;
                         open: root.snapshot-overlay == "local-info";
                     }
+                }
+            }
+
+            // The sign that a pasted command worked
+            if root.available && root.connected != "": HorizontalLayout {
+                spacing: Theme.space-8;
+                RowLabel { text: ""; accessible-role: none; }
+                Text {
+                    horizontal-stretch: 1;
+                    text: root.connected;
+                    color: Theme.text-secondary;
+                    font-size: Theme.font-md;
+                    overflow: elide;
+                    accessible-live-region: polite;
                 }
             }
         }
@@ -294,6 +334,10 @@ export component AgentsDialog inherits Rectangle {
                     VerticalLayout {
                         alignment: center;
                         Chip {
+                            // Said when the server starts or fails
+                            accessible-role: text;
+                            accessible-label: self.text;
+                            accessible-live-region: polite;
                             text: root.status-error ? "Can't start" : root.status;
                             variant: root.status-error ? ChipVariant.danger : ChipVariant.success;
                             dot: !root.status-error;
@@ -328,6 +372,7 @@ export component AgentsDialog inherits Rectangle {
                     vertical-alignment: center;
                 }
                 port-edit := StyledLineEdit {
+                    label: "Port";
                     width: 72px;
                     height: Theme.control-button;
                     enabled: root.network-fields;
@@ -356,19 +401,46 @@ export component AgentsDialog inherits Rectangle {
                     items: root.auths;
                     selected <=> root.auth;
                     enabled: root.network-fields;
-                    changed(index) => { root.auth-changed(index); }
+                    changed(index) => {
+                        root.confirm-new-token = false;
+                        root.auth-changed(index);
+                    }
                 }
-                if root.token-on: CopyLine {
+                // Armed: what pressing again does, in place of the token
+                if root.token-on && root.confirm-new-token: Text {
+                    horizontal-stretch: 1;
+                    text: "Agents need the new token";
+                    color: Theme.danger-text;
+                    font-size: Theme.font-md;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+                if root.token-on && !root.confirm-new-token: CopyLine {
+                    name: "Token";
                     text: root.token;
                     placeholder: "Created when first needed";
                     enabled: root.network-fields;
                 }
-                // Under Port, so the token ends where Listen on does
-                if root.token-on: SecondaryButton {
+                // Under Port, so the token ends where Listen on does. Agents
+                // set up with the old token stop working, so it takes two
+                // presses, the second in red.
+                if root.token-on && !root.confirm-new-token: SecondaryButton {
                     width: port-label.width + Theme.space-8 + port-edit.width;
                     label: "New Token";
                     enabled: root.network-fields && root.token != "";
-                    clicked => { root.regenerate-token(); }
+                    // The armed button takes the focus as it replaces this one
+                    clicked => { root.confirm-new-token = true; }
+                }
+                if root.token-on && root.confirm-new-token: DangerButton {
+                    init => { self.focus(); }
+                    label: "Press Again to Replace";
+                    armed: true;
+                    enabled: root.network-fields;
+                    clicked => {
+                        root.confirm-new-token = false;
+                        root.regenerate-token();
+                        shell.take-focus();
+                    }
                 }
                 // Listening on a network with no token: said in red
                 if !root.token-on: Text {
@@ -388,6 +460,7 @@ export component AgentsDialog inherits Rectangle {
                 spacing: Theme.space-8;
                 RowLabel { text: "Command"; }
                 CopyLine {
+                    name: "Command";
                     text: root.token-on && root.token == "" ? "" : root.command;
                     placeholder: root.network-placeholder;
                     enabled: root.network-fields;
@@ -400,6 +473,22 @@ export component AgentsDialog inherits Rectangle {
                         open: root.snapshot-overlay == "network-info";
                     }
                 }
+            }
+
+            if root.network-fields && root.token-error != "": Text {
+                text: root.token-error;
+                color: Theme.danger-text;
+                font-size: Theme.font-md;
+                wrap: word-wrap;
+                accessible-live-region: assertive;
+            }
+
+            // Listening beyond this computer: the port must be let through
+            if root.network-fields && !root.listen-local: Text {
+                text: "Your firewall must allow TCP " + root.port + ".";
+                color: Theme.text-secondary;
+                font-size: Theme.font-sm;
+                wrap: word-wrap;
             }
         }
     }
