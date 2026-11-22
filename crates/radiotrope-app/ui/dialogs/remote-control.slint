@@ -1,7 +1,7 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
-import { DialogShell, Toggle, InfoTip, IconButton, Icon } from "../components.slint";
+import { DialogShell, Toggle, InfoTip, IconButton, Icon, Chip, ChipVariant, SectionHeader } from "../components.slint";
 import { CopyLine, RowLabel } from "agents.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
@@ -18,20 +18,20 @@ component DeviceRow inherits Rectangle {
     in property <bool> confirm-remove;
     callback remove();
 
-    height: Defaults.remote-device-height;
+    height: Theme.row-dense;
     border-radius: Theme.radius-md;
     background: Theme.elevated;
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 6px;
-        spacing: 10px;
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-6;
+        spacing: Theme.space-12;
 
         VerticalLayout {
             alignment: center;
             Icon {
-                width: 14px;
-                height: 14px;
+                width: Theme.icon-compact;
+                height: Theme.icon-compact;
                 source: @image-url("../icons/mobile-screen-button.svg");
                 colorize: Theme.text-secondary;
             }
@@ -46,12 +46,12 @@ component DeviceRow inherits Rectangle {
                 text: root.device.name;
                 color: Theme.text-primary;
                 font-size: Theme.font-base;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 overflow: elide;
             }
             Text {
                 text: root.confirm-remove ? "Press Again to Remove" : root.device.seen;
-                color: root.confirm-remove ? Theme.danger : Theme.text-secondary;
+                color: root.confirm-remove ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
             }
@@ -61,9 +61,9 @@ component DeviceRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("../icons/trash-can.svg");
-                label: root.confirm-remove ? "Press again to remove" : "Remove " + root.device.name;
-                icon-size: 14px;
-                active: root.confirm-remove;
+                label: root.confirm-remove ? "Press Again to Remove" : "Remove " + root.device.name;
+                icon-size: Theme.icon-compact;
+                danger-armed: root.confirm-remove;
                 clicked => { root.remove(); }
             }
         }
@@ -78,6 +78,9 @@ export component RemoteControlDialog inherits Rectangle {
     // What the server says, while on
     in property <string> status;
     in property <bool> status-error;
+    // A short form of an error status for the row ("Can't start"), with
+    // the full status in the bubble. Empty: worked out here.
+    in property <string> status-short;
     // Where phones reach the player, e.g. "192.168.1.20:8766"
     in property <string> address;
     in property <string> address-note;
@@ -87,7 +90,7 @@ export component RemoteControlDialog inherits Rectangle {
     in property <[RemoteDevice]> devices;
     in-out property <bool> share-recordings: false;
     // The height the paired phones can take in this window
-    property <length> list-room: max(Defaults.remote-device-height,
+    property <length> list-room: max(Theme.row-dense,
         root.height - Defaults.remote-devices-chrome);
 
     // Being edited; reset from the saved name when the dialog opens
@@ -116,15 +119,16 @@ export component RemoteControlDialog inherits Rectangle {
         root.show-dialog = false;
     }
 
-    if show-dialog: DialogShell {
+    if show-dialog: shell := DialogShell {
         title: "Remote Control";
         subtitle: "Control the player from the Radiotrope Remote app on your phone";
         card-width: Defaults.remote-control-width;
         close-requested => { root.close(); }
 
-        // While on, what the server says at the right, as in Agents
+        // While on, what the server says at the right, as in Agents: a
+        // short chip, and on a problem the full reason in the bubble
         HorizontalLayout {
-            spacing: 12px;
+            spacing: Theme.space-12;
 
             Toggle {
                 label: "Allow phones on this network";
@@ -137,28 +141,27 @@ export component RemoteControlDialog inherits Rectangle {
             if root.enabled-on && root.status != "": HorizontalLayout {
                 horizontal-stretch: 1;
                 alignment: end;
-                spacing: 6px;
+                spacing: Theme.space-6;
 
-                if !root.status-error: VerticalLayout {
+                VerticalLayout {
                     alignment: center;
-                    Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        border-radius: 3.5px;
-                        background: Theme.accent;
+                    Chip {
+                        // Without an address the server didn't start; with
+                        // one, only the announcement failed
+                        text: !root.status-error ? "Ready"
+                            : root.status-short != "" ? root.status-short
+                            : root.address == "" ? "Can't start" : "Can't announce";
+                        variant: root.status-error ? ChipVariant.danger : ChipVariant.success;
+                        dot: !root.status-error;
+                        keep: true;
                     }
                 }
-                Text {
-                    text: root.status-error ? root.status : "Ready";
-                    color: root.status-error ? Theme.danger : Theme.accent-text;
-                    font-size: Theme.font-md;
-                    font-weight: 600;
-                    vertical-alignment: center;
-                    overflow: elide;
-                }
+                // Near the top of the card: open below, inside the body
                 if root.status-error: VerticalLayout {
                     alignment: center;
                     InfoTip {
+                        popup-bounds: shell.popup-bounds;
+                        open-below: true;
                         text: root.status;
                         open: root.snapshot-overlay == "status-info";
                     }
@@ -167,10 +170,10 @@ export component RemoteControlDialog inherits Rectangle {
         }
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.space-8;
             RowLabel { text: "Name"; }
             StyledLineEdit {
-                height: 34px;
+                height: Theme.control-button;
                 horizontal-stretch: 1;
                 text <=> root.edit-name;
                 placeholder-text: root.name-placeholder;
@@ -184,16 +187,17 @@ export component RemoteControlDialog inherits Rectangle {
         }
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.space-8;
             RowLabel { text: "Address"; }
             CopyLine {
                 text: root.enabled-on ? root.address : "";
-                placeholder: root.enabled-on ? "No network found" : "Shown while on";
+                placeholder: root.enabled-on ? "No network found" : "Shown when Remote Control is on";
                 enabled: root.enabled-on;
             }
             VerticalLayout {
                 alignment: center;
                 InfoTip {
+                    popup-bounds: shell.popup-bounds;
                     text: root.address-note;
                     open: root.snapshot-overlay == "address-info";
                 }
@@ -201,7 +205,7 @@ export component RemoteControlDialog inherits Rectangle {
         }
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.space-8;
             Toggle {
                 label: "Share recordings with paired phones";
                 checked <=> root.share-recordings;
@@ -211,8 +215,9 @@ export component RemoteControlDialog inherits Rectangle {
             VerticalLayout {
                 alignment: center;
                 InfoTip {
+                    popup-bounds: shell.popup-bounds;
                     open: root.snapshot-overlay == "recordings-info";
-                    text: "Paired phones can list, download and delete the recordings in the recording folder (Tools > Recording Settings). Only recordings are shown, never other files. The recording being made can't be downloaded or deleted until it stops.";
+                    text: "Paired phones can see, download and delete your recordings. Other files in the folder stay private.";
                 }
             }
         }
@@ -223,15 +228,12 @@ export component RemoteControlDialog inherits Rectangle {
         }
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.space-8;
 
-            Text {
-                text: "Paired phones";
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
-                font-weight: 600;
-                vertical-alignment: center;
+            VerticalLayout {
+                alignment: center;
                 horizontal-stretch: 1;
+                SectionHeader { title: "PAIRED PHONES"; }
             }
             SecondaryButton {
                 label: "Pair a Phone";
@@ -245,8 +247,8 @@ export component RemoteControlDialog inherits Rectangle {
         }
 
         if root.devices.length == 0: Text {
-            text: "No phones yet. Press Pair a Phone and scan the code with Radiotrope Remote, or add the player in the app and type the code it shows.";
-            color: Theme.text-tertiary;
+            text: "No phones yet. Press Pair a Phone, then scan the code with Radiotrope Remote.";
+            color: Theme.text-secondary;
             font-size: Theme.font-md;
             wrap: word-wrap;
         }
@@ -257,11 +259,11 @@ export component RemoteControlDialog inherits Rectangle {
 
             flick := Flickable {
                 content-height: list.preferred-height;
-                width: parent.width - (scroll.visible ? 12px : 0px);
+                width: parent.width - (scroll.visible ? Theme.space-12 : 0px);
                 x: 0;
 
                 list := VerticalLayout {
-                    spacing: 6px;
+                    spacing: Theme.space-6;
 
                     for device in root.devices: DeviceRow {
                         device: device;
@@ -302,12 +304,14 @@ export component PairingCodeDialog inherits Rectangle {
         title: "Pair a Phone";
         subtitle: root.device-name + " wants to control Radiotrope";
         card-width: Defaults.pairing-code-width;
+        // Cancel in the footer, at the right as in the other dialogs
+        cancel-label: "Cancel";
         close-requested => { root.cancel(); }
 
         Text {
             text: root.code;
             color: Theme.accent-text;
-            font-size: 44px;
+            font-size: Theme.font-code;
             font-weight: 700;
             letter-spacing: 10px;
             horizontal-alignment: center;
@@ -322,14 +326,6 @@ export component PairingCodeDialog inherits Rectangle {
             font-size: Theme.font-md;
             horizontal-alignment: center;
             wrap: word-wrap;
-        }
-
-        HorizontalLayout {
-            alignment: center;
-            SecondaryButton {
-                label: "Cancel";
-                clicked => { root.cancel(); }
-            }
         }
     }
 }
@@ -346,6 +342,8 @@ export component PairingQrDialog inherits Rectangle {
         title: "Pair a Phone";
         subtitle: "Scan this code with Radiotrope Remote";
         card-width: Defaults.pairing-code-width;
+        // Cancel in the footer, at the right as in the other dialogs
+        cancel-label: "Cancel";
         close-requested => { root.cancel(); }
 
         HorizontalLayout {
@@ -377,14 +375,6 @@ export component PairingQrDialog inherits Rectangle {
             color: Theme.text-secondary;
             font-size: Theme.font-md;
             horizontal-alignment: center;
-        }
-
-        HorizontalLayout {
-            alignment: center;
-            SecondaryButton {
-                label: "Cancel";
-                clicked => { root.cancel(); }
-            }
         }
     }
 }

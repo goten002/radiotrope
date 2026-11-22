@@ -1,6 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { DialogShell, InfoRow, LinkRow, SectionHeader } from "../components.slint";
+import { DialogShell, InfoRow, LinkRow, SectionHeader, ButtonKeys, FocusRing } from "../components.slint";
 
 // Build and environment details, filled in from Rust at startup
 export global AboutInfo {
@@ -28,12 +28,12 @@ export component AboutDialog inherits Rectangle {
         close-requested => { root.show-dialog = false; }
 
         HorizontalLayout {
-            spacing: 24px;
+            spacing: Theme.space-24;
 
             // Logo, name, version, links
             VerticalLayout {
                 width: 200px;
-                spacing: 6px;
+                spacing: Theme.space-6;
                 alignment: start;
 
                 HorizontalLayout {
@@ -49,7 +49,7 @@ export component AboutDialog inherits Rectangle {
                     text: "Radiotrope";
                     color: Theme.text-primary;
                     font-size: Theme.font-hero;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     horizontal-alignment: center;
                 }
 
@@ -62,8 +62,8 @@ export component AboutDialog inherits Rectangle {
 
                 HorizontalLayout {
                     alignment: center;
-                    padding-top: 4px;
-                    padding-bottom: 10px;
+                    padding-top: Theme.space-4;
+                    padding-bottom: Theme.space-8;
 
                     Rectangle {
                         width: version-text.preferred-width + 20px;
@@ -76,7 +76,7 @@ export component AboutDialog inherits Rectangle {
                             text: "Version \{AboutInfo.version}";
                             color: Theme.accent-text;
                             font-size: Theme.font-sm;
-                            font-weight: 600;
+                            font-weight: Theme.weight-semibold;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                             read-only: true;
@@ -89,37 +89,53 @@ export component AboutDialog inherits Rectangle {
 
                 AccentButton {
                     width: 200px;
-                    label: "Source code";
+                    label: "Source Code";
                     clicked => { root.open-url(AboutInfo.repository); }
                 }
 
                 SecondaryButton {
                     width: 200px;
-                    label: "Report an issue";
+                    label: "Report an Issue";
                     clicked => { root.open-url(AboutInfo.repository + "/issues"); }
                 }
 
                 // License (a link to its text) and copyright
                 HorizontalLayout {
                     alignment: center;
-                    padding-top: 8px;
+                    padding-top: Theme.space-8;
                     Rectangle {
                         width: license-link.preferred-width;
+
+                        accessible-role: button;
+                        accessible-label: AboutInfo.license;
+                        accessible-description: "https://www.gnu.org/licenses/gpl-3.0.html";
+                        accessible-action-default => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
+
+                        // The readable accent in every state; hover and focus underline it
                         license-link := Text {
                             text: AboutInfo.license;
-                            color: license-touch.has-hover ? Theme.accent-hover : Theme.accent-text;
+                            color: Theme.accent-text;
                             font-size: Theme.font-xs;
+                            accessible-role: none;
                         }
-                        // Underline on hover (Text can't underline)
+                        // Underline (Text can't underline)
                         Rectangle {
                             y: parent.height - 1px;
                             height: 1px;
                             background: license-link.color;
-                            visible: license-touch.has-hover;
+                            visible: license-touch.has-hover || license-keys.has-focus;
                         }
                         license-touch := TouchArea {
                             mouse-cursor: pointer;
                             clicked => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
+                        }
+                        // Enter or Space opens the link
+                        license-keys := ButtonKeys {
+                            activated => { root.open-url("https://www.gnu.org/licenses/gpl-3.0.html"); }
+                        }
+                        if license-keys.has-focus: FocusRing {
+                            offset: 1px;
+                            radius: Theme.radius-sm;
                         }
                     }
                     Text {
@@ -152,7 +168,7 @@ export component AboutDialog inherits Rectangle {
                 LinkRow {
                     label: "Stations";
                     links: [{ name: "radiotrope.app", url: "https://radiotrope.app" }];
-                    note: "station directory";
+                    note: "(station directory)";
                     open-url(url) => { root.open-url(url); }
                 }
                 LinkRow {
@@ -193,10 +209,10 @@ export component AboutDialog inherits Rectangle {
                 // GPL v3 section 5(d) asks an interactive program to show a
                 // copyright, no-warranty and license notice; the license and
                 // copyright sit under the buttons on the left
-                Rectangle { height: 10px; }
+                Rectangle { height: Theme.space-8; }
 
                 Text {
-                    text: "This program comes with ABSOLUTELY NO WARRANTY.";
+                    text: "This program comes with absolutely no warranty.";
                     color: Theme.text-secondary;
                     font-size: Theme.font-xs;
                     wrap: word-wrap;

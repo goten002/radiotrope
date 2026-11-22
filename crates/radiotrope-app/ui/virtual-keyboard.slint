@@ -7,27 +7,35 @@ import { Theme } from "defaults.slint";
 
 component KeyButton inherits Rectangle {
     in property <string> key;
+    // What a screen reader calls it, when the key shows a symbol
+    in property <string> spoken;
     // What the key puts in; the key itself when empty
     in property <string> inserts: "";
     in property <bool> accent: false;
     in property <bool> enabled: true;
     in property <length> text-size: 19px;
     in property <color> text-color: Theme.text-primary;
+    // A latched key (Shift): accent-tinted until pressed again
+    in property <bool> latched: false;
     callback pressed();
 
-    height: 44px;
+    height: Theme.control-touch;
     horizontal-stretch: 1;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: root.accent ? transparent : Theme.hairline;
     background: !root.enabled ? Theme.disabled-bg
-        : root.accent ? (ta.pressed ? Theme.accent-hover : Theme.accent)
-        : ta.pressed ? Theme.menu-hover : Theme.card;
+        : root.accent ? (ta.pressed ? Theme.accent-pressed : Theme.accent)
+        : ta.pressed ? Theme.pressed-bg
+        : root.latched ? Theme.selected-bg : Theme.card;
     animate background { duration: Theme.fast; }
 
     accessible-role: button;
-    accessible-label: root.key;
+    accessible-label: root.spoken != "" ? root.spoken : root.key;
     accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled { root.pressed(); }
+    }
 
     ta := TouchArea {
         enabled: root.enabled;
@@ -37,9 +45,10 @@ component KeyButton inherits Rectangle {
     Text {
         text: root.key;
         color: !root.enabled ? Theme.disabled-text
-            : root.accent ? Theme.on-accent : root.text-color;
+            : root.accent ? (ta.pressed ? Theme.on-accent-pressed : Theme.on-accent)
+            : root.latched ? Theme.accent-text : root.text-color;
         font-size: root.text-size;
-        font-weight: root.accent ? 700 : 400;
+        font-weight: root.accent ? Theme.weight-semibold : Theme.weight-regular;
         horizontal-alignment: center;
         vertical-alignment: center;
         accessible-role: none;
@@ -106,12 +115,13 @@ export component VirtualKeyboard inherits Rectangle {
         HorizontalLayout {
             spacing: 5px;
             KeyButton {
-                key: root.shift ? "⇧" : "⇧";
+                key: "⇧";
+                spoken: "Shift";
                 text-size: 20px;
-                text-color: root.shift ? Theme.accent-text : Theme.text-secondary;
+                text-color: Theme.text-secondary;
+                latched: root.shift;
                 horizontal-stretch: 0;
                 width: 80px;
-                background: root.shift ? Theme.accent-soft : Theme.card;
                 pressed => { root.shift = !root.shift; }
             }
             for key in root.row3: KeyButton {
@@ -120,6 +130,7 @@ export component VirtualKeyboard inherits Rectangle {
             }
             KeyButton {
                 key: "⌫";
+                spoken: "Backspace";
                 text-size: 20px;
                 text-color: Theme.text-secondary;
                 horizontal-stretch: 0;
@@ -132,7 +143,8 @@ export component VirtualKeyboard inherits Rectangle {
             spacing: 5px;
             KeyButton {
                 key: root.symbols ? "ABC" : "?123";
-                text-size: 14px;
+                spoken: root.symbols ? "Letters" : "Symbols";
+                text-size: Theme.font-lg;
                 text-color: Theme.text-secondary;
                 horizontal-stretch: 0;
                 width: 96px;
@@ -143,14 +155,15 @@ export component VirtualKeyboard inherits Rectangle {
             }
             KeyButton {
                 key: "space";
-                text-size: 13px;
+                spoken: "Space";
+                text-size: Theme.font-base;
                 text-color: Theme.text-secondary;
                 pressed => { root.type(" "); }
             }
             KeyButton {
                 key: root.done-label;
                 accent: true;
-                text-size: 15px;
+                text-size: Theme.font-xl;
                 horizontal-stretch: 0;
                 width: 140px;
                 enabled: root.text.character-count >= root.min-length;
