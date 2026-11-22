@@ -31,6 +31,7 @@ pub(crate) fn setup(
 ) {
     let (cmd_tx, shared_state) = (ctx.tx.clone(), ctx.state.clone());
     show_recording_folder(ui, settings.recording_dir.as_deref());
+    recover_recordings_in_background(recordings::folder(settings.recording_dir.as_deref()));
     ui.set_record_with_eq(settings.record_with_eq);
     ui.set_recording_format(settings.recording_format.id().into());
     ui.set_recording_bitrate(settings.recording_bitrate.unwrap_or(0) as i32);
@@ -119,7 +120,12 @@ pub(crate) fn setup(
             let spawned = std::thread::Builder::new()
                 .name("open-recordings".into())
                 .spawn(move || {
-                    let opened = recordings::prepare_dir(&dir).and_then(|()| open_folder(&dir));
+                    let opened = recordings::prepare_dir(&dir).and_then(|()| {
+                        // What a crash left unfinished shows in the folder
+                        // as the recording it is
+                        radiotrope::audio::recover_partial_recordings(&dir);
+                        open_folder(&dir)
+                    });
                     if let Err(e) = opened {
                         let _ = ui_weak.upgrade_in_event_loop(move |ui| show_folder_error(&ui, &e));
                     }
@@ -459,26 +465,53 @@ fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapsh
 #[cfg(not(feature = "desktop"))]
 fn browse_recording_folder(_ui_weak: slint::Weak<App>, _state: Arc<Mutex<AppSnapshot>>) {}
 
+/// The program that opens folders and links with the user's own apps
+pub(crate) const SYSTEM_OPENER: &str = if cfg!(target_os = "macos") {
+    "open"
+} else if cfg!(target_os = "windows") {
+    "explorer"
+} else {
+    "xdg-open"
+};
+
+/// Start `program` with `arg` on its own: what it (or the file manager or
+/// browser it starts) prints doesn't reach our terminal or log, and it is
+/// reaped in the background so it doesn't linger as a zombie.
+pub(crate) fn launch(program: &str, arg: impl AsRef<std::ffi::OsStr>) -> std::io::Result<()> {
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(program)
+        .arg(arg)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    std::thread::spawn(move || child.wait());
+    Ok(())
+}
+
+/// Tidy up recordings a crash left unfinished in `dir`, off the UI thread
+/// (the folder may be on a slow or sleeping drive)
+pub(crate) fn recover_recordings_in_background(dir: PathBuf) {
+    let spawned = std::thread::Builder::new()
+        .name("recover-recordings".into())
+        .spawn(move || {
+            radiotrope::audio::recover_partial_recordings(&dir);
+        });
+    if let Err(e) = spawned {
+        eprintln!("Failed to check for unfinished recordings: {e}");
+    }
+}
+
 /// Open a folder in the system file manager, or say why it didn't start
 /// (a sentence for the user)
 fn open_folder(dir: &std::path::Path) -> Result<(), String> {
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    let mut command = std::process::Command::new(program);
+    let program = SYSTEM_OPENER;
     #[cfg(windows)]
-    command.arg(explorer_path(dir));
+    let launched = launch(program, explorer_path(dir));
     #[cfg(not(windows))]
-    command.arg(dir);
-    match command.spawn() {
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
-            Ok(())
-        }
+    let launched = launch(program, dir);
+    match launched {
+        Ok(()) => Ok(()),
         Err(e) => {
             eprintln!("Failed to open {}: {e}", dir.display());
             Err(format!(
@@ -523,6 +556,40 @@ thread_local! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a launched program prints goes nowhere: its standard input,
+    /// output and error are all /dev/null, not our terminal
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn launched_programs_are_quiet() {
+        let dir = std::env::temp_dir().join(format!("radiotrope-launch-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fds.sh");
+        let out = dir.join("fds.txt");
+        std::fs::write(
+            &script,
+            format!(
+                "readlink /proc/$$/fd/0 /proc/$$/fd/1 /proc/$$/fd/2 > '{0}.tmp' && mv '{0}.tmp' '{0}'\n",
+                out.display()
+            ),
+        )
+        .unwrap();
+        launch("sh", &script).unwrap();
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        while !out.exists() && Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let fds = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(fds, "/dev/null\n/dev/null\n/dev/null\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_launcher_that_is_missing_is_an_error() {
+        let e = launch("radiotrope-no-such-program", "x").unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+    }
 
     /// A logo service over a cache folder of its own
     fn logos(name: &str) -> (Arc<LogoService>, PathBuf) {

@@ -62,18 +62,7 @@ fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return;
     }
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else if cfg!(target_os = "windows") {
-        "explorer"
-    } else {
-        "xdg-open"
-    };
-    match std::process::Command::new(program).arg(url).spawn() {
-        // Reap the launcher so it doesn't linger as a zombie
-        Ok(mut child) => {
-            std::thread::spawn(move || child.wait());
-        }
-        Err(e) => eprintln!("Failed to open {url}: {e}"),
+    if let Err(e) = crate::recording_ui::launch(crate::recording_ui::SYSTEM_OPENER, url) {
+        eprintln!("Failed to open {url}: {e}");
     }
 }

@@ -1714,7 +1714,11 @@ mod tests {
         let (release, released) = bounded::<()>(0);
         let recorder = Recorder::new();
         recorder
-            .start_writing(wav_options(Path::new("stuck")), StuckDisk { released }, false)
+            .start_writing(
+                wav_options(Path::new("stuck")),
+                StuckDisk { released },
+                false,
+            )
             .unwrap();
         play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
 

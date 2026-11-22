@@ -27,8 +27,8 @@ pub use dsp::sound::{
 };
 pub use engine::{AudioEngine, EngineConfig, EngineOutput};
 pub use recording::{
-    recover_partial_recordings, Listen, ListenError, ListenStream, Recorder, Recovered,
-    RecordingFormat, RecordingOptions, RecordingStatus, RecordingTags, RecordingTap, TapPoint,
+    recover_partial_recordings, Listen, ListenError, ListenStream, Recorder, RecordingFormat,
+    RecordingOptions, RecordingStatus, RecordingTags, RecordingTap, Recovered, TapPoint,
 };
 pub use stats::{new_shared_stats, DecoderStats, SharedStats, StreamStats};
 pub use types::{
