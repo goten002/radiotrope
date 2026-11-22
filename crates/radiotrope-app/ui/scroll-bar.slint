@@ -7,7 +7,10 @@ import { Theme } from "defaults.slint";
 //     content-height: flick.content-height;
 //     viewport-height: flick.height;
 // Drag the thumb to scroll, or click the track to page up/down.
+// Set a `width` larger than `bar-width` for a wider grab zone: the bar is
+// drawn at its right edge and the rest takes the pointer unseen.
 export component ScrollBar inherits Rectangle {
+    in property <length> bar-width: Theme.space-8;
     in property <length> viewport-height;
     in property <length> content-height;
     in-out property <length> content-y;
@@ -23,12 +26,8 @@ export component ScrollBar inherits Rectangle {
     property <bool> over-thumb: touch.has-hover
         && touch.mouse-y >= root.thumb-y && touch.mouse-y <= root.thumb-y + root.thumb-height;
 
-    width: Theme.space-8;
+    width: root.bar-width;
     visible: root.max-scroll > 0;
-    // Round ends
-    border-radius: self.width / 2;
-    background: touch.has-hover || root.dragging ? Theme.viz-track : transparent;
-    animate background { duration: Theme.fast; }
 
     touch := TouchArea {
         pointer-event(e) => {
@@ -55,10 +54,20 @@ export component ScrollBar inherits Rectangle {
         }
     }
 
+    // The track, with round ends
     Rectangle {
+        x: root.width - self.width;
+        width: root.bar-width;
+        border-radius: self.width / 2;
+        background: touch.has-hover || root.dragging ? Theme.viz-track : transparent;
+        animate background { duration: Theme.fast; }
+    }
+
+    Rectangle {
+        x: root.width - self.width;
         y: root.thumb-y;
         height: root.thumb-height;
-        width: parent.width;
+        width: root.bar-width;
         border-radius: self.width / 2;
         background: root.dragging ? Theme.selection-mark
             : touch.has-hover ? Theme.text-secondary : Theme.text-tertiary.with-alpha(0.45);

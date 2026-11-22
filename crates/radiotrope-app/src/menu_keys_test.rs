@@ -76,9 +76,13 @@ fn the_menus_work_with_the_keyboard_only() {
     press_keys(&[Home, Return]);
     assert_eq!(ui.get_theme_mode(), "system", "Home is the first row");
     press_keys(&[UpArrow, UpArrow, RightArrow, End, UpArrow]);
-    assert!(!ui.get_keep_on_top());
+    let rounded = ui.get_rounded_corners();
     press_keys(&[Return]);
-    assert!(ui.get_keep_on_top(), "View > Window > Always on Top");
+    assert_ne!(
+        ui.get_rounded_corners(),
+        rounded,
+        "View > Window > Rounded Corners"
+    );
 
     // Left folds the Window group and stops on its row (slot 18); Left
     // again is Stations, whose first row opens the search. The View menu's

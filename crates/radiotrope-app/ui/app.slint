@@ -114,14 +114,9 @@ export component App inherits Window {
 
     // Own title bar in place of the system frame (desktop; saved in settings)
     in-out property <bool> custom-frame: Platform.has-window-frame;
-    in-out property <bool> keep-on-top: false;
     no-frame: root.custom-frame;
     // Edges to grab for resizing, since there is no system frame
     resize-border-width: root.custom-frame && !root.maximized ? Defaults.resize-border : 0px;
-    always-on-top: root.keep-on-top;
-    // Not on Wayland (Rust says so with a note for the greyed View item)
-    in property <bool> on-top-available: true;
-    in property <string> on-top-hint;
     // Ctrl+W: hide the window (to the tray, else minimized), never quit
     callback hide-window();
     // Rounded window corners with our title bar (desktop; saved in
@@ -607,9 +602,6 @@ export component App inherits Window {
                         viz-mode <=> root.viz-mode;
                         custom-frame: root.custom-frame;
                         maximized <=> root.maximized;
-                        always-on-top <=> root.keep-on-top;
-                        on-top-available: root.on-top-available;
-                        on-top-hint: root.on-top-hint;
                         minimize => { root.minimize-window(); }
                         show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
                         close-window => { root.close(); }
@@ -730,6 +722,7 @@ export component App inherits Window {
                     }
                     vertical-stretch: 1;
                     favorites: root.favorites-list;
+                    edge-band: root.resize-border-width;
                     favorite-logos: root.favorite-logos;
                     current-station-url: root.station-url;
                     is-playing: root.is-playing;

@@ -365,3 +365,110 @@ fn the_station_recorded_plays_from_network_stream_without_asking() {
     keys(&ui, &time, &[Return]);
     assert_eq!(*played.borrow(), [ui.get_station_url().to_string()]);
 }
+
+/// A click with the left button at (`x`, `y`) in the window
+fn click(ui: &App, time: &Cell<Duration>, x: f32, y: f32) {
+    let position = slint::LogicalPosition::new(x, y);
+    let button = slint::platform::PointerEventButton::Left;
+    ui.window()
+        .dispatch_event(WindowEvent::PointerMoved { position });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerPressed { position, button });
+    settle(time);
+    ui.window()
+        .dispatch_event(WindowEvent::PointerReleased { position, button });
+    settle(time);
+}
+
+#[test]
+fn an_empty_find_hides_when_it_loses_the_focus() {
+    let (ui, time) = open("main-stopped");
+    let played = played(&ui);
+    let muted = Rc::new(Cell::new(0));
+    ui.on_mute_clicked({
+        let muted = muted.clone();
+        move || muted.set(muted.get() + 1)
+    });
+
+    // Open and empty, a click on a row plays that row (the field goes away
+    // under the pointer, the click doesn't) and the field is gone: the
+    // keys are the window's again
+    type_text(&ui, &time, "/");
+    click(&ui, &time, 300.0, 275.0);
+    assert_eq!(
+        *played.borrow(),
+        ["North Coast FM"],
+        "the row under the click"
+    );
+    type_text(&ui, &time, "m");
+    assert_eq!(muted.get(), 1, "the empty field hid");
+
+    // With text it stays when a match is clicked, still narrowing the list
+    type_text(&ui, &time, "/");
+    type_text(&ui, &time, "sundial");
+    click(&ui, &time, 300.0, 220.0);
+    assert_eq!(played.borrow()[1..], ["Sundial Radio"]);
+    type_text(&ui, &time, "m");
+    assert_eq!(muted.get(), 1, "the field with text stayed");
+
+    // Emptied, Tab takes the focus out of it and it hides
+    keys(&ui, &time, &[Key::Escape]);
+    type_text(&ui, &time, "/");
+    keys(&ui, &time, &[Key::Tab]);
+    type_text(&ui, &time, "m");
+    assert_eq!(muted.get(), 2, "Tab hid the empty field");
+}
+
+#[test]
+fn the_scroll_bar_is_grabbed_beside_it_clear_of_the_resize_band() {
+    let platform = HeadlessPlatform::default();
+    let made = platform.window.clone();
+    let time = platform.time.clone();
+    slint::platform::set_platform(Box::new(platform)).expect("no other Slint platform yet");
+    // Short enough for the list to scroll
+    let options = Options {
+        theme: Theme::Dark,
+        scale: Some(0.5),
+        size: Size::Exact(640.0, 480.0),
+        ..Options::default()
+    };
+    let shot = SHOTS
+        .iter()
+        .find(|candidate| candidate.name == "main-stopped")
+        .expect("the shot exists");
+    let ui = stage(&made, shot, "dark", &options)
+        .expect("the screen opens")
+        .ui;
+    settle(&time);
+    let played = played(&ui);
+    let button = slint::platform::PointerEventButton::Left;
+    let at = |x: f32, y: f32| slint::LogicalPosition::new(x, y);
+
+    click(&ui, &time, 300.0, 300.0);
+    // The bar is drawn at x 622..630, inside the 8 px band at the right
+    // edge; its grab zone starts at 614. Down from the thumb (y 144..294), there.
+    ui.window().dispatch_event(WindowEvent::PointerMoved {
+        position: at(616.0, 170.0),
+    });
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position: at(616.0, 170.0),
+        button,
+    });
+    for y in (180..=330).step_by(10) {
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: at(616.0, y as f32),
+        });
+    }
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position: at(616.0, 330.0),
+        button,
+    });
+    settle(&time);
+    click(&ui, &time, 300.0, 300.0);
+    let played = played.borrow();
+    assert_eq!(played.len(), 2);
+    assert_ne!(
+        played[0], played[1],
+        "the list scrolled under the same spot"
+    );
+}

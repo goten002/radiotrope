@@ -106,10 +106,6 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
                     ui.set_corners_available(corners.available);
                     ui.set_draw_corners(corners.drawn);
                     ui.set_corners_hint(corners.hint.into());
-                    // The saved choice stays set, and works again on X11
-                    let on_top = window_frame::can_stay_on_top(ui.window());
-                    ui.set_on_top_available(on_top);
-                    ui.set_on_top_hint(if on_top { "" } else { "Not on Wayland" }.into());
                 }
             };
             window_frame::watch_window(ui.window(), apply_corners.clone());
@@ -166,16 +162,6 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
                 ui_weak
                     .upgrade()
                     .is_some_and(|ui| window_frame::show_system_menu(ui.window(), x, y, pressed))
-            });
-        }
-        // Window managers ignore the level on a window that isn't mapped
-        // yet (seen on X11), so raise it once the window is up
-        if settings.always_on_top {
-            let ui_weak = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_millis(300), move || {
-                if let Some(ui) = ui_weak.upgrade() {
-                    ui.set_keep_on_top(true);
-                }
             });
         }
     }
@@ -383,8 +369,8 @@ pub(crate) struct WindowSettings {
     /// View > Zoom in percent, for the next start
     pub(crate) zoom: u32,
     pub(crate) report_plays: bool,
-    /// Custom title bar, rounded corners and always on top (not on the Pi)
-    pub(crate) frame: Option<(bool, bool, bool)>,
+    /// Custom title bar and rounded corners (not on the Pi)
+    pub(crate) frame: Option<(bool, bool)>,
     /// Tray icon, close to tray, start in tray, minimize to tray (desktop)
     pub(crate) tray: Option<(bool, bool, bool, bool)>,
     pub(crate) last_station: Option<Station>,
@@ -449,13 +435,8 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         panel_gradient: ui.get_panel_gradient(),
         zoom,
         report_plays: crate::view_options::report_plays_choice(ui),
-        frame: cfg!(not(feature = "embedded")).then(|| {
-            (
-                ui.get_custom_frame(),
-                ui.get_rounded_corners(),
-                ui.get_keep_on_top(),
-            )
-        }),
+        frame: cfg!(not(feature = "embedded"))
+            .then(|| (ui.get_custom_frame(), ui.get_rounded_corners())),
         tray: cfg!(feature = "desktop").then(|| {
             (
                 ui.get_tray_icon(),
@@ -542,10 +523,9 @@ impl WindowSettings {
         settings.panel_gradient = w.panel_gradient;
         settings.zoom = w.zoom;
         settings.report_plays = w.report_plays;
-        if let Some((custom_title_bar, rounded_corners, always_on_top)) = w.frame {
+        if let Some((custom_title_bar, rounded_corners)) = w.frame {
             settings.custom_title_bar = custom_title_bar;
             settings.rounded_corners = rounded_corners;
-            settings.always_on_top = always_on_top;
         }
         if let Some((tray_icon, close_to_tray, start_in_tray, hide_on_minimize)) = w.tray {
             settings.tray_icon = tray_icon;

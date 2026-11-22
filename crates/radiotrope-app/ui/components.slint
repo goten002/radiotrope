@@ -798,6 +798,9 @@ export component DialogShell inherits Rectangle {
     // to its list) and the dialog stays: it is then raised at once, with
     // no fade-out.
     in property <bool> close-goes-back: false;
+    // A mouse drag in the body scrolls it. Off where the body has things
+    // to drag (a colour picker): the wheel and the scroll bar still scroll.
+    in property <bool> mouse-drag-scroll: true;
     callback back-requested();
     callback capture-key(KeyEvent) -> EventResult;
     capture-key(event) => { return reject; }
@@ -1043,6 +1046,7 @@ export component DialogShell inherits Rectangle {
                     preferred-height: body-content.preferred-height;
 
                     body := Flickable {
+                        mouse-drag-pan-enabled: root.mouse-drag-scroll;
                         content-width: self.width;
                         content-height: body-content.height;
                         width: parent.width;
