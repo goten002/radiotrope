@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 George Alexiou -->
+<component type="desktop-application">
+  <id>app.radiotrope.Radiotrope</id>
+
+  <name>Radiotrope</name>
+  <summary>Listen to and record internet radio</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="app.radiotrope">
+    <name>George Alexiou</name>
+  </developer>
+
+  <description>
+    <p>
+      An internet radio player for the desktop. Play it yourself, from your
+      phone, or let your AI assistant drive it over the Model Context Protocol
+      (MCP).
+    </p>
+    <ul>
+      <li>Find stations: typo-tolerant search by name, country, genre and language in the Radiotrope station directory, or play any stream address</li>
+      <li>Plays almost anything: MP3, AAC, HE-AAC, Vorbis, Opus and FLAC over Icecast/SHOUTcast, HLS and plain HTTP, with song titles from ICY and ID3</li>
+      <li>Sounds right: 10-band equalizer with 14 presets, volume leveler, hiss, hum and rumble filters</li>
+      <li>Records: MP3, Opus or WAV, by hand or on a schedule</li>
+      <li>Wakes you, sends you to sleep: Scheduler for plays, recordings and stops, plus a sleep timer</li>
+      <li>AI agents: 19 MCP tools, shared by every agent on your computer or your network</li>
+      <li>Phone remote: pair the Radiotrope Remote app with a QR code</li>
+      <li>Also: a terminal player and a station checker for monitoring</li>
+    </ul>
+  </description>
+
+  <launchable type="desktop-id">app.radiotrope.Radiotrope.desktop</launchable>
+
+  <url type="homepage">https://github.com/goten002/radiotrope</url>
+  <url type="bugtracker">https://github.com/goten002/radiotrope/issues</url>
+  <url type="vcs-browser">https://github.com/goten002/radiotrope</url>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>Favorites, the playing station and the spectrum visualizer</caption>
+      <image>https://raw.githubusercontent.com/goten002/radiotrope/main/assets/radiotrope_app.png</image>
+    </screenshot>
+  </screenshots>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+
+  <keywords>
+    <keyword>radio</keyword>
+    <keyword>internet radio</keyword>
+    <keyword>stream</keyword>
+    <keyword>station</keyword>
+    <keyword>recording</keyword>
+  </keywords>
+
+  <provides>
+    <binary>radiotrope</binary>
+    <binary>radiotrope-cli</binary>
+    <binary>radiotrope-probe</binary>
+  </provides>
+
+  <requires>
+    <internet>always</internet>
+  </requires>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+    <control>touch</control>
+  </supports>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#ffd0b8</color>
+    <color type="primary" scheme_preference="dark">#7a1048</color>
+  </branding>
+
+  <content_rating type="oars-1.1"/>
+
+  <!-- 0.1.0 is not released yet: AppStream needs a date, so this one is a
+       placeholder. At release, set the real date and type="stable". -->
+  <releases>
+    <release version="0.1.0" date="2026-11-22" type="development">
+      <description>
+        <p>First release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

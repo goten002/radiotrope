@@ -25,6 +25,49 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
       - run: cargo check --workspace
 
+  # The oldest Rust the workspace declares (`rust-version` in Cargo.toml),
+  # so the README's minimum stays true
+  msrv:
+    name: Check (Rust 1.95)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: msrv
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
+      - run: cargo check --workspace --locked
+
+  # The Linux install: desktop file and AppStream metainfo valid, and
+  # `make install` puts every file where packages expect it
+  packaging:
+    name: Linux install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: packaging
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev desktop-file-utils appstream
+      - run: desktop-file-validate packaging/linux/app.radiotrope.Radiotrope.desktop
+      - run: appstreamcli validate --strict packaging/linux/app.radiotrope.Radiotrope.metainfo.xml
+      - run: make PROFILE=dev
+      - run: make install PROFILE=dev DESTDIR="$PWD/stage" PREFIX=/usr
+      - name: Installed files
+        run: find stage -type f | sort
+      - name: Programs report their version
+        run: |
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            out=$(stage/usr/bin/$p --version)
+            echo "$out"
+            test "$out" = "$p $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "radiotrope") | .version')"
+          done
+      - run: make uninstall DESTDIR="$PWD/stage" PREFIX=/usr
+      - name: Nothing left after uninstall
+        run: test -z "$(find stage -type f)"
+
   # The Raspberry Pi build (linuxkms backend, no desktop crates): checked
   # here so a desktop change can't break it unnoticed until an image build
   embedded:
@@ -114,3 +157,11 @@ jobs:
             sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
             exit 1
           fi
+      # The exes start with their resources (icon, version details) linked in
+      - name: Programs start
+        shell: bash
+        run: |
+          cargo build -p radiotrope-app -p radiotrope-cli -p radiotrope-probe
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            target/debug/$p.exe --version
+          done

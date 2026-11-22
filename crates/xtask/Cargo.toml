@@ -1,0 +1,15 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "Project tasks: man pages and shell completions for the Radiotrope programs"
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+clap = { workspace = true }
+clap_mangen = { workspace = true }
+clap_complete = { workspace = true }

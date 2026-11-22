@@ -34,32 +34,44 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 
 ## Install
 
-There are no prebuilt packages yet; build from source with Rust 1.92 or newer
+Packages are coming: the AUR (`radiotrope`) for Arch Linux and WinGet
+(`Radiotrope.Radiotrope`) for Windows, plus downloads on the GitHub releases
+page. Until then, build from source with Rust 1.95 or newer
 ([rustup](https://rustup.rs)).
+
+> [!NOTE]
+> AAC and AAC+ stations play in every build. Full-quality HE-AAC (AAC+)
+> decoding depends on the FDK AAC library, and how it is provided is still
+> changing; this note will say what to install once that settles.
 
 ### Linux
 
 Install the build dependencies (ALSA for audio, fontconfig for the GUI, CMake
-and a C++ compiler for the bundled libopus and fdk-aac):
+and a C++ compiler for the bundled C libraries):
 
 ```bash
 # Debian / Ubuntu
-sudo apt install libasound2-dev libfontconfig1-dev cmake g++ pkg-config
+sudo apt install libasound2-dev libfontconfig1-dev cmake g++ pkg-config make
 # Arch / Manjaro
-sudo pacman -S alsa-lib fontconfig cmake gcc pkgconf
+sudo pacman -S alsa-lib fontconfig cmake gcc pkgconf make
 # Fedora
-sudo dnf install alsa-lib-devel fontconfig-devel cmake gcc-c++ pkgconf-pkg-config
+sudo dnf install alsa-lib-devel fontconfig-devel cmake gcc-c++ pkgconf-pkg-config make
 ```
 
-Then build:
+Then build and install:
 
 ```bash
 git clone https://github.com/goten002/radiotrope.git
 cd radiotrope
-cargo build --release
+make                                  # the programs, man pages and completions
+sudo make install                     # into /usr/local
 ```
 
-This gives three programs in `target/release/`:
+To install for your user only, with no root, use
+`make install PREFIX="$HOME/.local"` instead (make sure `~/.local/bin` is on
+your `PATH`). `make uninstall`, with the same `PREFIX`, removes it all again.
+
+This installs three programs:
 
 | Program | What it is |
 |---------|------------|
@@ -67,16 +79,20 @@ This gives three programs in `target/release/`:
 | `radiotrope-cli` | The terminal player |
 | `radiotrope-probe` | The station checker |
 
-To have the dock or taskbar show the app's icon, install the desktop file
-under the name `radiotrope.desktop` (it matches the window's app id) and the
-icons:
+along with the app's launcher and icons (so the dock and taskbar show the
+right icon), its AppStream entry for software centres, man pages, and bash,
+zsh and fish completions. Packagers can stage the same files with
+`make install DESTDIR=<dir> PREFIX=/usr`.
 
-```bash
-sudo install -Dm644 packaging/linux/radiotrope.desktop /usr/share/applications/radiotrope.desktop
-for s in 16 32 48 64 128 256; do
-  sudo install -Dm644 assets/icons/icon-$s.png /usr/share/icons/hicolor/${s}x${s}/apps/radiotrope.png
-done
-```
+The two terminal tools also install on their own with cargo:
+`cargo install --locked --git https://github.com/goten002/radiotrope radiotrope-cli`
+(or `radiotrope-probe`). For the desktop app use `make install`, which adds
+the launcher and icons.
+
+If you installed an earlier build by hand, remove its old launcher and icons,
+which used the name `radiotrope`:
+`/usr/share/applications/radiotrope.desktop` and
+`/usr/share/icons/hicolor/*/apps/radiotrope.png`.
 
 ### Windows
 
@@ -326,7 +342,7 @@ stream is detected and reported.
 
 ## Project layout
 
-A Cargo workspace with four crates:
+A Cargo workspace; the main crates are:
 
 | Crate | Kind | Description |
 |-------|------|-------------|
@@ -334,6 +350,11 @@ A Cargo workspace with four crates:
 | [`radiotrope-app`](crates/radiotrope-app) | Binary | The desktop app, MCP server and phone remote server |
 | [`radiotrope-cli`](crates/radiotrope-cli) | Binary | The terminal player, built with [ratatui](https://github.com/ratatui/ratatui) |
 | [`radiotrope-probe`](crates/radiotrope-probe) | Binary and library | The station checker |
+| [`radiotrope-library`](crates/radiotrope-library) | Library | The station directory and favorites storage the programs share |
+
+`crates/xtask` writes the man pages and shell completions
+(`cargo xtask man-and-completions`), and `packaging/linux/` holds the desktop
+file and AppStream metainfo that `make install` uses.
 
 ## Development
 

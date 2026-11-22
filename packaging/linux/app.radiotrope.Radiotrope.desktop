@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Radiotrope
+GenericName=Internet Radio
+Comment=Listen to and record internet radio stations
+TryExec=radiotrope
+Exec=radiotrope
+Icon=app.radiotrope.Radiotrope
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=radio;stream;station;music;
+StartupNotify=true
+SingleMainWindow=true
+StartupWMClass=app.radiotrope.Radiotrope
