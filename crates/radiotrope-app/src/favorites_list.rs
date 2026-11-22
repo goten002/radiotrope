@@ -12,7 +12,8 @@ use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::text;
 
 use crate::context::lock;
-use crate::{logo_image, mark_browse_favorites, session_listen_secs, App, FavoriteStation};
+use crate::favorites_ui::session_listen_secs;
+use crate::{logo_image, mark_browse_favorites, App, FavoriteStation};
 
 pub(crate) fn favorite_to_slint(
     f: &radiotrope_app::data::types::Favorite,
