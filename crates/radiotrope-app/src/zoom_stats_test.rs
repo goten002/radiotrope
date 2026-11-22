@@ -57,7 +57,9 @@ fn the_zoom_note_shows_only_while_another_zoom_is_picked() {
     // is Window, and Up again is Zoom. Right unfolds it: 90%, 100%, 115%…
     press_keys(
         &ui,
-        &[F10, RightArrow, RightArrow, DownArrow, End, UpArrow, UpArrow],
+        &[
+            F10, RightArrow, RightArrow, DownArrow, End, UpArrow, UpArrow,
+        ],
     );
     press_keys(&ui, &[RightArrow, DownArrow, DownArrow]);
     assert_eq!(view.get_zoom_note(), "", "no note for the zoom in use");
