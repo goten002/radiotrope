@@ -519,10 +519,18 @@ impl AudioEngine {
     /// Create an engine that plays through what `outputs` opens: at start,
     /// again whenever the device goes away, and when the default changes
     fn with_output(outputs: Outputs, config: EngineConfig) -> Result<Self, RadioError> {
+        Self::with_output_and_event_capacity(outputs, config, 64)
+    }
+
+    fn with_output_and_event_capacity(
+        outputs: Outputs,
+        config: EngineConfig,
+        event_capacity: usize,
+    ) -> Result<Self, RadioError> {
         // Unbounded: an output open that hangs holds the engine's thread,
         // and a full queue would hold whoever sends to it too
         let (cmd_tx, cmd_rx) = unbounded::<AudioCommand>();
-        let (event_tx, event_rx) = bounded::<EngineEvent>(64);
+        let (event_tx, event_rx) = bounded::<EngineEvent>(event_capacity);
         let open_deadline = config.output_open_deadline;
         let (init_tx, init_rx) = bounded::<Result<(), String>>(1);
 
@@ -1582,8 +1590,7 @@ impl AudioEngine {
 
                         // Emit buffering events (progressive percentage while buffering)
                         if !sink.empty() && !waiting_for_output {
-                            // From the snapshot: the buffer's lock is never held
-                            // while sending, which can wait for the app
+                            // Send from the snapshot after releasing the buffer lock.
                             if let Some((level_bytes, _, is_buffering, _, effective_watermark)) =
                                 buf_snapshot
                             {
@@ -4931,58 +4938,64 @@ mod tests {
         engine.shared_stats().lock().unwrap().output_underruns
     }
 
-    /// `inner` at `bytes_per_sec`, like a station sending in real time
-    struct Paced<R> {
-        inner: R,
-        bytes_per_sec: usize,
-    }
-
-    impl<R: std::io::Read> std::io::Read for Paced<R> {
-        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-            thread::sleep(Duration::from_millis(10));
-            let n = buf.len().min(self.bytes_per_sec / 100);
-            self.inner.read(&mut buf[..n])
-        }
-    }
-
-    impl<R: std::io::Seek> std::io::Seek for Paced<R> {
-        fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-            self.inner.seek(pos)
-        }
-    }
-
     #[test]
     fn a_full_event_queue_doesnt_stop_the_audio() {
-        // Checks often, so Buffering events fill the queue soon
-        let engine = AudioEngine::with_config(EngineConfig {
-            tick: Duration::from_millis(10),
-            ..test_config()
-        })
-        .unwrap();
-        // Real time, while the output plays faster: it keeps buffering
+        let (outputs, _) = counted_outputs(|_| true);
+        // Playing fills the queue before the engine reports buffering. A
+        // paced WAV can leave both sample-count observations in the same
+        // refill window, especially when the reader oversleeps on CI.
+        let engine = AudioEngine::with_output_and_event_capacity(outputs, test_config(), 1)
+            .expect("the engine starts");
+        let resume = Arc::new(AtomicBool::new(false));
+        let stall_after_bytes = 200_000;
         engine.play(
-            Box::new(Paced {
-                inner: EndlessWav::new(),
-                bytes_per_sec: 88_200,
+            Box::new(StallingWav {
+                wav: EndlessWav::new(),
+                after: stall_after_bytes,
+                resume: resume.clone(),
             }),
             None,
             None,
         );
-        // Nobody reads the events: the engine waits to send them. The
-        // buffer's status lock must not be held meanwhile, or the decoder
-        // waits for it and the audio stops.
-        let samples = || engine.analysis().lock().unwrap().sample_count;
-        thread::sleep(Duration::from_secs(2));
-        let before = samples();
-        thread::sleep(Duration::from_secs(2));
-        let after = samples();
 
-        // Let the engine finish sending, so it can shut down
         let events = engine.event_receiver().clone();
+        let stats = engine.shared_stats();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut stalled = false;
+        while Instant::now() < deadline {
+            let buffering = stats.lock().unwrap().is_buffering;
+            if events.is_full() && buffering && sample_count(&engine) > 0 {
+                stalled = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        // Release the producer while the queue remains full. Demand samples
+        // beyond the stall point, so buffered PCM alone cannot pass.
+        resume.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut recovered = false;
+        while stalled && Instant::now() < deadline {
+            if sample_count(&engine) > stall_after_bytes / 2 {
+                recovered = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let queue_still_full = events.is_full();
+
+        // Drain only after observing playback, so a blocking send regression
+        // can fail the assertions without hanging shutdown.
         let drain = thread::spawn(move || while events.recv().is_ok() {});
         engine.shutdown();
         drain.join().unwrap();
-        assert!(after > before, "audio stopped at {before} samples");
+        assert!(stalled, "playback did not buffer with a full event queue");
+        assert!(recovered, "decoding did not resume with a full event queue");
+        assert!(
+            queue_still_full,
+            "the event queue was drained during playback"
+        );
     }
 
     #[test]
