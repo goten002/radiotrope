@@ -1192,23 +1192,24 @@ fn show_agent_lines(ui: &App, app: AgentApp) {
 }
 
 fn seed_statistics(ui: &App) {
-    ui.set_stat_health(status::PLAYING.into());
-    ui.set_stat_playtime("24:18".into());
-    ui.set_stat_codec("AAC".into());
-    ui.set_stat_bitrate("192 kbps".into());
-    ui.set_stat_sample_rate("48 kHz".into());
-    ui.set_stat_channels("Stereo".into());
-    ui.set_stat_received("33.4 MB".into());
-    ui.set_stat_segments(MISSING.into());
-    ui.set_stat_throughput("197 kbps".into());
-    ui.set_stat_buffer_level("352 KB".into());
-    ui.set_stat_buffer_capacity("512 KB".into());
-    ui.set_stat_frames_played("68,343".into());
-    ui.set_stat_decode_errors("0".into());
-    ui.set_stat_underruns("0".into());
-    ui.set_stat_hum("50 Hz".into());
-    ui.set_stat_leveler("−2.4 dB".into());
-    ui.set_stat_hiss("Light".into());
+    let ui = ui.global::<crate::StatsData>();
+    crate::show_health(&ui, &HealthState::Healthy);
+    ui.set_playtime("24:18".into());
+    ui.set_codec("AAC".into());
+    ui.set_bitrate("192 kbps".into());
+    ui.set_sample_rate("48 kHz".into());
+    ui.set_channels("Stereo".into());
+    ui.set_received("33.4 MB".into());
+    ui.set_segments(MISSING.into());
+    ui.set_throughput("197 kbps".into());
+    ui.set_buffer_level("352 KB".into());
+    ui.set_buffer_capacity("512 KB".into());
+    ui.set_frames_played("68,343".into());
+    ui.set_decode_errors("0".into());
+    ui.set_underruns("0".into());
+    ui.set_hum("50 Hz".into());
+    ui.set_leveler("−2.4 dB".into());
+    ui.set_hiss("Light".into());
 }
 
 fn configure(ui: &App, shot: &Shot) {
@@ -1403,8 +1404,9 @@ fn configure(ui: &App, shot: &Shot) {
             }
         }
         "statistics" => match shot.state {
-            "failed" => ui.set_stat_health(
-                crate::format_health(&HealthState::Failed(FailureReason::StreamStall)).into(),
+            "failed" => crate::show_health(
+                &ui.global::<crate::StatsData>(),
+                &HealthState::Failed(FailureReason::StreamStall),
             ),
             "stopped" => crate::clear_stats_ui(ui),
             _ => {}

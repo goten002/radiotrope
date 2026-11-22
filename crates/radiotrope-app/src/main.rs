@@ -80,7 +80,7 @@ pub(crate) use browse_ui::flag_image;
 #[cfg(any(test, feature = "ui-snapshots"))]
 pub(crate) use player_ui::UNNAMED_STATION;
 #[cfg(any(test, feature = "ui-snapshots"))]
-pub(crate) use stats_ui::{clear_stats_ui, format_health};
+pub(crate) use stats_ui::{clear_stats_ui, show_health};
 #[cfg(any(test, feature = "ui-snapshots"))]
 pub(crate) use window_settings::show_eq_presets;
 
@@ -270,7 +270,15 @@ fn main() {
         let tools = agents.tools();
         let window = ui.as_weak();
         let show_window: mcp::local::ShowWindow = Arc::new(move || {
-            let _ = window.upgrade_in_event_loop(|ui| bring_to_front(ui.window()));
+            let _ = window.upgrade_in_event_loop(|ui| {
+                // A window that is open but covered is raised, which
+                // asking for the focus doesn't do on Wayland
+                #[cfg(feature = "desktop")]
+                if window_frame::raise_shown(ui.window()) {
+                    return;
+                }
+                bring_to_front(ui.window());
+            });
         });
         // `radiotrope --quit`: exit as the menu's Quit does
         let quit: mcp::local::QuitApp = Arc::new(|| {

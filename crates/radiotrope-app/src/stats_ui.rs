@@ -14,7 +14,7 @@ use radiotrope_app::text::{status, MISSING, SEPARATOR};
 use crate::app::state::AppSnapshot;
 use crate::context::lock;
 use crate::viz_ui::viz_wanted;
-use crate::App;
+use crate::{App, StatsData, StreamHealth};
 
 /// Reads the engine's statistics, once it has sent them
 pub(crate) type EngineStats = std::rc::Rc<dyn Fn() -> Option<SharedStats>>;
@@ -73,9 +73,10 @@ pub(crate) fn setup(
                     hiss_text(s.hiss),
                 )
             };
-            ui.set_stat_leveler(leveler.into());
-            ui.set_stat_hum(hum.into());
-            ui.set_stat_hiss(hiss.into());
+            let stats = ui.global::<StatsData>();
+            stats.set_leveler(leveler.into());
+            stats.set_hum(hum.into());
+            stats.set_hiss(hiss.into());
         })
     };
     // Every 200 ms while the dialog is open; it stops itself once closed
@@ -121,9 +122,10 @@ pub(crate) fn setup(
 }
 
 fn update_stats_ui(ui: &App, s: &StreamStats) {
+    let ui = ui.global::<StatsData>();
     // Stream section
-    ui.set_stat_health(format_health(&s.health_state).into());
-    ui.set_stat_playtime(format_playtime(s.play_started_at).into());
+    show_health(&ui, &s.health_state);
+    ui.set_playtime(format_playtime(s.play_started_at).into());
 
     // Codec section
     let (codec, bitrate, sample_rate, channels) = if let Some(ref ci) = s.codec_info {
@@ -155,52 +157,54 @@ fn update_stats_ui(ui: &App, s: &StreamStats) {
             MISSING.into(),
         )
     };
-    ui.set_stat_codec(codec.into());
-    ui.set_stat_bitrate(bitrate.into());
-    ui.set_stat_sample_rate(sample_rate.into());
-    ui.set_stat_channels(channels.into());
+    ui.set_codec(codec.into());
+    ui.set_bitrate(bitrate.into());
+    ui.set_sample_rate(sample_rate.into());
+    ui.set_channels(channels.into());
 
     // Network section
-    ui.set_stat_received(format_bytes(s.bytes_received).into());
+    ui.set_received(format_bytes(s.bytes_received).into());
     let segments_str = if s.segments_downloaded > 0 {
         format_number(s.segments_downloaded)
     } else {
         MISSING.into()
     };
-    ui.set_stat_segments(segments_str.into());
-    ui.set_stat_throughput(format!("{:.0} kbps", s.throughput_kbps).into());
+    ui.set_segments(segments_str.into());
+    ui.set_throughput(format!("{:.0} kbps", s.throughput_kbps).into());
 
     // Buffer section
-    ui.set_stat_buffer_level(format_bytes(s.buffer_level_bytes as u64).into());
-    ui.set_stat_buffer_capacity(format_bytes(s.buffer_capacity_bytes as u64).into());
+    ui.set_buffer_level(format_bytes(s.buffer_level_bytes as u64).into());
+    ui.set_buffer_capacity(format_bytes(s.buffer_capacity_bytes as u64).into());
     // Decode section
-    ui.set_stat_frames_played(format_number(s.frames_played).into());
-    ui.set_stat_decode_errors(format_number(s.decode_errors).into());
-    ui.set_stat_underruns(format_number(s.underrun_count as u64).into());
+    ui.set_frames_played(format_number(s.frames_played).into());
+    ui.set_decode_errors(format_number(s.decode_errors).into());
+    ui.set_underruns(format_number(s.underrun_count as u64).into());
 }
 
 /// Statistics dialog with nothing playing
 pub(crate) fn clear_stats_ui(ui: &App) {
-    ui.set_stat_health(status::STOPPED.into());
+    let stats = ui.global::<StatsData>();
+    stats.set_health(StreamHealth::Stopped);
+    stats.set_health_text(status::STOPPED.into());
     for set in [
-        App::set_stat_playtime,
-        App::set_stat_codec,
-        App::set_stat_bitrate,
-        App::set_stat_sample_rate,
-        App::set_stat_channels,
-        App::set_stat_received,
-        App::set_stat_segments,
-        App::set_stat_throughput,
-        App::set_stat_buffer_level,
-        App::set_stat_buffer_capacity,
-        App::set_stat_frames_played,
-        App::set_stat_decode_errors,
-        App::set_stat_underruns,
-        App::set_stat_leveler,
-        App::set_stat_hum,
-        App::set_stat_hiss,
+        StatsData::set_playtime,
+        StatsData::set_codec,
+        StatsData::set_bitrate,
+        StatsData::set_sample_rate,
+        StatsData::set_channels,
+        StatsData::set_received,
+        StatsData::set_segments,
+        StatsData::set_throughput,
+        StatsData::set_buffer_level,
+        StatsData::set_buffer_capacity,
+        StatsData::set_frames_played,
+        StatsData::set_decode_errors,
+        StatsData::set_underruns,
+        StatsData::set_leveler,
+        StatsData::set_hum,
+        StatsData::set_hiss,
     ] {
-        set(ui, MISSING.into());
+        set(&stats, MISSING.into());
     }
 }
 
@@ -235,6 +239,23 @@ fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
         (false, _) => "Off".into(),
         (true, Some(hz)) => format!("{hz} Hz"),
         (true, None) => "Listening".into(),
+    }
+}
+
+/// The stream's health on the Statistics dialog's first tile: its words,
+/// and its kind for the tile's tone
+pub(crate) fn show_health(stats: &StatsData, state: &HealthState) {
+    stats.set_health(health_kind(state));
+    stats.set_health_text(format_health(state).into());
+}
+
+/// The tone of the first tile; the words beside it are free to change
+fn health_kind(state: &HealthState) -> StreamHealth {
+    match state {
+        HealthState::WaitingForAudio => StreamHealth::Connecting,
+        HealthState::Healthy => StreamHealth::Playing,
+        HealthState::Stalled => StreamHealth::Stalled,
+        HealthState::Failed(_) => StreamHealth::Failed,
     }
 }
 
@@ -332,6 +353,29 @@ mod tests {
         );
         assert!(!format_health(&HealthState::Failed(FailureReason::ProbeFailed)).contains('('));
         assert_eq!(format_playtime(None), "\u{2014}");
+    }
+
+    #[test]
+    fn the_tile_tone_follows_the_health_not_its_words() {
+        assert_eq!(
+            health_kind(&HealthState::WaitingForAudio),
+            StreamHealth::Connecting
+        );
+        assert_eq!(health_kind(&HealthState::Healthy), StreamHealth::Playing);
+        assert_eq!(health_kind(&HealthState::Stalled), StreamHealth::Stalled);
+        for reason in [
+            FailureReason::NoAudioOutput,
+            FailureReason::StreamStall,
+            FailureReason::ProbeFailed,
+        ] {
+            assert_eq!(
+                health_kind(&HealthState::Failed(reason)),
+                StreamHealth::Failed
+            );
+        }
+        // The dialog compares no words
+        let dialog = include_str!("../ui/dialogs/statistics.slint");
+        assert!(!dialog.contains("== \""), "a string compare in the dialog");
     }
 
     #[test]
