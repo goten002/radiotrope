@@ -21,12 +21,12 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::{FormatOptions, FormatReader};
 use symphonia::core::io::{BitReaderLtr, MediaSourceStream, ReadBitsLtr, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
-use symphonia_adapter_fdk_aac::AacDecoder as LibAacDecoder;
 use symphonia_adapter_libopus::OpusDecoder as LibOpusDecoder;
 
 use crate::config::timeouts::PROBE_TIMEOUT_SECS;
 use crate::error::RadioError;
 
+use super::aac::{self, AAC_SAMPLE_RATES, AOT_PS, AOT_SBR};
 use super::stats::DecoderStats;
 use super::types::CodecInfo;
 
@@ -61,17 +61,9 @@ pub fn codec_type_to_name(codec: AudioCodecId) -> String {
     }
 }
 
-/// Audio object types that name SBR outright: HE-AAC and HE-AAC v2
-const AOT_SBR: u32 = 5;
-const AOT_PS: u32 = 29;
 /// USAC (xHE-AAC). It has an SBR of its own, but it is not HE-AAC: it
 /// shows as plain AAC (only "AAC" and "AAC+" are shown)
 const AOT_USAC: u32 = 42;
-
-/// Sampling rates by `samplingFrequencyIndex` (ISO/IEC 14496-3, 1.6.3.3)
-const AAC_SAMPLE_RATES: [u32; 13] = [
-    96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350,
-];
 
 /// Whether an AAC stream is AAC+ (HE-AAC v1 or v2), given the rate its
 /// first frame decoded at.
@@ -81,9 +73,14 @@ const AAC_SAMPLE_RATES: [u32; 13] = [
 /// declares that core rate in its header; MP4 gives it in the
 /// AudioSpecificConfig, or names SBR there outright. The rare single-rate
 /// SBR, which keeps the rate, reads as plain AAC, and so does USAC.
+///
+/// The name says what plays: without libfdk-aac only the AAC-LC core of
+/// an AAC+ stream does, at the rate it declares, and that is plain AAC.
 fn is_aac_plus(params: &AudioCodecParameters, decoded_rate: u32) -> bool {
     let core_rate = match params.extra_data.as_deref().and_then(audio_specific_config) {
-        Some((AOT_SBR | AOT_PS, _)) => return true,
+        Some((AOT_SBR | AOT_PS, core)) => {
+            return aac::active().decodes_he_aac() || decoded_rate > core
+        }
         Some((AOT_USAC, _)) => return false,
         Some((_, rate)) => Some(rate),
         None => params.sample_rate,
@@ -108,10 +105,10 @@ fn audio_specific_config(config: &[u8]) -> Option<(u32, u32)> {
 /// Create a codec registry with Opus support via libopus
 pub fn create_codec_registry() -> CodecRegistry {
     let mut registry = CodecRegistry::new();
-    // Register built-in codecs first (includes symphonia's AAC)
     symphonia::default::register_enabled_codecs(&mut registry);
-    // Override AAC with FDK AAC (supports HE-AAC v1/v2 with SBR)
-    registry.register_audio_decoder::<LibAacDecoder>();
+    // AAC: the system's FDK AAC if it is installed (HE-AAC v1/v2 with
+    // SBR), or the built-in AAC-LC decoder
+    aac::register(&mut registry);
     registry.register_audio_decoder::<LibOpusDecoder>();
     registry
 }
@@ -1547,6 +1544,172 @@ mod tests {
                 .codec_info()
         }
 
+        /// Whether AAC+ plays in full here: the system has a libfdk-aac
+        /// with HE-AAC. The tests that need it pass without it, saying so.
+        fn he_aac_plays() -> bool {
+            let plays = aac::aac_decoder().decodes_he_aac();
+            if !plays {
+                eprintln!("skipped: no libfdk-aac with HE-AAC on this system");
+            }
+            plays
+        }
+
+        /// `stream` as a system without libfdk-aac plays it
+        fn open_built_in(stream: Vec<u8>) -> SymphoniaSource {
+            let format = start_probe(Cursor::new(stream), Some("aac".to_string()))
+                .unwrap()
+                .recv()
+                .unwrap()
+                .unwrap();
+            aac::with_built_in_only(|| SymphoniaSource::from_probed(format)).unwrap()
+        }
+
+        /// The length in seconds and the peak of what `source` plays
+        fn played(source: SymphoniaSource) -> (f32, f32) {
+            let (rate, channels) = (source.sample_rate().get(), source.channels().get());
+            let samples: Vec<f32> = source.collect();
+            let secs = samples.len() as f32 / (rate * channels as u32) as f32;
+            (secs, samples.iter().fold(0.0, |peak, s| peak.max(s.abs())))
+        }
+
+        // --- with the system's libfdk-aac ---
+
+        #[test]
+        fn aac_and_aac_plus_play_whole_with_the_system_library() {
+            if !he_aac_plays() {
+                return;
+            }
+            for (object_type, bit_rate, stereo) in [
+                (AudioObjectType::Mpeg4LowComplexity, 128_000, true),
+                (AudioObjectType::Mpeg4HeAac, 64_000, true),
+                (AudioObjectType::Mpeg4HeAac, 32_000, false),
+                (AudioObjectType::Mpeg4HeAacV2, 32_000, true),
+            ] {
+                let stream = adts(object_type, bit_rate, 44_100, stereo);
+                let source =
+                    SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();
+                let slot = source.error_slot();
+                let stats = source.decoder_stats();
+                // The full band and both channels, whatever the profile
+                assert_eq!(source.sample_rate().get(), 44_100, "{object_type:?}");
+                // (FDK plays mono AAC+ on two channels: such a stream may
+                // turn out to be HE-AAC v2, whose stereo is signalled late)
+                let channels = source.channels().get();
+                assert!(channels == 2 || !stereo, "{object_type:?}: {channels}");
+                let (secs, peak) = played(source);
+                assert!((1.4..1.7).contains(&secs), "{object_type:?}: {secs} s");
+                assert!(peak > 0.2, "{object_type:?}: peak {peak}");
+                assert_eq!(*slot.lock().unwrap(), None, "{object_type:?}");
+                assert_eq!(stats.snapshot().1, 0, "{object_type:?}");
+            }
+        }
+
+        #[test]
+        fn the_system_library_rebuilds_the_top_of_the_band() {
+            if !he_aac_plays() {
+                return;
+            }
+            // The test audio has a 9 kHz tone: above the 5.5 kHz that the
+            // 22.05 kHz core of HE-AAC at 44.1 kHz can carry, so only SBR
+            // brings it back
+            let stream = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
+            let whole = SymphoniaSource::new_with_hint(Cursor::new(stream.clone()), Some("aac"))
+                .unwrap()
+                .step_by(2)
+                .collect::<Vec<f32>>();
+            let core = open_built_in(stream);
+            assert_eq!(core.sample_rate().get(), 22_050);
+            let core = core.step_by(2).collect::<Vec<f32>>();
+            assert!(tone(&whole, 44_100, 9000.0) > 0.01, "SBR's 9 kHz");
+            // Both have the 220 Hz of the core
+            assert!(tone(&whole, 44_100, 220.0) > 0.02);
+            assert!(tone(&core, 22_050, 220.0) > 0.02);
+        }
+
+        /// How much of `samples` is a tone at `freq` (its amplitude)
+        fn tone(samples: &[f32], rate: u32, freq: f32) -> f32 {
+            // Past the decoder's start-up
+            let samples = &samples[samples.len() / 4..];
+            let step = 2.0 * std::f32::consts::PI * freq / rate as f32;
+            let (sin, cos) =
+                samples
+                    .iter()
+                    .enumerate()
+                    .fold((0.0f64, 0.0f64), |(sin, cos), (i, s)| {
+                        let phase = step * i as f32;
+                        (
+                            sin + (s * phase.sin()) as f64,
+                            cos + (s * phase.cos()) as f64,
+                        )
+                    });
+            (2.0 * (sin * sin + cos * cos).sqrt() / samples.len() as f64) as f32
+        }
+
+        // --- without it: the built-in decoder ---
+
+        #[test]
+        fn without_the_library_plain_aac_plays_the_same() {
+            let source = open_built_in(adts(
+                AudioObjectType::Mpeg4LowComplexity,
+                128_000,
+                44_100,
+                true,
+            ));
+            assert_eq!(source.codec_name(), "AAC");
+            assert_eq!(
+                (source.sample_rate().get(), source.channels().get()),
+                (44_100, 2)
+            );
+            let slot = source.error_slot();
+            let (secs, peak) = played(source);
+            assert!((1.4..1.7).contains(&secs), "{secs} s");
+            assert!(peak > 0.2, "peak {peak}");
+            assert_eq!(*slot.lock().unwrap(), None);
+        }
+
+        #[test]
+        fn without_the_library_aac_plus_plays_its_core() {
+            // Half the band, and HE-AAC v2 in mono: plain AAC is what plays
+            for (object_type, bit_rate, channels) in [
+                (AudioObjectType::Mpeg4HeAac, 64_000, 2),
+                (AudioObjectType::Mpeg4HeAacV2, 32_000, 1),
+            ] {
+                let source = open_built_in(adts(object_type, bit_rate, 44_100, true));
+                assert_eq!(source.codec_name(), "AAC", "{object_type:?}");
+                assert_eq!(
+                    (source.sample_rate().get(), source.channels().get()),
+                    (22_050, channels),
+                    "{object_type:?}"
+                );
+                let slot = source.error_slot();
+                let stats = source.decoder_stats();
+                let (secs, peak) = played(source);
+                assert!((1.4..1.7).contains(&secs), "{object_type:?}: {secs} s");
+                assert!(peak > 0.2, "{object_type:?}: peak {peak}");
+                assert_eq!(*slot.lock().unwrap(), None, "{object_type:?}");
+                assert_eq!(stats.snapshot().1, 0, "{object_type:?}");
+            }
+        }
+
+        #[test]
+        fn without_the_library_a_new_track_stays_with_the_built_in_decoder() {
+            let stream = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
+            let mut source = open_built_in(stream);
+            aac::with_built_in_only(|| source.reset_track()).unwrap();
+            assert!(source.decode_next_packet());
+            assert_eq!(source.codec_name(), "AAC");
+            assert_eq!(source.sample_rate().get(), 22_050);
+        }
+
+        #[test]
+        fn without_the_library_a_track_that_declares_he_aac_is_plain_aac() {
+            // MP4 naming SBR outright: only the core plays, at its own rate
+            let track = mp4_track(Some(44_100), Some(config(5, 7)));
+            aac::with_built_in_only(|| {
+                assert!(!is_aac_plus(&track, 22_050));
+            });
+        }
+
         #[test]
         fn a_reconnect_into_the_middle_of_a_frame_keeps_playing() {
             let stream = adts(AudioObjectType::Mpeg4LowComplexity, 128_000, 44_100, true);
@@ -1595,6 +1758,9 @@ mod tests {
 
         #[test]
         fn he_aac_is_called_aac_plus() {
+            if !he_aac_plays() {
+                return;
+            }
             let info = open(adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true));
             assert_eq!(info.codec_name, "AAC+");
             assert_eq!((info.sample_rate, info.channels), (44_100, 2));
@@ -1602,6 +1768,9 @@ mod tests {
 
         #[test]
         fn he_aac_at_48_khz_is_called_aac_plus() {
+            if !he_aac_plays() {
+                return;
+            }
             let info = open(adts(AudioObjectType::Mpeg4HeAac, 48_000, 48_000, true));
             assert_eq!(info.codec_name, "AAC+");
             assert_eq!(info.sample_rate, 48_000);
@@ -1609,12 +1778,18 @@ mod tests {
 
         #[test]
         fn mono_he_aac_is_called_aac_plus() {
+            if !he_aac_plays() {
+                return;
+            }
             let info = open(adts(AudioObjectType::Mpeg4HeAac, 32_000, 44_100, false));
             assert_eq!(info.codec_name, "AAC+");
         }
 
         #[test]
         fn he_aac_v2_is_called_aac_plus() {
+            if !he_aac_plays() {
+                return;
+            }
             let info = open(adts(AudioObjectType::Mpeg4HeAacV2, 32_000, 44_100, true));
             assert_eq!(info.codec_name, "AAC+");
             assert_eq!((info.sample_rate, info.channels), (44_100, 2));
@@ -1622,6 +1797,9 @@ mod tests {
 
         #[test]
         fn tuning_in_mid_stream_still_finds_aac_plus() {
+            if !he_aac_plays() {
+                return;
+            }
             let v1 = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
             let v2 = adts(AudioObjectType::Mpeg4HeAacV2, 32_000, 44_100, true);
             for n in [1, 7, 20] {
@@ -1646,17 +1824,20 @@ mod tests {
                 7,
             );
             let plus = from_frame(&adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true), 7);
+            let he_aac_plays = he_aac_plays();
             for cut in [1, 100, 250] {
                 assert_eq!(
                     open(plain[cut..].to_vec()).codec_name,
                     "AAC",
                     "AAC cut at {cut}"
                 );
-                assert_eq!(
-                    open(plus[cut..].to_vec()).codec_name,
-                    "AAC+",
-                    "AAC+ cut at {cut}"
-                );
+                if he_aac_plays {
+                    assert_eq!(
+                        open(plus[cut..].to_vec()).codec_name,
+                        "AAC+",
+                        "AAC+ cut at {cut}"
+                    );
+                }
             }
         }
 
@@ -1715,6 +1896,9 @@ mod tests {
 
         #[test]
         fn a_new_track_keeps_the_aac_plus_name() {
+            if !he_aac_plays() {
+                return;
+            }
             let stream = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
             let mut source =
                 SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();

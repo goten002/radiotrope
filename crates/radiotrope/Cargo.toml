@@ -12,11 +12,17 @@ readme = "../../README.md"
 keywords = ["radio", "audio", "streaming", "internet-radio"]
 categories = ["multimedia::audio"]
 
+[features]
+default = ["system-fdk"]
+# AAC+ (HE-AAC) by the system's libfdk-aac, loaded at run time if it is
+# installed. Without this feature there is no FDK code in the build at all,
+# and AAC plays with the built-in AAC-LC decoder.
+system-fdk = ["dep:libloading"]
+
 [dependencies]
 rodio = { workspace = true }
 symphonia = { workspace = true }
 symphonia-adapter-libopus = { workspace = true }
-symphonia-adapter-fdk-aac = { workspace = true }
 rustfft = { workspace = true }
 biquad = { workspace = true }
 mp3lame-encoder = { workspace = true }
@@ -30,6 +36,7 @@ log = { workspace = true }
 chardetng = { workspace = true }
 encoding_rs = { workspace = true }
 sys-locale = { workspace = true }
+libloading = { workspace = true, optional = true }
 
 # The proxy set in Windows' settings (elsewhere the HTTP_PROXY / HTTPS_PROXY
 # variables, which reqwest reads anyway)

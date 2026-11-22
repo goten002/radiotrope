@@ -31,6 +31,9 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 ### Changed
 - Version 0.1.0. `--version` names the program (`radiotrope 0.1.0`, not `radiotrope-app 0.1.0-dev`). Building needs Rust 1.95 or newer.
 - The Linux app id is `app.radiotrope.Radiotrope` (window, launcher, icon and tray). An older hand-installed `radiotrope.desktop` should be removed. Settings and favorites stay where they were.
+- AAC+ (HE-AAC) now uses the system's libfdk-aac, loaded at run time, instead of a copy built into the programs. Where the library is not installed (or is a build without HE-AAC), AAC+ stations play their AAC-LC core with the built-in decoder and show as "AAC"; the README says how to install the library. The programs no longer contain FDK AAC code, and a `system-fdk` cargo feature builds them without the loader.
+- HTTPS uses rustls with the system's certificates instead of OpenSSL (Linux) and SChannel (Windows), so Linux builds no longer need or link OpenSSL.
+- AAC surround streams (more than two channels) play mixed down to stereo instead of failing.
 - Open > Network Stream asks for the stream URL first, and it is all a stream needs: the name, logo and country are optional. Without a name, the stream's own name is shown.
 - Search Stations has Country and Genre filters under the search box, combinable with a name search, and Reset filters to clear them. Stations > By Country is gone: pick a country in the filters instead.
 - Station search uses Radiotrope's own directory at api.radiotrope.app instead of radio-browser.info: typo-tolerant name search, countries, genres and languages, 256 px logos, and plays counted for its popular list. The Browse, phone Search and agent search all use it. Votes, trending and bitrate orders are gone (the phone's are treated as Most played); codec and bitrate filters for agents are checked on each page. Favorites saved from radio-browser keep playing as before.

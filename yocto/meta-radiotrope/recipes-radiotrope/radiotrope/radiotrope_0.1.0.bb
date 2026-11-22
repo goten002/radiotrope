@@ -68,8 +68,11 @@ export MP3LAME_SYS_OVERRIDE_HOST = "${HOST_SYS}"
 # Build with the embedded feature only (linuxkms backend, software
 # renderer). The class adds --features but not --no-default-features, and
 # the crate's default is the desktop feature (winit, tray icon, file
-# dialogs), which has no business on the Pi
-CARGO_FEATURES = "embedded"
+# dialogs), which has no business on the Pi. system-fdk has the player
+# load libfdk-aac at run time for AAC+ (HE-AAC), if the image has it (the
+# fdk-aac recipe of meta-multimedia); without the library it plays the
+# AAC-LC core of such stations
+CARGO_FEATURES = "embedded system-fdk"
 EXTRA_CARGO_FLAGS = "--no-default-features"
 
 # Rust writes source paths into the binary (panic messages, debug info),
@@ -98,7 +101,6 @@ DEPENDS = " \
     seatd \
     libxkbcommon \
     libdrm \
-    openssl \
 "
 
 RDEPENDS:${PN} = " \

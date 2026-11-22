@@ -47,29 +47,40 @@ impose copyleft requirements on the rest of the codebase.
 Full license text: https://www.mozilla.org/en-US/MPL/2.0/
 
 
-Fraunhofer FDK AAC (via symphonia-adapter-fdk-aac)
----------------------------------------------------
-AAC audio codec library.
+Fraunhofer FDK AAC (not included; loaded from the system if installed)
+----------------------------------------------------------------------
+AAC audio codec library, used for AAC+ (HE-AAC v1 and v2).
 
 License: Fraunhofer FDK AAC Codec Library for Android (BSD-style with patent disclaimer)
 Source:  https://github.com/mstorsjo/fdk-aac
 SPDX:   FDK-AAC
 
-The Rust wrapper crate (symphonia-adapter-fdk-aac) is licensed under
-MIT/Apache-2.0. However, the underlying C library (libfdk-aac) is distributed
-under the Fraunhofer FDK AAC license, which includes the following notice:
+Radiotrope does not contain, bundle or link this library: neither its source
+nor its binaries include any FDK AAC code. If the user's system has
+libfdk-aac installed, Radiotrope loads it at run time through a small binding
+of its own (crates/radiotrope/src/audio/aac/fdk.rs) and decodes AAC with it;
+otherwise it uses Symphonia's AAC-LC decoder. Building with
+`--no-default-features` (without the `system-fdk` feature) leaves the loader
+out as well.
+
+The library, where a user installs it, is under the Fraunhofer FDK AAC
+license, which includes the following notice:
 
   "NO EXPRESS OR IMPLIED LICENSES TO ANY PATENT CLAIMS, including without
    limitation the patents of Fraunhofer, ARE GRANTED BY THIS SOFTWARE LICENSE."
 
-This means no patent license is provided for AAC encoding or decoding. Users
-distributing binaries that include FDK-AAC should be aware of potential patent
+This means no patent license is provided for AAC encoding or decoding. Those
+who install or distribute FDK AAC should be aware of potential patent
 obligations in their jurisdiction.
 
 The Free Software Foundation considers the FDK AAC license incompatible with
 the GPL. Radiotrope's licensors therefore grant an additional permission under
-GPL version 3 section 7 to convey Radiotrope linked with libfdk-aac; see the
-License section of README.md.
+GPL version 3 section 7 to combine Radiotrope with libfdk-aac; see the License
+section of README.md. It covers the combination made on a user's system at
+run time.
+
+The tests build FDK's encoder (the fdk-aac crate, a dev-dependency) to make
+AAC test streams. It is not part of any program that is built or distributed.
 
 Full license text: https://github.com/mstorsjo/fdk-aac/blob/master/NOTICE
 

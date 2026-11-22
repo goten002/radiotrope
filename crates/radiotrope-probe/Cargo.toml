@@ -16,8 +16,15 @@ categories = ["command-line-utilities", "multimedia::audio"]
 name = "radiotrope-probe"
 path = "src/main.rs"
 
+[features]
+default = ["system-fdk"]
+# AAC+ (HE-AAC) by the system's libfdk-aac, loaded at run time if it is
+# installed. Without it (`--no-default-features`) the build has no FDK code
+# at all and plays AAC with the built-in AAC-LC decoder.
+system-fdk = ["radiotrope/system-fdk"]
+
 [dependencies]
-radiotrope = { path = "../radiotrope" }
+radiotrope = { path = "../radiotrope", default-features = false }
 env_logger = { workspace = true }
 crossbeam-channel = { workspace = true }
 clap = { workspace = true }
