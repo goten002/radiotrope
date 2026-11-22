@@ -67,12 +67,11 @@ export global Theme {
     // or black (light) only as far as it takes to reach 4.5:1 there
     out property <color> accent-text: readable(dark-mode ? accent-base : accent-base.darker(0.5),
         dark-mode ? #ffffff : #000000);
-    // Text and icons on an accent fill (buttons): black or white, whichever
-    // reads better on the accent
-    out property <color> on-accent: text-on(accent-base);
-    // The play/stop icon: black on every accent and in both themes, so the
-    // button looks the same everywhere
-    out property <color> play-icon: #000000;
+    out property <color> accent-pressed: accent-hover.darker(0.1);
+    out property <color> on-accent: text-on(accent);
+    out property <color> on-accent-hover: text-on(accent-hover);
+    out property <color> on-accent-pressed: text-on(accent-pressed);
+    out property <color> play-icon: on-accent;
     // Tints for badges, selected rows and header glows
     out property <color> accent-soft: accent-base.with-alpha(dark-mode ? 0.16 : 0.12);
     out property <color> accent-glow: accent-base.with-alpha(dark-mode ? 0.18 : 0.14);
@@ -81,6 +80,18 @@ export global Theme {
     out property <color> danger: dark-mode ? #ef5b5b : #d33b3b;
     out property <color> danger-hover: danger.darker(0.15);
     out property <color> success: dark-mode ? #4cc38a : #1f9d5a;
+    out property <color> warning: dark-mode ? #e6ae59 : #a16812;
+    out property <color> danger-text: dark-mode ? #ff9c9c : #8c1616;
+    out property <color> success-text: dark-mode ? #82e1ad : #11552f;
+    out property <color> warning-text: dark-mode ? #ffcf83 : #684000;
+    out property <color> neutral-text: dark-mode ? #c1c3c8 : #4d5057;
+    out property <color> danger-tint: danger.with-alpha(0.14);
+    out property <color> success-tint: success.with-alpha(0.14);
+    out property <color> warning-tint: warning.with-alpha(0.14);
+    out property <color> neutral-tint: text-secondary.with-alpha(0.14);
+    // A stronger tint for a destructive action awaiting a second press.
+    out property <color> danger-armed: danger.with-alpha(0.22);
+    out property <color> danger-pressed: danger.with-alpha(0.30);
     // The Timer's label
     out property <color> info: dark-mode ? #5aa9e6 : #2b78c2;
 
@@ -96,16 +107,26 @@ export global Theme {
     out property <length> focus-ring-offset: 3px;
 
     // ── Menus and hover states ──
-    out property <color> popup-bg: card;
+    out property <color> popup-surface: card;
+    out property <color> popup-border: dark-mode ? #ffffff29 : #00000029;
+    out property <color> popup-shadow: dark-mode ? #00000099 : #1a1b2040;
+    out property <length> popup-shadow-blur: 12px;
+    out property <length> popup-shadow-offset: 3px;
+    out property <color> popup-bg: popup-surface;
     out property <color> menu-hover: dark-mode ? #33363b : #ebebef;
-    out property <color> menu-bar-hover: dark-mode ? #2d3034 : #f0f0f4;
+    out property <color> menu-bar-hover: dark-mode ? #2d3034 : elevated;
+    out property <color> hover-bg: menu-bar-hover;
+    out property <color> pressed-bg: menu-hover;
+    out property <color> selected-bg: accent-soft;
+    out property <color> selection-mark: accent-text;
+    out property <color> field-border: hairline;
     out property <color> menu-text: dark-mode ? #c8c9cc : #3a3c41;
 
     // ── Visualizer ──
     // Selected text in inputs: an accent tint, not the style's own colour
     out property <color> selection-bg: accent.with-alpha(dark-mode ? 0.4 : 0.3);
     out property <color> selection-fg: text-primary;
-    out property <color> viz-bg: dark-mode ? #141517 : #f0f0f4;
+    out property <color> viz-bg: dark-mode ? #141517 : elevated;
     out property <color> viz-track: dark-mode ? #ffffff0d : #0000000d;
 
     // ── Text sizes ──
@@ -120,6 +141,35 @@ export global Theme {
     out property <length> font-title: 17px;    // dialog titles, stats tiles
     out property <length> font-station: 18px;  // station name in the header
     out property <length> font-hero: 22px;     // app name in About
+
+    out property <int> weight-regular: 400;
+    out property <int> weight-semibold: 600;
+    out property <length> font-timer: 34px;
+    out property <length> font-code: 44px;
+
+    // ── Layout ──
+    out property <length> space-2: 2px;
+    out property <length> space-4: 4px;
+    out property <length> space-6: 6px;
+    out property <length> space-8: 8px;
+    out property <length> space-12: 12px;
+    out property <length> space-16: 16px;
+    out property <length> space-20: 20px;
+    out property <length> space-24: 24px;
+    out property <length> icon-sm: 12px;
+    out property <length> icon-compact: 14px;
+    out property <length> icon-md: 16px;
+    out property <length> icon-lg: 20px;
+    out property <length> control-button: 34px;
+    out property <length> control-field: 36px;
+    out property <length> control-touch: 44px;
+    out property <length> row-menu: 28px;
+    out property <length> row-dense: 48px;
+    out property <length> row-media: 56px;
+    out property <length> row-touch: 64px;
+    out property <length> dialog-padding: space-20;
+    out property <length> dialog-gap: icon-compact;
+    out property <length> viewport-inset: space-12;
 
     // ── Shape ──
     out property <length> radius-sm: 4px;
@@ -171,8 +221,35 @@ export global Theme {
     // (light theme) background it sits on: an accent-tinted card or list
     // (selected rows, dialog glow), and its own 14% tint on the panel (chips)
     pure function reads-well(c: color) -> bool {
-        return contrast(c, accent-base.mix(dark-mode ? card : surface, dark-mode ? 0.18 : 0.14)) >= 4.5
-            && contrast(c, c.mix(panel, 0.14)) >= 4.5;
+        // Bound hue and surface blending by the brightest or darkest
+        // surface used for text, then account for the strongest tint.
+        let surface-limit = pressed-bg;
+        let accent-limit = accent.mix(surface-limit, 0.26);
+        let chip-base = dark-mode ? card : surface;
+        let chip-limit = c.mix(chip-base, 0.26);
+        let composite-limit = (dark-mode ? luminance(accent-limit) >= luminance(chip-limit)
+                                    : luminance(accent-limit) <= luminance(chip-limit))
+            ? accent-limit : chip-limit;
+        let tint-limit = (dark-mode ? luminance(composite-limit) >= luminance(surface-limit)
+                                    : luminance(composite-limit) <= luminance(surface-limit))
+            ? composite-limit : surface-limit;
+        return contrast(c, tint-limit) >= 4.5
+            && (dark-mode ? luminance(c) > luminance(tint-limit) : luminance(c) < luminance(tint-limit));
+    }
+
+    // WCAG foreground for a custom status color over the strongest
+    // supported status tint. Opaque color math mirrors alpha compositing.
+    public pure function status-text(tone: color) -> color {
+        let base = dark-mode ? pressed-bg : surface;
+        let opaque = tone.with-alpha(1);
+        let tint = opaque.mix(base, 0.30);
+        let limit = (dark-mode ? luminance(tint) > luminance(base) : luminance(tint) < luminance(base))
+            ? tint : base;
+        if contrast(opaque, limit) >= 4.5
+            && (dark-mode ? luminance(opaque) > luminance(limit) : luminance(opaque) < luminance(limit)) {
+            return opaque;
+        }
+        return dark-mode ? text-on(limit) : #000000;
     }
 
     // `c` if it reads well, else `c` moved toward `to` just far enough
@@ -201,7 +278,7 @@ export global Defaults {
     // Edges to grab for resizing with the app's own title bar
     out property <length> resize-border: 8px;
     // Rounded corners with the app's own title bar (Windows 11 uses its own)
-    out property <length> window-radius: 8px;
+    out property <length> window-radius: Theme.radius-lg;
 
     // ── Dialogs: card width, and height where it doesn't follow the content ──
     out property <length> dialog-width: 440px;
@@ -213,19 +290,22 @@ export global Defaults {
     out property <length> accent-color-width: 400px;
     // Height of the custom colour square in the Accent Color dialog
     out property <length> accent-picker-height: 120px;
-    out property <length> filter-picker-width: 360px;
+    out property <length> dialog-width-compact: 360px;
+    out property <length> filter-picker-width: dialog-width-compact;
     out property <length> filter-picker-height: 640px;
-    out property <length> edit-favorite-width: 460px;
+    out property <length> dialog-width-form: 460px;
+    out property <length> edit-favorite-width: dialog-width-form;
     out property <length> equalizer-width: 580px;
-    out property <length> network-stream-width: 460px;
+    out property <length> network-stream-width: dialog-width-form;
+    out property <length> import-favorites-width: dialog-width-form;
     out property <length> recording-width: 480px;
     out property <length> remote-control-width: 520px;
     // A paired phone's row, and the Remote Control dialog's height without
     // its list of phones (window margin, padding, title, settings), so the
     // list scrolls once the window is too short for all of them
-    out property <length> remote-device-height: 48px;
+    out property <length> remote-device-height: Theme.row-dense;
     out property <length> remote-devices-chrome: 360px;
-    out property <length> pairing-code-width: 360px;
+    out property <length> pairing-code-width: dialog-width-compact;
     // The pairing QR code (on a white tile in the dark theme); fits the Pi's 480 px height
     out property <length> pairing-qr-size: 220px;
     out property <length> schedule-width: 560px;
@@ -236,11 +316,11 @@ export global Defaults {
     // the gap kept to the window's edges
     out property <length> schedule-list-chrome: 160px;
     out property <length> sleep-timer-width: 520px;
-    // A dropdown's list rows, and how tall its list grows before it
-    // scrolls: 12 rows (the Scheduler's volumes all show), short enough
-    // for the Pi's 480 px window
-    out property <length> dropdown-row-height: 28px;
-    out property <length> dropdown-max-height: 344px;
+    // Dropdowns show at most eight rows before scrolling. Give short
+    // triggers room to show an option label and its check side by side.
+    out property <length> dropdown-row-height: Theme.row-menu;
+    out property <length> dropdown-max-height: 8 * Theme.row-menu + 2 * Theme.space-4;
+    out property <length> dropdown-min-popup-width: 136px;
     // The Sleep Timer's length in the middle, wide enough for "12 h 55 min"
     out property <length> sleep-readout-width: 190px;
     // The Sleep Timer's − and + step by the big step, and by the small
@@ -251,7 +331,10 @@ export global Defaults {
     out property <int> sleep-max-minutes: 1440;
     out property <length> station-browser-width: 700px;
     out property <length> station-browser-height: 640px;
-    out property <length> statistics-width: 540px;
+    out property <length> dialog-width-wide: 540px;
+    out property <length> statistics-width: dialog-width-wide;
+    out property <length> keyboard-shortcuts-width: dialog-width-wide;
+    out property <length> keyboard-shortcuts-height: 480px;
     // The volume slider in the controls bar: its track and knob (bigger
     // while hovered or dragged). Clicks and drags land anywhere in the
     // bar's height and this far past each end of the track.

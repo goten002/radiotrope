@@ -12,8 +12,8 @@ export component ScrollBar inherits Rectangle {
     in-out property <length> content-y;
 
     property <length> max-scroll: max(0px, root.content-height - root.viewport-height);
-    property <length> thumb-height: max(24px,
-        root.height * min(1, root.viewport-height / max(1px, root.content-height)));
+    property <length> thumb-height: min(root.height, max(Theme.space-24,
+        root.height * min(1, root.viewport-height / max(1px, root.content-height))));
     property <length> track-range: max(0px, root.height - root.thumb-height);
     property <length> thumb-y: root.max-scroll > 0
         ? root.track-range * (-root.content-y / root.max-scroll) : 0px;
@@ -22,7 +22,7 @@ export component ScrollBar inherits Rectangle {
     property <bool> over-thumb: touch.has-hover
         && touch.mouse-y >= root.thumb-y && touch.mouse-y <= root.thumb-y + root.thumb-height;
 
-    width: 8px;
+    width: Theme.space-8;
     visible: root.max-scroll > 0;
     // Round ends
     border-radius: self.width / 2;
@@ -39,7 +39,7 @@ export component ScrollBar inherits Rectangle {
                 } else {
                     root.content-y = max(-root.max-scroll, root.content-y - root.viewport-height);
                 }
-            } else if e.kind == PointerEventKind.up {
+            } else if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
                 root.dragging = false;
             }
         }
@@ -58,7 +58,7 @@ export component ScrollBar inherits Rectangle {
         height: root.thumb-height;
         width: parent.width;
         border-radius: self.width / 2;
-        background: root.dragging ? Theme.accent
+        background: root.dragging ? Theme.selection-mark
             : root.over-thumb ? Theme.text-primary : Theme.text-secondary;
     }
 }

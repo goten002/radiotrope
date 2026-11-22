@@ -4,7 +4,10 @@
 // headers, info rows, chips, icon buttons, form fields)
 
 import { Theme, Defaults } from "defaults.slint";
+import { Icon, FocusRing, ButtonKeys } from "component-primitives.slint";
+export { Icon, FocusRing, ButtonKeys }
 import { ScrollBar } from "scroll-bar.slint";
+import { AccentButton, SecondaryButton, DangerButton } from "buttons.slint";
 
 // Clock for the small status animations: steps by Defaults.motion-step
 // while something plays, connects or records (the window runs the timer)
@@ -12,60 +15,16 @@ export global Motion {
     in-out property <duration> tick;
 }
 
-// Colorized icon. Draws the image 1px larger on every side and clips that
-// edge off: the femtovg renderer builds colorized textures without clearing
-// them, so their outermost pixels can hold leftover garbage that shows as a
-// thin bar beside the icon. So a drawing that reaches the edge of its SVG
-// loses that 1px: keep icons at least 1px clear of the edge (spinner.svg).
-export component Icon inherits Rectangle {
-    in property <image> source;
-    in property <brush> colorize;
-    in property <angle> rotation: 0deg;
-
-    clip: true;
-
-    Image {
-        x: -1px;
-        y: -1px;
-        width: parent.width + 2px;
-        height: parent.height + 2px;
-        source: root.source;
-        colorize: root.colorize;
-        transform-rotation: root.rotation;
-        // Decoration: the control around it carries the name
-        accessible-role: none;
-    }
-}
-
-// Ring around a control that has keyboard focus. Put it in the control as
-// `if focus.has-focus: FocusRing { radius: root.border-radius; }`; it takes
-// the control's size and draws just outside its edge (a negative offset
-// draws inside, for controls at an edge that clips).
-export component FocusRing inherits Rectangle {
-    in property <length> radius;
-    in property <length> offset: Theme.focus-ring-offset;
-
-    Rectangle {
-        x: -root.offset;
-        y: -root.offset;
-        width: root.width + 2 * root.offset;
-        height: root.height + 2 * root.offset;
-        border-radius: max(0px, root.radius + root.offset);
-        border-width: Theme.focus-ring-width;
-        border-color: Theme.focus-ring;
-    }
-}
-
 // Background of a menu or a hover bubble: the popup colour, a hairline
 // edge and a soft shadow. Put the content inside.
 export component PopupCard inherits Rectangle {
-    background: Theme.popup-bg;
+    background: Theme.popup-surface;
     border-radius: Theme.radius-md;
     border-width: 1px;
-    border-color: Theme.hairline;
-    drop-shadow-blur: 8px;
-    drop-shadow-offset-y: 2px;
-    drop-shadow-color: Theme.shadow-soft;
+    border-color: Theme.popup-border;
+    drop-shadow-blur: Theme.popup-shadow-blur;
+    drop-shadow-offset-y: Theme.popup-shadow-offset;
+    drop-shadow-color: Theme.popup-shadow;
 }
 
 // Line between groups of menu items
@@ -76,24 +35,6 @@ export component MenuSeparator inherits Rectangle {
         y: 4px;
         height: 1px;
         background: Theme.menu-hover;
-    }
-}
-
-// Keyboard side of a button: takes focus by Tab (a click doesn't move the
-// focus) and presses the button on Space or Enter
-export component ButtonKeys inherits FocusScope {
-    callback activated();
-
-    focus-on-click: false;
-    key-pressed(event) => {
-        if (event.text == Key.Space || event.text == Key.Return)
-            && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
-            if !event.repeat {
-                root.activated();
-            }
-            return accept;
-        }
-        return reject;
     }
 }
 
@@ -119,10 +60,12 @@ export component IconButton inherits Rectangle {
     in property <image> icon;
     // What the button does, for screen readers (it shows only the icon)
     in property <string> label;
-    in property <length> icon-size: 16px;
+    in property <length> icon-size: Theme.icon-md;
     in property <color> icon-color: Theme.text-secondary;
     in property <color> hover-color: Theme.text-primary;
     in property <bool> active: false;
+    // Use for a destructive action waiting for its second press.
+    in property <bool> danger-armed: false;
     // Greyed out and not clickable, but keeps its place
     in property <bool> enabled: true;
     // A bigger click area around the button is hovered: it lights up too
@@ -135,10 +78,11 @@ export component IconButton inherits Rectangle {
     width: 30px;
     height: 30px;
     border-radius: self.height / 2;
-    background: !root.enabled ? transparent
-        : touch.pressed ? Theme.menu-hover
-        : root.hovered ? Theme.menu-bar-hover
-        : root.active ? Theme.accent-soft : transparent;
+    background: !root.enabled ? Theme.disabled-bg
+        : root.danger-armed ? (touch.pressed ? Theme.danger-pressed : Theme.danger-armed)
+        : touch.pressed ? Theme.pressed-bg
+        : root.hovered ? Theme.hover-bg
+        : root.active ? Theme.selected-bg : transparent;
     animate background { duration: Theme.fast; }
     forward-focus: focus;
 
@@ -162,7 +106,8 @@ export component IconButton inherits Rectangle {
         width: root.icon-size;
         height: root.icon-size;
         colorize: !root.enabled ? Theme.disabled-text
-            : root.active ? Theme.accent-text
+            : root.danger-armed ? Theme.danger-text
+            : root.active ? Theme.selection-mark
             : root.hovered ? root.hover-color : root.icon-color;
         animate colorize { duration: Theme.fast; }
     }
@@ -189,7 +134,7 @@ export component SectionHeader inherits Rectangle {
         text: root.title;
         color: Theme.accent-text;
         font-size: Theme.font-xs;
-        font-weight: 600;
+        font-weight: Theme.weight-semibold;
         letter-spacing: 1px;
     }
 }
@@ -286,7 +231,7 @@ export component LinkRow inherits Rectangle {
 
                     name := Text {
                         text: link.name;
-                        color: touch.has-hover ? Theme.accent-hover : Theme.accent-text;
+                        color: Theme.accent-text;
                         font-size: Theme.font-sm;
                         vertical-alignment: center;
                         accessible-role: none;
@@ -296,7 +241,7 @@ export component LinkRow inherits Rectangle {
                         y: parent.height / 2 + 7px;
                         height: 1px;
                         background: name.color;
-                        visible: touch.has-hover;
+                        visible: touch.has-hover || keys.has-focus;
                     }
                     touch := TouchArea {
                         mouse-cursor: pointer;
@@ -341,6 +286,8 @@ export global TextUtil {
     pure callback steady-digits(string) -> string;
 }
 
+export enum ChipVariant { neutral, accent, danger, success, warning }
+
 export component Chip inherits Rectangle {
     in property <string> text;
     // Optional second part after the text, behind a centred "·" and laid
@@ -349,7 +296,25 @@ export component Chip inherits Rectangle {
     in property <string> detail;
     // Keep the width steady while digits in the text change (timers, sizes)
     in property <bool> steady: false;
-    in property <color> tone: Theme.text-secondary;
+    in property <ChipVariant> variant: ChipVariant.neutral;
+    // Compatibility override for callers using decorative custom tones.
+    in property <color> tone: #00000000;
+    property <color> foreground: root.tone.alpha > 0 ? root.legacy-foreground
+        : root.variant == ChipVariant.accent ? Theme.accent-text
+        : root.variant == ChipVariant.danger ? Theme.danger-text
+        : root.variant == ChipVariant.success ? Theme.success-text
+        : root.variant == ChipVariant.warning ? Theme.warning-text
+        : Theme.neutral-text;
+    property <color> legacy-foreground: root.tone == Theme.danger ? Theme.danger-text
+        : root.tone == Theme.success ? Theme.success-text
+        : root.tone == Theme.warning ? Theme.warning-text
+        : root.tone == Theme.accent-text ? Theme.accent-text
+        : Theme.status-text(root.tone);
+    property <color> tint: root.tone.alpha > 0 ? root.tone
+        : root.variant == ChipVariant.accent ? Theme.accent-text
+        : root.variant == ChipVariant.danger ? Theme.danger
+        : root.variant == ChipVariant.success ? Theme.success
+        : root.variant == ChipVariant.warning ? Theme.warning : Theme.text-secondary;
     // Show a dot before the text (e.g. a live status)
     in property <bool> dot: false;
     // Optional icon before the text, in the chip's tone
@@ -372,28 +337,51 @@ export component Chip inherits Rectangle {
     horizontal-stretch: root.keep ? 0 : 1;
     height: 20px;
     border-radius: Theme.radius-sm;
-    background: root.tone.with-alpha(root.clickable && touch.has-hover ? 0.26 : 0.14);
+    property <color> resting-tint: root.tone.alpha > 0 || root.variant == ChipVariant.accent
+        ? root.tint.with-alpha(0.14)
+        : root.variant == ChipVariant.danger ? Theme.danger-tint
+        : root.variant == ChipVariant.success ? Theme.success-tint
+        : root.variant == ChipVariant.warning ? Theme.warning-tint : Theme.neutral-tint;
+    background: touch.pressed ? root.tint.with-alpha(0.26)
+        : touch.has-hover && root.interactive ? root.tint.with-alpha(0.22) : root.resting-tint;
+    property <bool> interactive: root.clickable || root.closable;
+    forward-focus: keys;
+
+    if root.interactive: Rectangle {
+        accessible-role: button;
+        accessible-label: root.detail == "" ? root.text : root.text + ", " + root.detail;
+        accessible-action-default => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.interactive;
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
-        enabled: root.clickable;
-        mouse-cursor: root.clickable ? pointer : default;
+        enabled: root.interactive;
+        mouse-cursor: root.interactive ? pointer : default;
         clicked => { root.clicked(); }
     }
 
     row := HorizontalLayout {
         x: 8px;
         width: parent.width - 16px;
-        spacing: 5px;
+        spacing: Theme.space-4;
         alignment: start;
 
         if root.icon.width > 0: VerticalLayout {
             alignment: center;
             Icon {
-                width: 11px;
-                height: 11px;
+                width: Theme.icon-sm;
+                height: self.width;
                 source: root.icon;
-                colorize: root.tone;
+                colorize: root.foreground;
             }
         }
 
@@ -403,7 +391,7 @@ export component Chip inherits Rectangle {
                 width: 6px;
                 height: 6px;
                 border-radius: 3px;
-                background: root.tone;
+                background: root.foreground;
                 opacity: root.pulse ? 0.45 + 0.55 * abs(sin(Motion.tick / Theme.pulse-period * 180deg)) : 1;
             }
         }
@@ -415,9 +403,9 @@ export component Chip inherits Rectangle {
 
             Text {
                 text: root.text;
-                color: root.tone;
+                color: root.foreground;
                 font-size: Theme.font-sm;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 1;
@@ -437,9 +425,9 @@ export component Chip inherits Rectangle {
 
                 separator := Text {
                     text: "·";
-                    color: root.tone;
+                    color: root.foreground;
                     font-size: Theme.font-sm;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     vertical-alignment: center;
                     horizontal-alignment: center;
                 }
@@ -447,9 +435,9 @@ export component Chip inherits Rectangle {
 
             if root.detail != "": Text {
                 text: root.detail;
-                color: root.tone;
+                color: root.foreground;
                 font-size: Theme.font-sm;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 vertical-alignment: center;
                 overflow: elide;
                 preferred-width: detail-measure.preferred-width;
@@ -462,7 +450,7 @@ export component Chip inherits Rectangle {
                 width: 8px;
                 height: 8px;
                 source: @image-url("icons/xmark.svg");
-                colorize: root.tone;
+                colorize: root.foreground;
             }
         }
     }
@@ -472,14 +460,14 @@ export component Chip inherits Rectangle {
         visible: false;
         text: root.steady ? TextUtil.steady-digits(root.text) : root.text;
         font-size: Theme.font-sm;
-        font-weight: 600;
+        font-weight: Theme.weight-semibold;
     }
 
     plain-measure := Text {
         visible: false;
         text: root.text;
         font-size: Theme.font-sm;
-        font-weight: 600;
+        font-weight: Theme.weight-semibold;
     }
 
     // Room the text keeps for wider digits than it shows now
@@ -489,14 +477,14 @@ export component Chip inherits Rectangle {
         visible: false;
         text: root.steady ? TextUtil.steady-digits(root.detail) : root.detail;
         font-size: Theme.font-sm;
-        font-weight: 600;
+        font-weight: Theme.weight-semibold;
     }
 }
 
 // Form field: a small label above its input
 export component Field inherits VerticalLayout {
     in property <string> label;
-    // A field that must be filled in: its label is bold
+    // A required field uses the primary text color.
     in property <bool> required: false;
 
     spacing: 6px;
@@ -505,10 +493,193 @@ export component Field inherits VerticalLayout {
         text: root.label;
         color: root.required ? Theme.text-primary : Theme.text-secondary;
         font-size: Theme.font-md;
-        font-weight: root.required ? 700 : 500;
+        font-weight: Theme.weight-semibold;
     }
 
     @children
+}
+
+// Keep dismiss and primary actions together, with destructive actions separate.
+export component DialogFooter inherits HorizontalLayout {
+    in property <string> primary-label;
+    in property <bool> primary-enabled: true;
+    in property <string> cancel-label;
+    in property <string> destructive-label;
+    in property <bool> destructive-enabled: true;
+    in property <bool> destructive-armed: false;
+    in property <string> destructive-armed-label;
+    in property <bool> close-only: false;
+    in property <bool> full-width: false;
+    callback primary-clicked();
+    callback cancel-clicked();
+    callback destructive-clicked();
+    callback close-clicked();
+
+    spacing: Theme.space-8;
+    property <int> action-count: root.close-only ? 1 : (root.destructive-label != "" ? 1 : 0)
+        + (root.cancel-label != "" ? 1 : 0) + (root.primary-label != "" ? 1 : 0);
+    property <length> action-width: (root.width - max(0, root.action-count - 1) * root.spacing)
+        / max(1, root.action-count);
+
+    if !root.close-only && root.destructive-label != "": DangerButton {
+        label: root.destructive-label;
+        enabled: root.destructive-enabled;
+        armed: root.destructive-armed;
+        armed-label: root.destructive-armed-label;
+        clicked => { root.destructive-clicked(); }
+        width: root.full-width ? root.action-width : self.natural-width;
+        height: root.full-width ? Theme.control-touch : Theme.control-button;
+    }
+
+    if !root.full-width: Rectangle { horizontal-stretch: 1; }
+
+    if root.close-only || root.cancel-label != "": SecondaryButton {
+        label: root.close-only ? "Close" : root.cancel-label;
+        width: root.full-width ? root.action-width : self.natural-width;
+        height: root.full-width ? Theme.control-touch : Theme.control-button;
+        clicked => {
+            if root.close-only { root.close-clicked(); }
+            else { root.cancel-clicked(); }
+        }
+    }
+
+    if !root.close-only && root.primary-label != "": AccentButton {
+        label: root.primary-label;
+        enabled: root.primary-enabled;
+        width: root.full-width ? root.action-width : self.natural-width;
+        height: root.full-width ? Theme.control-touch : Theme.control-button;
+        clicked => { root.primary-clicked(); }
+    }
+}
+
+export component StatusPanel inherits VerticalLayout {
+    in property <image> icon;
+    in property <string> title;
+    in property <string> message;
+    in property <string> action-label;
+    in property <ChipVariant> variant: ChipVariant.neutral;
+    in property <bool> busy: false;
+    callback action();
+
+    padding: Theme.space-16;
+    spacing: Theme.space-8;
+    alignment: center;
+
+    property <duration> spinner-time;
+    Timer {
+        running: root.busy;
+        interval: Defaults.motion-step;
+        triggered => { root.spinner-time += self.interval; }
+    }
+
+    if root.busy || root.icon.width > 0: HorizontalLayout {
+        alignment: center;
+
+        Icon {
+            width: Theme.icon-lg;
+            height: Theme.icon-lg;
+            source: root.busy ? @image-url("icons/spinner.svg") : root.icon;
+            colorize: root.variant == ChipVariant.danger ? Theme.danger-text
+                : root.variant == ChipVariant.success ? Theme.success-text
+                : root.variant == ChipVariant.warning ? Theme.warning-text
+                : root.busy || root.variant == ChipVariant.accent ? Theme.accent-text
+                : Theme.text-secondary;
+            rotation: root.busy ? root.spinner-time / Theme.spin-period * 360deg : 0deg;
+        }
+    }
+
+    Text {
+        text: root.title;
+        color: Theme.text-primary;
+        font-size: Theme.font-lg;
+        font-weight: Theme.weight-semibold;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+
+    if root.message != "": Text {
+        text: root.message;
+        color: Theme.text-secondary;
+        font-size: Theme.font-base;
+        horizontal-alignment: center;
+        wrap: word-wrap;
+    }
+
+    if root.action-label != "": HorizontalLayout {
+        alignment: center;
+
+        SecondaryButton {
+            label: root.action-label;
+            clicked => { root.action(); }
+        }
+    }
+}
+
+// Window-space bounds of the card body, excluding the header and footer.
+export struct PopupBounds {
+    left: length,
+    top: length,
+    right: length,
+    bottom: length,
+    dialog-id: int,
+}
+
+struct InfoTipRequest {
+    id: int,
+    dialog-id: int,
+    text: string,
+    x: length,
+    y: length,
+    width: length,
+    height: length,
+    open-right: bool,
+    open-below: bool,
+}
+
+// Most screens have one modal. Bind popup-bounds explicitly for controls in a
+// nested modal, or when presenting a popup outside DialogShell.
+global DialogPopupBounds {
+    in-out property <int> next-id;
+    in-out property <InfoTipRequest> tip;
+    in-out property <PopupBounds> current: {
+        left: Theme.viewport-inset,
+        top: Theme.viewport-inset,
+        right: Defaults.window-min-width - Theme.viewport-inset,
+        bottom: Defaults.window-min-height - Theme.viewport-inset,
+    };
+}
+
+component InfoTipBubble inherits PopupCard {
+    in property <PopupBounds> bounds;
+    in property <InfoTipRequest> tip;
+    in property <length> origin-x;
+    in property <length> origin-y;
+
+    property <length> above: root.tip.y - root.height - Theme.space-6;
+    property <length> below: root.tip.y + root.tip.height + Theme.space-6;
+    property <length> target-y: (root.tip.open-below || root.above < root.bounds.top)
+        && (root.below + root.height <= root.bounds.bottom || root.above < root.bounds.top)
+        ? root.below : root.above;
+    visible: root.tip.y >= root.bounds.top && root.tip.y + root.tip.height <= root.bounds.bottom;
+    x: clamp(root.tip.x + (root.tip.open-right ? 0px : root.tip.width - root.width),
+        root.bounds.left, root.bounds.right - root.width) - root.origin-x;
+    y: clamp(root.target-y, root.bounds.top, root.bounds.bottom - root.height) - root.origin-y;
+    width: min(Defaults.info-tip-width, root.bounds.right - root.bounds.left);
+    height: min(tip-layout.preferred-height, root.bounds.bottom - root.bounds.top);
+
+    tip-layout := VerticalLayout {
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-12;
+        padding-top: Theme.space-8;
+        padding-bottom: Theme.space-8;
+
+        Text {
+            text: root.tip.text;
+            font-size: Theme.font-md;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+    }
 }
 
 // Modal dialog: dimmed backdrop and a rounded card with an accent glow,
@@ -523,7 +694,29 @@ export component DialogShell inherits Rectangle {
     // Fixed card height; 0 sizes the card to its content
     in property <length> card-height: 0px;
     in property <bool> close-on-backdrop: true;
-    in property <length> content-padding: 20px;
+    in property <length> content-padding: Theme.dialog-padding;
+    in property <string> primary-label;
+    in property <bool> primary-enabled: true;
+    in property <string> cancel-label;
+    in property <string> destructive-label;
+    in property <bool> destructive-enabled: true;
+    in property <bool> destructive-armed: false;
+    in property <string> destructive-armed-label;
+    in property <bool> close-footer: false;
+    in property <bool> full-width-actions: false;
+    callback primary-requested();
+    callback cancel-requested();
+    callback destructive-requested();
+    cancel-requested => { root.close-requested(); }
+
+    property <int> dialog-id;
+    out property <PopupBounds> popup-bounds: {
+        left: card.absolute-position.x + Theme.space-4,
+        right: card.absolute-position.x + card.width - Theme.space-4,
+        top: max(body.absolute-position.y, close.absolute-position.y + close.height + Theme.space-4),
+        bottom: body.absolute-position.y + body.height,
+        dialog-id: root.dialog-id,
+    };
     // Take keyboard focus on open so Esc works. Turn off only when a child
     // input focuses itself on open (Esc then reaches the shell from the
     // input): with nothing focused, Esc does nothing.
@@ -544,11 +737,16 @@ export component DialogShell inherits Rectangle {
     // Drives the fade and slide-in when the dialog appears
     property <bool> shown: false;
     init => {
+        self.dialog-id = DialogPopupBounds.next-id + 1;
+        DialogPopupBounds.next-id = self.dialog-id;
         self.shown = true;
+        DialogPopupBounds.current = root.popup-bounds;
         if self.auto-focus {
             keys.focus();
         }
     }
+
+    changed popup-bounds => { DialogPopupBounds.current = root.popup-bounds; }
 
     width: 100%;
     height: 100%;
@@ -576,11 +774,24 @@ export component DialogShell inherits Rectangle {
         // A backdrop click closes the dialog at once, rather than first
         // taking the focus from a text field
         focus-on-click: false;
-        capture-key-pressed(event) => { return root.capture-key(event); }
+        capture-key-pressed(event) => {
+            DialogPopupBounds.current = root.popup-bounds;
+            return root.capture-key(event);
+        }
         key-pressed(event) => {
             if event.text == Key.Escape {
                 root.close-requested();
                 return accept;
+            }
+            if body.content-height > body.height {
+                if event.text == Key.PageDown {
+                    body.content-y = max(body.height - body.content-height, body.content-y - body.height);
+                    return accept;
+                }
+                if event.text == Key.PageUp {
+                    body.content-y = min(0px, body.content-y + body.height);
+                    return accept;
+                }
             }
             if event.text == Key.Tab && !event.modifiers.shift
                 && (self.has-focus || close.has-focus) {
@@ -611,11 +822,11 @@ export component DialogShell inherits Rectangle {
             property <length> slide: root.shown ? 0px : 14px;
             animate slide { duration: Theme.normal; easing: ease-out; }
 
-            width: min(root.card-width, root.width - 24px);
-            height: min(root.height - 24px,
+            width: min(root.card-width, root.width - 2 * Theme.viewport-inset);
+            height: min(root.height - 2 * Theme.viewport-inset,
                 root.card-height > 0 ? root.card-height : layout.preferred-height);
             x: (root.width - self.width) / 2;
-            y: max(12px, (root.height - self.height) / 2) + self.slide;
+            y: max(Theme.viewport-inset, (root.height - self.height) / 2) + self.slide;
             background: Theme.card;
             border-radius: Theme.dialog-radius;
             border-width: 1px;
@@ -640,7 +851,7 @@ export component DialogShell inherits Rectangle {
 
             layout := VerticalLayout {
                 padding: root.content-padding;
-                spacing: 14px;
+                spacing: Theme.dialog-gap;
 
                 if root.title != "": HorizontalLayout {
                     spacing: 10px;
@@ -651,7 +862,7 @@ export component DialogShell inherits Rectangle {
                         IconButton {
                             icon: @image-url("icons/chevron-left.svg");
                             label: "Back";
-                            icon-size: 16px;
+                            icon-size: Theme.icon-md;
                             clicked => { root.back-requested(); }
                         }
                     }
@@ -675,7 +886,7 @@ export component DialogShell inherits Rectangle {
                             text: root.title;
                             color: Theme.text-primary;
                             font-size: Theme.font-title;
-                            font-weight: 600;
+                            font-weight: Theme.weight-semibold;
                             overflow: elide;
                         }
 
@@ -688,7 +899,56 @@ export component DialogShell inherits Rectangle {
                     }
                 }
 
-                @children
+                Rectangle {
+                    vertical-stretch: 1;
+                    preferred-height: body-content.preferred-height;
+
+                    body := Flickable {
+                        content-width: self.width;
+                        content-height: body-content.height;
+                        width: parent.width;
+
+                        body-content := VerticalLayout {
+                            width: body.width;
+                            height: max(body.height, self.preferred-height);
+                            spacing: Theme.dialog-gap;
+                            @children
+                        }
+                    }
+
+                    ScrollBar {
+                        x: parent.width + Theme.space-4;
+                        viewport-height: body.height;
+                        content-height: body.content-height;
+                        content-y <=> body.content-y;
+                    }
+                }
+
+                if root.close-footer || root.primary-label != "" || root.cancel-label != ""
+                    || root.destructive-label != "": DialogFooter {
+                    close-only: root.close-footer;
+                    primary-label: root.primary-label;
+                    primary-enabled: root.primary-enabled;
+                    cancel-label: root.cancel-label;
+                    destructive-label: root.destructive-label;
+                    destructive-armed: root.destructive-armed;
+                    destructive-armed-label: root.destructive-armed-label;
+                    destructive-enabled: root.destructive-enabled;
+                    full-width: root.full-width-actions;
+                    primary-clicked => { root.primary-requested(); }
+                    cancel-clicked => { root.cancel-requested(); }
+                    destructive-clicked => { root.destructive-requested(); }
+                    close-clicked => { root.close-requested(); }
+                }
+            }
+
+            // Draw help above every row in the card. An inline bubble nested
+            // in a row can be covered by the following rows.
+            if DialogPopupBounds.tip.dialog-id == root.dialog-id && DialogPopupBounds.tip.id > 0: InfoTipBubble {
+                origin-x: card.absolute-position.x;
+                origin-y: card.absolute-position.y;
+                bounds: root.popup-bounds;
+                tip: DialogPopupBounds.tip;
             }
 
             // Close button, top right
@@ -697,7 +957,7 @@ export component DialogShell inherits Rectangle {
                 y: 12px;
                 icon: @image-url("icons/xmark.svg");
                 label: "Close";
-                icon-size: 12px;
+                icon-size: Theme.icon-sm;
                 clicked => { root.close-requested(); }
             }
         }
@@ -724,8 +984,6 @@ export component Toggle inherits Rectangle {
 
     width: row.preferred-width;
     height: 28px;
-    opacity: root.enabled ? 1 : 0.45;
-    animate opacity { duration: Theme.fast; }
     forward-focus: focus;
 
     accessible-role: switch;
@@ -763,7 +1021,10 @@ export component Toggle inherits Rectangle {
                 width: 36px;
                 height: 20px;
                 border-radius: 10px;
-                background: root.on ? Theme.accent : Theme.dark-mode ? Theme.elevated : Theme.disabled-bg;
+                background: !root.enabled ? Theme.disabled-bg
+                    : root.on ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
+                    : touch.pressed ? Theme.pressed-bg : touch.has-hover ? Theme.hover-bg
+                    : Theme.dark-mode ? Theme.elevated : Theme.disabled-bg;
                 border-width: root.dark-off ? 1.5px : 0;
                 border-color: Theme.text-tertiary;
                 animate background { duration: Theme.normal; }
@@ -781,17 +1042,20 @@ export component Toggle inherits Rectangle {
                     width: self.size;
                     height: self.size;
                     border-radius: self.size / 2;
-                    background: !Theme.dark-mode ? #ffffff : root.on ? Theme.panel : Theme.text-tertiary;
+                    background: !root.enabled ? Theme.disabled-text
+                        : !root.on ? (Theme.dark-mode ? Theme.text-tertiary : #ffffff)
+                        : touch.pressed ? Theme.on-accent-pressed
+                        : touch.has-hover ? Theme.on-accent-hover : Theme.on-accent;
                     animate background { duration: Theme.normal; }
                     drop-shadow-blur: Theme.dark-mode ? 0 : 3px;
-                    drop-shadow-color: #00000040;
+                    drop-shadow-color: Theme.shadow-soft;
                 }
             }
         }
 
         if root.label != "" && root.show-label: Text {
             text: root.label;
-            color: Theme.text-primary;
+            color: root.enabled ? Theme.text-primary : Theme.disabled-text;
             font-size: Theme.font-base;
             vertical-alignment: center;
             // Read as the switch's name
@@ -812,10 +1076,46 @@ export component InfoTip inherits Rectangle {
     in property <bool> open-right: false;
     in property <bool> open-below: false;
 
+    in property <PopupBounds> popup-bounds: DialogPopupBounds.current;
     in-out property <bool> open: false;
     // The press came from a touch screen, which leaves hover as the finger
     // lifts: a tap keeps the bubble open until the next tap
     property <bool> touch-press: false;
+    property <int> tip-id;
+    property <InfoTipRequest> request: {
+        id: root.tip-id,
+        dialog-id: root.popup-bounds.dialog-id,
+        text: root.text,
+        x: root.absolute-position.x,
+        y: root.absolute-position.y,
+        width: root.width,
+        height: root.height,
+        open-right: root.open-right,
+        open-below: root.open-below,
+    };
+
+    init => {
+        self.tip-id = DialogPopupBounds.next-id + 1;
+        DialogPopupBounds.next-id = self.tip-id;
+        self.update-tip();
+    }
+
+    changed open => { root.update-tip(); }
+
+    changed request => {
+        if DialogPopupBounds.tip.id == root.tip-id && root.tip-id > 0
+            && (DialogPopupBounds.tip.dialog-id == root.request.dialog-id || DialogPopupBounds.tip.dialog-id == 0) {
+            root.update-tip();
+        }
+    }
+
+    function update-tip() {
+        if root.open && root.tip-id > 0 {
+            DialogPopupBounds.tip = root.request;
+        } else if DialogPopupBounds.tip.id == root.tip-id {
+            DialogPopupBounds.tip = { id: 0 };
+        }
+    }
 
     width: 18px;
     height: 18px;
@@ -872,29 +1172,12 @@ export component InfoTip inherits Rectangle {
         }
     }
 
-    // Same style as the other hover bubbles
-    PopupCard {
-        visible: self.opacity > 0;
-        opacity: root.open ? 1 : 0;
-        animate opacity { duration: Theme.fast; }
-        width: Defaults.info-tip-width;
-        height: tip-layout.preferred-height;
-        x: root.open-right ? 0px : root.width - self.width;
-        y: root.open-below ? root.height + 6px : -self.height - 6px;
-
-        tip-layout := VerticalLayout {
-            padding-left: 12px;
-            padding-right: 12px;
-            padding-top: 8px;
-            padding-bottom: 8px;
-
-            Text {
-                text: root.text;
-                font-size: Theme.font-md;
-                color: Theme.text-primary;
-                wrap: word-wrap;
-            }
-        }
+    // Outside a DialogShell there is no card layer to draw the bubble.
+    if root.open && root.popup-bounds.dialog-id == 0: InfoTipBubble {
+        origin-x: root.absolute-position.x;
+        origin-y: root.absolute-position.y;
+        bounds: root.popup-bounds;
+        tip: root.request;
     }
 }
 
@@ -959,7 +1242,7 @@ export component AgentsChip inherits Rectangle {
             text: root.count;
             color: Theme.accent-text;
             font-size: Theme.font-sm;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             vertical-alignment: center;
         }
     }
@@ -998,7 +1281,7 @@ export component AgentsBubble inherits PopupCard {
             text: root.agents.length == 1 ? "AGENT USING THE PLAYER" : "AGENTS USING THE PLAYER";
             color: Theme.text-secondary;
             font-size: Theme.font-xs;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             letter-spacing: 0.5px;
         }
 
@@ -1020,7 +1303,7 @@ export component AgentsBubble inherits PopupCard {
                     text: agent.name;
                     color: Theme.text-primary;
                     font-size: Theme.font-md;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     vertical-alignment: center;
                 }
                 Text {
@@ -1062,7 +1345,7 @@ export component ListenersBubble inherits PopupCard {
             text: root.phones.length == 1 ? "PHONE LISTENING" : "PHONES LISTENING";
             color: Theme.text-secondary;
             font-size: Theme.font-xs;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             letter-spacing: 0.5px;
         }
 
@@ -1082,151 +1365,309 @@ export component ListenersBubble inherits PopupCard {
                 text: phone;
                 color: Theme.text-primary;
                 font-size: Theme.font-md;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 vertical-alignment: center;
             }
         }
     }
 }
 
-// One choice in a dropdown's list, with the menus' tick when picked
-component DropdownItem inherits Rectangle {
+// One option in a menu, picker or dropdown. Rows managed by a containing
+// keyboard scope can supply highlighted and set tab-stop to false.
+export component ChoiceRow inherits Rectangle {
     in property <string> label;
-    in property <bool> selected;
+    in property <image> icon;
+    in property <string> trailing-text;
+    in property <bool> selected: false;
+    in property <bool> checkable: true;
+    in property <bool> enabled: true;
+    in property <bool> highlighted: false;
+    in property <bool> tab-stop: true;
+    in property <bool> danger-armed: false;
     callback clicked();
 
-    height: Defaults.dropdown-row-height;
+    height: Theme.row-menu;
     border-radius: Theme.radius-sm;
-    background: touch.has-hover ? Theme.menu-hover : transparent;
+    background: !root.enabled ? Theme.disabled-bg
+        : root.danger-armed ? (touch.pressed ? Theme.danger-pressed : Theme.danger-armed)
+        : touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg
+        : root.selected && root.checkable ? Theme.selected-bg : transparent;
     animate background { duration: Theme.fast; }
+    forward-focus: keys;
 
-    touch := TouchArea {
-        clicked => { root.clicked(); }
+    accessible-role: button;
+    accessible-label: root.label;
+    accessible-enabled: root.enabled;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.selected;
+    accessible-action-default => {
+        if root.enabled { root.clicked(); }
     }
 
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 12px;
-        spacing: 10px;
-
-        Text {
-            horizontal-stretch: 1;
-            text: root.label;
-            color: touch.has-hover ? Theme.text-primary : Theme.menu-text;
-            font-size: Theme.font-md;
-            vertical-alignment: center;
-        }
-        Rectangle {
-            width: 12px;
-            if root.selected: Icon {
-                width: 12px;
-                height: 12px;
-                y: (parent.height - self.height) / 2;
-                source: @image-url("icons/tick.svg");
-                colorize: Theme.accent;
-            }
-        }
-    }
-}
-
-// A dropdown like the EQ presets: a closed field showing the pick, and
-// the list in a popup (Agents dialog, recording bitrate)
-export component Dropdown inherits Rectangle {
-    in property <bool> show-popup;
-    changed show-popup => {
-        if root.show-popup { popup.show(); }
-    }
-
-    in property <[string]> items;
-    in-out property <int> selected;
-    in property <bool> enabled: true;
-    callback changed(int);
-
-    // As tall as CopyLine and the buttons, so a row lines up
-    height: 34px;
-    horizontal-stretch: 1;
-    border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: Theme.hairline;
-    background: root.enabled && touch.has-hover ? Theme.menu-hover : Theme.elevated;
-    animate background { duration: Theme.fast; }
+    property <color> foreground: !root.enabled ? Theme.disabled-text
+        : root.danger-armed ? Theme.danger-text
+        : touch.has-hover || root.highlighted ? Theme.text-primary : Theme.menu-text;
 
     touch := TouchArea {
         enabled: root.enabled;
         mouse-cursor: root.enabled ? pointer : default;
-        clicked => { popup.show(); }
+        clicked => { root.clicked(); }
     }
 
     HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
+        padding-left: Theme.space-8;
+        padding-right: Theme.space-8;
+        spacing: Theme.space-8;
+
+        if root.icon.width > 0: Rectangle {
+            width: Theme.icon-md;
+            Icon {
+                width: Theme.icon-md;
+                height: self.width;
+                source: root.icon;
+                colorize: root.foreground;
+            }
+        }
 
         Text {
-            text: root.items[root.selected];
+            horizontal-stretch: 1;
+            text: root.label;
+            color: root.foreground;
+            font-size: Theme.font-md;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+
+        if root.trailing-text != "": Text {
+            text: root.trailing-text;
+            color: root.enabled ? Theme.text-tertiary : Theme.disabled-text;
+            font-size: Theme.font-sm;
+            vertical-alignment: center;
+        }
+
+        if root.checkable: Rectangle {
+            width: Theme.icon-sm;
+            if root.selected: Icon {
+                width: Theme.icon-sm;
+                height: self.width;
+                source: @image-url("icons/tick.svg");
+                colorize: root.enabled ? Theme.selection-mark : Theme.disabled-text;
+            }
+        }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.enabled && root.tab-stop;
+        activated => { root.clicked(); }
+    }
+
+    if root.enabled && (keys.has-focus || root.highlighted): FocusRing {
+        offset: -1px;
+        radius: root.border-radius;
+    }
+}
+
+// A field with a window-space popup that flips above the field when the
+// card has more room there. The popup owns keyboard navigation while open.
+export component Dropdown inherits Rectangle {
+    in property <bool> show-popup;
+    in property <[string]> items;
+    in-out property <int> selected;
+    in property <bool> enabled: true;
+    in property <string> label;
+    in property <PopupBounds> popup-bounds: DialogPopupBounds.current;
+    in property <length> popup-min-width: Defaults.dropdown-min-popup-width;
+    callback changed(int);
+
+    property <bool> can-open: root.enabled && root.items.length > 0;
+    property <bool> open: popup.is-open;
+    property <int> active;
+    property <bool> keyboard-open;
+
+    changed show-popup => {
+        if root.show-popup { root.open-list(false); }
+        else if root.open { popup.close(); }
+    }
+
+    changed can-open => {
+        if !root.can-open && root.open { popup.close(); }
+    }
+
+    function open-list(keyboard: bool) {
+        if root.can-open && !root.open {
+            root.active = clamp(root.selected, 0, root.items.length - 1);
+            root.keyboard-open = keyboard;
+            field-keys.focus();
+            popup.show();
+        }
+    }
+
+    function pick(index: int) {
+        if index >= 0 && index < root.items.length && root.selected != index {
+            root.selected = index;
+            root.changed(index);
+        }
+    }
+
+    height: Theme.control-button;
+    horizontal-stretch: 1;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.field-border;
+    background: !root.enabled ? Theme.disabled-bg
+        : touch.pressed ? Theme.pressed-bg
+        : touch.has-hover || root.open ? Theme.hover-bg : Theme.elevated;
+    animate background { duration: Theme.fast; }
+    forward-focus: field-keys;
+
+    accessible-role: combobox;
+    accessible-label: root.label;
+    accessible-value: root.selected >= 0 && root.selected < root.items.length ? root.items[root.selected] : "";
+    accessible-enabled: root.can-open;
+    accessible-action-default => { root.open-list(true); }
+
+    touch := TouchArea {
+        enabled: root.can-open;
+        mouse-cursor: root.can-open ? pointer : default;
+        clicked => { root.open-list(false); }
+    }
+
+    field-keys := ButtonKeys {
+        enabled: root.can-open;
+        activated => { root.open-list(true); }
+        capture-key-pressed(event) => {
+            if event.text == Key.UpArrow || event.text == Key.DownArrow {
+                root.open-list(true);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if field-keys.has-focus: FocusRing {
+        offset: 0px;
+        radius: root.border-radius;
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-12;
+        spacing: Theme.space-6;
+
+        Text {
+            text: root.selected >= 0 && root.selected < root.items.length ? root.items[root.selected] : "";
             color: root.enabled ? Theme.text-primary : Theme.disabled-text;
             font-size: Theme.font-md;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
+            accessible-role: none;
         }
-        // Chevron, as on the EQ preset list
+
         Rectangle {
-            width: 14px;
+            width: Theme.icon-compact;
             Text {
                 text: "\u{2304}";
                 color: root.enabled ? Theme.text-secondary : Theme.disabled-text;
                 font-size: Theme.font-lg;
-                y: (parent.height - self.preferred-height) / 2 - 2px;
+                y: (parent.height - self.preferred-height) / 2 - Theme.space-2;
+                accessible-role: none;
             }
         }
     }
 
+    property <length> list-height: root.items.length * Theme.row-menu + 2 * Theme.space-4;
+    property <length> above: root.absolute-position.y - root.popup-bounds.top - Theme.space-2;
+    property <length> below: root.popup-bounds.bottom - root.absolute-position.y - root.height - Theme.space-2;
+    property <bool> flip: root.below < min(root.list-height, Defaults.dropdown-max-height)
+        && root.above > root.below;
+    property <length> popup-height: min(root.list-height, Defaults.dropdown-max-height,
+        max(Theme.row-menu + 2 * Theme.space-4, root.flip ? root.above : root.below));
+
+    property <length> popup-width: min(max(root.width, root.popup-min-width),
+        root.popup-bounds.right - root.popup-bounds.left);
+
     popup := PopupWindow {
-        x: 0;
-        y: root.height + 2px;
-        width: root.width;
-        // Long lists (the Scheduler's stations) stop at a few rows and
-        // scroll, so the popup always fits the window
-        height: min(list.preferred-height, Defaults.dropdown-max-height);
+        x: clamp(root.absolute-position.x, root.popup-bounds.left,
+            root.popup-bounds.right - root.popup-width) - root.absolute-position.x;
+        y: root.flip ? -root.popup-height - Theme.space-2 : root.height + Theme.space-2;
+        width: root.popup-width;
+        height: root.popup-height;
+        close-policy: close-on-click-outside;
 
         PopupCard {
-            flick := Flickable {
-                content-height: list.preferred-height;
-                width: parent.width - (scroll.visible ? 12px : 0px);
-                x: 0;
-                // Opens with the pick in view
-                init => {
-                    self.content-y = -clamp(
-                        4px + root.selected * Defaults.dropdown-row-height
-                            - (self.height - Defaults.dropdown-row-height) / 2,
-                        0px, max(0px, self.content-height - self.height));
+            keys := FocusScope {
+                focus-on-tab-navigation: false;
+                focus-on-click: false;
+                init => { self.focus(); }
+
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        popup.close();
+                        return accept;
+                    }
+                    if event.text == Key.Return || event.text == Key.Space {
+                        if !event.repeat {
+                            root.pick(root.active);
+                            popup.close();
+                        }
+                        return accept;
+                    }
+                    if event.text == Key.UpArrow || event.text == Key.DownArrow
+                        || event.text == Key.Home || event.text == Key.End {
+                        root.keyboard-open = true;
+                        root.active = event.text == Key.Home ? 0
+                            : event.text == Key.End ? root.items.length - 1
+                            : clamp(root.active + (event.text == Key.UpArrow ? -1 : 1), 0, root.items.length - 1);
+                        flick.reveal(root.active, false);
+                        return accept;
+                    }
+                    return reject;
                 }
 
-                list := VerticalLayout {
-                    padding: 4px;
-                    for label[index] in root.items: DropdownItem {
-                        label: label;
-                        selected: index == root.selected;
-                        // Picks before closing: the list's rows (and their
-                        // index) go away with the popup
-                        clicked => {
-                            if root.selected != index {
-                                root.selected = index;
-                                root.changed(index);
+                flick := Flickable {
+                    content-width: self.width;
+                    content-height: root.list-height;
+                    width: parent.width - (scroll.visible ? Theme.space-12 : 0px);
+                    x: 0;
+
+                    function reveal(index: int, center: bool) {
+                        let top = Theme.space-4 + index * Theme.row-menu;
+                        let offset = -self.content-y;
+                        self.content-y = -clamp(center ? top - (self.height - Theme.row-menu) / 2
+                            : clamp(offset, top + Theme.row-menu - self.height, top),
+                            0px, max(0px, self.content-height - self.height));
+                    }
+
+                    init => { self.reveal(root.active, true); }
+
+                    list := VerticalLayout {
+                        width: flick.width;
+                        padding: Theme.space-4;
+
+                        for option[index] in root.items: ChoiceRow {
+                            label: option;
+                            selected: index == root.selected;
+                            highlighted: root.keyboard-open && index == root.active;
+                            tab-stop: false;
+                            clicked => {
+                                root.pick(index);
+                                popup.close();
                             }
-                            popup.close();
                         }
                     }
                 }
-            }
 
-            scroll := ScrollBar {
-                x: parent.width - self.width - 4px;
-                y: 4px;
-                height: parent.height - 8px;
-                viewport-height: flick.height;
-                content-height: flick.content-height;
-                content-y <=> flick.content-y;
+                scroll := ScrollBar {
+                    x: parent.width - self.width - Theme.space-4;
+                    y: Theme.space-4;
+                    height: parent.height - 2 * Theme.space-4;
+                    viewport-height: flick.height;
+                    content-height: flick.content-height;
+                    content-y <=> flick.content-y;
+                }
             }
         }
     }
@@ -1248,11 +1689,14 @@ export component PickerOption inherits Rectangle {
     min-width: root.option-width;
     height: root.compact ? 22px : 30px;
     border-radius: Theme.radius-sm;
-    background: root.selected && root.enabled ? Theme.accent
-        : root.selected ? Theme.disabled-bg
-        : touch.has-hover ? Theme.menu-hover
-        : transparent;
-    animate background { duration: Theme.fast; }
+    background: !root.enabled ? Theme.disabled-bg
+        : root.selected ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg : transparent;
+    property <color> foreground: !root.enabled ? Theme.disabled-text
+        : !root.selected ? Theme.text-primary
+        : touch.pressed ? Theme.on-accent-pressed
+        : touch.has-hover ? Theme.on-accent-hover : Theme.on-accent;
     forward-focus: keys;
 
     accessible-role: radio-button;
@@ -1278,18 +1722,15 @@ export component PickerOption inherits Rectangle {
                 width: 11px;
                 height: 11px;
                 source: root.icon;
-                colorize: !root.enabled ? Theme.disabled-text
-                    : root.red-icon ? Theme.danger
-                    : root.selected ? Theme.on-accent : Theme.text-primary;
+                colorize: root.enabled && !root.selected && root.red-icon ? Theme.danger-text : root.foreground;
             }
         }
 
         Text {
             text: root.label;
-            color: !root.enabled ? Theme.disabled-text
-                : root.selected ? Theme.on-accent : Theme.text-primary;
+            color: root.foreground;
             font-size: root.compact ? Theme.font-md : Theme.font-base;
-            font-weight: root.selected ? 600 : 400;
+            font-weight: root.selected ? Theme.weight-semibold : Theme.weight-regular;
             horizontal-alignment: center;
             vertical-alignment: center;
             accessible-role: none;

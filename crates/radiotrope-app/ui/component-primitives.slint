@@ -1,0 +1,68 @@
+import { Theme } from "defaults.slint";
+
+// Colorized icon. Draws the image 1px larger on every side and clips that
+// edge off: the femtovg renderer builds colorized textures without clearing
+// them, so their outermost pixels can hold leftover garbage that shows as a
+// thin bar beside the icon. So a drawing that reaches the edge of its SVG
+// loses that 1px: keep icons at least 1px clear of the edge (spinner.svg).
+export component Icon inherits Rectangle {
+    in property <image> source;
+    in property <brush> colorize;
+    in property <angle> rotation: 0deg;
+
+    clip: true;
+
+    Image {
+        x: -1px;
+        y: -1px;
+        width: parent.width + 2px;
+        height: parent.height + 2px;
+        source: root.source;
+        colorize: root.colorize;
+        transform-rotation: root.rotation;
+        // Decoration: the control around it carries the name
+        accessible-role: none;
+    }
+}
+
+// Ring around a control that has keyboard focus. Put it in the control as
+// `if focus.has-focus: FocusRing { radius: root.border-radius; }`; it takes
+// the control's size and draws just outside its edge (a negative offset
+// draws inside, for controls at an edge that clips).
+export component FocusRing inherits Rectangle {
+    in property <length> radius;
+    in property <length> offset: Theme.focus-ring-offset;
+
+    Rectangle {
+        x: -root.offset;
+        y: -root.offset;
+        width: root.width + 2 * root.offset;
+        height: root.height + 2 * root.offset;
+        border-radius: max(0px, root.radius + root.offset);
+        border-width: Theme.focus-ring-width;
+        border-color: Theme.focus-ring;
+    }
+}
+
+// Keyboard side of a button: takes focus by Tab (a click doesn't move the
+// focus) and presses the button on Space or Enter
+export component ButtonKeys inherits FocusScope {
+    callback activated();
+
+    focus-on-click: false;
+    focus-gained(reason) => {
+        if reason == FocusReason.tab-navigation {
+            self.ensure-visible(ScrollBehavior.instant);
+        }
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Space || event.text == Key.Return)
+            && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+            if !event.repeat {
+                root.activated();
+            }
+            return accept;
+        }
+        return reject;
+    }
+}
