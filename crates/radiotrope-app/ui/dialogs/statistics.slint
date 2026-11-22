@@ -70,26 +70,43 @@ component StatGroup inherits Rectangle {
     }
 }
 
+// How the stream is doing, for the tone of the STREAM tile
+export enum StreamHealth {
+    // Nothing plays
+    stopped,
+    connecting,
+    playing,
+    // The station stopped sending for a moment
+    stalled,
+    failed,
+}
+
+// The figures of the Statistics dialog, set from Rust (stats_ui.rs). The
+// header's play time reads `playtime` too.
+export global StatsData {
+    in property <StreamHealth> health: StreamHealth.stopped;
+    // The health in words: "Playing", "Failed · no audio"
+    in property <string> health-text: "—";
+    in property <string> playtime: "—";
+    in property <string> codec: "—";
+    in property <string> bitrate: "—";
+    in property <string> sample-rate: "—";
+    in property <string> channels: "—";
+    in property <string> received: "—";
+    in property <string> segments: "—";
+    in property <string> throughput: "—";
+    in property <string> buffer-level: "—";
+    in property <string> buffer-capacity: "—";
+    in property <string> frames-played: "—";
+    in property <string> decode-errors: "—";
+    in property <string> underruns: "—";
+    in property <string> leveler: "—";
+    in property <string> hum: "—";
+    in property <string> hiss: "—";
+}
+
 export component StatisticsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
-
-    in property <string> stat-health: "—";
-    in property <string> stat-playtime: "—";
-    in property <string> stat-codec: "—";
-    in property <string> stat-bitrate: "—";
-    in property <string> stat-sample-rate: "—";
-    in property <string> stat-channels: "—";
-    in property <string> stat-received: "—";
-    in property <string> stat-segments: "—";
-    in property <string> stat-throughput: "—";
-    in property <string> stat-buffer-level: "—";
-    in property <string> stat-buffer-capacity: "—";
-    in property <string> stat-frames-played: "—";
-    in property <string> stat-decode-errors: "—";
-    in property <string> stat-underruns: "—";
-    in property <string> stat-leveler: "—";
-    in property <string> stat-hum: "—";
-    in property <string> stat-hiss: "—";
 
     if show-dialog: DialogShell {
         title: "Statistics";
@@ -102,18 +119,15 @@ export component StatisticsDialog inherits Rectangle {
 
             StatTile {
                 label: "STREAM";
-                value: root.stat-health;
-                // The words come from format_health in main.rs; anything
-                // else is a failure ("Failed · no audio")
-                tone: root.stat-health == "Playing" ? Theme.success
-                    : root.stat-health == "—" || root.stat-health == "Stopped"
-                        ? Theme.text-primary
-                    : root.stat-health == "Connecting…" || root.stat-health == "Stalled"
-                        ? Theme.accent-text : Theme.danger;
+                value: StatsData.health-text;
+                tone: StatsData.health == StreamHealth.playing ? Theme.success
+                    : StatsData.health == StreamHealth.stopped ? Theme.text-primary
+                    : StatsData.health == StreamHealth.failed ? Theme.danger
+                    : Theme.accent-text;
             }
-            StatTile { label: "PLAYTIME"; value: root.stat-playtime; }
-            StatTile { label: "THROUGHPUT"; value: root.stat-throughput; }
-            StatTile { label: "BUFFER"; value: root.stat-buffer-level; }
+            StatTile { label: "PLAYING FOR"; value: StatsData.playtime; }
+            StatTile { label: "DATA RATE"; value: StatsData.throughput; }
+            StatTile { label: "BUFFER"; value: StatsData.buffer-level; }
         }
 
         // Two equal columns lined up with the tiles above; rows share a height
@@ -123,35 +137,35 @@ export component StatisticsDialog inherits Rectangle {
             Row {
                 StatGroup {
                     title: "AUDIO";
-                    InfoRow { label: "Codec"; value: root.stat-codec; }
-                    InfoRow { label: "Bitrate"; value: root.stat-bitrate; }
-                    InfoRow { label: "Sample rate"; value: root.stat-sample-rate; }
-                    InfoRow { label: "Channels"; value: root.stat-channels; }
+                    InfoRow { label: "Codec"; value: StatsData.codec; }
+                    InfoRow { label: "Bitrate"; value: StatsData.bitrate; }
+                    InfoRow { label: "Sample rate"; value: StatsData.sample-rate; }
+                    InfoRow { label: "Channels"; value: StatsData.channels; }
                 }
 
                 // What the filters do to the station playing
                 StatGroup {
                     title: "SOUND";
-                    InfoRow { label: "Volume leveler"; value: root.stat-leveler; }
-                    InfoRow { label: "Hum filter"; value: root.stat-hum; }
-                    InfoRow { label: "Hiss reducer"; value: root.stat-hiss; }
+                    InfoRow { label: "Volume leveler"; value: StatsData.leveler; }
+                    InfoRow { label: "Hum filter"; value: StatsData.hum; }
+                    InfoRow { label: "Hiss reducer"; value: StatsData.hiss; }
                 }
             }
 
             Row {
                 StatGroup {
                     title: "NETWORK";
-                    InfoRow { label: "Received"; value: root.stat-received; }
-                    InfoRow { label: "Segments"; value: root.stat-segments; }
+                    InfoRow { label: "Received"; value: StatsData.received; }
+                    InfoRow { label: "Segments"; value: StatsData.segments; }
                     // The live level is on the BUFFER tile
-                    InfoRow { label: "Buffer size"; value: root.stat-buffer-capacity; }
+                    InfoRow { label: "Buffer size"; value: StatsData.buffer-capacity; }
                 }
 
                 StatGroup {
                     title: "DECODE";
-                    InfoRow { label: "Frames"; value: root.stat-frames-played; }
-                    InfoRow { label: "Errors"; value: root.stat-decode-errors; }
-                    InfoRow { label: "Underruns"; value: root.stat-underruns; }
+                    InfoRow { label: "Frames"; value: StatsData.frames-played; }
+                    InfoRow { label: "Errors"; value: StatsData.decode-errors; }
+                    InfoRow { label: "Underruns"; value: StatsData.underruns; }
                 }
             }
         }
