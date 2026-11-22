@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crossbeam_channel::{never, select, tick, Receiver, Sender};
+use crossbeam_channel::{at, never, select, tick, Receiver, Sender};
 
 use radiotrope::audio::{
     AudioAnalysis, AudioEngine, AudioEvent, EngineEvent, PlaybackState, RecordingFormat,
@@ -51,6 +51,9 @@ pub const OUTPUT_NOT_RESPONDING: &str =
 
 /// The status of a station that plays nothing
 const NO_AUDIO: &str = "The station sends no audio";
+
+/// The error of a station whose threads the system didn't start
+const CANT_START: &str = "Can't start the station";
 
 pub struct AppController {
     cmd_rx: Receiver<AppCommand>,
@@ -97,6 +100,12 @@ pub struct AppController {
     /// A recording kept open while its station, which failed, is started
     /// again
     resume: Option<resume::Resume>,
+    /// The station that was playing when its reader gave up (the network
+    /// was gone for too long), while it is started again and again
+    outage: Option<resume::Outage>,
+    /// The time the outage's retries go by, when a test sets it
+    #[cfg(test)]
+    fake_now: Option<std::time::Instant>,
     /// How loud the stations played were, for volume matching
     levels: Levels,
     /// The station whose loudness the engine is measuring
@@ -135,6 +144,9 @@ impl AppController {
             cover_source: None,
             engine_volume: None,
             resume: None,
+            outage: None,
+            #[cfg(test)]
+            fake_now: None,
             levels: Levels::default(),
             level_url: None,
         }
@@ -193,6 +205,8 @@ impl AppController {
         let mut fading = false;
         loop {
             let metadata = self.metadata_rx.clone().unwrap_or_else(never);
+            // Wakes when the station an outage stopped is due again
+            let outage_due = self.outage_due().map(at).unwrap_or_else(never);
             select! {
                 recv(commands) -> cmd => match cmd {
                     Ok(cmd) => {
@@ -215,7 +229,9 @@ impl AppController {
                 recv(if recording { &recording_tick } else { &no_tick }) -> _ => {}
                 recv(if scheduled { &schedule_tick } else { &no_tick }) -> _ => {}
                 recv(if fading { &fade_tick } else { &no_tick }) -> _ => {}
+                recv(outage_due) -> _ => {}
             }
+            self.retry_outage();
             if scheduled || self.schedule_armed() {
                 let now = chrono::Local::now();
                 self.run_schedule(now);
@@ -470,6 +486,8 @@ impl AppController {
 
     /// Stop the station, and the recording of it
     fn stop_playback(&mut self) {
+        // Nothing starts it again
+        self.outage = None;
         // Before the engine stops measuring it
         self.remember_level();
         self.stop_recording();
@@ -505,6 +523,8 @@ impl AppController {
         logo_url: Option<String>,
         country: Option<String>,
     ) -> u64 {
+        // A station picked takes over from one an outage stopped
+        self.outage = None;
         // Playing the station a recording waits for keeps the recording
         if self.resumes(url) {
             return self.resume_station_now();
@@ -570,37 +590,47 @@ impl AppController {
         let url: Arc<str> = Arc::from(url);
         let cmd_tx = self.cmd_tx.clone();
 
-        std::thread::Builder::new()
+        let spawned = std::thread::Builder::new()
             .name("stream-resolve".into())
             .spawn(move || {
                 // Run the actual resolve on a nested thread so we can enforce a timeout
                 let (tx, rx) = crossbeam_channel::bounded(1);
                 let url_inner = Arc::clone(&url);
                 let cancel_inner = cancel.clone();
-                std::thread::Builder::new()
+                let inner = std::thread::Builder::new()
                     .name("stream-resolve-inner".into())
                     .spawn(move || {
                         let result = StreamResolver::resolve_cancellable(&url_inner, &cancel_inner)
                             .map_err(|e| e.to_string());
                         let _ = tx.send(result);
-                    })
-                    .expect("Failed to spawn stream-resolve-inner thread");
+                    });
 
-                let result = match rx.recv_timeout(RESOLVE_TIMEOUT) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        // Stop the resolve, which would otherwise carry on
-                        cancel.cancel();
-                        Err(format!(
-                            "Stream resolution timed out after {}s for: {url}",
-                            RESOLVE_TIMEOUT.as_secs()
-                        ))
+                let result = match inner {
+                    Ok(_) => match rx.recv_timeout(RESOLVE_TIMEOUT) {
+                        Ok(r) => r,
+                        Err(_) => {
+                            // Stop the resolve, which would otherwise carry on
+                            cancel.cancel();
+                            Err(format!(
+                                "Stream resolution timed out after {}s for: {url}",
+                                RESOLVE_TIMEOUT.as_secs()
+                            ))
+                        }
+                    },
+                    // The system is out of threads: the station fails, the
+                    // player carries on
+                    Err(e) => {
+                        eprintln!("Can't start the stream-resolve-inner thread: {e}");
+                        Err(CANT_START.to_string())
                     }
                 };
 
                 let _ = cmd_tx.send(AppCommand::InternalStreamResolved { generation, result });
-            })
-            .expect("Failed to spawn stream-resolve thread");
+            });
+        if let Err(e) = spawned {
+            eprintln!("Can't start the stream-resolve thread: {e}");
+            self.handle_stream_resolved(generation, Err(CANT_START.to_string()));
+        }
         seq
     }
 
@@ -642,7 +672,12 @@ impl AppController {
                         StreamType::Hls => "HLS".to_string(),
                     };
                     state.bitrate = resolved.info.bitrate;
-                    state.status_text = status::CONNECTING.into();
+                    // Started again after an outage, it is still reconnecting
+                    state.status_text = if self.outage.is_some() {
+                        resume::RECONNECTING.into()
+                    } else {
+                        status::CONNECTING.into()
+                    };
                     state.is_error = false;
                     state.is_connecting = true;
                     state.station_url.clone().unwrap_or_default()
@@ -679,6 +714,8 @@ impl AppController {
                 }
                 // A recording waiting for the station tries again
                 self.resume_failed(&e);
+                // And so does a station an outage stopped
+                self.outage_try_failed();
             }
         }
     }
@@ -695,6 +732,8 @@ impl AppController {
         // The stream ended or failed: a recording waits for the station to
         // be started again, or keeps what was recorded
         self.recording_station_event(&event);
+        // The station's reader gave up: it is started again until it plays
+        self.outage_station_event(&event);
 
         // The output was gone so long that the station would play minutes
         // behind live: start it again, to catch up
@@ -711,7 +750,10 @@ impl AppController {
                 })
             };
             if let Some((url, name, logo_url, country)) = station {
-                self.start_stream(&url, name, logo_url, country);
+                self.start_stream(&url, name.clone(), logo_url.clone(), country.clone());
+                // With the network still away (a laptop just woken), the
+                // start fails: it is tried again like after an outage
+                self.expect_outage(url, name, logo_url, country);
             }
             return;
         }
@@ -759,10 +801,15 @@ impl AppController {
                     state.status_text = status::STOPPED.into();
                     state.is_error = false;
                 }
-                // A recording that waits for the station says so
-                if self.resume.is_some() {
+                // A recording that waits for the station says so, and a
+                // station that is started again after an outage
+                if self.resume.is_some() || self.outage.is_some() {
                     state.status_text = resume::RECONNECTING.into();
                     state.is_error = false;
+                }
+                // Not heard yet, and on its way: a phone shows it starting
+                if self.outage.is_some() {
+                    state.is_connecting = true;
                 }
             }
             AudioEvent::Paused => {
@@ -785,6 +832,13 @@ impl AppController {
                 state.is_error = true;
                 state.is_connecting = false;
                 self.stream_failed = true;
+                // The error is for agents and the log: the station is
+                // started again
+                if self.outage.is_some() {
+                    state.status_text = resume::RECONNECTING.into();
+                    state.is_error = false;
+                    state.is_connecting = true;
+                }
             }
             AudioEvent::Buffering(pct) => {
                 state.status_text = if pct < 100 {
@@ -842,6 +896,11 @@ impl AppController {
                 state.is_error = true;
                 state.is_connecting = false;
                 self.stream_failed = true;
+                if self.outage.is_some() {
+                    state.status_text = resume::RECONNECTING.into();
+                    state.is_error = false;
+                    state.is_connecting = true;
+                }
             }
             // Handled above
             AudioEvent::FellBehind => {}
@@ -1524,10 +1583,10 @@ mod tests {
     #[test]
     fn a_failed_stream_stops_with_its_error_showing() {
         let (mut controller, state) = controller_playing();
-        // What the engine sends when a station goes down for good
+        // What the engine sends when a station's audio can't be read
         controller.handle_engine_event(on(
             1,
-            AudioEvent::Error("Stream error: No audio for 2 min: HTTP 404 Not Found".into()),
+            AudioEvent::Error("Stream error: HTTP 404 Not Found".into()),
         ));
         controller.handle_engine_event(on(1, AudioEvent::Stopped));
 

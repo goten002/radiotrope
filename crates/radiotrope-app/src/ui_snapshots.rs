@@ -315,6 +315,12 @@ const SHOTS: &[Shot] = &[
         "Theme selector in the View menu, with the current theme selected.",
     ),
     Shot::new(
+        "menu-visualizer-style",
+        "view-group",
+        "style",
+        "Visualizer styles expanded in the View menu.",
+    ),
+    Shot::new(
         "menu-window-options",
         "view-group",
         "window",
@@ -338,6 +344,12 @@ const SHOTS: &[Shot] = &[
         "tools-group",
         "connections",
         "Connections options expanded in the Tools menu.",
+    ),
+    Shot::new(
+        "menu-tools-keys",
+        "menu",
+        "tools",
+        "Tools menu walked with the arrow keys: the focus ring on Equalizer.",
     ),
     Shot::new("menu-help", "menu", "help", "Help menu."),
     Shot::new(
@@ -984,6 +996,12 @@ fn after_open(ui: &App, shot: &Shot) {
         // Enter in the form's first field saves it, and the save fails
         ("edit-favorite", "error") => press(ui, Key::Return),
         _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
+        _ if shot.name == "menu-tools-keys" => {
+            for _ in 0..3 {
+                press(ui, Key::DownArrow);
+                slint::platform::update_timers_and_animations();
+            }
+        }
         // Down from the text field goes into the list, then moves in it
         ("search", "keyboard") | ("picker", "country-keys") => {
             for _ in 0..if shot.screen == "search" { 2 } else { 3 } {
@@ -1662,6 +1680,10 @@ fn set_picker_entries(ui: &App, kind: &str) {
 #[cfg(test)]
 #[path = "ui_snapshots_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "menu_keys_test.rs"]
+mod menu_keys_tests;
 
 #[cfg(test)]
 #[path = "key_lists_test.rs"]

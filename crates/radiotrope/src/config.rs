@@ -185,8 +185,15 @@ pub mod timeouts {
 
     /// How long a playing station may send no audio (while reconnecting, or
     /// with an HLS playlist that stops adding segments) before its reader
-    /// gives up and playback stops with the reason (seconds).
+    /// gives up and playback stops with the reason (seconds). A player may
+    /// then start the station again by [`OUTAGE_RETRY_DELAYS_SECS`].
     pub const RECONNECT_GIVE_UP_SECS: u64 = 120;
+
+    /// The waits before a station whose reader gave up is started again:
+    /// before the first start, the second, and every one after (seconds).
+    /// A router that restarts or a network away for minutes then leaves
+    /// the radio silent only until it is back.
+    pub const OUTAGE_RETRY_DELAYS_SECS: [u64; 3] = [30, 60, 120];
 
     /// How long resolving a station may take, from its address to the first
     /// audio: playlist fetches, the HLS playlists and the first segment, or
