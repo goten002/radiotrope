@@ -1513,7 +1513,6 @@ fn seed_statistics(ui: &App) {
     ui.set_underruns("0".into());
     ui.set_hum("50 Hz".into());
     ui.set_leveler("−2.4 dB".into());
-    ui.set_hiss("Light".into());
 }
 
 fn configure(ui: &App, shot: &Shot) {

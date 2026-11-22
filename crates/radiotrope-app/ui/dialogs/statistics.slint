@@ -102,7 +102,6 @@ export global StatsData {
     in property <string> underruns: "—";
     in property <string> leveler: "—";
     in property <string> hum: "—";
-    in property <string> hiss: "—";
 }
 
 export component StatisticsDialog inherits Rectangle {
@@ -148,7 +147,6 @@ export component StatisticsDialog inherits Rectangle {
                     title: "SOUND";
                     InfoRow { label: "Volume leveler"; value: StatsData.leveler; }
                     InfoRow { label: "Hum filter"; value: StatsData.hum; }
-                    InfoRow { label: "Hiss reducer"; value: StatsData.hiss; }
                 }
             }
 
