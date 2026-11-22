@@ -1,6 +1,5 @@
-import { Theme, Defaults } from "../defaults.slint";
+import { Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { DialogShell, Field } from "../components.slint";
 
 export component NetworkStreamDialog inherits Rectangle {
@@ -25,7 +24,8 @@ export component NetworkStreamDialog inherits Rectangle {
         root.country = "";
     }
 
-    // Cancel clears the fields
+    // Cancel, Esc, the close button and a click beside the dialog all
+    // discard what was typed, like Cancel in every other form
     function cancel() {
         root.reset();
         root.show-dialog = false;
@@ -41,12 +41,14 @@ export component NetworkStreamDialog inherits Rectangle {
 
     if show-dialog: DialogShell {
         title: "Open Network Stream";
-        subtitle: "Play any internet radio or HLS stream by its address";
+        subtitle: "Play any radio stream by its web address";
         card-width: Defaults.network-stream-width;
         auto-focus: false;
-        // Esc, the close button or a click beside the dialog keep what was
-        // typed, for when it is opened again
-        close-requested => { root.show-dialog = false; }
+        cancel-label: "Cancel";
+        primary-label: "Play";
+        primary-enabled: root.can-play;
+        primary-requested => { root.play(); }
+        close-requested => { root.cancel(); }
 
         // The address first: it is all a stream needs
         Field {
@@ -55,7 +57,6 @@ export component NetworkStreamDialog inherits Rectangle {
             StyledLineEdit {
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.url;
-                clearable: true;
                 accepted(text) => { root.play(); }
                 init => { self.focus-input(); }
             }
@@ -64,7 +65,7 @@ export component NetworkStreamDialog inherits Rectangle {
         Field {
             label: "Name";
             StyledLineEdit {
-                placeholder-text: "The stream's own name if left empty";
+                placeholder-text: "Optional · uses the stream's name";
                 text <=> root.name;
                 clearable: true;
                 accepted(text) => { root.play(); }
@@ -74,7 +75,7 @@ export component NetworkStreamDialog inherits Rectangle {
         Field {
             label: "Logo URL";
             StyledLineEdit {
-                placeholder-text: "https://example.com/logo.png";
+                placeholder-text: "Optional · https://example.com/logo.png";
                 text <=> root.logo-url;
                 clearable: true;
                 accepted(text) => { root.play(); }
@@ -84,26 +85,10 @@ export component NetworkStreamDialog inherits Rectangle {
         Field {
             label: "Country";
             StyledLineEdit {
-                placeholder-text: "United Kingdom, London";
+                placeholder-text: "Optional · United Kingdom";
                 text <=> root.country;
                 clearable: true;
                 accepted(text) => { root.play(); }
-            }
-        }
-
-        HorizontalLayout {
-            alignment: end;
-            spacing: 8px;
-
-            SecondaryButton {
-                label: "Cancel";
-                clicked => { root.cancel(); }
-            }
-
-            AccentButton {
-                label: "Play";
-                enabled: root.can-play;
-                clicked => { root.play(); }
             }
         }
     }

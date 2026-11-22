@@ -1,5 +1,5 @@
-import { Theme } from "../defaults.slint";
-import { DialogShell, Toggle, Picker, InfoTip } from "../components.slint";
+import { Theme, Defaults } from "../defaults.slint";
+import { DialogShell, Toggle, Picker, InfoTip, PopupBounds } from "../components.slint";
 
 // One filter: its name with an ⓘ that says what it does, and its switch on
 // the right. A filter with a control of its own (the leveler's levels) has
@@ -7,6 +7,7 @@ import { DialogShell, Toggle, Picker, InfoTip } from "../components.slint";
 component FilterRow inherits HorizontalLayout {
     in property <string> name;
     in property <string> info;
+    in property <PopupBounds> popup-bounds;
     // The first row's bubble opens below, so the dialog doesn't cut it off
     in property <bool> info-below: false;
     in property <bool> show-info;
@@ -15,22 +16,22 @@ component FilterRow inherits HorizontalLayout {
     in-out property <bool> checked;
     callback toggled(bool);
 
-    spacing: 16px;
-    padding-top: 12px;
-    padding-bottom: 12px;
+    spacing: Theme.space-16;
+    padding-top: Theme.space-12;
+    padding-bottom: Theme.space-12;
 
     // Over the controls beside and under it, so its bubble isn't hidden
     HorizontalLayout {
         z: 1;
         horizontal-stretch: 1;
-        spacing: 6px;
+        spacing: Theme.space-6;
         alignment: start;
 
         Text {
             text: root.name;
             color: Theme.text-primary;
             font-size: Theme.font-base;
-            font-weight: 600;
+            font-weight: Theme.weight-semibold;
             vertical-alignment: center;
         }
         VerticalLayout {
@@ -38,6 +39,7 @@ component FilterRow inherits HorizontalLayout {
             InfoTip {
                 text: root.info;
                 open: root.show-info;
+                popup-bounds: root.popup-bounds;
                 open-right: true;
                 open-below: root.info-below;
             }
@@ -62,8 +64,8 @@ component Line inherits Rectangle {
 }
 
 // The filters, each with its own switch; the Volume Leveler has its levels
-// and Off, the Hiss Reducer its strengths and Off. What the leveler does to the station playing shows after its
-// channels in the header.
+// and Off, the Hiss Reducer its strengths and Off. What the leveler does to
+// the station playing shows after its channels in the header.
 export component FiltersDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <bool> show-leveler-info;
@@ -92,17 +94,19 @@ export component FiltersDialog inherits Rectangle {
     changed leveler-on => { root.show-level(); }
     changed level-target => { root.show-level(); }
 
-    if show-dialog: DialogShell {
+    if show-dialog: shell := DialogShell {
         title: "Filters";
-        card-width: 440px;
+        subtitle: "Cleans up the sound as it plays";
+        card-width: Defaults.dialog-width;
         close-requested => { root.show-dialog = false; }
 
         VerticalLayout {
             FilterRow {
+                popup-bounds: shell.popup-bounds;
                 // Its bubble opens over the rows below
                 z: 2;
                 name: "Volume Leveler";
-                info: "Some stations are much louder than others. The leveler turns loud ones down and quiet ones up, so you don't have to reach for the volume when you switch. Quiet, Normal and Loud set how loud they all play.";
+                info: "Plays every station at a similar loudness, so you don't need the volume knob when you switch. Pick how loud they play.";
                 info-below: true;
                 show-info: root.show-leveler-info;
                 has-switch: false;
@@ -114,8 +118,6 @@ export component FiltersDialog inherits Rectangle {
                         { id: "normal", label: "Normal" },
                         { id: "loud", label: "Loud" },
                     ];
-                    compact: true;
-                    option-width: 54px;
                     selected <=> root.level-pick;
                     changed(id) => {
                         if id == "off" {
@@ -134,10 +136,11 @@ export component FiltersDialog inherits Rectangle {
             }
             Line { }
             FilterRow {
+                popup-bounds: shell.popup-bounds;
                 // Its bubble also opens below, under the leveler's
                 z: 1;
                 name: "Hiss Reducer";
-                info: "Turns down the steady hiss or static some stations have in the background. Light is gentle; Strong removes more, but music can start to sound a little watery.";
+                info: "Turns down background hiss and static. Strong removes more but can make music sound watery.";
                 info-below: true;
                 has-switch: false;
 
@@ -147,30 +150,31 @@ export component FiltersDialog inherits Rectangle {
                         { id: "light", label: "Light" },
                         { id: "strong", label: "Strong" },
                     ];
-                    compact: true;
-                    option-width: 54px;
                     selected <=> root.hiss-reducer;
                     changed(id) => { root.hiss-reducer-changed(id); }
                 }
             }
             Line { }
             FilterRow {
+                popup-bounds: shell.popup-bounds;
                 name: "Hum Filter";
-                info: "Removes the low electrical buzz some stations carry. It only acts when it hears one.";
+                info: "Removes the low electrical buzz some stations carry, only when it hears one.";
                 checked <=> root.hum-filter;
                 toggled(on) => { root.hum-filter-toggled(on); }
             }
             Line { }
             FilterRow {
+                popup-bounds: shell.popup-bounds;
                 name: "Rumble Filter";
-                info: "Removes deep rumble you can't hear, so your speakers play cleaner.";
+                info: "Cuts deep rumble you can't hear, so your speakers play cleaner.";
                 checked <=> root.rumble-filter;
                 toggled(on) => { root.rumble-filter-toggled(on); }
             }
             Line { }
             FilterRow {
+                popup-bounds: shell.popup-bounds;
                 name: "Smooth Switching";
-                info: "Fades the sound out when you change or stop a station, instead of cutting it off.";
+                info: "Fades out when you change or stop a station, instead of cutting off.";
                 checked <=> root.smooth-switching;
                 toggled(on) => { root.smooth-switching-toggled(on); }
             }

@@ -1,7 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, ButtonKeys, FocusRing } from "../components.slint";
+import { DialogShell, ButtonKeys, FocusRing, Icon, StatusPanel, ChipVariant } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
 // A country or genre the station search can be narrowed to
@@ -15,6 +14,9 @@ export struct FilterEntry {
     flag: image,
 }
 
+// One entry, styled like the shared ChoiceRow: regular text, and a check in
+// a fixed slot on the right for the entry in force. Countries keep a flag
+// slot so the names line up.
 component FilterRow inherits Rectangle {
     in property <string> name;
     in property <int> station-count;
@@ -24,14 +26,18 @@ component FilterRow inherits Rectangle {
     in property <bool> selected;
     callback clicked();
 
-    height: 34px;
+    height: Theme.control-button;
     border-radius: Theme.radius-sm;
-    background: touch.has-hover ? Theme.menu-hover : transparent;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg
+        : root.selected ? Theme.selected-bg : transparent;
     animate background { duration: Theme.fast; }
     forward-focus: keys;
 
     accessible-role: list-item;
     accessible-label: root.name;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
     accessible-action-default => { root.clicked(); }
 
     touch := TouchArea {
@@ -45,13 +51,14 @@ component FilterRow inherits Rectangle {
     }
 
     if keys.has-focus: FocusRing {
+        offset: -1px;
         radius: root.border-radius;
     }
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 8px;
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-12;
+        spacing: Theme.space-8;
         alignment: stretch;
 
         // Flag slot keeps country names aligned even when one has no flag
@@ -68,8 +75,7 @@ component FilterRow inherits Rectangle {
 
         Text {
             text: root.name;
-            color: root.selected ? Theme.accent-text : Theme.text-primary;
-            font-weight: root.selected ? 600 : 400;
+            color: Theme.text-primary;
             font-size: Theme.font-base;
             vertical-alignment: center;
             horizontal-stretch: 1;
@@ -78,11 +84,22 @@ component FilterRow inherits Rectangle {
 
         Text {
             text: root.station-count > 0 ? "\{root.station-count}" : "";
-            color: Theme.text-secondary;
+            color: Theme.text-tertiary;
             font-size: Theme.font-sm;
             vertical-alignment: center;
             horizontal-alignment: right;
             width: 50px;
+        }
+
+        Rectangle {
+            width: Theme.icon-sm;
+
+            if root.selected: Icon {
+                width: Theme.icon-sm;
+                height: self.width;
+                source: @image-url("../icons/tick.svg");
+                colorize: Theme.selection-mark;
+            }
         }
     }
 }
@@ -115,24 +132,24 @@ export component FilterPickerDialog inherits Rectangle {
         root.entry-selected(entry);
     }
 
+    // Esc, the close button and a click beside the dialog all go back to
+    // Search Stations without changing the filter
     if show-dialog: DialogShell {
         title: root.kind == "genre" ? "Genre" : "Country";
-        subtitle: root.loading ? "" : "\{root.entries.length} \{root.plural}";
+        // Always one line, so the header doesn't jump between states
+        subtitle: root.loading ? "Loading…"
+            : root.error != "" ? "—"
+            : "\{root.entries.length} \{root.plural}";
         card-width: Defaults.filter-picker-width;
         card-height: Defaults.filter-picker-height;
         auto-focus: false;
-        show-back: true;
-        back-requested => {
-            root.show-dialog = false;
-            root.dismissed();
-        }
         close-requested => {
             root.show-dialog = false;
             root.dismissed();
         }
 
         filter-input := StyledLineEdit {
-            placeholder-text: "Filter \{root.plural}...";
+            placeholder-text: "Filter \{root.plural}";
             clearable: true;
             init => { self.focus-input(); }
             text <=> root.filter-text;
@@ -152,43 +169,28 @@ export component FilterPickerDialog inherits Rectangle {
             border-radius: Theme.radius-sm;
             background: Theme.surface;
 
-            // Loading state
-            if root.loading: Text {
-                text: "Loading \{root.plural}...";
-                color: Theme.text-secondary;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            if root.loading: StatusPanel {
+                width: parent.width;
+                height: parent.height;
+                busy: true;
+                title: "Loading \{root.plural}…";
             }
 
             // Error state, with a way to ask again
-            if root.error != "" && !root.loading: VerticalLayout {
-                alignment: center;
-                spacing: 6px;
-
-                Text {
-                    text: root.error;
-                    color: Theme.danger;
-                    font-size: Theme.font-base;
-                    horizontal-alignment: center;
-                }
-
-                HorizontalLayout {
-                    alignment: center;
-                    padding-top: 6px;
-
-                    SecondaryButton {
-                        label: "Try again";
-                        clicked => {
-                            root.loading = true;
-                            root.load-entries(root.kind);
-                            // The button goes away while it loads: keep the
-                            // focus in the dialog so Esc still closes it
-                            if self.has-focus {
-                                filter-input.focus-input();
-                            }
-                        }
-                    }
+            if root.error != "" && !root.loading: StatusPanel {
+                width: parent.width;
+                height: parent.height;
+                icon: @image-url("../icons/circle-exclamation.svg");
+                variant: ChipVariant.danger;
+                title: "Can't load \{root.plural}";
+                message: root.error;
+                action-label: "Try Again";
+                action => {
+                    root.loading = true;
+                    root.load-entries(root.kind);
+                    // The button goes away while it loads: keep the focus
+                    // in the dialog so Esc still closes it
+                    filter-input.focus-input();
                 }
             }
 
@@ -198,7 +200,7 @@ export component FilterPickerDialog inherits Rectangle {
                     content-height: entry-layout.preferred-height;
 
                     entry-layout := VerticalLayout {
-                        padding: 4px;
+                        padding: Theme.space-4;
 
                         if root.filter-text == "": FilterRow {
                             name: "Any \{root.noun}";
@@ -221,9 +223,9 @@ export component FilterPickerDialog inherits Rectangle {
                 }
 
                 ScrollBar {
-                    x: parent.width - self.width - 2px;
-                    y: 4px;
-                    height: parent.height - 8px;
+                    x: parent.width - self.width - Theme.space-2;
+                    y: Theme.space-4;
+                    height: parent.height - 2 * Theme.space-4;
                     viewport-height: entry-flick.height;
                     content-height: entry-flick.content-height;
                     content-y <=> entry-flick.content-y;
@@ -232,12 +234,11 @@ export component FilterPickerDialog inherits Rectangle {
 
             // No match for the filter
             if root.entries.length == 0 && !root.loading && root.error == ""
-                && root.filter-text != "": Text {
-                text: "No \{root.plural} match \"\{root.filter-text}\"";
-                color: Theme.text-secondary;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+                && root.filter-text != "": StatusPanel {
+                width: parent.width;
+                height: parent.height;
+                icon: @image-url("../icons/magnifying-glass.svg");
+                title: "No \{root.plural} match \"\{root.filter-text}\"";
             }
         }
     }

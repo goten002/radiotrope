@@ -1,8 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton, SecondaryButton } from "../buttons.slint";
-import { DialogShell, Field, Toggle, Dropdown, Picker, PickerOption, IconButton, Icon, InfoTip } from "../components.slint";
-import { ScrollBar } from "../scroll-bar.slint";
+import { DialogShell, Field, Toggle, Dropdown, Picker, PickerOption, IconButton, Icon, InfoTip, StatusPanel } from "../components.slint";
 
 // One entry, as the list shows it
 export struct ScheduleRow {
@@ -74,10 +72,10 @@ component EntryRow inherits Rectangle {
     callback edit();
     callback remove();
 
-    height: 52px;
+    height: Theme.row-dense;
     border-radius: Theme.radius-md;
-    background: root.entry.running ? Theme.accent-soft
-        : touch.has-hover ? Theme.menu-hover : Theme.elevated;
+    background: touch.has-hover ? Theme.hover-bg
+        : root.entry.running ? Theme.accent-soft : Theme.elevated;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
@@ -87,7 +85,7 @@ component EntryRow inherits Rectangle {
 
     HorizontalLayout {
         padding-left: 10px;
-        padding-right: 6px;
+        padding-right: Theme.space-6;
         spacing: 10px;
 
         VerticalLayout {
@@ -103,16 +101,16 @@ component EntryRow inherits Rectangle {
             text: root.entry.time;
             width: 52px;
             color: root.entry.enabled ? Theme.text-primary : Theme.text-tertiary;
-            font-size: 17px;
-            font-weight: 600;
+            font-size: Theme.font-title;
+            font-weight: Theme.weight-semibold;
             vertical-alignment: center;
         }
 
         VerticalLayout {
             alignment: center;
             Icon {
-                width: 12px;
-                height: 12px;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
                 source: root.entry.action == "record" ? @image-url("../icons/circle.svg")
                     : root.entry.action == "stop" ? @image-url("../icons/stop.svg")
                     : @image-url("../icons/play.svg");
@@ -131,13 +129,13 @@ component EntryRow inherits Rectangle {
                 text: root.entry.title;
                 color: root.entry.enabled ? Theme.text-primary : Theme.text-tertiary;
                 font-size: Theme.font-base;
-                font-weight: 600;
+                font-weight: Theme.weight-semibold;
                 overflow: elide;
             }
             Text {
                 text: root.confirm-remove ? "Press Again to Remove"
                     : root.entry.running ? "Running now · " + root.entry.details : root.entry.details;
-                color: root.confirm-remove ? Theme.danger : Theme.text-secondary;
+                color: root.confirm-remove ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
             }
@@ -148,7 +146,7 @@ component EntryRow inherits Rectangle {
             IconButton {
                 icon: @image-url("../icons/pencil.svg");
                 label: "Edit " + root.entry.title;
-                icon-size: 14px;
+                icon-size: Theme.icon-compact;
                 clicked => { root.edit(); }
             }
         }
@@ -156,9 +154,9 @@ component EntryRow inherits Rectangle {
             alignment: center;
             IconButton {
                 icon: @image-url("../icons/trash-can.svg");
-                label: root.confirm-remove ? "Press again to remove" : "Remove " + root.entry.title;
-                icon-size: 14px;
-                active: root.confirm-remove;
+                label: root.confirm-remove ? "Press Again to Remove" : "Remove " + root.entry.title;
+                icon-size: Theme.icon-compact;
+                danger-armed: root.confirm-remove;
                 clicked => { root.remove(); }
             }
         }
@@ -176,8 +174,6 @@ component DayChoice inherits PickerOption {
 export component ScheduleDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in property <string> snapshot-overlay;
-    // The height the list can take in this window
-    property <length> list-room: max(80px, root.height - Defaults.schedule-list-chrome);
     in property <[ScheduleRow]> rows;
     // "Next: Mon 07:00, Play Jazz FM"
     in property <string> next;
@@ -264,105 +260,97 @@ export component ScheduleDialog inherits Rectangle {
         }
     }
 
-    if show-dialog: DialogShell {
+    // The editor is a step inside the dialog: Cancel, Esc, the close button
+    // and a click beside it all go back to the list, without saving
+    function leave-editor() {
+        root.editing = false;
+        root.error = "";
+    }
+
+    if show-dialog: shell := DialogShell {
         title: !root.editing ? "Scheduler"
-            : root.edit-id == 0 ? "Add to Scheduler" : "Edit Scheduler Entry";
+            : root.edit-id == 0 ? "New Scheduler Entry" : "Edit Scheduler Entry";
+        subtitle: root.editing ? "" : "Plays, records or stops at set times";
         card-width: Defaults.schedule-width;
-        show-back: root.editing;
-        back-requested => { root.editing = false; }
-        close-requested => { root.show-dialog = false; }
+        // The list's footer adds an entry; the editor's saves or goes back
+        cancel-label: root.editing ? "Cancel" : "";
+        primary-label: root.editing ? "Save" : "Add";
+        primary-requested => {
+            if root.editing {
+                self.save();
+            } else {
+                root.start-edit(0);
+            }
+        }
+
+        // Saved: back to the list. The focused field went with the editor,
+        // so the dialog takes the focus back and Esc still closes it.
+        public function save() {
+            root.save-edit();
+            if !root.editing {
+                self.take-focus();
+            }
+        }
+        close-requested => {
+            if root.editing {
+                root.leave-editor();
+                // The focused field went with the editor: take the focus
+                // back so Esc still closes the dialog
+                self.take-focus();
+            } else {
+                root.show-dialog = false;
+            }
+        }
 
         // ── The list ──
         if !root.editing && root.rows.length == 0: Rectangle {
-            height: min(root.list-room, Defaults.schedule-empty-height);
             border-radius: Theme.radius-md;
             background: Theme.elevated;
+            height: Defaults.schedule-empty-height;
 
-            VerticalLayout {
-                alignment: center;
-                spacing: 10px;
-
-                HorizontalLayout {
-                    alignment: center;
-                    Icon {
-                        width: 34px;
-                        height: 34px;
-                        source: @image-url("../icons/calendar-days.svg");
-                        colorize: Theme.text-tertiary;
-                    }
-                }
-                Text {
-                    text: "Nothing scheduled yet";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-lg;
-                    horizontal-alignment: center;
-                }
-            }
-        }
-
-        if !root.editing && root.rows.length > 0: Rectangle {
-            // As tall as the empty box at least, taller with more entries
-            // while the window has room, and scrolling past that
-            height: min(root.list-room, max(Defaults.schedule-empty-height, list.preferred-height));
-
-            flick := Flickable {
-                content-height: list.preferred-height;
-                width: parent.width - (scroll.visible ? 12px : 0px);
-                x: 0;
-
-                list := VerticalLayout {
-                    spacing: 6px;
-
-                    for row in root.rows: EntryRow {
-                        entry: row;
-                        confirm-remove: root.confirm-remove == row.id;
-                        toggled(on) => {
-                            root.confirm-remove = 0;
-                            root.toggled(row.id, on);
-                        }
-                        edit => { root.start-edit(row.id); }
-                        remove => {
-                            if root.confirm-remove == row.id {
-                                root.confirm-remove = 0;
-                                root.remove(row.id);
-                            } else {
-                                root.confirm-remove = row.id;
-                            }
-                        }
-                    }
-                }
-            }
-
-            scroll := ScrollBar {
-                x: parent.width - self.width;
+            StatusPanel {
+                width: parent.width;
                 height: parent.height;
-                viewport-height: flick.height;
-                content-height: flick.content-height;
-                content-y <=> flick.content-y;
+                icon: @image-url("../icons/calendar-days.svg");
+                title: "Nothing scheduled yet";
+                message: "Add an entry to play, record or stop at a set time.";
             }
         }
 
-        if !root.editing: HorizontalLayout {
-            spacing: 8px;
+        // The rows take the room they need; the dialog body scrolls past
+        // what the window can show
+        if !root.editing && root.rows.length > 0: VerticalLayout {
+            spacing: Theme.space-6;
 
-            Text {
-                text: root.next;
-                color: Theme.text-secondary;
-                font-size: Theme.font-md;
-                vertical-alignment: center;
-                overflow: elide;
-                horizontal-stretch: 1;
+            for row in root.rows: EntryRow {
+                entry: row;
+                confirm-remove: root.confirm-remove == row.id;
+                toggled(on) => {
+                    root.confirm-remove = 0;
+                    root.toggled(row.id, on);
+                }
+                edit => { root.start-edit(row.id); }
+                remove => {
+                    if root.confirm-remove == row.id {
+                        root.confirm-remove = 0;
+                        root.remove(row.id);
+                    } else {
+                        root.confirm-remove = row.id;
+                    }
+                }
             }
-            AccentButton {
-                label: "Add";
-                icon: @image-url("../icons/plus.svg");
-                clicked => { root.start-edit(0); }
-            }
+        }
+
+        if !root.editing && root.next != "": Text {
+            text: root.next;
+            color: Theme.text-secondary;
+            font-size: Theme.font-md;
+            overflow: elide;
         }
 
         // ── The form ──
         if root.editing: HorizontalLayout {
-            spacing: 12px;
+            spacing: Theme.space-12;
 
             Field {
                 label: "Action";
@@ -388,7 +376,9 @@ export component ScheduleDialog inherits Rectangle {
                 label: "Station";
                 horizontal-stretch: 1;
                 Dropdown {
-                    height: 36px;
+                    label: "Station";
+                    height: Theme.control-field;
+                    popup-bounds: shell.popup-bounds;
                     show-popup: root.snapshot-overlay == "station";
                     items: root.stations.length > 0 ? root.stations : ["No favorites yet"];
                     selected <=> root.station;
@@ -398,16 +388,18 @@ export component ScheduleDialog inherits Rectangle {
         }
 
         if root.editing: HorizontalLayout {
-            spacing: 16px;
+            spacing: Theme.space-16;
 
             Field {
                 label: root.action == "stop" ? "At" : "Start";
                 horizontal-stretch: 0;
+                // The form starts on the time; Enter in a field saves
                 StyledLineEdit {
+                    init => { self.focus-input(); }
                     width: 80px;
                     placeholder-text: "07:00";
                     text <=> root.start;
-                    accepted => { root.save-edit(); }
+                    accepted => { shell.save(); }
                     edited => { root.error = ""; }
                 }
             }
@@ -415,7 +407,7 @@ export component ScheduleDialog inherits Rectangle {
             Field {
                 label: "Ends";
                 HorizontalLayout {
-                    spacing: 8px;
+                    spacing: Theme.space-8;
 
                     Picker {
                         choices: [
@@ -434,7 +426,7 @@ export component ScheduleDialog inherits Rectangle {
                         enabled: root.action != "stop";
                         placeholder-text: "60";
                         text <=> root.end-after;
-                        accepted => { root.save-edit(); }
+                        accepted => { shell.save(); }
                         edited => { root.error = ""; }
                     }
                     if root.end-kind == "after": Text {
@@ -448,7 +440,7 @@ export component ScheduleDialog inherits Rectangle {
                         enabled: root.action != "stop";
                         placeholder-text: "22:00";
                         text <=> root.end-at;
-                        accepted => { root.save-edit(); }
+                        accepted => { shell.save(); }
                         edited => { root.error = ""; }
                     }
                     // Keeps the field next to the picker
@@ -461,7 +453,7 @@ export component ScheduleDialog inherits Rectangle {
             label: "Repeat";
 
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Theme.space-8;
 
                 Picker {
                     choices: [
@@ -480,7 +472,9 @@ export component ScheduleDialog inherits Rectangle {
                     }
                 }
                 if root.repeat == "once": Dropdown {
-                    height: 36px;
+                    label: "Date";
+                    height: Theme.control-field;
+                    popup-bounds: shell.popup-bounds;
                     horizontal-stretch: 1;
                     show-popup: root.snapshot-overlay == "date";
                     items: root.dates;
@@ -515,13 +509,15 @@ export component ScheduleDialog inherits Rectangle {
         }
 
         if root.editing: HorizontalLayout {
-            spacing: 16px;
+            spacing: Theme.space-16;
 
             Field {
                 label: "Volume";
                 width: 150px;
                 Dropdown {
-                    height: 36px;
+                    label: "Volume";
+                    height: Theme.control-field;
+                    popup-bounds: shell.popup-bounds;
                     show-popup: root.snapshot-overlay == "volume";
                     items: ["Keep current", "Silent", "10%", "20%", "30%", "40%", "50%",
                         "60%", "70%", "80%", "90%", "100%"];
@@ -532,7 +528,7 @@ export component ScheduleDialog inherits Rectangle {
 
             VerticalLayout {
                 alignment: end;
-                padding-bottom: 4px;
+                padding-bottom: Theme.space-4;
 
                 Toggle {
                     label: root.action == "stop" ? "Fade out" : "Fade in";
@@ -543,10 +539,10 @@ export component ScheduleDialog inherits Rectangle {
 
             VerticalLayout {
                 alignment: end;
-                padding-bottom: 4px;
+                padding-bottom: Theme.space-4;
 
                 HorizontalLayout {
-                    spacing: 6px;
+                    spacing: Theme.space-6;
 
                     Toggle {
                         label: "Fallback sound";
@@ -557,7 +553,8 @@ export component ScheduleDialog inherits Rectangle {
                         alignment: center;
                         InfoTip {
                             open: root.snapshot-overlay == "fallback-info";
-                            text: "If the station hasn't started 30 seconds after the start time, for example because it is down or there's no internet, the Scheduler switches to alarm mode and beeps until you press Stop.";
+                            popup-bounds: shell.popup-bounds;
+                            text: "Beeps if the station hasn't started 30 seconds after the start time, until you press Stop.";
                         }
                     }
                 }
@@ -566,23 +563,9 @@ export component ScheduleDialog inherits Rectangle {
 
         if root.editing && root.error != "": Text {
             text: root.error;
-            color: Theme.danger;
+            color: Theme.danger-text;
             font-size: Theme.font-md;
             wrap: word-wrap;
-        }
-
-        if root.editing: HorizontalLayout {
-            spacing: 8px;
-            alignment: end;
-
-            SecondaryButton {
-                label: "Cancel";
-                clicked => { root.editing = false; }
-            }
-            AccentButton {
-                label: "Save";
-                clicked => { root.save-edit(); }
-            }
         }
     }
 }

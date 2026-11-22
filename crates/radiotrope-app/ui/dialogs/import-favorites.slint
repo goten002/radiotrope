@@ -1,19 +1,18 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { AccentButton, SecondaryButton, DangerButton } from "../buttons.slint";
-import { DialogShell } from "../components.slint";
+import { DialogShell, StatusPanel, ChipVariant } from "../components.slint";
 
 // One choice: its name, what it does, and what it would change here
 component ImportChoice inherits VerticalLayout {
     in property <string> label;
     in property <string> text;
     in property <string> summary;
-    spacing: 2px;
+    spacing: Theme.space-2;
 
     Text {
         text: root.label;
         color: Theme.text-primary;
         font-size: Theme.font-lg;
-        font-weight: 600;
+        font-weight: Theme.weight-semibold;
     }
     Text {
         text: root.text;
@@ -48,14 +47,35 @@ export component ImportFavoritesDialog inherits Rectangle {
     callback add-missing();
     callback replace();
 
+    // Replace was pressed once: the next press replaces. Replacing drops
+    // favorites, so it always takes a second, deliberate press.
+    property <bool> confirm-replace: false;
+    changed show-dialog => { root.confirm-replace = false; }
+    changed message => { root.confirm-replace = false; }
+
     if show-dialog: DialogShell {
         title: root.title;
-        subtitle: root.subtitle;
-        card-width: Defaults.network-stream-width;
+        subtitle: root.message == "" ? root.subtitle : "";
+        card-width: Defaults.import-favorites-width;
+        cancel-label: root.message == "" ? "Cancel" : "";
+        destructive-label: root.message == "" ? "Replace" : "";
+        destructive-armed: root.confirm-replace;
+        destructive-armed-label: "Press Again to Replace";
+        primary-label: root.message == "" ? "Add Missing" : "";
+        close-footer: root.message != "";
+        destructive-requested => {
+            if root.confirm-replace {
+                root.confirm-replace = false;
+                root.replace();
+            } else {
+                root.confirm-replace = true;
+            }
+        }
+        primary-requested => { root.add-missing(); }
         close-requested => { root.show-dialog = false; }
 
         if root.message == "": VerticalLayout {
-            spacing: 14px;
+            spacing: Theme.dialog-gap;
 
             ImportChoice {
                 label: "Add Missing";
@@ -67,52 +87,14 @@ export component ImportFavoritesDialog inherits Rectangle {
                 text: "Your favorites become the file's list, in its order.";
                 summary: root.replace-summary;
             }
-
-            HorizontalLayout {
-                alignment: end;
-                spacing: 8px;
-
-                SecondaryButton {
-                    label: "Cancel";
-                    clicked => { root.show-dialog = false; }
-                }
-                DangerButton {
-                    label: "Replace";
-                    clicked => { root.replace(); }
-                }
-                AccentButton {
-                    label: "Add Missing";
-                    clicked => { root.add-missing(); }
-                }
-            }
         }
 
-        if root.message != "": VerticalLayout {
-            spacing: 14px;
-
-            VerticalLayout {
-                spacing: 2px;
-                Text {
-                    text: root.message;
-                    color: root.message-error ? Theme.danger : Theme.text-primary;
-                    font-size: Theme.font-lg;
-                    overflow: elide;
-                }
-                if root.message-detail != "": Text {
-                    text: root.message-detail;
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-base;
-                    overflow: elide;
-                }
-            }
-
-            HorizontalLayout {
-                alignment: end;
-                AccentButton {
-                    label: "Close";
-                    clicked => { root.show-dialog = false; }
-                }
-            }
+        if root.message != "": StatusPanel {
+            icon: root.message-error ? @image-url("../icons/circle-exclamation.svg")
+                : @image-url("../icons/tick.svg");
+            variant: root.message-error ? ChipVariant.danger : ChipVariant.success;
+            title: root.message;
+            message: root.message-detail;
         }
     }
 }
