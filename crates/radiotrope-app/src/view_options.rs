@@ -7,7 +7,6 @@
 //! menu.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::time::Duration;
 
 use slint::ComponentHandle;
 
@@ -26,7 +25,7 @@ static REPORT_PLAYS: AtomicBool = AtomicBool::new(true);
 
 /// How often the display's own scale is looked at (see [`watch_display_scale`])
 #[cfg(feature = "desktop")]
-const SCALE_CHECK: Duration = Duration::from_secs(10);
+const SCALE_CHECK: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The scale to make the window with for a zoom of `percent`: the
 /// display's own scale times the zoom. `None` at 100%, where the window

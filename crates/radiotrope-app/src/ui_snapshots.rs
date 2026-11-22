@@ -315,6 +315,12 @@ const SHOTS: &[Shot] = &[
         "View menu with the inline Theme selector.",
     ),
     Shot::new(
+        "menu-view-end",
+        "view-group",
+        "tray",
+        "View menu with System Tray open, after End: the last row has the focus (scrolled into view in a short window).",
+    ),
+    Shot::new(
         "menu-theme",
         "view-group",
         "theme",
@@ -1001,6 +1007,7 @@ fn after_open(ui: &App, shot: &Shot) {
         // Enter in the form's first field saves it, and the save fails
         ("edit-favorite", "error") => press(ui, Key::Return),
         _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
+        _ if shot.name == "menu-view-end" => press(ui, Key::End),
         _ if shot.name == "menu-tools-keys" => {
             for _ in 0..3 {
                 press(ui, Key::DownArrow);

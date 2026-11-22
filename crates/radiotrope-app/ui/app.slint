@@ -573,6 +573,7 @@ export component App inherits Window {
                     VerticalLayout {
                     menu-bar := MenuBar {
                         snapshot-bubble: root.snapshot-bubble;
+                        window-height: root.height;
                         show-station-stats <=> root.show-station-stats;
                         show-visualizer <=> root.show-visualizer;
                         viz-mode <=> root.viz-mode;

@@ -1,5 +1,6 @@
 import { DesktopShortcuts, ShortcutAction } from "shortcuts.slint";
 import { Theme, ViewOptions } from "defaults.slint";
+import { ScrollBar } from "scroll-bar.slint";
 import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Picker } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
@@ -18,6 +19,17 @@ global MenuNav {
     public function begin() {
         self.opening += 1;
         self.active = -1;
+    }
+
+    // The row the arrow keys moved to (its place in the window), for a
+    // menu taller than the window to scroll it into view
+    out property <length> reached-y;
+    out property <length> reached-height;
+    out property <int> reached;
+    public function reveal(y: length, height: length) {
+        self.reached-y = y;
+        self.reached-height = height;
+        self.reached += 1;
     }
 
     pure function hit(usable: [bool], slot: int) -> bool {
@@ -166,6 +178,11 @@ component MenuRowBase inherits Rectangle {
     property <int> menu: -1;
     out property <bool> current: root.slot >= 0 && root.menu == MenuNav.opening && MenuNav.active == root.slot;
     init => { self.menu = MenuNav.opening; }
+    // Reached with the keyboard: a scrolled menu brings the row into view
+    property <bool> reached: root.current;
+    changed reached => {
+        if self.reached { MenuNav.reveal(self.absolute-position.y, self.height); }
+    }
 
     height: Theme.row-menu;
     min-width: 200px;
@@ -597,13 +614,31 @@ component MenuPane inherits Rectangle {
     // (menu, with the keyboard): open that menu instead
     callback switch(int, bool);
     callback close();
+    // Room for the rows under the bar: a taller menu scrolls (a short
+    // window, a high zoom, a group unfolded)
+    in property <length> room: 10000px;
+    property <length> card-height: min(rows.preferred-height, root.room);
+    // A scrolling menu is wider by its scroll bar, which then covers no row
+    property <length> bar-room: rows.preferred-height > root.room ? Theme.space-8 + Theme.space-2 : 0px;
+    property <length> card-width: rows.preferred-width + root.bar-room;
+
+    property <int> reached: MenuNav.reached;
+    changed reached => {
+        let above = flick.absolute-position.y - MenuNav.reached-y;
+        let below = MenuNav.reached-y + MenuNav.reached-height - flick.absolute-position.y - flick.height;
+        if above > 0 {
+            flick.content-y = min(0px, flick.content-y + above + Theme.space-4);
+        } else if below > 0 {
+            flick.content-y = max(flick.height - flick.content-height, flick.content-y - below - Theme.space-4);
+        }
+    }
 
     property <length> card-x: root.index >= 0 ? root.title-x[root.index] : 0;
     property <length> strip-height: root.index >= 0 ? root.bar-height : 0;
     property <length> titles-end: root.index >= 0
         ? root.title-x[root.title-x.length - 1] + root.title-width[root.title-x.length - 1] : 0;
-    out property <length> wanted-width: max(root.titles-end, root.card-x + rows.preferred-width);
-    out property <length> wanted-height: root.strip-height + rows.preferred-height;
+    out property <length> wanted-width: max(root.titles-end, root.card-x + root.card-width);
+    out property <length> wanted-height: root.strip-height + root.card-height;
 
     TouchArea {
         pointer-event(event) => {
@@ -633,8 +668,8 @@ component MenuPane inherits Rectangle {
     PopupCard {
         x: root.card-x;
         y: root.strip-height;
-        width: rows.preferred-width;
-        height: rows.preferred-height;
+        width: root.card-width;
+        height: root.card-height;
         accessible-role: groupbox;
         accessible-label: root.label;
 
@@ -678,9 +713,29 @@ component MenuPane inherits Rectangle {
                 return reject;
             }
 
-            rows := VerticalLayout {
-                padding: Theme.space-4;
-                @children
+            // Scrolls with the wheel, the bar and the arrow keys; a drag
+            // would take the rows' clicks
+            flick := Flickable {
+                width: parent.width - root.bar-room;
+                interactive: false;
+                content-width: self.width;
+                content-height: rows.preferred-height;
+
+                rows := VerticalLayout {
+                    width: flick.width;
+                    height: self.preferred-height;
+                    padding: Theme.space-4;
+                    @children
+                }
+            }
+
+            ScrollBar {
+                x: parent.width - self.width - Theme.space-2;
+                y: Theme.space-4;
+                height: parent.height - 2 * Theme.space-4;
+                viewport-height: flick.height;
+                content-height: flick.content-height;
+                content-y <=> flick.content-y;
             }
         }
     }
@@ -719,6 +774,9 @@ export component MenuBar inherits Rectangle {
     // The menus are greyed out while a dialog is open; the window buttons
     // and moving the window still work
     in property <bool> menus-enabled: true;
+    // The window's height: a menu taller than the room under the bar scrolls
+    in property <length> window-height: 10000px;
+    property <length> menu-room: root.window-height - root.height - Theme.space-8;
     // Agents (MCP) using the player now, and one line about each: a chip
     // at the end of the bar, only while there are any
     in property <int> agent-count;
@@ -1095,6 +1153,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         open-pane := MenuPane {
+            room: root.menu-room;
             index: 0;
             label: "Open";
             title-x: root.title-x;
@@ -1168,6 +1227,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         stations-pane := MenuPane {
+            room: root.menu-room;
             index: 1;
             label: "Stations";
             title-x: root.title-x;
@@ -1272,6 +1332,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         view-pane := MenuPane {
+            room: root.menu-room;
             index: 2;
             label: "View";
             title-x: root.title-x;
@@ -1512,6 +1573,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         help-pane := MenuPane {
+            room: root.menu-room;
             index: 4;
             label: "Help";
             title-x: root.title-x;
@@ -1551,6 +1613,7 @@ export component MenuBar inherits Rectangle {
         close-policy: close-on-click-outside;
 
         tools-pane := MenuPane {
+            room: root.menu-room;
             index: 3;
             label: "Tools";
             title-x: root.title-x;
