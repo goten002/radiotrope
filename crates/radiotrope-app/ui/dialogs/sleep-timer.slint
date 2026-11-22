@@ -65,13 +65,15 @@ component LengthChip inherits Rectangle {
     height: 32px;
     width: chip-text.preferred-width + 30px;
     border-radius: Theme.radius-md;
-    border-width: 1px;
-    border-color: root.selected ? Theme.selection-mark : Theme.field-border;
-    background: root.selected ? Theme.selected-bg
+    // Selected looks like a Picker's choice: accent fill, on-accent text
+    border-width: root.selected ? 0px : 1px;
+    border-color: Theme.field-border;
+    background: root.selected
+        ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
         : touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg
         : transparent;
-    animate background, border-color { duration: Theme.fast; }
+    animate background { duration: Theme.fast; }
     forward-focus: keys;
 
     accessible-role: radio-button;
@@ -82,7 +84,9 @@ component LengthChip inherits Rectangle {
 
     chip-text := Text {
         text: root.label;
-        color: root.selected || touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+        color: !root.selected ? Theme.text-primary
+            : touch.pressed ? Theme.on-accent-pressed
+            : touch.has-hover ? Theme.on-accent-hover : Theme.on-accent;
         font-size: Theme.font-lg;
         font-weight: root.selected ? Theme.weight-semibold : Theme.weight-regular;
         horizontal-alignment: center;
@@ -123,6 +127,9 @@ export component SleepTimerDialog inherits Rectangle {
     // The length started last time, in minutes (the dialog opens on it)
     in property <int> last: 30;
     in-out property <bool> fade: true;
+    // A station plays (or is starting): without one there is nothing for
+    // the timer to stop, so Start waits for one
+    in property <bool> playing: true;
 
     callback start(int);
     callback turn-off();
@@ -169,7 +176,15 @@ export component SleepTimerDialog inherits Rectangle {
         h + " h " + m + " min"
     }
 
-    if show-dialog: DialogShell {
+    // Start and Stop Timer go away when pressed, so the dialog takes the
+    // focus back and Esc still closes it
+    function begin(minutes: int) {
+        if root.playing {
+            root.start(minutes);
+        }
+    }
+
+    if show-dialog: shell := DialogShell {
         title: "Sleep Timer";
         subtitle: "Stops playback after a set time";
         card-width: Defaults.sleep-timer-width;
@@ -178,9 +193,16 @@ export component SleepTimerDialog inherits Rectangle {
         // Footer: Start when off; Stop Timer at the left and Restart at
         // the right while it runs
         primary-label: root.active ? "" : "Start " + root.length-label(root.length);
-        primary-requested => { root.start(root.length); }
+        primary-enabled: root.playing;
+        primary-requested => {
+            root.begin(root.length);
+            self.take-focus();
+        }
         destructive-label: root.active ? "Stop Timer" : "";
-        destructive-requested => { root.turn-off(); }
+        destructive-requested => {
+            root.turn-off();
+            self.take-focus();
+        }
         cancel-label: root.active ? "Restart " + root.length-label(root.length-minutes) : "";
         cancel-requested => { root.start(root.length-minutes); }
 
@@ -217,8 +239,9 @@ export component SleepTimerDialog inherits Rectangle {
                         root.bump(-1);
                         return accept;
                     }
-                    if event.text == Key.Return {
-                        root.start(root.length);
+                    if event.text == Key.Return && root.playing {
+                        root.begin(root.length);
+                        shell.take-focus();
                         return accept;
                     }
                     reject
@@ -276,6 +299,13 @@ export component SleepTimerDialog inherits Rectangle {
             }
         }
 
+        if !root.active && !root.playing: Text {
+            text: "Start a station first.";
+            color: Theme.text-secondary;
+            font-size: Theme.font-md;
+            horizontal-alignment: center;
+        }
+
         // ── Running: the time left ──
         if root.active: VerticalLayout {
             spacing: Theme.space-4;
@@ -304,7 +334,7 @@ export component SleepTimerDialog inherits Rectangle {
                 x: 0;
                 width: parent.width * clamp(root.left-secs / max(1, root.length-minutes * 60), 0, 1);
                 border-radius: parent.border-radius;
-                background: Theme.accent;
+                background: Theme.accent-graphic;
             }
         }
 

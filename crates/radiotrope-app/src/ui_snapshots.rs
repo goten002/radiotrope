@@ -581,6 +581,12 @@ const SHOTS: &[Shot] = &[
         "Sleep Timer showing the remaining time.",
     ),
     Shot::new(
+        "sleep-nothing-playing",
+        "sleep",
+        "",
+        "Sleep Timer with nothing playing: Start waits for a station.",
+    ),
+    Shot::new(
         "scheduler",
         "schedule",
         "",
@@ -603,6 +609,12 @@ const SHOTS: &[Shot] = &[
         "schedule",
         "add",
         "New scheduler entry form.",
+    ),
+    Shot::new(
+        "scheduler-no-stations",
+        "schedule",
+        "add",
+        "New entry with no station to pick: Stop only, and Search Stations.",
     ),
     Shot::new(
         "scheduler-edit",
@@ -1397,6 +1409,13 @@ fn configure(ui: &App, shot: &Shot) {
             .into()
         }),
         "sleep" if shot.state == "running" => configure_sleep(ui),
+        "sleep" if shot.name == "sleep-nothing-playing" => {
+            ui.set_is_playing(false);
+            ui.set_is_loading(false);
+        }
+        "schedule" if shot.name == "scheduler-no-stations" => {
+            ui.set_schedule_stations(ModelRc::default());
+        }
         "import" => {
             ui.set_import_subtitle("12 stations found in favorites.json".into());
             ui.set_import_add_summary("Add 5 new stations".into());
@@ -1404,6 +1423,7 @@ fn configure(ui: &App, shot: &Shot) {
             if shot.state == "result" {
                 ui.set_import_message("Favorites imported".into());
                 ui.set_import_message_detail("Added 5 stations and skipped 7 duplicates.".into());
+                ui.set_import_can_undo(true);
             } else if shot.state == "error" {
                 ui.set_import_message("Can't read the file: permission denied".into());
                 ui.set_import_message_detail(

@@ -9,7 +9,11 @@ use slint::ComponentHandle;
 use radiotrope_app::data::favorites::{FavoritesManager, ImportMode, ImportOutcome};
 
 use crate::context::{lock, AppContext};
+use radiotrope::error::RadioError;
+use radiotrope_app::error::AppError;
+
 use crate::favorites_list::refresh_favorites;
+use crate::favorites_ui::save_favorites;
 use crate::{control, App};
 
 /// Wire File > Import Favorites and Export Favorites
@@ -40,26 +44,81 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                     ImportMode::Add
                 };
                 let mut f = lock(&ctx.favorites);
-                let done = f
-                    .import_list(mode, &list, control::MAX_FAVORITES, false)
-                    .and_then(|outcome| f.save().map(|_| outcome));
+                let done = f.import_list(mode, &list, control::MAX_FAVORITES, false);
+                let can_undo = f.can_undo_import();
                 drop(f);
                 match done {
                     Ok(outcome) => {
+                        // Written on the saving thread; a failure shows in
+                        // the header and is tried again
+                        save_favorites();
                         let text = import_done_text(mode, &outcome, list.len());
                         ui.set_import_message(text.into());
                         ui.set_import_message_detail(Default::default());
                         ui.set_import_message_error(false);
+                        ui.set_import_can_undo(can_undo && outcome.changes());
                     }
                     Err(e) => {
-                        ui.set_import_message(e.to_string().into());
+                        ui.set_import_message(import_error_text(&e).into());
                         ui.set_import_message_detail(Default::default());
                         ui.set_import_message_error(true);
+                        ui.set_import_can_undo(false);
                     }
                 }
                 refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
             });
         }
+        {
+            // Undo Import on the result: the favorites from before it
+            let ctx = ctx.clone();
+            ui.on_import_favorites_undo(move || {
+                let Some(ui) = ctx.ui.upgrade() else { return };
+                let undone = lock(&ctx.favorites).undo_import();
+                ui.set_import_can_undo(false);
+                match undone {
+                    Ok(count) => {
+                        save_favorites();
+                        ui.set_import_message(undo_done_text(count).into());
+                        ui.set_import_message_error(false);
+                    }
+                    Err(e) => {
+                        ui.set_import_message(import_error_text(&e).into());
+                        ui.set_import_message_error(true);
+                    }
+                }
+                ui.set_import_message_detail(Default::default());
+                refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
+            });
+        }
+    }
+}
+
+/// Why an import, or its undo, didn't go through, in plain words: the
+/// system's "(os error 13)" left out
+fn import_error_text(e: &AppError) -> String {
+    let text = match e {
+        AppError::Engine(RadioError::Io(e)) => {
+            format!(
+                "Can't use the file: {}.",
+                radiotrope_app::text::io_reason(e)
+            )
+        }
+        other => other.to_string(),
+    };
+    match text.rfind(" (os error ") {
+        Some(at) => {
+            let end = text[at..].find(')').map_or(text.len(), |end| at + end + 1);
+            format!("{}{}", &text[..at], &text[end..])
+        }
+        None => text,
+    }
+}
+
+/// What Undo Import did
+fn undo_done_text(count: usize) -> String {
+    match count {
+        1 => "Your favorites are back as they were: 1 station.".into(),
+        n => format!("Your favorites are back as they were: {n} stations."),
     }
 }
 
@@ -72,6 +131,7 @@ fn show_favorites_file_message(ui: &App, title: &str, message: &str, detail: &st
     ui.set_import_message(message.into());
     ui.set_import_message_detail(detail.into());
     ui.set_import_message_error(error);
+    ui.set_import_can_undo(false);
     ui.set_show_import_favorites(true);
 }
 
@@ -158,9 +218,13 @@ fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<FavoritesManager>
                 &path.display().to_string(),
                 false,
             ),
-            Err(e) => {
-                show_favorites_file_message(&ui, "Export Favorites", &e.to_string(), "", true)
-            }
+            Err(e) => show_favorites_file_message(
+                &ui,
+                "Export Favorites",
+                &import_error_text(&e),
+                "",
+                true,
+            ),
         }
     });
     if let Err(e) = spawned {
@@ -200,7 +264,7 @@ fn import_favorites(
                 return show_favorites_file_message(
                     &ui,
                     "Import Favorites",
-                    &e.to_string(),
+                    &import_error_text(&e),
                     "",
                     true,
                 )
@@ -211,7 +275,7 @@ fn import_favorites(
             [ImportMode::Add, ImportMode::Replace].map(|mode| {
                 f.import_list(mode, &list, control::MAX_FAVORITES, true)
                     .map(|o| import_preview_text(mode, &o))
-                    .unwrap_or_else(|e| e.to_string())
+                    .unwrap_or_else(|e| import_error_text(&e))
             })
         };
         let name = path
@@ -232,6 +296,7 @@ fn import_favorites(
         ui.set_import_message(Default::default());
         ui.set_import_message_detail(Default::default());
         ui.set_import_message_error(false);
+        ui.set_import_can_undo(false);
         *pending.borrow_mut() = list;
         ui.set_show_import_favorites(true);
     });
@@ -250,4 +315,38 @@ fn import_favorites(
     _favs: Arc<Mutex<FavoritesManager>>,
     _pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>>,
 ) {
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_import_error_reads_without_the_system_code() {
+        let denied = std::io::Error::from_raw_os_error(13);
+        let text = import_error_text(&AppError::from(denied));
+        assert!(text.starts_with("Can't use the file: "), "{text}");
+        assert!(!text.contains("os error"), "{text}");
+        assert!(text.ends_with('.'), "{text}");
+
+        let config = AppError::Config("Can't read the file: no such file (os error 2)".into());
+        assert_eq!(
+            import_error_text(&config),
+            "Can't read the file: no such file"
+        );
+        let plain = AppError::Config("The file has no favorites.".into());
+        assert_eq!(import_error_text(&plain), "The file has no favorites.");
+    }
+
+    #[test]
+    fn undo_says_how_many_are_back() {
+        assert_eq!(
+            undo_done_text(1),
+            "Your favorites are back as they were: 1 station."
+        );
+        assert_eq!(
+            undo_done_text(42),
+            "Your favorites are back as they were: 42 stations."
+        );
+    }
 }

@@ -394,6 +394,8 @@ export component App inherits Window {
     in-out property <string> import-message <=> import-dialog.message;
     in-out property <bool> import-message-error <=> import-dialog.message-error;
     in-out property <string> import-message-detail <=> import-dialog.message-detail;
+    in-out property <bool> import-can-undo <=> import-dialog.can-undo;
+    callback import-favorites-undo();
 
     // Filter picker proxy properties (for Rust access)
     in-out property <string> filter-kind <=> picker-dialog.kind;
@@ -733,9 +735,12 @@ export component App inherits Window {
             import-dialog := ImportFavoritesDialog {
                 add-missing => { root.import-favorites-chosen(false); }
                 replace => { root.import-favorites-chosen(true); }
+                undo => { root.import-favorites-undo(); }
             }
 
             stream-dialog := NetworkStreamDialog {
+                playing-url: root.station-url;
+                is-playing: root.is-playing;
                 accepted(url, name, logo, country) => {
                     root.play-stream(url, name, logo, country);
                 }
@@ -831,6 +836,7 @@ export component App inherits Window {
                 left-secs: root.sleep-left-secs;
                 length-minutes: root.sleep-length;
                 last: root.sleep-last;
+                playing: root.is-playing || root.is-loading;
                 start(minutes) => { root.sleep-start(minutes); }
                 turn-off() => { root.sleep-off(); }
                 fade-toggled(on) => { root.sleep-fade-toggled(on); }
@@ -848,6 +854,10 @@ export component App inherits Window {
                 save(draft) => { return root.schedule-save(draft); }
                 toggled(id, on) => { root.schedule-toggled(id, on); }
                 remove(id) => { root.schedule-remove(id); }
+                search-stations() => {
+                    self.show-dialog = false;
+                    menu-bar.open-station-search();
+                }
             }
 
             agents-dialog := AgentsDialog {

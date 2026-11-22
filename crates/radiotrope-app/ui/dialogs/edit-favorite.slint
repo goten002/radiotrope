@@ -82,6 +82,8 @@ export component EditFavoriteDialog inherits Rectangle {
             // The form starts on its first field; Enter in any field saves
             StyledLineEdit {
                 init => { self.focus-input(); }
+                label: "Name";
+                required: true;
                 placeholder-text: "Station name";
                 text <=> root.edit-name;
                 accepted => { root.save(); }
@@ -92,6 +94,8 @@ export component EditFavoriteDialog inherits Rectangle {
             label: "Stream URL";
             required: true;
             StyledLineEdit {
+                label: "Stream URL";
+                required: true;
                 placeholder-text: "https://stream.example.com/radio";
                 text <=> root.edit-url;
                 accepted => { root.save(); }
@@ -103,13 +107,17 @@ export component EditFavoriteDialog inherits Rectangle {
                 color: Theme.danger-text;
                 font-size: Theme.font-md;
                 wrap: word-wrap;
+                // Save didn't go through: said at once
+                accessible-live-region: assertive;
             }
         }
 
         Field {
             label: "Logo URL";
+            optional: true;
             StyledLineEdit {
-                placeholder-text: "Optional · https://example.com/logo.png";
+                label: "Logo URL";
+                placeholder-text: "https://example.com/logo.png";
                 text <=> root.edit-logo-url;
                 clearable: true;
                 accepted => { root.save(); }
@@ -118,8 +126,10 @@ export component EditFavoriteDialog inherits Rectangle {
 
         Field {
             label: "Country";
+            optional: true;
             StyledLineEdit {
-                placeholder-text: "Optional · United Kingdom";
+                label: "Country";
+                placeholder-text: "United Kingdom";
                 text <=> root.edit-country;
                 clearable: true;
                 accepted => { root.save(); }
