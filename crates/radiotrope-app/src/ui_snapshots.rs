@@ -123,7 +123,7 @@ impl Shot {
         let nested = match self.screen {
             "picker" => true,
             "remote" => matches!(self.state, "code" | "qr"),
-            "schedule" => !matches!(self.state, "" | "empty" | "remove"),
+            "schedule" => !matches!(self.state, "" | "empty" | "remove" | "last-result"),
             _ => false,
         };
         1 + usize::from(dropdown) + usize::from(nested)

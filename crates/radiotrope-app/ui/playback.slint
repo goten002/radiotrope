@@ -135,9 +135,21 @@ export component Playback inherits Rectangle {
     property <string> bubble-text: root.bubble-chip == 1 ? root.status-text
         : root.bubble-chip == 2 ? root.recording-notice
         : root.bubble-chip == 3 ? root.save-error : "";
+    // A text that changes takes its bubble down. The notice and the save
+    // error can go away under the pointer, without telling that it left.
     changed status-text => { if root.pinned-chip == 1 { root.pinned-chip = 0; } }
-    changed recording-notice => { if root.pinned-chip == 2 { root.pinned-chip = 0; } }
-    changed save-error => { if root.pinned-chip == 3 { root.pinned-chip = 0; } }
+    changed recording-notice => { root.chip-gone(2); }
+    changed save-error => { root.chip-gone(3); }
+
+    function chip-gone(chip: int) {
+        if root.pinned-chip == chip {
+            root.pinned-chip = 0;
+        }
+        if root.hovered-chip == chip {
+            root.hovered-chip = 0;
+            root.hover-ready = false;
+        }
+    }
 
     // The pointer came onto a cut chip (at `x`, `y` in the window) or left it
     function chip-hovered(chip: int, on: bool, x: length, y: length) {
