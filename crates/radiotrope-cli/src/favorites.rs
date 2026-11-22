@@ -4,9 +4,32 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, unbounded, Receiver, RecvTimeoutError, Sender};
 use radiotrope_library::data::favorites::{FavoriteEdit, FavoritesManager};
-use radiotrope_library::data::types::{FavoriteSort, Station};
+use radiotrope_library::data::types::{name_from_url, Favorite, FavoriteSort, Station};
 
 const FOLLOW_INTERVAL: Duration = Duration::from_secs(2);
+
+/// What a finished edit did, for the notice in the bottom line
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Change {
+    Added,
+    Removed,
+}
+
+impl Change {
+    pub fn of(edit: &FavoriteEdit) -> Self {
+        match edit {
+            FavoriteEdit::Add(_) => Self::Added,
+            FavoriteEdit::Remove(_) => Self::Removed,
+        }
+    }
+
+    pub fn notice(self) -> &'static str {
+        match self {
+            Self::Added => "Added to favorites",
+            Self::Removed => "Removed from favorites",
+        }
+    }
+}
 
 pub enum Reply {
     Followed(Result<Vec<Station>, String>),
@@ -89,11 +112,34 @@ pub fn stations(manager: &FavoritesManager) -> Vec<Station> {
         .map(|favorite| favorite.station.clone())
         .map(|mut station| {
             if station.name.trim().is_empty() {
-                station.name = station.url.clone();
+                station.name = without_credentials(&station.url).into_owned();
             }
             station
         })
         .collect()
+}
+
+/// A new favorite for `station`. A station started from a bare URL has no
+/// name: it gets its host, as in the app.
+pub fn new_favorite(station: &Station) -> Favorite {
+    let mut station = station.clone();
+    if station.name.trim().is_empty() {
+        station.name = name_from_url(&station.url);
+    }
+    Favorite::from_station(station)
+}
+
+/// `url` without the scheme's `user:password@` part, so a password is
+/// never shown on screen or saved as a name. Kept as it is otherwise.
+pub fn without_credentials(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.into();
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{scheme}://{}", &rest[at + 1..]).into(),
+        None => url.into(),
+    }
 }
 
 pub fn find_match<'a>(favorites: &'a [Station], station: &Station) -> Option<&'a Station> {
@@ -111,7 +157,41 @@ pub fn find_match<'a>(favorites: &'a [Station], station: &Station) -> Option<&'a
 #[cfg(test)]
 mod tests {
     use super::*;
-    use radiotrope_library::data::types::Favorite;
+
+    #[test]
+    fn passwords_never_become_names() {
+        assert_eq!(
+            without_credentials("http://user:secret@host.test:8000/live?x=1"),
+            "http://host.test:8000/live?x=1"
+        );
+        assert_eq!(
+            without_credentials("https://host.test/a@b"),
+            "https://host.test/a@b"
+        );
+        assert_eq!(without_credentials("no scheme"), "no scheme");
+        let named = new_favorite(&Station::new("", "http://me:pw@radio.test/"));
+        assert_eq!(named.name(), "radio.test");
+        assert_eq!(named.url(), "http://me:pw@radio.test/");
+        assert_eq!(
+            new_favorite(&Station::new("Jazz", "https://jazz.test")).name(),
+            "Jazz"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("favorites.json");
+        let nameless = Favorite::from_station(Station::new("", "http://me:pw@radio.test/"));
+        let manager =
+            FavoritesManager::edit_file(&path, FavoriteEdit::Add(Box::new(nameless))).unwrap();
+        assert_eq!(stations(&manager)[0].name, "http://radio.test/");
+    }
+
+    #[test]
+    fn edits_name_their_change() {
+        let add = FavoriteEdit::Add(Box::new(Favorite::new("A", "https://a.test")));
+        assert_eq!(Change::of(&add), Change::Added);
+        let remove = FavoriteEdit::Remove("a".into());
+        assert_eq!(Change::of(&remove).notice(), "Removed from favorites");
+    }
 
     #[test]
     fn edits_round_trip_metadata_and_match_changed_urls_by_provider_id() {
