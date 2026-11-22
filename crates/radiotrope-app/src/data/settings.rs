@@ -868,9 +868,8 @@ mod tests {
         let older = read(r#"{"report_plays": true, "report_plays_consent": 0}"#);
         assert!(!older.report_plays);
         // A yes to this one is kept
-        let current = format!(
-            r#"{{"report_plays": true, "report_plays_consent": {REPORT_PLAYS_CONSENT}}}"#
-        );
+        let current =
+            format!(r#"{{"report_plays": true, "report_plays_consent": {REPORT_PLAYS_CONSENT}}}"#);
         let yes = read(&current);
         assert!(yes.report_plays);
         assert_eq!(yes.report_plays_consent, Some(REPORT_PLAYS_CONSENT));
