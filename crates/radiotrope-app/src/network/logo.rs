@@ -4,16 +4,98 @@
 //! handling both cache lookups and network fetching.
 
 use crate::config::logos::{MAX_BYTES, REFRESH_AFTER};
-use crate::data::cache::{decode_logo, CacheState, ImageCache};
+use crate::data::cache::{decode_logo, CacheState, ImageCache, LogoInfo};
 use crate::data::types::HasLogo;
 use crate::error::{AppError, Result};
+use crate::network::browse_logos::{row_rgba, Rgba};
 use crate::network::failed_logos::FailedLogos;
-use radiotrope::config::network::{user_agent, CONNECT_TIMEOUT_SECS, READ_TIMEOUT_SECS};
-use std::collections::HashSet;
+use radiotrope::config::network::{user_agent, CONNECT_TIMEOUT_SECS};
+use std::collections::{HashSet, VecDeque};
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
+
+/// The longest a logo request may take from start to end. A logo is
+/// small: a host that hasn't sent it by then is hung, and would hold up
+/// the logos queued behind it.
+pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Logos downloaded at the same time
+pub const FETCH_WORKERS: usize = 5;
+
+type Job = Box<dyn FnOnce() + Send>;
+
+/// Jobs run on up to `max` threads, which start when there is work and
+/// end when it runs out
+pub struct Workers {
+    name: &'static str,
+    max: usize,
+    /// The jobs waiting, and how many threads are running
+    state: Mutex<(VecDeque<Job>, usize)>,
+}
+
+impl Workers {
+    pub fn new(name: &'static str, max: usize) -> Arc<Self> {
+        Arc::new(Self {
+            name,
+            max,
+            state: Mutex::default(),
+        })
+    }
+
+    /// Run `job` on one of the threads, after the jobs given before it
+    pub fn run(self: &Arc<Self>, job: impl FnOnce() + Send + 'static) {
+        let mut state = self.lock();
+        state.0.push_back(Box::new(job));
+        if state.1 >= self.max {
+            return;
+        }
+        let this = Arc::clone(self);
+        let spawned = std::thread::Builder::new()
+            .name(self.name.into())
+            .spawn(move || this.work());
+        match spawned {
+            Ok(_) => state.1 += 1,
+            // The threads already running take the job; with none, it
+            // waits for the next job's thread
+            Err(e) => eprintln!("Failed to start a {} thread: {e}", self.name),
+        }
+    }
+
+    fn work(&self) {
+        loop {
+            let job = {
+                let mut state = self.lock();
+                match state.0.pop_front() {
+                    Some(job) => job,
+                    None => {
+                        state.1 -= 1;
+                        return;
+                    }
+                }
+            };
+            // A job that panics doesn't take its thread's count with it
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, (VecDeque<Job>, usize)> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+/// What is known of an item's cached logo without touching a file (see
+/// [`LogoService::glance`])
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glance {
+    /// When the cached file was written; `None` with nothing cached
+    pub modified: Option<SystemTime>,
+    /// The logo is worth fetching: it is missing or out of date (see
+    /// [`LogoService::is_missing`])
+    pub wanted: bool,
+}
 
 /// Service for fetching and caching station logos
 ///
@@ -25,9 +107,10 @@ pub struct LogoService {
     client: reqwest::blocking::Client,
     /// Logo URLs that failed lately, so they aren't fetched on every look
     failed: FailedLogos,
-    /// A background prefetch is running, and whether another was asked for
-    /// meanwhile
-    prefetching: Mutex<(bool, bool)>,
+    /// The threads of [`fetch_in_background`](Self::fetch_in_background)
+    fetchers: Arc<Workers>,
+    /// Cache keys waiting for one of them, or being fetched by one
+    queued: Mutex<HashSet<String>>,
     /// Cache keys whose logo a thread is fetching now. Another fetch of
     /// one waits for it (see [`claim`](Self::claim)).
     fetching: Mutex<HashSet<String>>,
@@ -59,7 +142,7 @@ impl LogoService {
         let client = reqwest::blocking::Client::builder()
             .user_agent(user_agent())
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
-            .timeout(Duration::from_secs(READ_TIMEOUT_SECS))
+            .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(AppError::from)?;
 
@@ -67,7 +150,8 @@ impl LogoService {
             cache,
             client,
             failed: FailedLogos::new(),
-            prefetching: Mutex::new((false, false)),
+            fetchers: Workers::new("logo-fetch", FETCH_WORKERS),
+            queued: Mutex::default(),
             fetching: Mutex::default(),
             fetched: Condvar::new(),
         })
@@ -224,9 +308,30 @@ impl LogoService {
     /// converted, counts too: [`prefetch`](Self::prefetch) converts it.
     /// A cached logo that is out of date (see [`is_stale`](Self::is_stale))
     /// counts too: [`prefetch`](Self::prefetch) downloads it again.
+    ///
+    /// What the cache holds is read from the disk the first time an item
+    /// is asked about (see [`ImageCache::info`]), and from memory after.
     pub fn is_missing<T: HasLogo>(&self, item: &T) -> bool {
-        match self.cache.state(&item.logo_cache_key()) {
-            CacheState::Ready => self.is_stale(item),
+        let info = self.cache.info(&item.logo_cache_key());
+        self.is_wanted(item, &info, SystemTime::now())
+    }
+
+    /// What is known of `item`'s cached logo, without touching a file:
+    /// for the UI thread. `None` when nothing is known yet; asking
+    /// [`is_missing`](Self::is_missing) or
+    /// [`cached_modified`](Self::cached_modified) on another thread
+    /// reads it.
+    pub fn glance<T: HasLogo>(&self, item: &T) -> Option<Glance> {
+        let info = self.cache.known(&item.logo_cache_key())?;
+        Some(Glance {
+            modified: info.modified,
+            wanted: self.is_wanted(item, &info, SystemTime::now()),
+        })
+    }
+
+    fn is_wanted<T: HasLogo>(&self, item: &T, info: &LogoInfo, now: SystemTime) -> bool {
+        match info.state {
+            CacheState::Ready => self.is_stale_given(item, info, now),
             CacheState::NeedsConversion => true,
             CacheState::Absent => item
                 .logo_url()
@@ -243,86 +348,90 @@ impl LogoService {
     }
 
     fn is_stale_at<T: HasLogo>(&self, item: &T, now: SystemTime) -> bool {
+        let info = self.cache.info(&item.logo_cache_key());
+        self.is_stale_given(item, &info, now)
+    }
+
+    fn is_stale_given<T: HasLogo>(&self, item: &T, info: &LogoInfo, now: SystemTime) -> bool {
         let Some(url) = item.logo_url().filter(|url| !url.is_empty()) else {
             return false;
         };
         if self.failed.has_failed(url) {
             return false;
         }
-        match self.cache.source(&item.logo_cache_key()) {
+        match &info.source {
             Some((from, at)) => {
-                from != url || now.duration_since(at).is_ok_and(|age| age >= REFRESH_AFTER)
+                from != url
+                    || now
+                        .duration_since(*at)
+                        .is_ok_and(|age| age >= REFRESH_AFTER)
             }
             None => true,
         }
     }
 
     /// When `item`'s cached logo file was last written (see
-    /// [`ImageCache::modified`])
+    /// [`ImageCache::modified`]). Read from the disk the first time, from
+    /// memory after (see [`ImageCache::info`]).
     pub fn cached_modified<T: HasLogo>(&self, item: &T) -> Option<SystemTime> {
-        self.cache.modified(&item.logo_cache_key())
+        self.cache.info(&item.logo_cache_key()).modified
     }
 
-    /// [`prefetch`](Self::prefetch) `items` on a thread of its own, then
-    /// call `done` if any logo arrived. While one runs, another call only
-    /// notes that it was asked for: the running one then calls its `done`
-    /// as well, so the caller looks again, instead of a second thread
-    /// fetching the same logos.
-    pub fn prefetch_in_background<T, F>(self: &Arc<Self>, items: Vec<T>, done: F)
+    /// Fetch `item`'s logo on one of [`FETCH_WORKERS`] threads, if it is
+    /// missing or out of date (see [`is_missing`](Self::is_missing)), and
+    /// call `arrived` there once it is cached. An item whose logo is
+    /// already waiting or being fetched isn't queued again: the first
+    /// call's `arrived` tells of it.
+    pub fn fetch_in_background<T, F>(self: &Arc<Self>, item: T, arrived: F)
     where
         T: HasLogo + Send + 'static,
-        F: FnOnce() + Send + 'static,
+        F: FnOnce(&T) + Send + 'static,
     {
-        {
-            let mut state = self.prefetching.lock().unwrap_or_else(|e| e.into_inner());
-            if state.0 {
-                state.1 = true;
-                return;
-            }
-            *state = (true, false);
+        let key = item.logo_cache_key();
+        if !self.lock_queued().insert(key.clone()) {
+            return;
         }
         let this = Arc::clone(self);
-        let spawned = std::thread::Builder::new()
-            .name("logo-prefetch".into())
-            .spawn(move || {
-                let fetched = this.prefetch(&items);
-                let again = {
-                    let mut state = this.prefetching.lock().unwrap_or_else(|e| e.into_inner());
-                    std::mem::take(&mut *state).1
-                };
-                if fetched > 0 || again {
-                    done();
-                }
-            });
-        if spawned.is_err() {
-            *self.prefetching.lock().unwrap_or_else(|e| e.into_inner()) = (false, false);
-        }
+        self.fetchers.run(move || {
+            let fetched = this.is_missing(&item) && this.ensure_cached(&item).is_ok();
+            this.lock_queued().remove(&key);
+            if fetched {
+                arrived(&item);
+            }
+        });
+    }
+
+    fn lock_queued(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.queued.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Prefetch logos for multiple items
     ///
     /// Downloads and caches logos that aren't already cached, and converts
-    /// the ones an older build cached. Returns the number of logos
-    /// successfully fetched or converted.
+    /// the ones an older build cached, [`FETCH_WORKERS`] at a time.
+    /// Returns the number of logos successfully fetched or converted.
     ///
     /// This is a blocking operation - for background prefetching,
     /// call this from a separate thread.
-    pub fn prefetch<T: HasLogo>(&self, items: &[T]) -> usize {
-        let mut fetched = 0;
-
-        for item in items {
-            // Skip if no URL, already cached, or failed lately
-            if !self.is_missing(item) {
-                continue;
+    pub fn prefetch<T: HasLogo + Sync>(&self, items: &[T]) -> usize {
+        let next = AtomicUsize::new(0);
+        let fetched = AtomicUsize::new(0);
+        let work = || {
+            while let Some(item) = items.get(next.fetch_add(1, Ordering::Relaxed)) {
+                // Skip if no URL, already cached, or failed lately
+                if self.is_missing(item) && self.ensure_cached(item).is_ok() {
+                    fetched.fetch_add(1, Ordering::Relaxed);
+                }
             }
-
-            // Try to fetch and cache
-            if self.ensure_cached(item).is_ok() {
-                fetched += 1;
+        };
+        std::thread::scope(|scope| {
+            // This thread is one of the workers
+            for _ in 1..FETCH_WORKERS.min(items.len()) {
+                scope.spawn(work);
             }
-        }
-
-        fetched
+            work();
+        });
+        fetched.into_inner()
     }
 
     /// Prefetch logos, reporting progress via callback
@@ -444,6 +553,19 @@ impl LogoService {
     pub fn get_cached_rgba<T: HasLogo>(&self, item: &T) -> Option<(Vec<u8>, u32, u32)> {
         let data = self.get_cached(item)?;
         self.decode_cached(item, &data)
+    }
+
+    /// `item`'s cached logo shrunk for a list row (see
+    /// [`browse_logos::ROW_LOGO_SIZE`](crate::network::browse_logos::ROW_LOGO_SIZE)),
+    /// without any network request. One that fails to decode is deleted,
+    /// as by [`get_cached_rgba`](Self::get_cached_rgba).
+    pub fn get_cached_row_rgba<T: HasLogo>(&self, item: &T) -> Option<Rgba> {
+        let data = self.get_cached(item)?;
+        let logo = row_rgba(&data);
+        if logo.is_none() {
+            self.cache.delete_logo(item);
+        }
+        logo
     }
 
     /// Decode `item`'s cached logo. One that fails to decode (what older
@@ -864,35 +986,142 @@ mod tests {
         assert!(service.decode_to_rgba(&png(100, 100)).is_ok());
     }
 
+    /// Five stations whose logos a server sends after `delay`
+    fn slow_logos(delay: Duration) -> (Vec<Station>, Arc<std::sync::atomic::AtomicUsize>) {
+        use crate::network::test_http::{ok, serve_counted};
+        let (server, requests) = serve_counted(ok(&png(8, 8), true), delay);
+        let stations = (0..5)
+            .map(|i| {
+                Station::new("Slow", &format!("http://slow.test/{i}"))
+                    .with_logo(format!("{server}/{i}.png").as_str())
+            })
+            .collect();
+        (stations, requests)
+    }
+
     #[test]
-    fn a_prefetch_asked_for_while_one_runs_is_folded_into_it() {
-        use crate::network::test_http::serve;
+    fn logos_are_fetched_several_at_a_time() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let (stations, requests) = slow_logos(Duration::from_millis(600));
+        let started = std::time::Instant::now();
+        assert_eq!(service.prefetch(&stations), 5);
+        // One after the other they would take 3 s
+        assert!(started.elapsed() < Duration::from_millis(2400));
+        assert_eq!(requests.load(Ordering::SeqCst), 5);
+        assert!(stations.iter().all(|s| service.is_cached(s)));
+    }
+
+    #[test]
+    fn background_fetches_tell_of_each_logo_as_it_arrives() {
         let service = Arc::new(LogoService::with_cache(temp_cache()).unwrap());
-        let slow = serve(
-            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
-            Duration::from_millis(500),
-        );
-        let station = Station::new("Slow", "http://slow.test/stream")
-            .with_logo(format!("{slow}/logo.png").as_str());
+        let (stations, requests) = slow_logos(Duration::from_millis(100));
         let (tx, rx) = std::sync::mpsc::channel();
-
-        let first = tx.clone();
-        service.prefetch_in_background(vec![station.clone()], move || {
-            let _ = first.send("first");
-        });
-        let second = tx.clone();
-        service.prefetch_in_background(vec![station.clone()], move || {
-            let _ = second.send("second");
-        });
-        // Nothing arrived, but another look was asked for meanwhile
-        assert_eq!(rx.recv_timeout(Duration::from_secs(10)), Ok("first"));
+        for station in &stations {
+            // Asked for twice (two redraws of the list): fetched once
+            for _ in 0..2 {
+                let tx = tx.clone();
+                service.fetch_in_background(station.clone(), move |station: &Station| {
+                    let _ = tx.send(station.url.clone());
+                });
+            }
+        }
+        let mut arrived: Vec<String> = (0..5)
+            .map(|_| rx.recv_timeout(Duration::from_secs(10)).unwrap())
+            .collect();
+        arrived.sort();
+        let mut wanted: Vec<String> = stations.iter().map(|s| s.url.clone()).collect();
+        wanted.sort();
+        assert_eq!(arrived, wanted);
         assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 5);
+        assert!(service.lock_queued().is_empty());
+    }
 
-        // The refused logo isn't fetched again, and nothing calls back
-        service.prefetch_in_background(vec![station], move || {
-            let _ = tx.send("third");
-        });
-        assert!(rx.recv_timeout(Duration::from_millis(300)).is_err());
+    #[test]
+    fn a_refused_logo_is_not_told_of_or_fetched_again() {
+        use crate::network::test_http::serve_counted;
+        let service = Arc::new(LogoService::with_cache(temp_cache()).unwrap());
+        let (server, requests) = serve_counted(
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            Duration::ZERO,
+        );
+        let station = Station::new("Gone", "http://gone.test/stream")
+            .with_logo(format!("{server}/logo.png").as_str());
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..2 {
+            let tx = tx.clone();
+            service.fetch_in_background(station.clone(), move |_: &Station| {
+                let _ = tx.send(());
+            });
+            assert!(rx.recv_timeout(Duration::from_millis(500)).is_err());
+        }
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(!service.is_missing(&station));
+    }
+
+    #[test]
+    fn a_hung_logo_host_is_given_up_on_after_the_request_timeout() {
+        // Checked by the value: a test waiting it out would take as long
+        assert!(REQUEST_TIMEOUT <= Duration::from_secs(10));
+    }
+
+    #[test]
+    fn a_glance_reads_no_files_and_follows_what_the_service_writes() {
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let station =
+            Station::new("Test", "http://test.com/stream").with_logo("http://test.com/logo.png");
+        let key = station.logo_cache_key();
+
+        // Nothing known until a worker asks
+        assert_eq!(service.glance(&station), None);
+        assert!(service.is_missing(&station));
+        assert_eq!(
+            service.glance(&station),
+            Some(Glance {
+                modified: None,
+                wanted: true
+            })
+        );
+
+        // A logo written through the cache is unknown again, then known
+        assert!(service.cache().put_thumbnail(&key, &png(8, 8)).is_some());
+        service.cache().set_source(&key, "http://test.com/logo.png");
+        assert_eq!(service.glance(&station), None);
+        let written = service.cached_modified(&station);
+        assert!(written.is_some());
+        assert_eq!(
+            service.glance(&station),
+            Some(Glance {
+                modified: written,
+                wanted: false
+            })
+        );
+
+        // A new logo address shows without asking the disk again
+        let moved = station.clone().with_logo("http://test.com/new.png");
+        assert_eq!(
+            service.glance(&moved),
+            Some(Glance {
+                modified: written,
+                wanted: true
+            })
+        );
+
+        service.delete(&station);
+        assert_eq!(service.glance(&station), None);
+    }
+
+    #[test]
+    fn a_cached_logo_is_shrunk_for_a_row() {
+        use crate::network::browse_logos::ROW_LOGO_SIZE;
+        let service = LogoService::with_cache(temp_cache()).unwrap();
+        let station = Station::new("Test", "http://test.com/stream");
+        service.cache().put_logo(&station, &png(256, 128)).unwrap();
+        let (rgba, w, h) = service.get_cached_row_rgba(&station).unwrap();
+        assert_eq!((w, h), (ROW_LOGO_SIZE, ROW_LOGO_SIZE / 2));
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        // The full size stays for the header
+        assert_eq!(service.get_cached_rgba(&station).unwrap().1, 256);
     }
 
     #[test]
