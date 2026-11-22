@@ -13,23 +13,22 @@ use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::{text, visual};
 
 use crate::app::state::AppSnapshot;
-use crate::app::ui_sender::UiSender;
-use crate::context::lock;
+use crate::context::{lock, AppContext};
 use crate::stats_ui::format_bytes;
 use crate::{app, App};
 
 /// Largest station logo embedded as cover art in a recording
-pub(crate) const MAX_COVER_BYTES: usize = 512 * 1024;
+const MAX_COVER_BYTES: usize = 512 * 1024;
 
 /// Wire the Tools menu recording items and the Recording Settings
 /// dialog. The format, folder and before/after-EQ choice are saved right away.
-pub(crate) fn setup_recording(
+pub(crate) fn setup(
     ui: &App,
+    ctx: &AppContext,
     settings: &radiotrope_app::data::settings::Settings,
-    cmd_tx: UiSender,
-    shared_state: Arc<Mutex<AppSnapshot>>,
-    logo_service: Arc<LogoService>,
 ) {
+    let (cmd_tx, shared_state, logo_service) =
+        (ctx.tx.clone(), ctx.state.clone(), ctx.logos.clone());
     show_recording_folder(ui, settings.recording_dir.as_deref());
     ui.set_record_with_eq(settings.record_with_eq);
     ui.set_recording_format(settings.recording_format.id().into());
@@ -143,7 +142,7 @@ pub(crate) fn setup_recording(
 /// made and checked on a thread of its own, as a slow or sleeping drive
 /// can take a while, then saved back on the UI thread unless another
 /// folder was asked for meanwhile.
-pub(crate) fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, path: &str) {
+fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, path: &str) {
     let path = std::path::PathBuf::from(path.trim());
     if path.as_os_str().is_empty() {
         ui.set_recording_folder_error("Enter a folder, or press Restore Default".into());
@@ -181,13 +180,13 @@ pub(crate) fn apply_recording_folder(ui: &App, state: &Arc<Mutex<AppSnapshot>>, 
 
 /// A new recording folder was asked for (or the default restored): a
 /// check still running for an earlier one is ignored when it ends
-pub(crate) fn new_folder_check() -> u64 {
+fn new_folder_check() -> u64 {
     FOLDER_CHECK.set(FOLDER_CHECK.get() + 1);
     FOLDER_CHECK.get()
 }
 
 /// Show `custom` (or the default folder) in the Recording Settings dialog.
-pub(crate) fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
+fn show_recording_folder(ui: &App, custom: Option<&std::path::Path>) {
     let folder = recordings::folder(custom);
     let text: slint::SharedString = folder.display().to_string().into();
     ui.set_recording_folder(text.clone());
@@ -267,7 +266,7 @@ pub(crate) fn show_recording_state(
 /// Let the user pick the recording folder with the system's folder dialog.
 /// The choice is saved straight away.
 #[cfg(feature = "desktop")]
-pub(crate) fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapshot>>) {
+fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapshot>>) {
     let Some(ui) = ui_weak.upgrade() else { return };
     let start = std::path::PathBuf::from(ui.get_recording_folder_edit().as_str());
     // Start in the folder being edited, or the nearest parent that exists.
@@ -308,11 +307,10 @@ pub(crate) fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mute
 
 /// The kiosk build has no folder dialog; the path is typed instead.
 #[cfg(not(feature = "desktop"))]
-pub(crate) fn browse_recording_folder(_ui_weak: slint::Weak<App>, _state: Arc<Mutex<AppSnapshot>>) {
-}
+fn browse_recording_folder(_ui_weak: slint::Weak<App>, _state: Arc<Mutex<AppSnapshot>>) {}
 
 /// Open a folder in the system file manager.
-pub(crate) fn open_folder(dir: &std::path::Path) {
+fn open_folder(dir: &std::path::Path) {
     let program = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(target_os = "windows") {
@@ -336,7 +334,7 @@ pub(crate) fn open_folder(dir: &std::path::Path) {
 /// `dir` as Explorer takes it: given forward slashes ("C:/Users/..."), as a
 /// typed or saved folder can have, it opens Documents instead
 #[cfg(any(windows, test))]
-pub(crate) fn explorer_path(dir: &std::path::Path) -> std::ffi::OsString {
+fn explorer_path(dir: &std::path::Path) -> std::ffi::OsString {
     match dir.to_str() {
         Some(text) => text.replace('/', "\\").into(),
         // Not Unicode, so not typed in: left as it is
@@ -347,7 +345,7 @@ pub(crate) fn explorer_path(dir: &std::path::Path) -> std::ffi::OsString {
 thread_local! {
     /// Counts the recording folders asked for, so only the last one asked
     /// for is saved when its check comes back
-    pub(crate) static FOLDER_CHECK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static FOLDER_CHECK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

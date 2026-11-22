@@ -23,7 +23,6 @@ use crate::{row_logos, App, BrowseStation, FilterEntry};
 /// Wire the Search Stations window: searching and paging, the rows'
 /// logos, the star and Play on a row, and the country and genre pickers
 pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) {
-    let (ui_tx, shared_state) = (&ctx.tx, &ctx.state);
     let (favorites, logo_service) = (&ctx.favorites, &ctx.logos);
     // Generation counter for browse logo fetches (to cancel stale requests)
     let browse_logo_gen = Arc::new(AtomicU64::new(0));
@@ -38,19 +37,19 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
         browse_logo_gen.clone(),
     );
     {
-        let ui_weak = ui.as_weak();
         let row_logos = row_logos.clone();
+        let ctx = ctx.clone();
         ui.on_browse_rows_changed(move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 row_logos.refresh(&ui);
             }
         });
     }
     {
-        let ui_weak = ui.as_weak();
         let row_logos = row_logos.clone();
+        let ctx = ctx.clone();
         ui.on_browse_closed(move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 row_logos.release(&ui);
                 row_logos::return_freed_memory();
             }
@@ -60,18 +59,17 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
     // search-stations callback: a name query within the filters (nothing
     // given shows the most played stations)
     {
-        let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let row_logos = row_logos.clone();
-        let favs = favorites.clone();
+        let ctx = ctx.clone();
         ui.on_search_stations(move |query, country, genre| {
             let query = BrowseQuery {
                 name: query.trim().to_string(),
                 country: country.to_string(),
                 genre: genre.to_string(),
             };
-            start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
+            start_browse(&ctx.ui, &state, &gen, &row_logos, &ctx.favorites, query);
         });
     }
 
@@ -123,20 +121,19 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
 
     // Try the failed browser request again: the first page, or the next one
     {
-        let ui_weak = ui.as_weak();
         let state = browse_state.clone();
         let gen = browse_logo_gen.clone();
         let row_logos = row_logos.clone();
-        let favs = favorites.clone();
+        let ctx = ctx.clone();
         ui.on_retry_browse(move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(ui) = ctx.ui.upgrade() else { return };
             if ui.get_search_loading() || ui.get_search_loading_more() {
                 return;
             }
             ui.set_search_error(Default::default());
             if ui.get_search_results().row_count() == 0 {
                 let query = lock(&state).0.clone();
-                start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
+                start_browse(&ctx.ui, &state, &gen, &row_logos, &ctx.favorites, query);
             } else {
                 ui.set_search_loading_more(true);
                 ui.invoke_load_more_stations();
@@ -146,13 +143,11 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
 
     // Star on a search result: add the station to favorites, or remove it
     {
-        let ui_weak = ui.as_weak();
-        let favs = favorites.clone();
-        let logo_svc = logo_service.clone();
         let row_logos = row_logos.clone();
+        let ctx = ctx.clone();
         ui.on_toggle_browse_favorite(move |item| {
-            let Some(ui) = ui_weak.upgrade() else { return };
-            let mut f = lock(&favs);
+            let Some(ui) = ctx.ui.upgrade() else { return };
+            let mut f = lock(&ctx.favorites);
             let existing = f
                 .find_match(&item.url, Some(item.provider_id.as_str()))
                 .map(|fav| fav.url().to_string());
@@ -180,7 +175,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                         fav = fav.with_logo(item.logo_url.as_str());
                         // The browser already has the logo: no new download
                         if let Some(png) = row_logos.logos().cached_png(&item.logo_url) {
-                            let _ = logo_svc.cache().put_logo(&fav, &png);
+                            let _ = ctx.logos.cache().put_logo(&fav, &png);
                         }
                     }
                     let _ = f.add(fav);
@@ -190,7 +185,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
             let current = ui.get_station_url();
             ui.set_is_station_favorited(!current.is_empty() && f.is_favorite(&current));
             drop(f);
-            refresh_favorites(&ui, &favs, &logo_svc);
+            refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
         });
     }
 
@@ -232,9 +227,9 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
 
     // Narrow the filter picker's list by name
     {
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_filter_filter_entries(move |text| {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 show_filter_entries(&ui, &text);
             }
         });
@@ -242,21 +237,14 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
 
     // play-station callback
     {
-        let play_tx = ui_tx.clone();
-        let logo_svc = logo_service.clone();
-        let favs = favorites.clone();
-        let play_state = shared_state.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_play_station(move |station| {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 let logo_url = station.logo_url.to_string();
                 let country = station.country.to_string();
                 play_station_with_metadata(
                     &ui,
-                    &play_tx,
-                    &play_state,
-                    &favs,
-                    &logo_svc,
+                    &ctx,
                     PlayMetadata {
                         url: station.url.to_string(),
                         name: Some(station.name.to_string()),
@@ -284,7 +272,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
 /// within the filters. Each part may be empty; all empty lists the most
 /// played stations.
 #[derive(Clone, Default)]
-pub(crate) struct BrowseQuery {
+struct BrowseQuery {
     pub(crate) name: String,
     /// ISO 3166-1 code
     pub(crate) country: String,
@@ -305,7 +293,7 @@ impl BrowseQuery {
 }
 
 /// Fetch one page of browser results from the Radiotrope directory
-pub(crate) fn fetch_browse_page(
+fn fetch_browse_page(
     query: &BrowseQuery,
     offset: usize,
 ) -> radiotrope_app::error::Result<SearchResults> {
@@ -314,7 +302,7 @@ pub(crate) fn fetch_browse_page(
 
 /// The directory the station browser lists, made once: it remembers where
 /// each list's next page starts
-pub(crate) fn browse_directory() -> radiotrope_app::error::Result<Arc<RadiotropeProvider>> {
+fn browse_directory() -> radiotrope_app::error::Result<Arc<RadiotropeProvider>> {
     static DIRECTORY: std::sync::OnceLock<Arc<RadiotropeProvider>> = std::sync::OnceLock::new();
     if let Some(directory) = DIRECTORY.get() {
         return Ok(directory.clone());
@@ -326,7 +314,7 @@ pub(crate) fn browse_directory() -> radiotrope_app::error::Result<Arc<Radiotrope
 /// Count a play of a station browser result in the directory, which
 /// orders its lists by plays. Nobody waits on it, and a failure costs
 /// only the count.
-pub(crate) fn report_browse_play(item: &BrowseStation) {
+fn report_browse_play(item: &BrowseStation) {
     if item.provider_id.is_empty() {
         return;
     }
@@ -343,7 +331,7 @@ pub(crate) fn report_browse_play(item: &BrowseStation) {
 
 /// Replace the browser list with the first page of `query`, fetched in the
 /// background. Results of an older request that finish later are dropped.
-pub(crate) fn start_browse(
+fn start_browse(
     ui_weak: &slint::Weak<App>,
     state: &Arc<Mutex<(BrowseQuery, usize)>>,
     gen: &Arc<AtomicU64>,
@@ -388,7 +376,7 @@ pub(crate) fn start_browse(
 
 /// Show a page of browser results, appending to the list or replacing it,
 /// then load the logos of the rows on screen
-pub(crate) fn show_browse_results(
+fn show_browse_results(
     ui: &App,
     results: SearchResults,
     append: bool,
@@ -424,11 +412,11 @@ pub(crate) fn show_browse_results(
 
 thread_local! {
     /// Station browser requests failed in a row, which spaces out the retries
-    pub(crate) static BROWSE_FAILURES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    static BROWSE_FAILURES: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Say why a station browser request failed, and when it is tried again
-pub(crate) fn show_browse_error(ui: &App, e: &radiotrope_app::error::AppError) {
+fn show_browse_error(ui: &App, e: &radiotrope_app::error::AppError) {
     let failures = BROWSE_FAILURES.get() + 1;
     BROWSE_FAILURES.set(failures);
     let problem = ServiceProblem::of(e);
@@ -436,7 +424,7 @@ pub(crate) fn show_browse_error(ui: &App, e: &radiotrope_app::error::AppError) {
     ui.set_search_retry_in(problem.retry_delay_secs(failures) as i32);
 }
 
-pub(crate) fn station_to_browse(s: &Station) -> BrowseStation {
+fn station_to_browse(s: &Station) -> BrowseStation {
     BrowseStation {
         name: s.name.as_str().into(),
         url: s.url.as_str().into(),
@@ -456,7 +444,7 @@ pub(crate) fn station_to_browse(s: &Station) -> BrowseStation {
 }
 
 /// A search result is a favorite by URL or by the provider's station ID
-pub(crate) fn browse_is_favorite(favs: &FavoritesManager, item: &BrowseStation) -> bool {
+fn browse_is_favorite(favs: &FavoritesManager, item: &BrowseStation) -> bool {
     favs.find_match(&item.url, Some(item.provider_id.as_str()))
         .is_some()
 }
@@ -480,20 +468,20 @@ pub(crate) fn mark_browse_favorites(ui: &App, favs: &FavoritesManager) {
 // Decoded flag images keyed by country code. Flags are tiny and shared by many
 // rows, so each is decoded once. Runs on the Slint event-loop thread only.
 thread_local! {
-    pub(crate) static FLAG_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
+    static FLAG_IMAGE_CACHE: std::cell::RefCell<HashMap<String, slint::Image>> =
         std::cell::RefCell::new(HashMap::new());
 }
 
 thread_local! {
     /// Every entry of the kind the filter picker loaded last; it shows a
     /// filtered copy
-    pub(crate) static ALL_FILTER_ENTRIES: std::cell::RefCell<Vec<FilterEntry>> =
+    static ALL_FILTER_ENTRIES: std::cell::RefCell<Vec<FilterEntry>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The directory's countries or genres (`kind`: "country" or "genre") as
 /// filter picker entries, A to Z
-pub(crate) fn filter_entries(
+fn filter_entries(
     kind: &str,
     categories: Vec<radiotrope_app::providers::types::Category>,
 ) -> Vec<FilterEntry> {
@@ -529,7 +517,7 @@ pub(crate) fn filter_entries(
 
 /// Show the filter picker entries whose name contains `filter`
 /// (case-insensitive)
-pub(crate) fn show_filter_entries(ui: &App, filter: &str) {
+fn show_filter_entries(ui: &App, filter: &str) {
     let filter = filter.trim().to_lowercase();
     let entries: Vec<FilterEntry> = ALL_FILTER_ENTRIES.with(|all| {
         all.borrow()

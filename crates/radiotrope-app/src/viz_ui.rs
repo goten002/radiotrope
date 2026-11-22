@@ -120,12 +120,7 @@ pub(crate) fn viz_wanted(ui: &App) -> bool {
 
 /// Push one visualizer frame to the UI (levels already gated and smoothed).
 /// The model is updated in place.
-pub(crate) fn show_viz_frame(
-    viz: &VizData,
-    vu: &[f32],
-    spectrum: &[f32],
-    spectrum_model: &VecModel<f32>,
-) {
+fn show_viz_frame(viz: &VizData, vu: &[f32], spectrum: &[f32], spectrum_model: &VecModel<f32>) {
     // Only the bands that changed: every write makes the visualizer update
     // (Wave redraws on any write), and in silence nothing changes
     set_levels(spectrum_model, spectrum);
@@ -135,7 +130,7 @@ pub(crate) fn show_viz_frame(
 }
 
 /// Models behind the Dot Matrix mode, updated in place
-pub(crate) struct VizExtras {
+struct VizExtras {
     pub(crate) columns: std::rc::Rc<VecModel<f32>>,
     pub(crate) peaks: std::rc::Rc<VecModel<f32>>,
 }
@@ -152,7 +147,7 @@ impl VizExtras {
         extras
     }
 
-    pub(crate) fn show_columns(&self, columns: &[f32], peaks: &[f32]) {
+    fn show_columns(&self, columns: &[f32], peaks: &[f32]) {
         set_levels(&self.columns, columns);
         set_levels(&self.peaks, peaks);
     }
@@ -168,7 +163,7 @@ impl VizExtras {
 }
 
 /// Write `levels` into `model` row by row, skipping unchanged rows
-pub(crate) fn set_levels(model: &VecModel<f32>, levels: &[f32]) {
+fn set_levels(model: &VecModel<f32>, levels: &[f32]) {
     for (i, &level) in levels.iter().enumerate().take(model.row_count()) {
         if model.row_data(i) != Some(level) {
             model.set_row_data(i, level);

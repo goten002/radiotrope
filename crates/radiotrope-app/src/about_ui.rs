@@ -5,7 +5,7 @@ use slint::ComponentHandle;
 use crate::{AboutInfo, App};
 
 /// Fill in the About dialog and handle its links
-pub(crate) fn setup_about(ui: &App) {
+pub(crate) fn setup(ui: &App) {
     let info = ui.global::<AboutInfo>();
     info.set_version(env!("CARGO_PKG_VERSION").into());
     info.set_commit(env!("RADIOTROPE_GIT_HASH").into());
@@ -24,7 +24,7 @@ pub(crate) fn setup_about(ui: &App) {
 }
 
 /// Human-readable OS and CPU, e.g. "Linux aarch64"
-pub(crate) fn platform_name() -> String {
+fn platform_name() -> String {
     let os = match std::env::consts::OS {
         "linux" => "Linux",
         "macos" => "macOS",
@@ -56,7 +56,7 @@ pub(crate) fn author_names(authors: &str) -> String {
 
 /// Open a web link in the default browser. Does nothing if there is no
 /// browser (e.g. the embedded kiosk build).
-pub(crate) fn open_url(url: &str) {
+fn open_url(url: &str) {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return;
     }

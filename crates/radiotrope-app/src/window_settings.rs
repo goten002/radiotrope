@@ -10,8 +10,7 @@ use radiotrope_app::data::settings::Theme as ThemeSetting;
 use radiotrope_app::data::types::Station;
 
 use crate::app::state::AppSnapshot;
-use crate::app::ui_sender::UiSender;
-use crate::context::lock;
+use crate::context::{lock, AppContext};
 use crate::{app, App, EqPresetGroup, VizStyle};
 #[cfg(feature = "desktop")]
 use crate::{tray, window_frame};
@@ -167,7 +166,8 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
 }
 
 /// Wire the Equalizer, Filters and Accent Color dialogs
-pub(crate) fn setup(ui: &App, ui_tx: &UiSender, shared_state: &Arc<Mutex<AppSnapshot>>) {
+pub(crate) fn setup(ui: &App, ctx: &AppContext) {
+    let (ui_tx, shared_state) = (&ctx.tx, &ctx.state);
     // EQ callbacks
     {
         let tx = ui_tx.clone();
@@ -317,7 +317,7 @@ pub(crate) struct WindowSettings {
     /// Tray icon, close to tray, start in tray, minimize to tray (desktop)
     pub(crate) tray: Option<(bool, bool, bool, bool)>,
     pub(crate) last_station: Option<Station>,
-    pub(crate) window_size: Option<(u32, u32)>,
+    window_size: Option<(u32, u32)>,
 }
 
 pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {

@@ -17,7 +17,7 @@ use crate::favorites_ui::session_listen_secs;
 use crate::player_ui::logo_image;
 use crate::{App, FavoriteStation};
 
-pub(crate) fn favorite_to_slint(
+fn favorite_to_slint(
     f: &radiotrope_app::data::types::Favorite,
     stats: radiotrope_app::data::types::StationStats,
 ) -> FavoriteStation {
@@ -68,14 +68,14 @@ pub(crate) fn update_favorite_stats(ui: &App, favs: &FavoritesManager) {
 
 /// Total listening time for a favorites row: "3 h 25 min", "40 min",
 /// "<1 min", or empty when never played
-pub(crate) fn format_listen_time(secs: u64) -> String {
+fn format_listen_time(secs: u64) -> String {
     text::minutes(secs)
 }
 
 /// When a favorite was last played, relative to now: "Just now",
 /// "12 min ago", "3 h ago", "Yesterday", "5 days ago", "2 weeks ago",
 /// "4 months ago", or empty when never played
-pub(crate) fn format_last_played(timestamp: Option<u64>) -> String {
+fn format_last_played(timestamp: Option<u64>) -> String {
     let Some(ts) = timestamp else {
         return String::new();
     };
@@ -106,13 +106,13 @@ pub(crate) fn format_last_played(timestamp: Option<u64>) -> String {
 
 /// A favorite's decoded logo, and when the file it was decoded from was
 /// written: a newer file (a logo downloaded again) is decoded again
-pub(crate) type DecodedLogo = (slint::Image, Option<std::time::SystemTime>);
+type DecodedLogo = (slint::Image, Option<std::time::SystemTime>);
 
 // In-memory cache of decoded slint::Image keyed by favorite ID.
 // All callers run on the Slint event-loop thread, so thread_local is safe and avoids
 // threading slint::Image (which is !Send) through closures.
 thread_local! {
-    pub(crate) static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, DecodedLogo>> =
+    static LOGO_IMAGE_CACHE: std::cell::RefCell<HashMap<String, DecodedLogo>> =
         std::cell::RefCell::new(HashMap::new());
 }
 

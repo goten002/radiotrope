@@ -29,7 +29,7 @@ pub(crate) fn setup_power(ui: &App) {
 
 /// Wire the Wi-Fi page to the iwd thread (Raspberry Pi build only). The
 /// thread reports through `WifiEvent`s, applied on the UI thread here.
-pub(crate) fn setup_wifi(ui: &App) {
+pub(crate) fn setup(ui: &App) {
     use radiotrope_app::wifi::{WifiCommand, WifiEvent, WifiManager, WifiState};
 
     // Backspace for the on-screen keyboard (Slint has no string slicing)

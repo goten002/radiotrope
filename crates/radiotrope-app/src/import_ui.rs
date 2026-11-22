@@ -3,6 +3,7 @@
 
 use std::sync::{Arc, Mutex};
 
+#[cfg(feature = "desktop")]
 use slint::ComponentHandle;
 
 use radiotrope_app::data::favorites::{FavoritesManager, ImportMode, ImportOutcome};
@@ -13,37 +14,32 @@ use crate::{control, App};
 
 /// Wire File > Import Favorites and Export Favorites
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
-    let (favorites, logo_service) = (&ctx.favorites, &ctx.logos);
     {
         // The list read from the file picked, until Add Missing or Replace
         let pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>> =
             Default::default();
         {
-            let ui_weak = ui.as_weak();
-            let favs = favorites.clone();
-            ui.on_export_favorites(move || export_favorites(ui_weak.clone(), favs.clone()));
+            let ctx = ctx.clone();
+            ui.on_export_favorites(move || export_favorites(ctx.ui.clone(), ctx.favorites.clone()));
         }
         {
-            let ui_weak = ui.as_weak();
-            let favs = favorites.clone();
             let pending = pending.clone();
+            let ctx = ctx.clone();
             ui.on_import_favorites(move || {
-                import_favorites(ui_weak.clone(), favs.clone(), pending.clone())
+                import_favorites(ctx.ui.clone(), ctx.favorites.clone(), pending.clone())
             });
         }
         {
-            let ui_weak = ui.as_weak();
-            let favs = favorites.clone();
-            let logo_svc = logo_service.clone();
+            let ctx = ctx.clone();
             ui.on_import_favorites_chosen(move |replace| {
-                let Some(ui) = ui_weak.upgrade() else { return };
+                let Some(ui) = ctx.ui.upgrade() else { return };
                 let list = std::mem::take(&mut *pending.borrow_mut());
                 let mode = if replace {
                     ImportMode::Replace
                 } else {
                     ImportMode::Add
                 };
-                let mut f = lock(&favs);
+                let mut f = lock(&ctx.favorites);
                 let done = f
                     .import_list(mode, &list, control::MAX_FAVORITES, false)
                     .and_then(|outcome| f.save().map(|_| outcome));
@@ -61,7 +57,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                         ui.set_import_message_error(true);
                     }
                 }
-                refresh_favorites(&ui, &favs, &logo_svc);
+                refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
             });
         }
     }
@@ -69,13 +65,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
 
 /// Show the favorites file dialog with only a message (an export done, or
 /// what went wrong)
-pub(crate) fn show_favorites_file_message(
-    ui: &App,
-    title: &str,
-    message: &str,
-    detail: &str,
-    error: bool,
-) {
+fn show_favorites_file_message(ui: &App, title: &str, message: &str, detail: &str, error: bool) {
     ui.set_import_title(title.into());
     ui.set_import_subtitle(Default::default());
     ui.set_import_message(message.into());
@@ -87,7 +77,7 @@ pub(crate) fn show_favorites_file_message(
 /// What taking in a list would change, for Import Favorites: "Adds 12,
 /// keeps 30"
 #[cfg(feature = "desktop")]
-pub(crate) fn import_preview_text(mode: ImportMode, o: &ImportOutcome) -> String {
+fn import_preview_text(mode: ImportMode, o: &ImportOutcome) -> String {
     if !o.changes() {
         return match mode {
             ImportMode::Add => "You have them all already.".into(),
@@ -125,7 +115,7 @@ pub(crate) fn import_preview_text(mode: ImportMode, o: &ImportOutcome) -> String
 }
 
 /// What Import Favorites did
-pub(crate) fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usize) -> String {
+fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usize) -> String {
     if !o.changes() {
         return "Nothing changed: your favorites already match.".into();
     }
@@ -146,7 +136,7 @@ pub(crate) fn import_done_text(mode: ImportMode, o: &ImportOutcome, listed: usiz
 
 /// Save the favorites to a file the user picks
 #[cfg(feature = "desktop")]
-pub(crate) fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<FavoritesManager>>) {
+fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<FavoritesManager>>) {
     let Some(ui) = ui_weak.upgrade() else { return };
     let save = rfd::AsyncFileDialog::new()
         .set_title("Export Favorites")
@@ -179,7 +169,7 @@ pub(crate) fn export_favorites(ui_weak: slint::Weak<App>, favs: Arc<Mutex<Favori
 
 /// Pick a favorites file, then ask Add Missing or Replace
 #[cfg(feature = "desktop")]
-pub(crate) fn import_favorites(
+fn import_favorites(
     ui_weak: slint::Weak<App>,
     favs: Arc<Mutex<FavoritesManager>>,
     pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>>,
@@ -251,10 +241,10 @@ pub(crate) fn import_favorites(
 
 /// The kiosk build has no file dialog (the menu items are greyed out)
 #[cfg(not(feature = "desktop"))]
-pub(crate) fn export_favorites(_ui_weak: slint::Weak<App>, _favs: Arc<Mutex<FavoritesManager>>) {}
+fn export_favorites(_ui_weak: slint::Weak<App>, _favs: Arc<Mutex<FavoritesManager>>) {}
 
 #[cfg(not(feature = "desktop"))]
-pub(crate) fn import_favorites(
+fn import_favorites(
     _ui_weak: slint::Weak<App>,
     _favs: Arc<Mutex<FavoritesManager>>,
     _pending: std::rc::Rc<std::cell::RefCell<Vec<radiotrope_app::data::types::Favorite>>>,

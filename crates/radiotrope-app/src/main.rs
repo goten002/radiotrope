@@ -57,8 +57,6 @@ use radiotrope_app::data::types::Station;
 use radiotrope_app::network::browse_logos::BrowseLogos;
 use radiotrope_app::network::logo::LogoService;
 
-use about_ui::setup_about;
-use agents_ui::{setup_agents, watch_agents};
 use app::controller::AppController;
 use app::delayed_save::DelayedSave;
 use app::listening::ListenSession;
@@ -69,7 +67,7 @@ use caches::{migrate_logo_ids, prune_caches_daily};
 use context::{lock, AppContext};
 use favorites_list::refresh_favorites;
 use favorites_ui::{credit_listening, show_edited_favorite, EditedFavorite};
-use recording_ui::{save_recording_settings, setup_recording, station_cover_png};
+use recording_ui::{save_recording_settings, station_cover_png};
 use window_settings::save_settings;
 
 // What the snapshot tool takes from the crate root
@@ -232,16 +230,16 @@ fn main() {
         state.recording_setup = app::state::RecordingSetup::from_settings(&settings);
     }
 
+    // Create Slint UI
+    let ui = App::new().unwrap();
     // What the window's handlers share
     let ctx = AppContext {
+        ui: ui.as_weak(),
         tx: ui_tx.clone(),
         state: shared_state.clone(),
         favorites: favorites.clone(),
         logos: logo_service.clone(),
     };
-
-    // Create Slint UI
-    let ui = App::new().unwrap();
     shortcuts::install(&ui);
     ui.on_locate_favorite(|model, highlighted, playing, action, page| {
         shortcuts::favorite_highlight(
@@ -287,8 +285,8 @@ fn main() {
         agents
     });
     // Network agents, when turned on, and the Agents dialog
-    let _network_timer = setup_agents(&ui, agents.clone(), &settings);
-    let _agents_timer = watch_agents(&ui, agents.as_ref().map(|a| a.tools().presence()));
+    let _network_timer = agents_ui::setup(&ui, agents.clone(), &settings);
+    let _agents_timer = agents_ui::watch(&ui, agents.as_ref().map(|a| a.tools().presence()));
     // Phones (Radiotrope Remote), when turned on, in the main player only
     let remote = instance.as_ref().map(|_| {
         Arc::new(remote::Remote::new(
@@ -303,6 +301,7 @@ fn main() {
     migrate_logo_ids(&favorites, settings.last_station.as_ref(), &logo_service);
     refresh_favorites(&ui, &favorites, &logo_service);
 
+    // The saved settings and the station of the last run
     window_settings::apply(&ui, &settings);
     player_ui::setup_header(&ui, &ctx, settings.last_station.as_ref());
 
@@ -322,26 +321,19 @@ fn main() {
         ui_tx.send(command);
     }
 
+    // What the window's controls do
     player_ui::setup(&ui, &ctx);
-
     favorites_ui::setup(&ui, &ctx);
-
-    window_settings::setup(&ui, &ui_tx, &shared_state);
+    window_settings::setup(&ui, &ctx);
     // WiFi settings and Power Off / Restart (Raspberry Pi build only)
     #[cfg(feature = "embedded")]
-    wifi_ui::setup_wifi(&ui);
+    wifi_ui::setup(&ui);
     #[cfg(feature = "embedded")]
     wifi_ui::setup_power(&ui);
 
-    setup_about(&ui);
+    about_ui::setup(&ui);
     setup_text_util(&ui);
-    setup_recording(
-        &ui,
-        &settings,
-        ui_tx.clone(),
-        shared_state.clone(),
-        logo_service.clone(),
-    );
+    recording_ui::setup(&ui, &ctx, &settings);
     schedule_ui::setup(&ui, &settings, ui_tx.clone(), shared_state.clone());
 
     // Logos of the browser rows on screen, kept small on disk
@@ -371,10 +363,7 @@ fn main() {
         logos_refreshed,
     );
     browse_ui::setup(&ui, &ctx, browse_logos);
-
     import_ui::setup(&ui, &ctx);
-
-    // TODO: set up system tray when mcp_mode is true
 
     // Spawn controller on its own thread
     let ctrl_state = shared_state.clone();
@@ -404,7 +393,6 @@ fn main() {
     // when they come.
 
     let viz_timer = viz_ui::start_timer(&ui, analysis_rx);
-
     let engine_stats = stats_ui::setup(&ui, &shared_state, stats_rx, &viz_timer);
 
     // Listening session of the station playing now, for favorite stats

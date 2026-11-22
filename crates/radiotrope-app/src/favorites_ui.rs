@@ -26,23 +26,19 @@ use crate::{shortcuts, App, FavoriteStation};
 /// Wire what the favorites list and the header's star do: play, step,
 /// star, edit, remove, move and reorder, and reset a row's figures
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
-    let (ui_tx, shared_state) = (&ctx.tx, &ctx.state);
-    let (favorites, logo_service) = (&ctx.favorites, &ctx.logos);
+    let shared_state = &ctx.state;
     // toggle-favorite callback
     {
-        let favs = favorites.clone();
-        let logo_svc = logo_service.clone();
-        let state = shared_state.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_toggle_favorite(move || {
-            let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(ui) = ctx.ui.upgrade() else { return };
             let url = ui.get_station_url().to_string();
             if url.is_empty() {
                 return;
             }
             // A stream without a name shows as "Radiotrope"; it is saved
             // under its address instead
-            let name = lock(&state)
+            let name = lock(&ctx.state)
                 .station_name
                 .clone()
                 .filter(|name| !name.is_empty())
@@ -50,7 +46,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             let logo_url = ui.get_station_logo_url().to_string();
             let country = ui.get_station_country().to_string();
 
-            let mut f = lock(&favs);
+            let mut f = lock(&ctx.favorites);
             if f.is_favorite(&url) {
                 let _ = f.remove_by_url(&url);
             } else {
@@ -73,27 +69,20 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             drop(f);
 
             ui.set_is_station_favorited(is_fav);
-            refresh_favorites(&ui, &favs, &logo_svc);
+            refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
         });
     }
 
     // play-favorite callback
     {
-        let play_tx = ui_tx.clone();
-        let logo_svc = logo_service.clone();
-        let favs = favorites.clone();
-        let play_state = shared_state.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_play_favorite(move |station| {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 let logo_url = station.logo_url.to_string();
                 let country = station.country.to_string();
                 play_station_with_metadata(
                     &ui,
-                    &play_tx,
-                    &play_state,
-                    &favs,
-                    &logo_svc,
+                    &ctx,
                     PlayMetadata {
                         url: station.url.to_string(),
                         name: Some(station.name.to_string()),
@@ -140,10 +129,9 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
 
     // reset-favorite-stats callback
     {
-        let favs = favorites.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_reset_favorite_stats(move |id| {
-            let mut f = lock(&favs);
+            let mut f = lock(&ctx.favorites);
             // What another player saved since is taken in first, and then
             // the poll redraws the whole list
             let took_in = f.reload_if_changed();
@@ -158,7 +146,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             if let Some(map) = lock(&SESSION_LISTEN).as_mut() {
                 map.remove(id.as_str());
             }
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 update_favorite_stats(&ui, &f);
             }
         });
@@ -166,10 +154,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
 
     // edit-favorite callback
     {
-        let favs = favorites.clone();
-        let logo_svc = logo_service.clone();
-        let ui_weak = ui.as_weak();
-        let edit_shared_state = shared_state.clone();
+        let ctx = ctx.clone();
         ui.on_edit_favorite(move |station| {
             let id = station.id.to_string();
             let name = station.name.to_string();
@@ -193,7 +178,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
 
             // A failed update (another favorite has the new URL) changes
             // nothing; the dialog stays open and shows why
-            let mut f = lock(&favs);
+            let mut f = lock(&ctx.favorites);
             let old_fav = f.get(&id).cloned();
             if f.update(&id, update).is_err() {
                 return if f.get_id_for_url(&url) != id && f.is_favorite(&url) {
@@ -206,7 +191,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             let _ = f.save();
             drop(f);
 
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 let edited = EditedFavorite {
                     old: old_fav.as_ref(),
                     id: &id,
@@ -215,7 +200,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                     logo_url: &logo_url,
                     country: &country,
                 };
-                show_edited_favorite(&ui, &favs, &logo_svc, &edit_shared_state, edited);
+                show_edited_favorite(&ui, &ctx.favorites, &ctx.logos, &ctx.state, edited);
             }
             slint::SharedString::new()
         });
@@ -223,57 +208,52 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
 
     // delete-favorite callback
     {
-        let favs = favorites.clone();
-        let logo_svc = logo_service.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_delete_favorite(move |station| {
             let id = station.id.to_string();
-            let mut f = lock(&favs);
+            let mut f = lock(&ctx.favorites);
             let _ = f.remove(&id);
             let _ = f.save();
             drop(f);
             invalidate_logo_image(&id);
 
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 let current_url = ui.get_station_url().to_string();
                 if station.url == current_url {
                     ui.set_is_station_favorited(false);
                 }
-                refresh_favorites(&ui, &favs, &logo_svc);
+                refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
             }
         });
     }
 
     // move-favorite callback: Move to Top / Move to Bottom from a row's menu
     {
-        let favs = favorites.clone();
-        let logo_svc = logo_service.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_move_favorite(move |station, to_top| {
             {
-                let mut f = lock(&favs);
+                let mut f = lock(&ctx.favorites);
                 if f.move_to_edge(&station.id, to_top).is_err() {
                     return;
                 }
                 let _ = f.save();
             }
-            if let Some(ui) = ui_weak.upgrade() {
-                refresh_favorites(&ui, &favs, &logo_svc);
+            if let Some(ui) = ctx.ui.upgrade() {
+                refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
             }
         });
     }
 
     // reorder-favorites callback
     {
-        let favs = favorites.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_reorder_favorites(move |from, to| {
             let from = from as usize;
             let to = to as usize;
 
             // Update data model
             {
-                let mut f = lock(&favs);
+                let mut f = lock(&ctx.favorites);
                 let mut sorted: Vec<String> = f
                     .sorted(FavoriteSort::Manual)
                     .iter()
@@ -298,7 +278,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             }
 
             // Shuffle existing UI model data (no disk I/O or image decoding)
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 let model = ui.get_favorites_list();
                 let logos_model = ui.get_favorite_logos();
                 let mut items: Vec<FavoriteStation> = (0..model.row_count())
@@ -322,7 +302,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             }
 
             // Save to disk in background
-            let favs_bg = favs.clone();
+            let favs_bg = ctx.favorites.clone();
             std::thread::Builder::new()
                 .name("fav-save".into())
                 .spawn(move || {
@@ -375,7 +355,7 @@ pub(crate) fn start_timers(
 }
 
 /// Listening time per favorite since the app was opened, by favorite ID
-pub(crate) static SESSION_LISTEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
+static SESSION_LISTEN: Mutex<Option<HashMap<String, u64>>> = Mutex::new(None);
 
 pub(crate) fn session_listen_secs(id: &str) -> u64 {
     lock(&SESSION_LISTEN)
@@ -447,7 +427,7 @@ pub(crate) fn credit_listening(
 
 /// Add listening time to the favorite playing from `url`. It is saved a
 /// moment later by `saver`, off the UI thread.
-pub(crate) fn add_listening(
+fn add_listening(
     ui: &App,
     favorites: &Arc<Mutex<FavoritesManager>>,
     saver: &DelayedSave,

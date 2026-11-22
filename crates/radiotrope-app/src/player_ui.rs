@@ -8,7 +8,7 @@ use slint::{ComponentHandle, ModelRc, SharedPixelBuffer, VecModel};
 
 use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::{PLAY_TAKE_TIMEOUT, SETTINGS_SAVE_DELAY};
-use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
+use radiotrope_app::data::favorites::PlayMetadata;
 use radiotrope_app::data::types::Station;
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::text::{status, SEPARATOR};
@@ -20,7 +20,6 @@ use crate::app::listening::ListenSession;
 use crate::app::picked_station::{PendingPick, PickedStation};
 use crate::app::shown_station::ShownStation;
 use crate::app::state::AppSnapshot;
-use crate::app::ui_sender::UiSender;
 use crate::context::{lock, AppContext};
 use crate::favorites_list::{refresh_favorites, FAVORITES_SHOWN};
 use crate::favorites_ui::track_listening;
@@ -39,9 +38,9 @@ pub(crate) fn setup_header(ui: &App, ctx: &AppContext, last_station: Option<&Sta
     // Re-sample the visualizer colours whenever the station logo or the
     // theme changes (near-white suits the dark theme, near-black the light)
     {
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_logo_changed(move || {
-            if let Some(ui) = ui_weak.upgrade() {
+            if let Some(ui) = ctx.ui.upgrade() {
                 apply_logo_palette(&ui);
             }
         });
@@ -88,49 +87,37 @@ pub(crate) fn setup_header(ui: &App, ctx: &AppContext, last_station: Option<&Sta
 
 /// Wire Play, Open Network Stream, Stop, the volume and Mute
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
-    let (ui_tx, shared_state) = (&ctx.tx, &ctx.state);
-    let (favorites, logo_service) = (&ctx.favorites, &ctx.logos);
-    // Wire Slint callbacks → ui_tx
-    let play_tx = ui_tx.clone();
-    let play_url_weak = ui.as_weak();
-    let play_url_favs = favorites.clone();
-    let play_url_logo_svc = logo_service.clone();
-    let play_url_state = shared_state.clone();
-    ui.on_play_url(move |url| {
-        if let Some(ui) = play_url_weak.upgrade() {
-            // Replaying the station already in the player (the Play button)
-            // keeps its name, logo and country, which a station that isn't a
-            // favorite has nowhere else
-            let current = ui.get_station_url() == url;
-            let keep = |value: slint::SharedString| {
-                Some(value.to_string()).filter(|v| current && !v.is_empty())
-            };
-            play_station_with_metadata(
-                &ui,
-                &play_tx,
-                &play_url_state,
-                &play_url_favs,
-                &play_url_logo_svc,
-                PlayMetadata {
-                    url: url.to_string(),
-                    name: keep(ui.get_station_name()),
-                    logo_url: keep(ui.get_station_logo_url()),
-                    country: keep(ui.get_station_country()),
-                    provider_id: None,
-                },
-            );
-        }
-    });
+    {
+        let ctx = ctx.clone();
+        ui.on_play_url(move |url| {
+            if let Some(ui) = ctx.ui.upgrade() {
+                // Replaying the station already in the player (the Play button)
+                // keeps its name, logo and country, which a station that isn't a
+                // favorite has nowhere else
+                let current = ui.get_station_url() == url;
+                let keep = |value: slint::SharedString| {
+                    Some(value.to_string()).filter(|v| current && !v.is_empty())
+                };
+                play_station_with_metadata(
+                    &ui,
+                    &ctx,
+                    PlayMetadata {
+                        url: url.to_string(),
+                        name: keep(ui.get_station_name()),
+                        logo_url: keep(ui.get_station_logo_url()),
+                        country: keep(ui.get_station_country()),
+                        provider_id: None,
+                    },
+                );
+            }
+        });
+    }
 
     // Open Network Stream, with the station details typed in the dialog
     {
-        let play_tx = ui_tx.clone();
-        let favs = favorites.clone();
-        let logo_svc = logo_service.clone();
-        let state = shared_state.clone();
-        let ui_weak = ui.as_weak();
+        let ctx = ctx.clone();
         ui.on_play_stream(move |url, name, logo_url, country| {
-            let Some(ui) = ui_weak.upgrade() else { return };
+            let Some(ui) = ctx.ui.upgrade() else { return };
             let url = url.trim();
             if url.is_empty() {
                 return;
@@ -138,10 +125,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             let opt = |value: &str| Some(value.trim().to_string()).filter(|v| !v.is_empty());
             play_station_with_metadata(
                 &ui,
-                &play_tx,
-                &state,
-                &favs,
-                &logo_svc,
+                &ctx,
                 PlayMetadata {
                     url: url.to_string(),
                     name: opt(&name),
@@ -153,26 +137,31 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
         });
     }
 
-    let stop_tx = ui_tx.clone();
-    ui.on_stop_clicked(move || {
-        stop_tx.send(app::state::AppCommand::Stop);
-    });
+    {
+        let ctx = ctx.clone();
+        ui.on_stop_clicked(move || {
+            ctx.tx.send(app::state::AppCommand::Stop);
+        });
+    }
 
-    let vol_tx = ui_tx.clone();
-    ui.on_volume_changed(move |vol| {
-        vol_tx.send(app::state::AppCommand::SetVolume(vol));
-    });
+    {
+        let ctx = ctx.clone();
+        ui.on_volume_changed(move |vol| {
+            ctx.tx.send(app::state::AppCommand::SetVolume(vol));
+        });
+    }
 
-    let mute_tx = ui_tx.clone();
-    let mute_state = shared_state.clone();
-    ui.on_mute_clicked(move || {
-        let is_muted = lock(&mute_state).is_muted;
-        if is_muted {
-            mute_tx.send(app::state::AppCommand::Unmute);
-        } else {
-            mute_tx.send(app::state::AppCommand::Mute);
-        }
-    });
+    {
+        let ctx = ctx.clone();
+        ui.on_mute_clicked(move || {
+            let is_muted = lock(&ctx.state).is_muted;
+            if is_muted {
+                ctx.tx.send(app::state::AppCommand::Unmute);
+            } else {
+                ctx.tx.send(app::state::AppCommand::Mute);
+            }
+        });
+    }
 }
 
 /// What the header and the playback bar show of the controller's state
@@ -480,19 +469,19 @@ pub(crate) fn start_poll(
 
 /// The header logo's visualizer colours on each theme (dark, light),
 /// worked out once per logo: a theme switch only picks
-pub(crate) struct HeaderLogo {
+struct HeaderLogo {
     pub(crate) image: slint::Image,
     pub(crate) colors: [Vec<slint::Color>; 2],
 }
 
 thread_local! {
-    pub(crate) static HEADER_LOGO: std::cell::RefCell<Option<HeaderLogo>> =
+    static HEADER_LOGO: std::cell::RefCell<Option<HeaderLogo>> =
         const { std::cell::RefCell::new(None) };
 }
 
 /// A logo's visualizer colours on each theme (dark, light). `rgba` is the
 /// logo's pixels in RGBA order.
-pub(crate) fn logo_colors(rgba: &[u8]) -> [Vec<slint::Color>; 2] {
+fn logo_colors(rgba: &[u8]) -> [Vec<slint::Color>; 2] {
     [true, false].map(|dark| {
         logo_palette(rgba, dark)
             .into_iter()
@@ -511,7 +500,7 @@ pub(crate) fn logo_image(rgba: Vec<u8>, width: u32, height: u32) -> slint::Image
 
 /// Show a station logo in the header. The visualizer takes its colours
 /// from the logo itself, not from the fog it is shown on.
-pub(crate) fn set_header_logo(ui: &App, rgba: Vec<u8>, width: u32, height: u32) {
+fn set_header_logo(ui: &App, rgba: Vec<u8>, width: u32, height: u32) {
     let colors = logo_colors(&rgba);
     let image = logo_image(rgba, width, height);
     HEADER_LOGO.with(|header| {
@@ -526,7 +515,7 @@ pub(crate) fn set_header_logo(ui: &App, rgba: Vec<u8>, width: u32, height: u32) 
 /// Show the logo of the station at `url` in the header: the cached one at
 /// once; else the header is cleared and the logo at `logo_url`, if any, is
 /// fetched. `shown` is the station's number (see [`show_station`]).
-pub(crate) fn show_station_logo(
+fn show_station_logo(
     ui: &App,
     logos: &Arc<LogoService>,
     name: &str,
@@ -579,7 +568,7 @@ pub(crate) fn fetch_station_logo(
 }
 
 /// Colour the visualizer with the main colours of the station logo
-pub(crate) fn apply_logo_palette(ui: &App) {
+fn apply_logo_palette(ui: &App) {
     let dark = ui.get_dark_mode();
     let image = ui.get_current_logo();
     HEADER_LOGO.with(|header| {
@@ -605,12 +594,12 @@ thread_local! {
     /// The station the player shows, numbered (see [`ShownStation`])
     pub(crate) static SHOWN_STATION: std::cell::RefCell<ShownStation> = Default::default();
     /// A station picked here that the controller hasn't taken up yet
-    pub(crate) static PENDING_PICK: std::cell::RefCell<PendingPick> = Default::default();
+    static PENDING_PICK: std::cell::RefCell<PendingPick> = Default::default();
 }
 
 /// The player now shows the station at `url`. Returns its number, for the
 /// logo fetched for it.
-pub(crate) fn show_station(url: &str) -> u64 {
+fn show_station(url: &str) -> u64 {
     SHOWN_STATION.with(|s| s.borrow_mut().show(url))
 }
 
@@ -618,20 +607,13 @@ pub(crate) fn show_station(url: &str) -> u64 {
 /// the player may still be shown: no station was picked since (from the
 /// UI or an agent). The poll overwrites the logo of a station it finds
 /// changed, so one landing just before it doesn't stay.
-pub(crate) fn is_current_station(shown: u64, url: &str) -> bool {
+fn is_current_station(shown: u64, url: &str) -> bool {
     SHOWN_STATION.with(|s| s.borrow().is_current(shown, url))
 }
 
 /// Shared helper for all play actions. Enriches metadata from favorites if available,
 /// sets all UI properties consistently, sends the Play command, and spawns logo fetch.
-pub(crate) fn play_station_with_metadata(
-    ui: &App,
-    cmd_tx: &UiSender,
-    shared_state: &Arc<Mutex<AppSnapshot>>,
-    favorites: &Arc<Mutex<FavoritesManager>>,
-    logo_service: &Arc<LogoService>,
-    req: PlayMetadata,
-) {
+pub(crate) fn play_station_with_metadata(ui: &App, ctx: &AppContext, req: PlayMetadata) {
     // A favorite's URL, name and logo take priority over the caller's
     let (
         PlayMetadata {
@@ -643,7 +625,7 @@ pub(crate) fn play_station_with_metadata(
         },
         is_favorite,
     ) = {
-        let favs = lock(favorites);
+        let favs = lock(&ctx.favorites);
         let play = favs.resolve_play(req);
         let is_favorite = favs.is_favorite(&play.url);
         (play, is_favorite)
@@ -675,7 +657,7 @@ pub(crate) fn play_station_with_metadata(
     // fetched
     show_station_logo(
         ui,
-        logo_service,
+        &ctx.logos,
         name.as_deref().unwrap_or(""),
         &url,
         logo_url.as_deref(),
@@ -685,14 +667,14 @@ pub(crate) fn play_station_with_metadata(
     // The controller takes up the Play only after stopping the old
     // station; the poll shows this one as starting until then. Its number
     // is read before the Play goes out, which may be taken at once.
-    let play_seq = lock(shared_state).play_seq;
+    let play_seq = lock(&ctx.state).play_seq;
     PENDING_PICK.with(|p| {
         p.borrow_mut()
             .pick(play_seq, &url, name.clone(), Instant::now())
     });
 
     // Send play command
-    cmd_tx.send(app::state::AppCommand::Play {
+    ctx.tx.send(app::state::AppCommand::Play {
         url: url.clone(),
         name: name.clone(),
         logo_url: logo_url.clone(),
@@ -713,30 +695,30 @@ pub(crate) fn play_station_with_metadata(
 
     // Save settings (persists last_station, volume, eq, etc.)
     {
-        let mut s = lock(shared_state);
+        let mut s = lock(&ctx.state);
         s.station_url = Some(url.clone());
         s.station_name = name.clone();
         s.station_logo_url = logo_url.clone();
         s.station_country = country;
         drop(s);
-        save_settings(shared_state, ui);
+        save_settings(&ctx.state, ui);
     }
 }
 
 /// Stream URL and time of the last station started from the UI, so a
 /// double tap doesn't start it twice
-pub(crate) static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
 
 /// The name shown for a stream without one
 pub(crate) const UNNAMED_STATION: &str = "Radiotrope";
 
 /// The status of a station that is starting (as the controller sets it)
-pub(crate) const STARTING_STATUS: &str = status::CONNECTING;
+const STARTING_STATUS: &str = status::CONNECTING;
 
 /// The codec line of a station not playing yet
-pub(crate) const AWAITING_STREAM: &str = "Waiting for stream";
+const AWAITING_STREAM: &str = "Waiting for stream";
 
-pub(crate) fn format_codec_line(s: &AppSnapshot) -> String {
+fn format_codec_line(s: &AppSnapshot) -> String {
     if s.codec_name.is_empty() {
         return AWAITING_STREAM.to_string();
     }

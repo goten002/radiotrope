@@ -120,7 +120,7 @@ pub(crate) fn setup(
     engine_stats
 }
 
-pub(crate) fn update_stats_ui(ui: &App, s: &StreamStats) {
+fn update_stats_ui(ui: &App, s: &StreamStats) {
     // Stream section
     ui.set_stat_health(format_health(&s.health_state).into());
     ui.set_stat_playtime(format_playtime(s.play_started_at).into());
@@ -207,7 +207,7 @@ pub(crate) fn clear_stats_ui(ui: &App) {
 /// The Volume Leveler on the Statistics dialog: what it does to the
 /// station playing ("−6.5 dB"), "Learning" while it measures a station
 /// heard for the first time, "Off", or "—" before the station's audio
-pub(crate) fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
+fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
     if !on {
         return "Off".into();
     }
@@ -219,7 +219,7 @@ pub(crate) fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> Stri
 }
 
 /// The Hiss Reducer's strength on the Statistics dialog
-pub(crate) fn hiss_text(level: HissLevel) -> &'static str {
+fn hiss_text(level: HissLevel) -> &'static str {
     match level {
         HissLevel::Off => "Off",
         HissLevel::Light => "Light",
@@ -230,7 +230,7 @@ pub(crate) fn hiss_text(level: HissLevel) -> &'static str {
 /// The Statistics dialog's "Hum filter": the mains frequency the Hum
 /// Filter is taking out ("50 Hz", "60 Hz"), "Listening" while it is on
 /// and hears no hum, or "Off"
-pub(crate) fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
+fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
     match (filter_on, hz) {
         (false, _) => "Off".into(),
         (true, Some(hz)) => format!("{hz} Hz"),
@@ -275,7 +275,7 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
     }
 }
 
-pub(crate) fn format_number(n: u64) -> String {
+fn format_number(n: u64) -> String {
     if n < 1_000 {
         n.to_string()
     } else if n < 1_000_000 {
@@ -286,7 +286,7 @@ pub(crate) fn format_number(n: u64) -> String {
 }
 
 /// "−6.5 dB": what the Volume Leveler does to the station, to half a dB
-pub(crate) fn level_text(gain_db: f32) -> String {
+fn level_text(gain_db: f32) -> String {
     text::signed_db((gain_db * 2.0).round() / 2.0, 1)
 }
 

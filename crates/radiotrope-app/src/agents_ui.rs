@@ -11,7 +11,7 @@ use crate::{mcp, AgentRow, App};
 /// agent on stdio only: the dialog shows the settings greyed out. Keep the
 /// returned timer: it starts the network server again when the network
 /// changes.
-pub(crate) fn setup_agents(
+pub(crate) fn setup(
     ui: &App,
     agents: Option<Arc<mcp::agents::Agents>>,
     settings: &radiotrope_app::data::settings::Settings,
@@ -162,7 +162,7 @@ pub(crate) fn setup_agents(
 }
 
 /// Keep the menu bar's agents chip up to date: who uses the player now
-pub(crate) fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::Timer {
+pub(crate) fn watch(ui: &App, presence: Option<mcp::presence::Presence>) -> slint::Timer {
     let timer = slint::Timer::default();
     let Some(presence) = presence else {
         return timer;
@@ -198,14 +198,14 @@ pub(crate) fn watch_agents(ui: &App, presence: Option<mcp::presence::Presence>) 
 }
 
 /// Show the network status once the server is set up, on its own thread
-pub(crate) fn show_agents_network_later(ui: &App) -> mcp::agents::ShowStatus {
+fn show_agents_network_later(ui: &App) -> mcp::agents::ShowStatus {
     let ui_weak = ui.as_weak();
     Box::new(move |status| {
         let _ = ui_weak.upgrade_in_event_loop(move |ui| show_agents_network(&ui, &status));
     })
 }
 
-pub(crate) fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
+fn show_agents_network(ui: &App, status: &mcp::agents::NetworkStatus) {
     ui.set_agents_status(status.text.as_str().into());
     ui.set_agents_status_error(status.is_error);
     ui.set_agents_token(status.token.as_str().into());
@@ -237,7 +237,7 @@ pub(crate) fn show_agent_lines(ui: &App) {
 
 /// One entry of the Agents dialog's "Listen on" list
 #[derive(Clone)]
-pub(crate) struct ListenChoice {
+struct ListenChoice {
     pub(crate) ip: std::net::IpAddr,
     /// The interface it belongs to, saved so its next address is used too
     pub(crate) interface: Option<String>,
@@ -245,7 +245,7 @@ pub(crate) struct ListenChoice {
 
 /// Fill the "Listen on" list: this computer only, each network interface,
 /// then all networks; and pick the saved one (added if it's not there)
-pub(crate) fn show_listen_choices(
+fn show_listen_choices(
     ui: &App,
     settings: &radiotrope_app::data::settings::Settings,
     listen: &std::cell::RefCell<Vec<ListenChoice>>,
@@ -302,13 +302,13 @@ pub(crate) fn show_listen_choices(
 }
 
 /// The port of the saved network address
-pub(crate) fn saved_port(settings: &radiotrope_app::data::settings::Settings) -> u16 {
+fn saved_port(settings: &radiotrope_app::data::settings::Settings) -> u16 {
     mcp::network::split_address(&settings.mcp_address)
         .map(|a| a.port())
         .unwrap_or_else(default_port)
 }
 
-pub(crate) fn default_port() -> u16 {
+fn default_port() -> u16 {
     radiotrope_app::config::mcp::DEFAULT_ADDRESS
         .rsplit(':')
         .next()
@@ -316,9 +316,7 @@ pub(crate) fn default_port() -> u16 {
         .unwrap_or(8765)
 }
 
-pub(crate) fn save_agent_settings(
-    change: impl FnOnce(&mut radiotrope_app::data::settings::Settings),
-) {
+fn save_agent_settings(change: impl FnOnce(&mut radiotrope_app::data::settings::Settings)) {
     let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
     change(&mut settings);
     if let Err(e) = settings.save() {

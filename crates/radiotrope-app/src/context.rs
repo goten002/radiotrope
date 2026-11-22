@@ -7,11 +7,15 @@ use radiotrope_app::network::logo::LogoService;
 
 use crate::app::state::AppSnapshot;
 use crate::app::ui_sender::UiSender;
+use crate::App;
 
 /// The handles nearly every handler of the window needs. Cloning it clones
-/// the handles, not what they point at.
+/// the handles, not what they point at. It stays on the window's thread
+/// (the command sender does); another thread takes the handles it needs.
 #[derive(Clone)]
 pub(crate) struct AppContext {
+    /// The window
+    pub(crate) ui: slint::Weak<App>,
     /// Commands to the controller
     pub(crate) tx: UiSender,
     /// What the controller last reported
