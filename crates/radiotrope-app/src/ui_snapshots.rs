@@ -852,10 +852,22 @@ const SHOTS: &[Shot] = &[
         "Accent Color presets and custom color controls.",
     ),
     Shot::new(
-        "accent-color-low-contrast",
+        "accent-color-white",
         "accent",
-        "low-contrast",
-        "A custom white accent: the low-contrast note under the picker.",
+        "white",
+        "A custom white accent: no note under the picker, the same height.",
+    ),
+    Shot::new(
+        "accent-color-hex",
+        "accent",
+        "hex",
+        "C97718 typed in the hex field and applied with Enter.",
+    ),
+    Shot::new(
+        "accent-color-hex-invalid",
+        "accent",
+        "hex-invalid",
+        "Text that isn't a hex color, with the error beside the field.",
     ),
     Shot::new(
         "keyboard-shortcuts",
@@ -1013,6 +1025,7 @@ fn stage(
     ui.set_snapshot_mode(true);
     ui.set_theme_mode(theme.into());
     crate::setup_text_util(&ui);
+    crate::window_settings::setup_hex_color(&ui);
     seed(&ui);
     configure(&ui, shot);
     let needs_layout =
@@ -1058,6 +1071,21 @@ fn after_open(ui: &App, shot: &Shot) {
                 slint::platform::update_timers_and_animations();
             }
         }
+        // Tab to the hex field, type and press Enter
+        ("accent", "hex" | "hex-invalid") => {
+            for _ in 0..HEX_FIELD_TABS {
+                press(ui, Key::Tab);
+            }
+            type_text(
+                ui,
+                if shot.state == "hex" {
+                    " C97718 "
+                } else {
+                    "#12g"
+                },
+            );
+            press(ui, Key::Return);
+        }
         ("picker", "no-match") => {
             // What the filter callback leaves for a text nothing matches
             ui.set_filter_entries_text("Atlantis".into());
@@ -1077,7 +1105,7 @@ fn after_open(ui: &App, shot: &Shot) {
     if shot.screen == "bubble" {
         ui.set_snapshot_bubble(shot.state.into());
     }
-    if shot.screen == "accent" && shot.state == "low-contrast" {
+    if shot.screen == "accent" && shot.state == "white" {
         ui.set_accent_color(Color::from_rgb_u8(0xff, 0xff, 0xff));
     }
     if shot.state == "presets" {
@@ -1089,6 +1117,20 @@ fn after_open(ui: &App, shot: &Shot) {
 }
 
 /// Press and release one key
+/// Tab presses from an opened Accent Color dialog to its hex field
+const HEX_FIELD_TABS: usize = 13;
+
+/// Type `text` a character at a time
+fn type_text(ui: &App, text: &str) {
+    for c in text.chars() {
+        let text = SharedString::from(c.to_string());
+        ui.window()
+            .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+        ui.window()
+            .dispatch_event(WindowEvent::KeyReleased { text });
+    }
+}
+
 fn press(ui: &App, key: Key) {
     let text = SharedString::from(key);
     ui.window()
