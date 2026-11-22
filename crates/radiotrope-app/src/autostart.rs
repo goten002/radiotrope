@@ -54,9 +54,10 @@ mod imp {
     /// GNOME key some startup settings write)
     pub(super) fn is_enabled_at(path: &Path) -> bool {
         std::fs::read_to_string(path).is_ok_and(|text| {
-            !text.lines().map(str::trim).any(|line| {
-                line == "Hidden=true" || line == "X-GNOME-Autostart-enabled=false"
-            })
+            !text
+                .lines()
+                .map(str::trim)
+                .any(|line| line == "Hidden=true" || line == "X-GNOME-Autostart-enabled=false")
         })
     }
 
@@ -259,7 +260,11 @@ mod tests {
         assert!(!is_enabled_at(&path), "no file");
         std::fs::write(&path, desktop_entry("/usr/bin/radiotrope")).unwrap();
         assert!(is_enabled_at(&path));
-        std::fs::write(&path, desktop_entry("/usr/bin/radiotrope") + "Hidden=true\n").unwrap();
+        std::fs::write(
+            &path,
+            desktop_entry("/usr/bin/radiotrope") + "Hidden=true\n",
+        )
+        .unwrap();
         assert!(!is_enabled_at(&path));
 
         let _ = std::fs::remove_dir_all(&dir);

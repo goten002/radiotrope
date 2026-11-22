@@ -10,6 +10,9 @@
 //! and in portable mode, the `data\local` folder beside the program. The
 //! file is started afresh past 1 MB, the old one kept as `radiotrope.old.log`.
 
+// The kiosk build has no log file: only the path's "none" is used there
+#![cfg_attr(not(any(windows, feature = "desktop")), allow(dead_code))]
+
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -181,7 +184,10 @@ mod tests {
     #[test]
     fn the_linux_log_is_in_the_state_folder() {
         let path = path().unwrap();
-        if radiotrope_app::data::storage::data_dirs().portable.is_none() {
+        if radiotrope_app::data::storage::data_dirs()
+            .portable
+            .is_none()
+        {
             assert!(path.ends_with("radiotrope/radiotrope.log"), "{path:?}");
             assert!(path.starts_with(dirs::state_dir().unwrap()), "{path:?}");
         }

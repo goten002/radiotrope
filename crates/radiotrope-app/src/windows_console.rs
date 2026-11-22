@@ -77,7 +77,10 @@ fn stderr_is_usable() -> bool {
 fn log_to_file() {
     use std::os::windows::io::IntoRawHandle;
 
-    let Some(file) = crate::log_file::path().as_deref().and_then(crate::log_file::open) else {
+    let Some(file) = crate::log_file::path()
+        .as_deref()
+        .and_then(crate::log_file::open)
+    else {
         return;
     };
     // The handle stays open for the life of the process. Rust's stderr looks
