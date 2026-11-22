@@ -1007,12 +1007,11 @@ fn main() {
         let gen = browse_logo_gen.clone();
         let row_logos = row_logos.clone();
         let favs = favorites.clone();
-        ui.on_search_stations(move |query, country, genre, language| {
+        ui.on_search_stations(move |query, country, genre| {
             let query = BrowseQuery {
                 name: query.trim().to_string(),
                 country: country.to_string(),
                 genre: genre.to_string(),
-                language: language.to_string(),
             };
             start_browse(&ui_weak, &state, &gen, &row_logos, &favs, query);
         });
@@ -1190,8 +1189,7 @@ fn main() {
         }
     }
 
-    // The countries, genres or languages the station browser's filter
-    // picker lists
+    // The countries or genres the station browser's filter picker lists
     {
         let ui_weak = ui.as_weak();
         ui.on_load_filter_entries(move |kind| {
@@ -3558,8 +3556,6 @@ struct BrowseQuery {
     country: String,
     /// The directory's genre slug
     genre: String,
-    /// Language code
-    language: String,
 }
 
 impl BrowseQuery {
@@ -3569,7 +3565,6 @@ impl BrowseQuery {
             name: given(&self.name),
             country: given(&self.country),
             genre: given(&self.genre),
-            language: given(&self.language),
             ..Default::default()
         }
     }
@@ -3956,15 +3951,14 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
-/// The directory's countries, genres or languages (`kind`: "country",
-/// "genre" or "language") as filter picker entries, A to Z
+/// The directory's countries or genres (`kind`: "country" or "genre") as
+/// filter picker entries, A to Z
 fn filter_entries(
     kind: &str,
     categories: Vec<radiotrope_app::providers::types::Category>,
 ) -> Vec<FilterEntry> {
     let wanted = match kind {
         "genre" => CategoryType::Genre,
-        "language" => CategoryType::Language,
         _ => CategoryType::Country,
     };
     let mut entries: Vec<FilterEntry> = categories
@@ -4634,8 +4628,10 @@ mod tests {
             ("Greece", "GR")
         );
 
-        let languages = filter_entries("language", categories());
-        assert_eq!(languages[0].code, "ell");
+        // Languages aren't a filter
+        assert!(filter_entries("genre", categories())
+            .iter()
+            .all(|e| e.name != "Greek"));
     }
 
     #[test]
@@ -4650,6 +4646,5 @@ mod tests {
         assert_eq!(filter.name.as_deref(), Some("kiss"));
         assert_eq!(filter.country.as_deref(), Some("GR"));
         assert_eq!(filter.genre, None);
-        assert_eq!(filter.language, None);
     }
 }

@@ -84,9 +84,9 @@ export component App inherits Window {
     callback stop-clicked();
     callback volume-changed(float);
     callback mute-clicked();
-    // Station search: name query, country code, genre slug, language code
-    // (each may be empty)
-    callback search-stations(string, string, string, string);
+    // Station search: name query, country code, genre slug (each may be
+    // empty)
+    callback search-stations(string, string, string);
     callback load-more-stations();
     callback play-station(BrowseStation);
     callback toggle-favorite();
@@ -106,8 +106,8 @@ export component App inherits Window {
     out property <bool> stats-open: stats-dialog.show-dialog;
     changed show-visualizer => { root.live-views-changed(); }
     changed stats-open => { root.live-views-changed(); }
-    // The countries, genres or languages for the filter picker ("country",
-    // "genre", "language"), and narrowing that list by name
+    // The countries or genres for the filter picker ("country", "genre"),
+    // and narrowing that list by name
     callback load-filter-entries(string);
     callback open-url(string);
     callback filter-filter-entries(string);
@@ -400,7 +400,6 @@ export component App inherits Window {
         browser-dialog.show-dialog = false;
         picker-dialog.kind = kind;
         picker-dialog.selected-code = kind == "genre" ? browser-dialog.genre-code
-            : kind == "language" ? browser-dialog.language-code
             : browser-dialog.country-code;
         picker-dialog.entries = [];
         picker-dialog.error = "";
@@ -649,8 +648,8 @@ export component App inherits Window {
                 play-loading: root.is-loading;
                 play-error: root.is-error;
                 play-status: root.status-text;
-                search-stations(query, country, genre, language) => {
-                    root.search-stations(query, country, genre, language);
+                search-stations(query, country, genre) => {
+                    root.search-stations(query, country, genre);
                 }
                 pick-filter(kind) => { root.show-filter-picker(kind); }
                 load-more() => { root.load-more-stations(); }
@@ -679,9 +678,6 @@ export component App inherits Window {
                     if self.kind == "genre" {
                         browser-dialog.genre-name = entry.name;
                         browser-dialog.genre-code = entry.code;
-                    } else if self.kind == "language" {
-                        browser-dialog.language-name = entry.name;
-                        browser-dialog.language-code = entry.code;
                     } else {
                         browser-dialog.country-name = entry.name;
                         browser-dialog.country-code = entry.code;

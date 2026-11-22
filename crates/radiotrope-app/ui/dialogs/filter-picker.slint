@@ -4,11 +4,11 @@ import { StyledLineEdit } from "../styled-line-edit.slint";
 import { SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
-// A country, genre or language the station search can be narrowed to
+// A country or genre the station search can be narrowed to
 export struct FilterEntry {
     name: string,
-    // What the directory is asked for: a country's ISO 3166-1 code, a
-    // genre's slug or a language's code. Empty for "Any".
+    // What the directory is asked for: a country's ISO 3166-1 code or a
+    // genre's slug. Empty for "Any".
     code: string,
     station-count: int,
     // Countries only
@@ -87,10 +87,10 @@ component FilterRow inherits Rectangle {
     }
 }
 
-// Pick the country, genre or language the station search is narrowed to
+// Pick the country or genre the station search is narrowed to
 export component FilterPickerDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
-    // "country", "genre" or "language"
+    // "country" or "genre"
     in-out property <string> kind: "country";
     // Code of the entry in force, empty for Any
     in-out property <string> selected-code: "";
@@ -107,8 +107,8 @@ export component FilterPickerDialog inherits Rectangle {
     // Show only entries whose name contains the text
     callback filter-entries(string);
 
-    property <string> noun: root.kind == "genre" ? "genre" : root.kind == "language" ? "language" : "country";
-    property <string> plural: root.kind == "genre" ? "genres" : root.kind == "language" ? "languages" : "countries";
+    property <string> noun: root.kind == "genre" ? "genre" : "country";
+    property <string> plural: root.kind == "genre" ? "genres" : "countries";
 
     function pick(entry: FilterEntry) {
         root.show-dialog = false;
@@ -116,7 +116,7 @@ export component FilterPickerDialog inherits Rectangle {
     }
 
     if show-dialog: DialogShell {
-        title: root.kind == "genre" ? "Genre" : root.kind == "language" ? "Language" : "Country";
+        title: root.kind == "genre" ? "Genre" : "Country";
         subtitle: root.loading ? "" : "\{root.entries.length} \{root.plural}";
         card-width: Defaults.filter-picker-width;
         card-height: Defaults.filter-picker-height;

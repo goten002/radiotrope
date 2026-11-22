@@ -349,6 +349,68 @@ component FilterChip inherits Rectangle {
     }
 }
 
+// Clears every filter; greyed out while none is set
+component ResetFiltersButton inherits Rectangle {
+    in property <bool> enabled;
+    callback clicked();
+
+    height: 30px;
+    width: row.preferred-width + 24px;
+    border-radius: self.height / 2;
+    background: root.enabled && touch.has-hover ? Theme.menu-hover : transparent;
+    animate background { duration: Theme.fast; }
+    forward-focus: keys;
+
+    accessible-role: button;
+    accessible-label: "Reset filters";
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+
+    keys := ButtonKeys {
+        enabled: root.enabled;
+        activated => { root.clicked(); }
+    }
+
+    if keys.has-focus: FocusRing {
+        radius: root.border-radius;
+    }
+
+    row := HorizontalLayout {
+        x: 12px;
+        spacing: 6px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Icon {
+                width: 12px;
+                height: 12px;
+                source: @image-url("../icons/rotate-left.svg");
+                colorize: root.enabled ? Theme.accent-text : Theme.text-secondary;
+            }
+        }
+
+        Text {
+            text: "Reset filters";
+            color: root.enabled ? Theme.accent-text : Theme.text-secondary;
+            opacity: root.enabled ? 1 : 0.6;
+            font-size: Theme.font-md;
+            font-weight: 500;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component StationBrowserDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <bool> search-loading: false;
@@ -370,9 +432,7 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <string> genre-name: "";
     // The directory's slug
     in-out property <string> genre-code: "";
-    in-out property <string> language-name: "";
-    in-out property <string> language-code: "";
-    property <bool> filtered: root.country-code != "" || root.genre-code != "" || root.language-code != "";
+    property <bool> filtered: root.country-code != "" || root.genre-code != "";
     // Current playback, so the row of the station being played shows its
     // state even while the dialog hides the player
     in property <string> playing-url;
@@ -407,11 +467,11 @@ export component StationBrowserDialog inherits Rectangle {
         root.visible-rows-changed();
     }
 
-    // Search by name within the filters (query, country code, genre slug,
-    // language code); with nothing given, the most played stations
-    callback search-stations(string, string, string, string);
-    // Open the list of countries, genres or languages ("country", "genre",
-    // "language") to choose a filter from
+    // Search by name within the filters (query, country code, genre slug);
+    // with nothing given, the most played stations
+    callback search-stations(string, string, string);
+    // Open the list of countries or genres ("country", "genre") to choose a
+    // filter from
     callback pick-filter(string);
     callback load-more();
     // Try the failed request again (the first page, or the next one)
@@ -424,7 +484,7 @@ export component StationBrowserDialog inherits Rectangle {
         root.shown-query = root.search-query;
         root.list-scroll = 0;
         root.search-loading = true;
-        root.search-stations(root.search-query, root.country-code, root.genre-code, root.language-code);
+        root.search-stations(root.search-query, root.country-code, root.genre-code);
     }
 
     if show-dialog: DialogShell {
@@ -475,7 +535,7 @@ export component StationBrowserDialog inherits Rectangle {
             }
         }
 
-        // Filters: country, genre and language
+        // Filters: country and genre
         HorizontalLayout {
             spacing: 8px;
 
@@ -502,13 +562,13 @@ export component StationBrowserDialog inherits Rectangle {
                 }
             }
 
-            FilterChip {
-                any-label: "Any language";
-                value: root.language-name;
-                clicked => { root.pick-filter("language"); }
-                cleared => {
-                    root.language-name = "";
-                    root.language-code = "";
+            ResetFiltersButton {
+                enabled: root.filtered;
+                clicked => {
+                    root.country-name = "";
+                    root.country-code = "";
+                    root.genre-name = "";
+                    root.genre-code = "";
                     root.run-search();
                 }
             }
