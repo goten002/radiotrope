@@ -184,12 +184,8 @@ export global Theme {
     out property <length> dialog-radius: rounded-corners ? radius-lg : 0px;
 
     // ── Motion ──
-    // View > Reduce Motion (the system's setting until it is picked):
-    // transitions are instant, and the status animations, spinners and the
-    // visualizer stand still
-    in-out property <bool> reduce-motion: false;
-    out property <duration> fast: reduce-motion ? 0ms : 120ms;
-    out property <duration> normal: reduce-motion ? 0ms : 180ms;
+    out property <duration> fast: 120ms;
+    out property <duration> normal: 180ms;
     // Status animations, one cycle each. The bouncing now-playing bars:
     // the first bar, and how much slower each next one is
     out property <duration> bars-period: 520ms;
@@ -307,9 +303,6 @@ export global ViewOptions {
     in property <int> zoom-in-use: 100;
     // The percentages offered
     out property <[int]> zoom-choices: [90, 100, 115, 130, 150];
-    // Reduce Motion was picked in the menu; until then Theme.reduce-motion
-    // follows the system
-    in-out property <bool> reduce-motion-chosen: false;
     // Tools > Connections > Report Plays to the Station Directory
     in-out property <bool> report-plays: true;
     callback report-plays-changed(bool);

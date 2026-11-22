@@ -126,6 +126,11 @@ export component App inherits Window {
     // Edges to grab for resizing, since there is no system frame
     resize-border-width: root.custom-frame && !root.maximized ? Defaults.resize-border : 0px;
     always-on-top: root.keep-on-top;
+    // Not on Wayland (Rust says so with a note for the greyed View item)
+    in property <bool> on-top-available: true;
+    in property <string> on-top-hint;
+    // Ctrl+W: hide the window (to the tray, else minimized), never quit
+    callback hide-window();
     // Rounded window corners with our title bar (desktop; saved in
     // settings). Rust sets corners-available: false where they can't be
     // shown (Windows 10, X11 without a compositor), and draw-corners:
@@ -494,8 +499,6 @@ export component App inherits Window {
     // Accent color proxy — two-way bind to Theme global
     in-out property <color> accent-color <=> Theme.accent-base;
     in-out property <bool> panel-gradient <=> Theme.panel-gradient;
-    // View > Reduce Motion (the system's setting until it is picked)
-    in-out property <bool> reduce-motion <=> Theme.reduce-motion;
 
     // Shortcuts in the main window: Space plays or stops, Ctrl+F searches
     // stations, M mutes. Keys reach it only when the focused control
@@ -591,8 +594,8 @@ export component App inherits Window {
                     menu-bar.open-station-search();
                 } else if action == ShortcutAction.network-stream {
                     menu-bar.open-network-stream();
-                } else if action == ShortcutAction.close-window {
-                    root.close();
+                } else if action == ShortcutAction.hide-window {
+                    root.hide-window();
                 } else if action == ShortcutAction.quit {
                     root.quit-app();
                 } else if action == ShortcutAction.help {
@@ -626,6 +629,8 @@ export component App inherits Window {
                         custom-frame: root.custom-frame;
                         maximized <=> root.maximized;
                         always-on-top <=> root.keep-on-top;
+                        on-top-available: root.on-top-available;
+                        on-top-hint: root.on-top-hint;
                         minimize => { root.minimize-window(); }
                         show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
                         close-window => { root.close(); }
@@ -659,6 +664,8 @@ export component App inherits Window {
                             }
                             browser-dialog.show-dialog = true;
                         }
+                        has-favorites: root.favorites-list.length > 0;
+                        find-favorites => { favorites.open-find(); }
                         export-favorites => { root.export-favorites(); }
                         import-favorites => { root.import-favorites(); }
                         open-keyboard-shortcuts => {
@@ -998,7 +1005,7 @@ export component App inherits Window {
         // Steps the status animations (Motion), only while there is one to show
         Timer {
             interval: Defaults.motion-step;
-            running: !root.snapshot-mode && !Theme.reduce-motion && (root.is-playing || root.is-loading || root.is-recording);
+            running: !root.snapshot-mode && (root.is-playing || root.is-loading || root.is-recording);
             triggered => { Motion.tick += self.interval; }
         }
 

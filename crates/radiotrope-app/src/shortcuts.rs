@@ -79,7 +79,7 @@ const BINDINGS: &[Binding] = &[
     Binding::control(UndoRemove, "Ctrl+Z", &[&[CTRL, "Z"]], "z"),
     Binding::control(Search, "Ctrl+F", &[&[CTRL, "F"]], "f"),
     Binding::control(NetworkStream, "Ctrl+O", &[&[CTRL, "O"]], "o"),
-    Binding::control(CloseWindow, "Ctrl+W", &[&[CTRL, "W"]], "w"),
+    Binding::control(HideWindow, "Ctrl+W", &[&[CTRL, "W"]], "w"),
     Binding::control(Quit, "Ctrl+Q", &[&[CTRL, "Q"]], "q"),
     Binding::new(
         Help,
@@ -189,7 +189,7 @@ const GROUPS: &[(&str, &[Row])] = &[
         "Window",
         &[
             keys("Go to the menu bar", &[&["F10"]]),
-            row("Close the window", &[CloseWindow]),
+            row("Hide the window", &[HideWindow]),
             row("Quit Radiotrope", &[Quit]),
             row("Show keyboard shortcuts", &[Help]),
         ],
@@ -686,7 +686,7 @@ mod tests {
             (ToggleFavorite, "F"),
             (Search, "Ctrl+F"),
             (NetworkStream, "Ctrl+O"),
-            (CloseWindow, "Ctrl+W"),
+            (HideWindow, "Ctrl+W"),
             (Quit, "Ctrl+Q"),
             (Help, "F1"),
             (FindFavorites, "/"),
