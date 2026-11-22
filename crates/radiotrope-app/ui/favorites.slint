@@ -24,11 +24,12 @@ export struct FavoriteStation {
     session-time: string,
 }
 
-// Find in favorites: the rows whose name contains the text, and their
-// logos (Rust; the list itself stays whole and in order)
+// Find in favorites: the rows whose name contains the text, and where
+// each of them is in the whole list (Rust; the list itself stays whole and
+// in order)
 export global FavoritesFind {
     pure callback stations([FavoriteStation], string) -> [FavoriteStation];
-    pure callback logos([FavoriteStation], [image], string) -> [image];
+    pure callback rows([FavoriteStation], string) -> [int];
 }
 
 // Picking another station while recording ends the recording, so the first
@@ -784,8 +785,9 @@ export component Favorites inherits Rectangle {
     property <bool> finding: root.find-text != "";
     property <[FavoriteStation]> shown: root.finding
         ? FavoritesFind.stations(root.favorites, root.find-text) : root.favorites;
-    property <[image]> shown-logos: root.finding
-        ? FavoritesFind.logos(root.favorites, root.favorite-logos, root.find-text) : root.favorite-logos;
+    // Where each shown row is in the whole list: its logo is read there,
+    // so one that loads later shows in a found row too
+    property <[int]> found-rows: root.finding ? FavoritesFind.rows(root.favorites, root.find-text) : [];
 
     // A favorite was just removed and can be put back (0: no; Rust counts
     // up for each removal, which restarts the time the offer stays)
@@ -1248,9 +1250,12 @@ export component Favorites inherits Rectangle {
                         is-current: station.url == root.current-station-url;
                         state: root.play-state;
                         description: root.describe(station, self.is-current ? root.play-state : StationState.none);
-                        logo-image: idx < root.shown-logos.length ? root.shown-logos[idx] : @image-url("");
-                        has-logo: idx < root.shown-logos.length
-                            ? root.shown-logos[idx].width > 0
+                        property <int> source-row: !root.finding ? idx
+                            : idx < root.found-rows.length ? root.found-rows[idx] : -1;
+                        logo-image: self.source-row >= 0 && self.source-row < root.favorite-logos.length
+                            ? root.favorite-logos[self.source-row] : @image-url("");
+                        has-logo: self.source-row >= 0 && self.source-row < root.favorite-logos.length
+                            ? root.favorite-logos[self.source-row].width > 0
                             : false;
                         is-drag-source: root.drag-from-index == idx;
                         dragging: root.drag-from-index >= 0;

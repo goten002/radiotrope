@@ -118,12 +118,13 @@ fn find_matches(name: &str, needle: &str) -> bool {
 }
 
 /// Give the favorites list its Find: the rows whose name contains the
-/// text, and their logos. The rows stay those of the whole list, so a
-/// figure updated there shows in a found row too.
+/// text, and where each is in the whole list (its logo is read there).
+/// The rows stay those of the whole list, so a figure updated there shows
+/// in a found row too.
 pub(crate) fn install_find(ui: &App) {
     let find = ui.global::<FavoritesFind>();
     find.on_stations(|stations, text| found_stations(stations, &text));
-    find.on_logos(|stations, logos, text| found_logos(&stations, logos, &text));
+    find.on_rows(|stations, text| found_rows(&stations, &text));
 }
 
 /// The rows of `stations` Find shows for `text`, in their order. They
@@ -136,24 +137,20 @@ fn found_stations(stations: ModelRc<FavoriteStation>, text: &str) -> ModelRc<Fav
     ModelRc::new(stations.filter(move |station| find_matches(&station.name, &needle)))
 }
 
-/// The logos of the rows [`found_stations`] shows (`logos` has one per
-/// station, in the same order)
-fn found_logos(
-    stations: &ModelRc<FavoriteStation>,
-    logos: ModelRc<slint::Image>,
-    text: &str,
-) -> ModelRc<slint::Image> {
+/// Where each row [`found_stations`] shows is in `stations`: its logo is
+/// read there. Empty when nothing was typed (every row is its own).
+fn found_rows(stations: &ModelRc<FavoriteStation>, text: &str) -> ModelRc<i32> {
     let needle = find_needle(text);
     if needle.is_empty() {
-        return logos;
+        return ModelRc::default();
     }
-    let found: Vec<slint::Image> = stations
+    let rows: Vec<i32> = stations
         .iter()
-        .zip(logos.iter())
-        .filter(|(station, _)| find_matches(&station.name, &needle))
-        .map(|(_, logo)| logo)
+        .enumerate()
+        .filter(|(_, station)| find_matches(&station.name, &needle))
+        .filter_map(|(row, _)| i32::try_from(row).ok())
         .collect();
-    ModelRc::new(VecModel::from(found))
+    ModelRc::new(VecModel::from(rows))
 }
 
 /// A favorite just removed, and its place in the list, for Undo
@@ -824,8 +821,8 @@ mod tests {
     }
 
     #[test]
-    fn find_narrows_the_rows_and_their_logos_together() {
-        let rows = std::rc::Rc::new(VecModel::from(
+    fn find_narrows_the_rows_and_says_where_they_are() {
+        let list = std::rc::Rc::new(VecModel::from(
             ["Harbour Jazz", "Radio Verde", "Sundial Radio"]
                 .iter()
                 .map(|name| FavoriteStation {
@@ -834,42 +831,31 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
         ));
-        let stations: ModelRc<FavoriteStation> = rows.clone().into();
-        // One logo per row, told apart by their width
-        let logo = |width| {
-            slint::Image::from_rgb8(slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, 1))
-        };
-        let logos: ModelRc<slint::Image> =
-            ModelRc::new(VecModel::from(vec![logo(1), logo(2), logo(3)]));
+        let stations: ModelRc<FavoriteStation> = list.clone().into();
         let shown = |text: &str| -> Vec<String> {
             found_stations(stations.clone(), text)
                 .iter()
                 .map(|station| station.name.to_string())
                 .collect()
         };
-        let widths = |text: &str| -> Vec<u32> {
-            found_logos(&stations, logos.clone(), text)
-                .iter()
-                .map(|logo| logo.size().width)
-                .collect()
-        };
+        let rows = |text: &str| -> Vec<i32> { found_rows(&stations, text).iter().collect() };
 
         assert_eq!(shown("radio"), ["Radio Verde", "Sundial Radio"]);
-        assert_eq!(widths("radio"), [2, 3]);
+        assert_eq!(rows("radio"), [1, 2]);
         assert_eq!(shown("JAZZ"), ["Harbour Jazz"]);
-        assert_eq!(widths("JAZZ"), [1]);
+        assert_eq!(rows("JAZZ"), [0]);
         assert!(shown("no such station").is_empty());
-        assert!(widths("no such station").is_empty());
+        assert!(rows("no such station").is_empty());
         // Nothing typed: the whole list, in its order
         assert_eq!(shown(" ").len(), 3);
-        assert_eq!(widths("").len(), 3);
+        assert!(rows("").is_empty());
 
         // A found row follows the row it comes from (its figures change
         // while it plays)
         let found = found_stations(stations.clone(), "verde");
-        let mut row = rows.row_data(1).unwrap();
+        let mut row = list.row_data(1).unwrap();
         row.listen_time = "5 min".into();
-        rows.set_row_data(1, row);
+        list.set_row_data(1, row);
         assert_eq!(found.row_data(0).unwrap().listen_time, "5 min");
     }
 
