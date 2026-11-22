@@ -21,7 +21,7 @@ use radiotrope_app::data::levels::Levels;
 use radiotrope_app::data::recordings;
 use radiotrope_app::text::{self, status};
 
-use super::state::{AppCommand, AppSnapshot, RecordingNotice, RecordingProgress};
+use super::state::{AppCommand, AppSnapshot, NoticeKind, RecordingNotice, RecordingProgress};
 
 mod alarm_tone;
 mod resume;
@@ -87,6 +87,10 @@ pub struct AppController {
     schedule: Vec<radiotrope_app::data::schedule::Entry>,
     /// Where the entries are saved; `None` keeps them in memory (tests)
     schedule_path: Option<std::path::PathBuf>,
+    /// How each entry's last run went, saved with the entries
+    schedule_results: Vec<radiotrope_app::data::schedule::LastRun>,
+    /// The scheduled run the running recording was started for
+    recording_for: Option<scheduling::RunId>,
     /// The entry the schedule started, while it plays
     active: Option<scheduling::ActiveEntry>,
     sleep: Option<scheduling::SleepTimer>,
@@ -137,6 +141,8 @@ impl AppController {
             output_hang: None,
             schedule: Vec::new(),
             schedule_path: None,
+            schedule_results: Vec::new(),
+            recording_for: None,
             active: None,
             sleep: None,
             fade_in: None,
@@ -907,7 +913,8 @@ impl AppController {
         }
     }
 
-    /// Start recording the playing station into `folder`.
+    /// Start recording the playing station into `folder`, and say so
+    /// when it can't be
     fn start_recording(
         &mut self,
         folder: &Path,
@@ -916,10 +923,28 @@ impl AppController {
         with_eq: bool,
         cover: Option<Vec<u8>>,
     ) {
-        let Some(engine) = &self.engine else { return };
+        if let Err(e) = self.try_start_recording(folder, format, bitrate, with_eq, cover) {
+            self.notify(&e, NoticeKind::Error);
+        }
+    }
+
+    /// Start recording the playing station into `folder`, or say why not
+    /// (a sentence for the user). Nothing to do is fine: no audio engine
+    /// yet, or a recording already running.
+    fn try_start_recording(
+        &mut self,
+        folder: &Path,
+        format: RecordingFormat,
+        bitrate: Option<u32>,
+        with_eq: bool,
+        cover: Option<Vec<u8>>,
+    ) -> Result<(), String> {
+        let Some(engine) = &self.engine else {
+            return Ok(());
+        };
         let recorder = engine.recorder();
         if recorder.is_recording() {
-            return;
+            return Ok(());
         }
 
         let (station, url, playing, station_kbps) = {
@@ -932,14 +957,9 @@ impl AppController {
             )
         };
         if !playing {
-            self.notify("Start a station before recording", true);
-            return;
+            return Err("Start a station before recording".into());
         }
-
-        if let Err(e) = recordings::prepare_dir(folder) {
-            self.notify(&e, true);
-            return;
-        }
+        recordings::prepare_dir(folder)?;
 
         let now = chrono::Local::now();
         let path = recordings::new_file_path(folder, &station, now, format.extension());
@@ -974,8 +994,9 @@ impl AppController {
                     duration: Duration::ZERO,
                     bytes: 0,
                 });
+                Ok(())
             }
-            Err(e) => self.notify(&format!("Can't start recording: {e}"), true),
+            Err(e) => Err(format!("Can't start recording: {e}")),
         }
     }
 
@@ -1033,19 +1054,22 @@ impl AppController {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         match &status.error {
-            Some(e) => self.notify(&format!("Recording stopped: {e}. Saved {name}"), true),
-            None => self.notify(&format!("Saved {name}"), false),
+            Some(e) => self.notify(
+                &format!("Recording stopped: {e}. Saved {name}"),
+                NoticeKind::Error,
+            ),
+            None => self.notify(&format!("Saved {name}"), NoticeKind::Saved),
         }
+        // A scheduled recording: its entry's row says how it went
+        self.scheduled_recording_finished(status);
     }
 
-    fn notify(&mut self, text: &str, is_error: bool) {
+    /// Tell the user `text` under the station. The kind says what it is
+    /// about: its icon, what a click does, and whether it stays until closed.
+    fn notify(&mut self, text: &str, kind: NoticeKind) {
         self.notice_seq += 1;
         let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-        state.recording_notice = Some(RecordingNotice {
-            seq: self.notice_seq,
-            text: text.to_string(),
-            is_error,
-        });
+        state.recording_notice = Some(RecordingNotice::new(self.notice_seq, text, kind));
     }
 
     /// Show the station's song info: `meta`, or a newer one already waiting

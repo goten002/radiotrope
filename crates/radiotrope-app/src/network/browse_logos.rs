@@ -13,7 +13,11 @@ use crate::network::LogoService;
 /// once a day)
 pub const UNUSED_AFTER: std::time::Duration = std::time::Duration::from_secs(90 * 24 * 60 * 60);
 
-/// Size the browser shows logos at (2x its 40px for HiDPI screens)
+/// The most the browser's logos may take on disk: past it, the ones shown
+/// longest ago are removed (at startup and once a day)
+pub const MAX_BYTES: u64 = 150 * 1024 * 1024;
+
+/// Size the lists show logos at (2x their 40px for HiDPI screens)
 pub const ROW_LOGO_SIZE: u32 = 80;
 
 /// RGBA pixels with width and height
@@ -49,6 +53,12 @@ impl BrowseLogos {
     /// Remove logos not shown for [`UNUSED_AFTER`]
     pub fn remove_unused(&self) -> usize {
         self.cache.remove_unused(UNUSED_AFTER)
+    }
+
+    /// Remove the logos shown longest ago until the cache takes no more
+    /// than [`MAX_BYTES`]
+    pub fn trim_to_size(&self) -> usize {
+        self.cache.trim_to_size(MAX_BYTES)
     }
 
     /// A logo shrunk for a browser row: from the disk cache, else
@@ -105,7 +115,7 @@ impl BrowseLogos {
 }
 
 /// Decode a cached PNG to row size
-fn row_rgba(png: &[u8]) -> Option<Rgba> {
+pub fn row_rgba(png: &[u8]) -> Option<Rgba> {
     let img = decode_logo(png).ok()?;
     let img = if img.width() > ROW_LOGO_SIZE || img.height() > ROW_LOGO_SIZE {
         img.thumbnail(ROW_LOGO_SIZE, ROW_LOGO_SIZE)

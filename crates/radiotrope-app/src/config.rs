@@ -92,7 +92,8 @@ pub mod ui {
     /// player (one an agent started with `--mcp --standalone`)
     pub const FAVORITES_FOLLOW: Duration = Duration::from_secs(1);
 
-    /// How long "Saved ..." and recording errors stay on screen
+    /// How long "Saved ..." and the Sleep Timer's news stay on screen.
+    /// Errors and missed Scheduler entries stay until they are closed.
     pub const RECORDING_NOTICE_TIME: Duration = Duration::from_secs(6);
 
     /// Listening shorter than this does not count (tuning through stations)

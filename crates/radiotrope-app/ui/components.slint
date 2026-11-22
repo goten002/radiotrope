@@ -342,6 +342,11 @@ export component Chip inherits Rectangle {
     // give: those elide first (e.g. Playing and REC stay whole while a
     // Scheduler label shortens)
     in property <bool> keep: false;
+    // The owner says the text to screen readers itself (a live region):
+    // the chip's own text is then not read a second time
+    in property <bool> silent: false;
+    // The chip has the keyboard focus (only one that is a button can)
+    out property <bool> has-focus: keys.has-focus;
     callback clicked();
 
     // Grows with its text but gives way (eliding) when space runs out
@@ -367,6 +372,13 @@ export component Chip inherits Rectangle {
         accessible-role: button;
         accessible-label: root.detail == "" ? root.text : root.text + ", " + root.detail;
         accessible-action-default => { root.clicked(); }
+    }
+
+    // Read once: here, as the button above, or by the owner (`silent`).
+    // The texts drawn below are not read themselves.
+    if !root.interactive && !root.silent: Rectangle {
+        accessible-role: AccessibleRole.text;
+        accessible-label: root.detail == "" ? root.text : root.text + ", " + root.detail;
     }
 
     keys := ButtonKeys {
@@ -422,6 +434,7 @@ export component Chip inherits Rectangle {
 
             Text {
                 text: root.text;
+                accessible-role: none;
                 color: root.foreground;
                 font-size: Theme.font-sm;
                 font-weight: Theme.weight-semibold;
@@ -444,6 +457,7 @@ export component Chip inherits Rectangle {
 
                 separator := Text {
                     text: "·";
+                    accessible-role: none;
                     color: root.foreground;
                     font-size: Theme.font-sm;
                     font-weight: Theme.weight-semibold;
@@ -454,6 +468,7 @@ export component Chip inherits Rectangle {
 
             if root.detail != "": Text {
                 text: root.detail;
+                accessible-role: none;
                 color: root.foreground;
                 font-size: Theme.font-sm;
                 font-weight: Theme.weight-semibold;
