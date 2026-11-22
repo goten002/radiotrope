@@ -24,6 +24,7 @@ use radiotrope_app::text::{self, status};
 use super::state::{AppCommand, AppSnapshot, NoticeKind, RecordingNotice, RecordingProgress};
 
 mod alarm_tone;
+pub mod play_report;
 mod resume;
 mod scheduling;
 
@@ -122,6 +123,11 @@ pub struct AppController {
     levels: Levels,
     /// The station whose loudness the engine is measuring
     level_url: Option<String>,
+    /// Counts a play in the directory (see [`play_report`])
+    play_reporter: Option<play_report::PlayReporter>,
+    /// The station started last, until it first plays: its play is
+    /// counted then, once, and not again for a reconnect or retry
+    unreported: Option<String>,
 }
 
 impl AppController {
@@ -164,6 +170,8 @@ impl AppController {
             fake_now: None,
             levels: Levels::default(),
             level_url: None,
+            play_reporter: None,
+            unreported: None,
         }
     }
 
@@ -308,7 +316,7 @@ impl AppController {
             } => {
                 // The schedule's entry is over: the user picked a station
                 self.release_schedule();
-                let seq = self.start_stream(&url, name, logo_url, country);
+                let seq = self.start_new(&url, name, logo_url, country);
                 if let Some(taken) = taken {
                     // An agent that stopped waiting has dropped its end
                     let _ = taken.send(seq);
@@ -323,9 +331,11 @@ impl AppController {
             } => {
                 // The schedule's entry is over: the user picked a station
                 self.release_schedule();
+                self.count_start(&url);
                 self.step_to(&url, name, logo_url, country);
             }
             AppCommand::Stop => {
+                self.unreported = None;
                 self.stopped_by_user();
                 self.stop_playback();
             }
@@ -541,6 +551,42 @@ impl AppController {
         // The beep's volume floor is gone
         if was_beeping {
             self.apply_volume(&chrono::Local::now());
+        }
+    }
+
+    /// Count a play in the directory with `reporter` (see [`play_report`])
+    pub fn with_play_reporter(mut self, reporter: play_report::PlayReporter) -> Self {
+        self.play_reporter = Some(reporter);
+        self
+    }
+
+    /// A station is started anew (not reconnected, retried or kept for a
+    /// recording waiting for it): its play is counted once it plays
+    pub(super) fn count_start(&mut self, url: &str) {
+        self.unreported = (!self.resumes(url)).then(|| url.to_string());
+    }
+
+    /// [`Self::start_stream`] for a station started anew: its play is
+    /// counted once it plays
+    pub(super) fn start_new(
+        &mut self,
+        url: &str,
+        name: Option<String>,
+        logo_url: Option<String>,
+        country: Option<String>,
+    ) -> u64 {
+        self.count_start(url);
+        self.start_stream(url, name, logo_url, country)
+    }
+
+    /// The station started last first plays: its play is counted
+    fn report_play(&mut self, url: Option<String>) {
+        let Some(url) = url.filter(|url| self.unreported.as_deref() == Some(url.as_str())) else {
+            return;
+        };
+        self.unreported = None;
+        if let Some(reporter) = &self.play_reporter {
+            reporter(&url);
         }
     }
 
@@ -874,7 +920,9 @@ impl AppController {
                 state.status_text = status::PLAYING.into();
                 state.is_error = false;
                 self.stream_failed = false;
+                let url = state.station_url.clone();
                 drop(state);
+                self.report_play(url);
                 // An alarm's fade starts once it is heard
                 self.entry_station_plays();
                 self.apply_volume(&chrono::Local::now());

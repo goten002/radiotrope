@@ -250,6 +250,15 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
         let ctx = ctx.clone();
         ui.on_play_station(move |station| {
             if let Some(ui) = ctx.ui.upgrade() {
+                // Its play is counted once it plays (Report Play Count)
+                if !station.provider_id.is_empty() {
+                    crate::app::controller::play_report::picked_from_directory(
+                        &Station::new(station.name.as_str(), station.url.as_str()).with_provider(
+                            radiotrope_app::providers::radiotrope::PROVIDER_ID,
+                            Some(station.provider_id.to_string()),
+                        ),
+                    );
+                }
                 let logo_url = station.logo_url.to_string();
                 let country = station.country.to_string();
                 play_station_with_metadata(
@@ -272,7 +281,6 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                             .filter(|id| !id.is_empty()),
                     },
                 );
-                report_browse_play(&station);
             }
         });
     }
@@ -319,24 +327,6 @@ fn browse_directory() -> radiotrope_app::error::Result<Arc<RadiotropeProvider>> 
     }
     let directory = Arc::new(RadiotropeProvider::new()?);
     Ok(DIRECTORY.get_or_init(|| directory).clone())
-}
-
-/// Count a play of a station browser result in the directory, which
-/// orders its lists by plays. Nobody waits on it, and a failure costs
-/// only the count. Not with Stations > Report Plays off.
-fn report_browse_play(item: &BrowseStation) {
-    if item.provider_id.is_empty() || !crate::view_options::report_plays() {
-        return;
-    }
-    let station = Station::new(item.name.as_str(), item.url.as_str()).with_provider(
-        radiotrope_app::providers::radiotrope::PROVIDER_ID,
-        Some(item.provider_id.to_string()),
-    );
-    let _ = std::thread::Builder::new()
-        .name("report-play".into())
-        .spawn(move || {
-            let _ = browse_directory().and_then(|d| d.report_click(&station));
-        });
 }
 
 /// Replace the browser list with the first page of `query`, fetched in the

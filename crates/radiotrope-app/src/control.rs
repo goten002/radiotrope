@@ -260,23 +260,12 @@ impl Control {
             .await
     }
 
-    /// A station by its directory id, looked up off the async thread. The
-    /// play is counted in the directory, as the GUI does (not with
-    /// Stations > Report Plays off); nobody waits on it.
+    /// A station by its directory id, looked up off the async thread, to
+    /// play it: its play is counted once it plays, with Stations > Report
+    /// Play Count allowed (see `play_report`)
     pub async fn station_to_play(&self, id: String) -> Result<Station, Error> {
         let station = self.station(id).await?;
-        if !crate::view_options::report_plays() {
-            return Ok(station);
-        }
-        let control = self.clone();
-        let clicked = station.clone();
-        tokio::task::spawn_blocking(move || {
-            if let Ok(providers) = control.providers() {
-                if let Some(p) = providers.get(&clicked.provider) {
-                    let _ = p.report_click(&clicked);
-                }
-            }
-        });
+        crate::app::controller::play_report::picked_from_directory(&station);
         Ok(station)
     }
 
@@ -1196,31 +1185,16 @@ mod tests {
         (control, plays, dir)
     }
 
-    /// Wait for the report, which nobody waits on
-    async fn reported(plays: &AtomicUsize, count: usize) -> bool {
-        for _ in 0..200 {
-            if plays.load(Ordering::SeqCst) == count {
-                return true;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        false
-    }
-
-    // The only test that changes the switch, which the whole process shares
+    // The play is counted by the controller once the station plays
+    // (`play_report`), not here as well: Search Stations, a phone or an
+    // agent count it once
     #[tokio::test]
-    async fn a_play_is_not_reported_with_report_plays_off() {
+    async fn looking_up_a_station_to_play_does_not_count_it() {
         let (control, plays, dir) = control("report");
-
-        crate::view_options::set_report_plays(false);
         let station = control.station_to_play("jazz".into()).await.unwrap();
         assert_eq!(station.name, "Jazz FM", "the station still plays");
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(plays.load(Ordering::SeqCst), 0, "no report when off");
-
-        crate::view_options::set_report_plays(true);
-        control.station_to_play("jazz".into()).await.unwrap();
-        assert!(reported(&plays, 1).await, "one report when on");
+        assert_eq!(plays.load(Ordering::SeqCst), 0, "counted when it plays");
         let _ = std::fs::remove_dir_all(dir);
     }
 

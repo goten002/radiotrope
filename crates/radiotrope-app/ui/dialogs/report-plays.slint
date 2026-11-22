@@ -3,7 +3,7 @@ import { SecondaryButton } from "../buttons.slint";
 import { DialogShell } from "../components.slint";
 import { AboutInfo } from "about.slint";
 
-// Asked when the user switches Stations > Report Plays on: why, what is
+// Asked when the user switches Stations > Report Play Count on: why, what is
 // kept, and how to take it back, in plain words; the README's Privacy
 // section, behind Learn More, has the technical details. Opt-in consent:
 // the switch stays off unless Allow is pressed; Esc, the close button and
@@ -19,26 +19,26 @@ export component ReportPlaysDialog inherits Rectangle {
     out property <string> learn-more-url: AboutInfo.repository + "#privacy";
 
     if show-dialog: DialogShell {
-        title: "Report Plays?";
+        title: "Report Play Count?";
         card-width: Defaults.dialog-width;
         close-requested => { root.show-dialog = false; }
 
         Text {
-            text: "Help others find good stations. When you play a station from Search Stations, Radiotrope counts the play so popular stations show up first.";
+            text: "When you play a station from the station directory, including your favorites, Radiotrope can send a play notification to our server. We use these counts to rank popular stations and help others discover them.";
             color: Theme.text-primary;
             font-size: Theme.font-md;
             wrap: word-wrap;
         }
 
         Text {
-            text: "We only count plays: we don't store your IP address or anything else that could identify you, and there's no account.";
+            text: "Your privacy matters. We don't store your IP address or link plays to you. No account is needed.";
             color: Theme.text-primary;
             font-size: Theme.font-md;
             wrap: word-wrap;
         }
 
         Text {
-            text: "You can turn this off anytime in Stations > Report Plays.";
+            text: "You can change this anytime in Stations > Report Play Count.";
             color: Theme.text-primary;
             font-size: Theme.font-md;
             wrap: word-wrap;

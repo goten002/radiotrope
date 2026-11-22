@@ -31,10 +31,12 @@ const RETIRED_FIELDS: &[&str] = &[
     "always_on_top",
 ];
 
-/// The version of the Report Plays dialog's text. Plays are reported only
-/// with a yes to this version: when what is sent or kept changes, raise it
-/// and the dialog is asked again (with the switch off until then).
-pub const REPORT_PLAYS_CONSENT: u32 = 1;
+/// The version of the Report Play Count dialog's text. Plays are reported
+/// only with a yes to this version: when what is sent or kept changes, raise
+/// it and the dialog is asked again (with the switch off until then).
+/// 2: plays of favorites from the directory are counted too, not only
+/// those from Search Stations.
+pub const REPORT_PLAYS_CONSENT: u32 = 2;
 
 /// How long [`Settings::update`] waits for another player's update
 const LOCK_WAIT: Duration = Duration::from_secs(2);
@@ -234,12 +236,12 @@ pub struct Settings {
     // === Station directory ===
     /// Tell the station directory when one of its stations is played (the
     /// station's id, for its "most played" lists). Off until the user says
-    /// yes in the Report Plays dialog; read as off without a yes to the
+    /// yes in the Report Play Count dialog; read as off without a yes to the
     /// current dialog (see [`report_plays_consent`](Self::report_plays_consent)).
     #[serde(default)]
     pub report_plays: bool,
 
-    /// The version of the Report Plays dialog the user said yes to
+    /// The version of the Report Play Count dialog the user said yes to
     /// ([`REPORT_PLAYS_CONSENT`]); `None` with the switch off. Set both with
     /// [`allow_report_plays`](Self::allow_report_plays).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -433,13 +435,13 @@ impl Settings {
         settings
     }
 
-    /// Turn Report Plays on (the user said yes in its dialog) or off
+    /// Turn Report Play Count on (the user said yes in its dialog) or off
     pub fn allow_report_plays(&mut self, allowed: bool) {
         self.report_plays = allowed;
         self.report_plays_consent = allowed.then_some(REPORT_PLAYS_CONSENT);
     }
 
-    /// Report Plays stays on only with a yes to this build's dialog. Files
+    /// Report Play Count stays on only with a yes to this build's dialog. Files
     /// from before the dialog (on by default then, with no yes) and a yes
     /// to an older text read as off, so the user is asked again.
     fn check_report_plays_consent(&mut self) {
@@ -864,6 +866,12 @@ mod tests {
         // A yes to an older text asks again
         let older = read(r#"{"report_plays": true, "report_plays_consent": 0}"#);
         assert!(!older.report_plays);
+        // A yes to version 1, which counted only Search Stations' plays and
+        // not favorites': off, and asked again
+        let v1 = read(r#"{"report_plays": true, "report_plays_consent": 1}"#);
+        assert!(!v1.report_plays);
+        assert_eq!(v1.report_plays_consent, None);
+        assert_eq!(REPORT_PLAYS_CONSENT, 2);
         // A yes to this one is kept
         let current =
             format!(r#"{{"report_plays": true, "report_plays_consent": {REPORT_PLAYS_CONSENT}}}"#);

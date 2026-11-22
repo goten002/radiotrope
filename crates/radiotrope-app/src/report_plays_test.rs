@@ -1,4 +1,4 @@
-//! Stations > Report Plays in the real `App`, headless: switching it on
+//! Stations > Report Play Count in the real `App`, headless: switching it on
 //! asks first (only Allow turns it on), switching it off is at once.
 
 use std::cell::RefCell;
@@ -14,7 +14,7 @@ fn settle(time: &Cell<Duration>) {
 
 // One test only: Slint's platform is set once per thread
 #[test]
-fn report_plays_is_switched_on_only_by_allow() {
+fn report_play_count_is_switched_on_only_by_allow() {
     use Key::{DownArrow, End, Escape, Return, RightArrow, Tab, F10};
 
     let platform = HeadlessPlatform::default();
@@ -46,7 +46,7 @@ fn report_plays_is_switched_on_only_by_allow() {
         }
     };
     // F10, Down: the Open menu; Right: Stations, whose last row is
-    // Report Plays
+    // Report Play Count
     let switch = [F10, DownArrow, RightArrow, End, Return];
 
     assert!(!view.get_report_plays(), "off by default");

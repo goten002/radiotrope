@@ -385,7 +385,7 @@ impl AppController {
             (previous, same)
         };
         if !same_station {
-            self.start_stream(
+            self.start_new(
                 &station.url,
                 Some(station.name.clone()).filter(|n| !n.is_empty()),
                 station.logo_url.clone(),
@@ -1152,6 +1152,49 @@ mod tests {
         controller.active.as_mut().unwrap().retry_at = Some(Instant::now());
         controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS - 1));
         assert_eq!(state.lock().unwrap().play_seq, first + 1);
+    }
+
+    // Report Play Count: a scheduled start is counted once when it plays,
+    // and its retries aren't counted again
+    #[test]
+    fn a_scheduled_start_is_reported_once() {
+        let (controller, state) = controller();
+        let reports = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut controller = controller.with_play_reporter({
+            let reports = reports.clone();
+            Arc::new(move |url: &str| reports.lock().unwrap().push(url.to_string()))
+        });
+        let codec = || radiotrope::audio::CodecInfo {
+            codec_name: "MP3".into(),
+            channels: 2,
+            sample_rate: 44_100,
+            bits_per_sample: None,
+            bitrate: None,
+        };
+        let plays = |controller: &mut AppController| {
+            state.lock().unwrap().is_resolving = false;
+            controller.handle_engine_event(radiotrope::audio::EngineEvent {
+                stream: None,
+                event: AudioEvent::Playing(codec()),
+            });
+        };
+        let (_, at) = save(&mut controller, entry(Action::Play));
+        controller.run_schedule(at);
+        // It failed, and is tried again
+        {
+            let mut s = state.lock().unwrap();
+            s.is_resolving = false;
+            s.playback = PlaybackState::Stopped;
+        }
+        controller.run_schedule(at + TimeDelta::seconds(1));
+        controller.active.as_mut().unwrap().retry_at = Some(Instant::now());
+        controller.run_schedule(at + TimeDelta::seconds(2));
+        assert!(reports.lock().unwrap().is_empty(), "not before it plays");
+        plays(&mut controller);
+        assert_eq!(*reports.lock().unwrap(), [DEAD_URL]);
+        // It drops out and plays again: the same play
+        plays(&mut controller);
+        assert_eq!(reports.lock().unwrap().len(), 1);
     }
 
     #[test]
