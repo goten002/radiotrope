@@ -12,7 +12,7 @@ import { NetworkStreamDialog } from "dialogs/network-stream.slint";
 import { ImportFavoritesDialog } from "dialogs/import-favorites.slint";
 import { StatisticsDialog, StatsData, StreamHealth } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
-import { FilterPickerDialog, FilterEntry } from "dialogs/filter-picker.slint";
+import { FilterEntry } from "filter-dropdown.slint";
 import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
@@ -57,20 +57,7 @@ export component App inherits Window {
             favorites.find-text = "ra";
         }
         if screen == "main" && detail == "armed" { favorites.confirm-switch(root.favorites-list[2].url); }
-        if screen == "search" {
-            browser-dialog.search-query = detail == "empty" ? "no such station" : "jazz";
-            if detail == "filtered" || detail == "next-loading" || detail == "next-error" {
-                browser-dialog.country-code = "GB";
-                browser-dialog.country-name = "United Kingdom";
-                browser-dialog.genre-code = "jazz";
-                browser-dialog.genre-name = "Jazz";
-            }
-            browser-dialog.show-dialog = true;
-        }
-        if screen == "picker" {
-            root.show-filter-picker(detail == "genre" ? "genre" : "country");
-            picker-dialog.selected-code = detail == "genre" ? "jazz" : "GB";
-        }
+        if screen == "search" { browser-dialog.stage(detail); }
         if screen == "network-stream" {
             if detail == "filled" {
                 stream-dialog.url = root.station-url;
@@ -443,12 +430,12 @@ export component App inherits Window {
     in-out property <bool> import-can-undo <=> import-dialog.can-undo;
     callback import-favorites-undo();
 
-    // Filter picker proxy properties (for Rust access)
-    in-out property <string> filter-kind <=> picker-dialog.kind;
-    in-out property <[FilterEntry]> filter-entries <=> picker-dialog.entries;
-    in-out property <string> filter-entries-text <=> picker-dialog.filter-text;
-    in-out property <bool> filter-entries-loading <=> picker-dialog.loading;
-    in-out property <string> filter-entries-error <=> picker-dialog.error;
+    // The station browser's open filter list (for Rust access)
+    in-out property <string> filter-kind <=> browser-dialog.filter-kind;
+    in-out property <[FilterEntry]> filter-entries <=> browser-dialog.filter-entries;
+    in-out property <string> filter-entries-text <=> browser-dialog.filter-text;
+    in-out property <bool> filter-entries-loading <=> browser-dialog.filter-loading;
+    in-out property <string> filter-entries-error <=> browser-dialog.filter-error;
 
     // Equalizer proxy properties
     in-out property <bool> eq-enabled <=> eq-dialog.eq-enabled;
@@ -510,20 +497,6 @@ export component App inherits Window {
     // stations, M mutes. Keys reach it only when the focused control
     // doesn't use them (text fields keep theirs), and dialogs sit outside
     // it, so it is quiet while one is open.
-    // The filter picker for one of the station browser's filters, in place
-    // of the browser until something is picked or it is closed
-    function show-filter-picker(kind: string) {
-        browser-dialog.show-dialog = false;
-        picker-dialog.kind = kind;
-        picker-dialog.selected-code = kind == "genre" ? browser-dialog.genre-code
-            : browser-dialog.country-code;
-        picker-dialog.entries = [];
-        picker-dialog.error = "";
-        picker-dialog.loading = true;
-        picker-dialog.filter-text = "";
-        picker-dialog.show-dialog = true;
-        root.load-filter-entries(kind);
-    }
     forward-focus: shortcuts;
     // The whole window inside one box, so that with rounded corners
     // everything is cut to them (dialog scrims and bubbles too)
@@ -845,7 +818,10 @@ export component App inherits Window {
             }
 
             browser-dialog := StationBrowserDialog {
-                search-shortcut-enabled: !picker-dialog.show-dialog;
+                snapshot-overlay: root.snapshot-overlay;
+                can-undo: root.favorite-undo != 0;
+                undo-requested => { root.undo-remove-favorite(); }
+                undo-dismissed => { root.favorite-undo = 0; }
                 playing-url: root.station-url;
                 is-playing: root.is-playing;
                 play-loading: root.is-loading;
@@ -855,7 +831,8 @@ export component App inherits Window {
                 search-stations(query, country, genre) => {
                     root.search-stations(query, country, genre);
                 }
-                pick-filter(kind) => { root.show-filter-picker(kind); }
+                load-filter-entries(kind) => { root.load-filter-entries(kind); }
+                filter-filter-entries(text) => { root.filter-filter-entries(text); }
                 load-more() => { root.load-more-stations(); }
                 retry() => { root.retry-browse(); }
                 station-selected(station) => { root.play-station(station); }
@@ -875,24 +852,6 @@ export component App inherits Window {
 
             accent-dialog := AccentColorDialog {
                 color-changed(color) => { root.accent-color-changed(color); }
-            }
-
-            picker-dialog := FilterPickerDialog {
-                entry-selected(entry) => {
-                    if self.kind == "genre" {
-                        browser-dialog.genre-name = entry.name;
-                        browser-dialog.genre-code = entry.code;
-                    } else {
-                        browser-dialog.country-name = entry.name;
-                        browser-dialog.country-code = entry.code;
-                        browser-dialog.country-flag = entry.flag;
-                    }
-                    browser-dialog.show-dialog = true;
-                    browser-dialog.run-search();
-                }
-                dismissed() => { browser-dialog.show-dialog = true; }
-                load-entries(kind) => { root.load-filter-entries(kind); }
-                filter-entries(text) => { root.filter-filter-entries(text); }
             }
 
             recording-dialog := RecordingSettingsDialog {
@@ -1036,7 +995,7 @@ export component App inherits Window {
     out property <bool> dialog-open: stream-dialog.show-dialog || stats-dialog.show-dialog
         || eq-dialog.show-dialog || filters-dialog.show-dialog || browser-dialog.show-dialog || edit-dialog.show-dialog
         || import-dialog.show-dialog
-        || accent-dialog.show-dialog || picker-dialog.show-dialog || recording-dialog.show-dialog
+        || accent-dialog.show-dialog || recording-dialog.show-dialog
         || agents-dialog.show-dialog || about-dialog.show-dialog || shortcuts-dialog.show-dialog || root.show-wifi-settings
         || sleep-dialog.show-dialog || schedule-dialog.show-dialog || remote-dialog.show-dialog
         || root.pairing-shown || root.pairing-qr-shown || root.quit-shown;

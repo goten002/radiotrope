@@ -112,16 +112,15 @@ impl Shot {
     }
 
     /// How many presses of Esc close the dialog. Each one first closes
-    /// what is on top: a dropdown, then the Scheduler's form (back to its
-    /// list), a pairing overlay, or a filter picker (back to Search).
+    /// what is on top: a dropdown (Search's filter lists too), then the
+    /// Scheduler's form (back to its list) or a pairing overlay.
     #[cfg(test)]
     fn escapes(&self) -> usize {
         let dropdown = matches!(
             self.state,
             "presets" | "bitrate" | "agent" | "interface" | "auth" | "station" | "date" | "volume"
-        );
+        ) || self.state.starts_with("filter-");
         let nested = match self.screen {
-            "picker" => true,
             "remote" => matches!(self.state, "code" | "qr"),
             "schedule" => !matches!(self.state, "" | "empty" | "remove" | "last-result"),
             _ => false,
@@ -451,8 +450,32 @@ const SHOTS: &[Shot] = &[
     Shot::new(
         "search-results",
         "search",
+        "results",
+        "Station results; the filters are hidden behind the button beside the search field.",
+    ),
+    Shot::new(
+        "search-filters",
+        "search",
+        "filters",
+        "The filters shown, none set: Any country, Any genre, Reset Filters greyed out.",
+    ),
+    Shot::new(
+        "search-filtered",
+        "search",
+        "filtered-shown",
+        "The filters shown with a country and a genre set.",
+    ),
+    Shot::new(
+        "search-filtered-hidden",
+        "search",
         "filtered",
-        "Station results with country and genre chips selected.",
+        "Filters set while hidden: the dot on the button, and the results line names them.",
+    ),
+    Shot::new(
+        "search-undo",
+        "search",
+        "results",
+        "A result just un-starred: Removed from Favorites and Undo over the results.",
     ),
     Shot::new(
         "search-loading",
@@ -509,40 +532,40 @@ const SHOTS: &[Shot] = &[
         "The results list with the keyboard: Down from the search field, the second row active.",
     ),
     Shot::new(
-        "picker-country",
-        "picker",
-        "country",
-        "Country filter options with flags and counts.",
+        "search-filter-country",
+        "search",
+        "filter-country",
+        "The country list open with \"uni\" typed: the matches, the first one Enter's.",
     ),
     Shot::new(
-        "picker-genre",
-        "picker",
-        "genre",
-        "Genre filter options and counts.",
+        "search-filter-genre",
+        "search",
+        "filter-genre",
+        "The genre list open: Any genre, then the genres by name with their counts.",
     ),
     Shot::new(
-        "picker-keyboard-row",
-        "picker",
-        "country-keys",
-        "The country list with the keyboard: Down from the filter field, the third row active.",
+        "search-filter-keys",
+        "search",
+        "filter-keys",
+        "The country list with the keyboard: Down from the text box, the third row active.",
     ),
     Shot::new(
-        "picker-loading",
-        "picker",
-        "loading",
-        "Country filter entries loading.",
+        "search-filter-loading",
+        "search",
+        "filter-loading",
+        "The country list loading.",
     ),
     Shot::new(
-        "picker-error",
-        "picker",
-        "error",
-        "Country filter directory failure with retry.",
+        "search-filter-error",
+        "search",
+        "filter-error",
+        "The country list after the directory failed, with Try Again.",
     ),
     Shot::new(
-        "picker-no-match",
-        "picker",
-        "no-match",
-        "Country filter text that matches no country.",
+        "search-filter-no-match",
+        "search",
+        "filter-no-match",
+        "The country list with a text that matches no country.",
     ),
     Shot::new(
         "network-stream-empty",
@@ -911,7 +934,6 @@ const SHOTS: &[Shot] = &[
 #[cfg(test)]
 const DIALOG_SCREENS: &[&str] = &[
     "search",
-    "picker",
     "network-stream",
     "edit-favorite",
     "import",
@@ -1084,8 +1106,8 @@ fn after_open(ui: &App, shot: &Shot) {
             }
         }
         // Down from the text field goes into the list, then moves in it
-        ("search", "keyboard") | ("picker", "country-keys") => {
-            for _ in 0..if shot.screen == "search" { 2 } else { 3 } {
+        ("search", "keyboard") => {
+            for _ in 0..2 {
                 press(ui, Key::DownArrow);
                 slint::platform::update_timers_and_animations();
             }
@@ -1104,11 +1126,6 @@ fn after_open(ui: &App, shot: &Shot) {
                 },
             );
             press(ui, Key::Return);
-        }
-        ("picker", "no-match") => {
-            // What the filter callback leaves for a text nothing matches
-            ui.set_filter_entries_text("Atlantis".into());
-            ui.set_filter_entries(ModelRc::default());
         }
         _ => {}
     }
@@ -1133,9 +1150,37 @@ fn after_open(ui: &App, shot: &Shot) {
         ui.set_snapshot_preset_menu(true);
     }
     ui.set_snapshot_overlay(shot.state.into());
+    if shot.screen == "search" && shot.state.starts_with("filter-") {
+        use_filter_list(ui, shot.state);
+    }
 }
 
-/// Press and release one key
+/// What a user does in a filter's list of Search Stations, once it opens
+fn use_filter_list(ui: &App, state: &str) {
+    // The list opens when the overlay's change is seen
+    slint::platform::update_timers_and_animations();
+    match state {
+        "filter-country" => type_text(ui, "uni"),
+        "filter-no-match" => type_text(ui, "Atlantis"),
+        // Down from the text box goes into the list, then moves in it
+        "filter-keys" => {
+            for _ in 0..3 {
+                press(ui, Key::DownArrow);
+                slint::platform::update_timers_and_animations();
+            }
+        }
+        "filter-loading" => {
+            ui.set_filter_entries(ModelRc::default());
+            ui.set_filter_entries_loading(true);
+        }
+        "filter-error" => {
+            ui.set_filter_entries(ModelRc::default());
+            ui.set_filter_entries_error("The station directory did not respond.".into());
+        }
+        _ => {}
+    }
+}
+
 /// Tab presses from an opened Accent Color dialog to its hex field
 const HEX_FIELD_TABS: usize = 13;
 
@@ -1150,6 +1195,7 @@ fn type_text(ui: &App, text: &str) {
     }
 }
 
+/// Press and release one key
 fn press(ui: &App, key: Key) {
     let text = SharedString::from(key);
     ui.window()
@@ -1520,13 +1566,23 @@ fn configure(ui: &App, shot: &Shot) {
         },
         "visualizer" => ui.set_viz_mode(shot.state.into()),
         "search" => {
-            if matches!(shot.state, "filtered" | "next-loading" | "next-error") {
+            if matches!(
+                shot.state,
+                "filtered" | "filtered-shown" | "next-loading" | "next-error"
+            ) {
                 ui.set_snapshot_country_flag(flag_image(Some("GB"), None));
             }
-            if shot.name == "search-results"
-                || matches!(shot.state, "next-loading" | "next-error" | "keyboard")
+            if matches!(
+                shot.state,
+                "results" | "filters" | "filtered-shown" | "next-loading" | "next-error" | "keyboard"
+            ) || shot.name == "search-filtered-hidden"
+                || shot.state.starts_with("filter-")
             {
                 set_results(ui);
+            }
+            install_filter_lists(ui);
+            if shot.name == "search-undo" {
+                ui.set_favorite_undo(1);
             }
             if shot.state == "loading" {
                 ui.set_search_loading(true);
@@ -1732,17 +1788,6 @@ fn configure(ui: &App, shot: &Shot) {
 
 fn open_screen(ui: &App, shot: &Shot) {
     ui.invoke_snapshot_open(shot.screen.into(), shot.state.into());
-    if shot.screen == "picker" {
-        match shot.state {
-            "error" => {
-                ui.set_filter_entries_loading(false);
-                ui.set_filter_entries_error("The station directory did not respond.".into());
-            }
-            "loading" => {}
-            "genre" => set_picker_entries(ui, "genre"),
-            _ => set_picker_entries(ui, "country"),
-        }
-    }
 }
 
 /// Names longer than the header and the rows have room for
@@ -1790,6 +1835,7 @@ fn set_results(ui: &App) {
                 index + STATIONS.len()
             }),
             country: "United Kingdom".into(),
+            genres: ["Jazz, Soul", "Blues, Jazz", "Jazz", "Ambient, Jazz"][index].into(),
             logo_url: "".into(),
             provider_id: format!("directory-{index}").into(),
             codec: codec.into(),
@@ -1800,27 +1846,47 @@ fn set_results(ui: &App) {
     ui.set_browse_logos(model(results.iter().map(|(_, index, _, _)| logo(*index))));
 }
 
-fn set_picker_entries(ui: &App, kind: &str) {
+/// The filters' lists of Search Stations, as the directory fills them:
+/// opening one shows its entries, and typing narrows them
+fn install_filter_lists(ui: &App) {
+    crate::browse_ui::install_filter(ui);
+    let ui_weak = ui.as_weak();
+    ui.on_load_filter_entries(move |kind| {
+        let Some(ui) = ui_weak.upgrade() else { return };
+        crate::browse_ui::keep_filter_entries(&kind, filter_list(&kind));
+        crate::browse_ui::show_filter_entries(&ui);
+    });
+}
+
+fn filter_list(kind: &str) -> Vec<FilterEntry> {
     let entries: &[(&str, &str, i32)] = if kind == "country" {
         &[
-            ("United Kingdom", "GB", 1842),
-            ("United States", "US", 6305),
             ("France", "FR", 1926),
             ("Germany", "DE", 2550),
+            ("Greece", "GR", 412),
             ("Ireland", "IE", 199),
             ("Portugal", "PT", 315),
+            ("Reunion", "RE", 12),
+            ("Tunisia", "TN", 38),
+            ("United Arab Emirates", "AE", 64),
+            ("United Kingdom", "GB", 1842),
+            ("United States", "US", 6305),
         ]
     } else {
         &[
-            ("Jazz", "jazz", 719),
+            ("Ambient", "ambient", 293),
             ("Blues", "blues", 328),
             ("Classical", "classical", 1084),
-            ("Ambient", "ambient", 293),
+            ("Drum and Bass", "drum-and-bass", 87),
+            ("Hip Hop", "hip-hop", 541),
+            ("Jazz", "jazz", 719),
+            ("R&B", "r-and-b", 204),
             ("Soul", "soul", 496),
         ]
     };
-    ui.set_filter_entries(model(entries.iter().map(|&(name, code, count)| {
-        FilterEntry {
+    entries
+        .iter()
+        .map(|&(name, code, count)| FilterEntry {
             name: name.into(),
             code: code.into(),
             station_count: count,
@@ -1829,9 +1895,8 @@ fn set_picker_entries(ui: &App, kind: &str) {
             } else {
                 Image::default()
             },
-        }
-    })));
-    ui.set_filter_entries_loading(false);
+        })
+        .collect()
 }
 
 #[cfg(test)]
