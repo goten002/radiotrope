@@ -19,11 +19,13 @@ use serde::{Deserialize, Deserializer, Serialize};
 use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::flags::code_for_country;
+use radiotrope_app::data::recordings;
 use radiotrope_app::data::schedule::{self, Action, Entry};
 use radiotrope_app::data::types::{url_to_id, Favorite};
 #[cfg(test)]
 use radiotrope_app::providers::ProviderRegistry;
-use radiotrope_app::providers::{CategoryType, SearchOrder, StationFilter};
+use radiotrope_app::providers::{Category, CategoryType, SearchOrder, StationFilter};
 
 use super::presence::{NetworkAgent, Place, Presence};
 use crate::app::state::{AppCommand, AppSnapshot};
@@ -38,9 +40,19 @@ const DEFAULT_SEARCH_LIMIT: usize = 20;
 const DEFAULT_PLAY_WAIT: Duration = Duration::from_secs(10);
 /// Longest wait a play tool accepts
 const MAX_PLAY_WAIT_SECS: f64 = 30.0;
-/// Default and largest number of categories list_categories returns
+/// Default and largest number of entries the list_genres, list_countries,
+/// list_languages and list_categories tools return
 const DEFAULT_CATEGORY_LIMIT: usize = 50;
 const MAX_CATEGORY_LIMIT: usize = 500;
+/// What a search that found nothing says, so an agent checks its filters
+const NOTHING_FOUND: &str = "No station matches. Filter values must be ones the directory has: \
+                             list_genres, list_countries, list_languages and list_categories \
+                             list them.";
+/// Where the user's consent to report plays is given
+const REPORT_PLAYS_NOTE: &str = "Whether plays of directory stations are counted in the \
+                                 directory. This is the user's consent: only the user can \
+                                 change it, in the window (Stations > Report Play Count). No \
+                                 tool can.";
 
 /// Everything the tools reach into: the player, through the control layer
 /// the Remote API shares, and what agents alone keep
@@ -121,18 +133,27 @@ pub struct SetVolumeArgs {
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 pub struct SearchArgs {
-    /// Words to match against station names
+    /// Words to match against station names (typo tolerant)
     #[serde(default)]
     pub query: Option<String>,
-    /// Genre, e.g. "jazz" (list_categories lists them)
+    /// Genre name ("Drum and Bass") or slug ("drum-and-bass"), from
+    /// list_genres. Several separated by commas ("jazz, blues") find
+    /// stations with any of them.
     #[serde(default)]
     pub genre: Option<String>,
-    /// Country name ("Greece") or two-letter code ("GR")
+    /// Country name ("Greece") or two-letter ISO code ("GR"), from
+    /// list_countries
     #[serde(default)]
     pub country: Option<String>,
-    /// Language name ("Greek") or ISO 639-3 code ("ell")
+    /// Language name ("Greek") or ISO 639-3 code ("ell"), from
+    /// list_languages
     #[serde(default)]
     pub language: Option<String>,
+    /// Programme type: its name ("Jazz music") or code (1-31), from
+    /// list_categories. Broader than a genre: news, sport, culture ...
+    #[serde(default, deserialize_with = "lenient_optional_text")]
+    #[schemars(schema_with = "category_schema")]
+    pub category: Option<String>,
     /// Codec, e.g. "MP3", "AAC", "OGG"
     #[serde(default)]
     pub codec: Option<String>,
@@ -140,9 +161,10 @@ pub struct SearchArgs {
     #[serde(default, deserialize_with = "lenient_optional_number")]
     #[schemars(schema_with = "bitrate_schema")]
     pub min_bitrate: Option<f64>,
-    /// Order of the results (default: popular)
-    #[serde(default)]
-    pub order: Option<OrderArg>,
+    /// Order of the results. Default: relevance when a query is given,
+    /// else popular.
+    #[serde(default, alias = "order")]
+    pub sort: Option<SortArg>,
     /// Maximum number of stations to return (1-100, default 20)
     #[serde(default, deserialize_with = "lenient_optional_number")]
     #[schemars(schema_with = "limit_schema")]
@@ -155,41 +177,90 @@ pub struct SearchArgs {
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum OrderArg {
-    /// Most played first, or the best match first when a query is given
+pub enum SortArg {
+    /// Most played first
+    #[serde(alias = "popularity")]
     Popular,
     /// A to Z
     Name,
+    /// Best match for the query first (most played first without a query)
+    Relevance,
 }
 
-impl From<OrderArg> for SearchOrder {
-    fn from(order: OrderArg) -> Self {
-        match order {
-            OrderArg::Popular => SearchOrder::Popular,
-            OrderArg::Name => SearchOrder::Name,
+impl From<SortArg> for SearchOrder {
+    fn from(sort: SortArg) -> Self {
+        match sort {
+            SortArg::Popular => SearchOrder::MostPlayed,
+            SortArg::Name => SearchOrder::Name,
+            // The directory's own choice: the best match when there is a
+            // query, the most played when there is none
+            SortArg::Relevance => SearchOrder::Popular,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum CategoryKind {
-    Genre,
-    Country,
-    Language,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ListCategoriesArgs {
-    /// Which list: genres, countries or languages
-    pub kind: CategoryKind,
-    /// Only names containing this text
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct FacetArgs {
+    /// Only entries whose name contains this text, or whose code or slug
+    /// is it
     #[serde(default)]
     pub filter: Option<String>,
     /// Maximum number to return, largest first (1-500, default 50)
     #[serde(default, deserialize_with = "lenient_optional_number")]
     #[schemars(schema_with = "category_limit_schema")]
     pub limit: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StationIdArgs {
+    /// Station id from search_stations ("st_..."); a Radio Browser UUID
+    /// kept from before also works
+    pub id: String,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct ListFavoritesArgs {
+    /// Only favorites whose name, country or genres contain this text
+    #[serde(default)]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Direction {
+    Next,
+    #[serde(alias = "prev")]
+    Previous,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct StepFavoriteArgs {
+    /// next or previous
+    pub direction: Direction,
+    /// Seconds to wait for the station to start playing (0-30, default 10;
+    /// 0 returns at once)
+    #[serde(default, deserialize_with = "lenient_optional_number")]
+    #[schemars(schema_with = "wait_schema")]
+    pub wait_seconds: Option<f64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReorderFavoritesArgs {
+    /// Favorite ids (from list_favorites) in the order wanted. Favorites
+    /// left out keep their order, after these.
+    pub ids: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct EqualizerArgs {
+    /// true to switch the equalizer on, false to switch it off; leave out
+    /// to keep it as it is
+    #[serde(default)]
+    pub enabled: Option<bool>,
+    /// Preset name, e.g. "Rock" (get_settings lists them); leave out to
+    /// keep the current sound
+    #[serde(default)]
+    pub preset: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -379,6 +450,13 @@ fn offset_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     })
 }
 
+fn category_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": "string",
+        "description": "Programme type: its name (\"Jazz music\") or code (1-31), from list_categories. Broader than a genre: news, sport, culture ..."
+    })
+}
+
 fn category_limit_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
     schemars::json_schema!({
         "type": "integer",
@@ -417,6 +495,21 @@ fn lenient_number<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
 
 fn lenient_optional_number<'de, D: Deserializer<'de>>(d: D) -> Result<Option<f64>, D::Error> {
     lenient_number(d).map(Some)
+}
+
+/// Text, or a whole number given as one (a programme type's code: `24`)
+fn lenient_optional_text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum TextOrNumber {
+        Text(String),
+        Number(u64),
+    }
+    Ok(match Option::<TextOrNumber>::deserialize(d)? {
+        Some(TextOrNumber::Text(s)) => Some(s),
+        Some(TextOrNumber::Number(n)) => Some(n.to_string()),
+        None => None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -489,17 +582,21 @@ pub struct RecordingInfo {
     pub bytes: u64,
 }
 
-/// A station found by search_stations
+/// A station of the directory, as search_stations and get_station give it
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct FoundStation {
-    /// Id for play_station
+    /// Id for play_station and get_station
     pub id: Option<String>,
     pub name: String,
     /// Stream URL to pass to play_url or add_favorite
     pub url: String,
+    /// Country name, with the region when known ("Greece, Attica")
     pub country: Option<String>,
+    /// Two-letter ISO code of the country, to search by it
+    pub country_code: Option<String>,
+    /// Language names ("Greek, English")
     pub language: Option<String>,
-    /// Genre tags
+    /// Genre names; each can be passed as genre to search_stations
     pub genres: Vec<String>,
     pub codec: Option<String>,
     pub bitrate_kbps: Option<u32>,
@@ -511,25 +608,145 @@ pub struct FoundStation {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SearchResult {
+    /// Stations on this page
     pub count: usize,
-    /// More may follow: search again with offset + count
+    /// Stations the directory has for these filters, on all pages (not
+    /// given with codec or min_bitrate, which are checked page by page)
+    pub total: Option<usize>,
+    /// More may follow: search again with offset + limit
     pub has_more: bool,
     pub stations: Vec<FoundStation>,
+    /// Advice when nothing was found
+    pub note: Option<String>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct CategoryItem {
-    /// Pass this as genre, country or language to search_stations
+pub struct GenreItem {
+    /// Pass the name or the slug as genre to search_stations
     pub name: String,
-    /// Two-letter country code, for countries
-    pub code: Option<String>,
+    pub slug: String,
+    /// Stations with this genre
     pub stations: Option<usize>,
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct CategoryList {
-    pub kind: CategoryKind,
-    pub categories: Vec<CategoryItem>,
+pub struct GenreList {
+    /// Largest first
+    pub genres: Vec<GenreItem>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct CountryItem {
+    /// Pass the name or the code as country to search_stations
+    pub name: String,
+    /// Two-letter ISO 3166-1 code
+    pub code: String,
+    /// Stations in this country
+    pub stations: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct CountryList {
+    /// Largest first
+    pub countries: Vec<CountryItem>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct LanguageItem {
+    /// Pass the name or the code as language to search_stations
+    pub name: String,
+    /// ISO 639-3 code
+    pub code: String,
+    /// Stations in this language
+    pub stations: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct LanguageList {
+    /// Largest first
+    pub languages: Vec<LanguageItem>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ProgrammeTypeItem {
+    /// Pass the name or the code as category to search_stations
+    pub name: String,
+    /// RDS programme type code, 1-31
+    pub code: String,
+    /// Stations of this type
+    pub stations: Option<usize>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ProgrammeTypeList {
+    /// Largest first
+    pub categories: Vec<ProgrammeTypeItem>,
+}
+
+/// The settings agents can read
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct Settings {
+    pub equalizer: EqualizerInfo,
+    /// What start_recording and scheduled recordings use; changed in the
+    /// window (Tools > Recording Settings)
+    pub recording: RecordingSettings,
+    pub report_play_count: ReportPlays,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct EqualizerInfo {
+    pub enabled: bool,
+    /// The preset in use; none when the bands were set by hand
+    pub preset: Option<String>,
+    /// The preset names set_equalizer takes
+    pub presets: Vec<String>,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct RecordingSettings {
+    /// Folder the files go to
+    pub folder: String,
+    /// "mp3", "opus" or "wav"
+    pub format: String,
+    /// Bitrate for MP3 and Opus; none: the format's usual one
+    pub bitrate_kbps: Option<u32>,
+    /// Whether the equalizer's sound is recorded (only while it is on)
+    pub with_equalizer: bool,
+}
+
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ReportPlays {
+    pub allowed: bool,
+    pub note: String,
+}
+
+/// A directory station in the tools' words
+fn found_station(
+    Found {
+        station: s,
+        favorite_id,
+    }: Found,
+) -> FoundStation {
+    FoundStation {
+        id: s.provider_id.clone().filter(|id| !id.is_empty()),
+        favorite_id,
+        genres: sorted_genres(&s.genres),
+        // "Greece, Attica": the country comes first
+        country_code: s
+            .country
+            .as_deref()
+            .and_then(|c| c.split(',').next())
+            .and_then(|c| code_for_country(c.trim()))
+            .map(str::to_ascii_uppercase),
+        name: s.name,
+        url: s.url,
+        country: s.country,
+        language: s.language,
+        codec: s.codec,
+        bitrate_kbps: s.bitrate.filter(|b| *b > 0),
+        homepage: s.homepage,
+        logo_url: s.logo_url,
+    }
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -697,7 +914,8 @@ impl RadioTools {
     #[tool(
         title = "Play a station",
         description = "Play a station found by search_stations, by its id, and wait until it \
-                       plays or fails (wait_seconds, default 10)",
+                       plays or fails (wait_seconds, default 10). The play is counted in the \
+                       directory only if the user allowed Report Play Count.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -894,10 +1112,14 @@ impl RadioTools {
     #[tool(
         title = "Search stations",
         description = "Search the Radiotrope station directory. Combine a name query (typo \
-                       tolerant) with genre, country, language, codec and minimum bitrate; \
-                       with nothing given it lists the most popular stations. Codec and \
-                       bitrate are checked on each page, so a page can hold fewer stations \
-                       than the limit while has_more is true.",
+                       tolerant) with genre, country, language, category (programme type), \
+                       codec and minimum bitrate; with nothing given it lists the most \
+                       popular stations. Filters take names or codes: list_genres, \
+                       list_countries, list_languages and list_categories give the valid \
+                       ones, and one the directory doesn't have finds nothing. Results carry \
+                       names, and the id for play_station and get_station. Page with limit \
+                       and offset. Codec and bitrate are checked on each page, so a page can \
+                       hold fewer stations than the limit while has_more is true.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn search_stations(
@@ -917,89 +1139,175 @@ impl RadioTools {
             language: text(args.language),
             codec: text(args.codec),
             min_bitrate: args.min_bitrate.map(|b| b.max(0.0) as u32),
-            order: args.order.map(Into::into).unwrap_or_default(),
+            category: text(args.category),
+            order: args.sort.map(Into::into).unwrap_or_default(),
         };
+        // The directory's count leaves out what is checked on each page
+        let counted = filter.codec.is_none() && filter.min_bitrate.is_none();
         let page = self
             .control
             .search(filter, limit, offset)
             .await
             .map_err(agent_text)?;
-        let stations: Vec<FoundStation> = page
-            .stations
-            .into_iter()
-            .map(
-                |Found {
-                     station: s,
-                     favorite_id,
-                 }| FoundStation {
-                    id: s.provider_id.clone().filter(|id| !id.is_empty()),
-                    favorite_id,
-                    genres: sorted_genres(&s.genres),
-                    name: s.name,
-                    url: s.url,
-                    country: s.country,
-                    language: s.language,
-                    codec: s.codec,
-                    bitrate_kbps: s.bitrate.filter(|b| *b > 0),
-                    homepage: s.homepage,
-                    logo_url: s.logo_url,
-                },
-            )
-            .collect();
+        let total = page.total.filter(|_| counted);
+        let stations: Vec<FoundStation> = page.stations.into_iter().map(found_station).collect();
         Ok(Json(SearchResult {
             count: stations.len(),
+            total,
             has_more: page.has_more,
+            note: (stations.is_empty() && !page.has_more && offset == 0)
+                .then(|| NOTHING_FOUND.to_string()),
             stations,
         }))
     }
 
     #[tool(
-        title = "List genres, countries or languages",
-        description = "List the genres, countries or languages of the Radiotrope station \
-                       directory, largest first, to use as search_stations filters",
+        title = "Station details",
+        description = "One station of the directory by its id (from search_stations): name, \
+                       stream URL, country, language, genres, codec and bitrate. Looking a \
+                       station up doesn't play it.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn get_station(
+        &self,
+        Parameters(args): Parameters<StationIdArgs>,
+    ) -> Result<Json<FoundStation>, String> {
+        let id = args.id.trim().to_string();
+        if id.is_empty() {
+            return Err("id must not be empty".into());
+        }
+        let station = self.control.station(id).await.map_err(agent_text)?;
+        let favorite_id = self.control.favorite_id(station.url.clone()).await;
+        Ok(Json(found_station(Found {
+            station,
+            favorite_id,
+        })))
+    }
+
+    #[tool(
+        title = "List genres",
+        description = "The genres of the station directory with how many stations each has, \
+                       largest first. Use a name or slug as genre in search_stations. There \
+                       are many: narrow with filter, or raise limit.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn list_genres(
+        &self,
+        Parameters(args): Parameters<FacetArgs>,
+    ) -> Result<Json<GenreList>, String> {
+        let genres = self
+            .facet(CategoryType::Genre, args)
+            .await?
+            .into_iter()
+            .map(|c| GenreItem {
+                name: c.name,
+                slug: c.id,
+                stations: c.station_count,
+            })
+            .collect();
+        Ok(Json(GenreList { genres }))
+    }
+
+    #[tool(
+        title = "List countries",
+        description = "The countries of the station directory with how many stations each \
+                       has, largest first. Use a name or code as country in search_stations.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn list_countries(
+        &self,
+        Parameters(args): Parameters<FacetArgs>,
+    ) -> Result<Json<CountryList>, String> {
+        let countries = self
+            .facet(CategoryType::Country, args)
+            .await?
+            .into_iter()
+            .map(|c| CountryItem {
+                name: c.name,
+                code: c.code.filter(|code| !code.is_empty()).unwrap_or(c.id),
+                stations: c.station_count,
+            })
+            .collect();
+        Ok(Json(CountryList { countries }))
+    }
+
+    #[tool(
+        title = "List languages",
+        description = "The languages of the station directory with how many stations each \
+                       has, largest first. Use a name or code as language in search_stations.",
+        annotations(read_only_hint = true, open_world_hint = true)
+    )]
+    async fn list_languages(
+        &self,
+        Parameters(args): Parameters<FacetArgs>,
+    ) -> Result<Json<LanguageList>, String> {
+        let languages = self
+            .facet(CategoryType::Language, args)
+            .await?
+            .into_iter()
+            .map(|c| LanguageItem {
+                name: c.name,
+                code: c.id,
+                stations: c.station_count,
+            })
+            .collect();
+        Ok(Json(LanguageList { languages }))
+    }
+
+    #[tool(
+        title = "List programme types",
+        description = "The programme types (broad kinds of station: news, sport, pop music, \
+                       culture ...) of the station directory with how many stations each \
+                       has, largest first. Use a name or code as category in \
+                       search_stations. For music styles see list_genres.",
         annotations(read_only_hint = true, open_world_hint = true)
     )]
     async fn list_categories(
         &self,
-        Parameters(args): Parameters<ListCategoriesArgs>,
-    ) -> Result<Json<CategoryList>, String> {
-        let kind = args.kind;
-        let wanted = match kind {
-            CategoryKind::Genre => CategoryType::Genre,
-            CategoryKind::Country => CategoryType::Country,
-            CategoryKind::Language => CategoryType::Language,
-        };
-        let limit = args
-            .limit
-            .map(|v| (v as usize).clamp(1, MAX_CATEGORY_LIMIT))
-            .unwrap_or(DEFAULT_CATEGORY_LIMIT);
+        Parameters(args): Parameters<FacetArgs>,
+    ) -> Result<Json<ProgrammeTypeList>, String> {
         let categories = self
-            .control
-            .categories(wanted, args.filter, limit)
-            .await
-            .map_err(agent_text)?
+            .facet(CategoryType::ProgrammeType, args)
+            .await?
             .into_iter()
-            .map(|c| CategoryItem {
+            .map(|c| ProgrammeTypeItem {
                 name: c.name,
-                code: c.code.filter(|code| !code.is_empty()),
+                code: c.id,
                 stations: c.station_count,
             })
             .collect();
-        Ok(Json(CategoryList { kind, categories }))
+        Ok(Json(ProgrammeTypeList { categories }))
     }
 
     #[tool(
         title = "List favorites",
-        description = "List the saved favorite stations, in the user's order, with their ids",
+        description = "List the saved favorite stations, in the user's order, with their \
+                       ids; query keeps those whose name, country or genres contain it",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
-    async fn list_favorites(&self) -> Result<Json<FavoritesList>, String> {
+    async fn list_favorites(
+        &self,
+        Parameters(args): Parameters<ListFavoritesArgs>,
+    ) -> Result<Json<FavoritesList>, String> {
+        let query = args
+            .query
+            .map(|q| q.trim().to_lowercase())
+            .filter(|q| !q.is_empty());
+        let wanted = |fav: &Favorite| {
+            query.as_deref().is_none_or(|q| {
+                let has = |text: &str| text.to_lowercase().contains(q);
+                has(fav.name())
+                    || fav.station.country.as_deref().is_some_and(has)
+                    || fav.station.genres.iter().any(|g| has(g))
+            })
+        };
         let favorites = self
             .control
             .favorites_with_stats()
             .await
             .map_err(agent_text)?
             .into_iter()
+            .filter(|(fav, _)| wanted(fav))
             .map(|(fav, stats)| FavoriteItem {
                 id: fav.id(),
                 name: fav.name().to_string(),
@@ -1079,9 +1387,159 @@ impl RadioTools {
     }
 
     #[tool(
+        title = "Next or previous favorite",
+        description = "Play the favorite after or before the one playing, in the user's \
+                       order and going round at the ends (the window's Next and Previous); \
+                       the first favorite when none is playing. Waits until it plays or \
+                       fails (wait_seconds, default 10).",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            open_world_hint = true
+        )
+    )]
+    async fn step_favorite(
+        &self,
+        Parameters(args): Parameters<StepFavoriteArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let forward = matches!(args.direction, Direction::Next);
+        let (url, name, logo, country) = self
+            .control
+            .favorite_step(forward)
+            .await
+            .map_err(agent_text)?;
+        self.play(
+            &ctx,
+            url,
+            Some(name),
+            logo,
+            country,
+            play_wait(args.wait_seconds),
+        )
+        .await
+    }
+
+    #[tool(
+        title = "Reorder favorites",
+        description = "Put favorites in a new order: the ids given come first, in that \
+                       order; favorites left out keep their order after them",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn reorder_favorites(
+        &self,
+        Parameters(args): Parameters<ReorderFavoritesArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        let ids: Vec<String> = args
+            .ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if ids.is_empty() {
+            return Err("Give the favorite ids in the order wanted".into());
+        }
+        if ids.len() > MAX_FAVORITES {
+            return Err(format!("At most {MAX_FAVORITES} ids"));
+        }
+        let moved = ids.len();
+        self.control
+            .reorder_favorites(ids)
+            .await
+            .map_err(agent_text)?;
+        self.note_change(&ctx, "reorder favorites");
+        Ok(match moved {
+            1 => "Moved 1 favorite to the top".into(),
+            n => format!("Put {n} favorites first, in the order given"),
+        })
+    }
+
+    #[tool(
+        title = "Equalizer",
+        description = "Switch the equalizer on or off, and pick one of its presets by name \
+                       (get_settings lists the presets and shows the equalizer now)",
+        annotations(
+            read_only_hint = false,
+            destructive_hint = false,
+            idempotent_hint = true,
+            open_world_hint = false
+        )
+    )]
+    async fn set_equalizer(
+        &self,
+        Parameters(args): Parameters<EqualizerArgs>,
+        ctx: RequestContext<RoleServer>,
+    ) -> Result<String, String> {
+        if args.enabled.is_none() && args.preset.is_none() {
+            return Err("Give enabled, preset or both".into());
+        }
+        let preset = self
+            .control
+            .set_equalizer(args.enabled, args.preset.as_deref())
+            .map_err(|e| match e {
+                control::Error::Failed(text) if text.starts_with("No equalizer preset") => {
+                    format!("{text}. The presets: {}", preset_names().join(", "))
+                }
+                other => agent_text(other),
+            })?;
+        let on = args
+            .enabled
+            .unwrap_or_else(|| self.control.snapshot().eq_enabled);
+        let text = match (preset, args.enabled) {
+            (Some(name), _) if on => format!("Equalizer on, preset {name}"),
+            (Some(name), _) => format!(
+                "Preset {name} chosen; the equalizer is off (set enabled to true to hear it)"
+            ),
+            (None, Some(true)) => "Equalizer on".to_string(),
+            (None, _) => "Equalizer off".to_string(),
+        };
+        self.note_change(&ctx, text.to_lowercase());
+        Ok(text)
+    }
+
+    #[tool(
+        title = "Settings",
+        description = "Read the player's settings an agent may need: the equalizer (on or \
+                       off, preset, the preset names), the recording settings (folder, \
+                       format, bitrate) and whether Report Play Count is allowed. Read-only: \
+                       set_equalizer changes the equalizer; the recording settings and \
+                       Report Play Count are changed by the user, in the window.",
+        annotations(read_only_hint = true, open_world_hint = false)
+    )]
+    async fn get_settings(&self) -> Json<Settings> {
+        let s = self.control.snapshot();
+        let setup = &s.recording_setup;
+        Json(Settings {
+            equalizer: EqualizerInfo {
+                enabled: s.eq_enabled,
+                preset: s.eq_preset_name.clone().filter(|name| !name.is_empty()),
+                presets: preset_names().into_iter().map(str::to_string).collect(),
+            },
+            recording: RecordingSettings {
+                folder: recordings::folder(setup.dir.as_deref())
+                    .display()
+                    .to_string(),
+                format: setup.format.extension().to_string(),
+                bitrate_kbps: setup.bitrate,
+                with_equalizer: setup.with_eq,
+            },
+            report_play_count: ReportPlays {
+                allowed: crate::view_options::report_plays(),
+                note: REPORT_PLAYS_NOTE.to_string(),
+            },
+        })
+    }
+
+    #[tool(
         title = "Start recording",
         description = "Record the station playing to a file, in the format and folder set in \
-                       the player's recording settings",
+                       the player's recording settings (get_settings shows them)",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1315,6 +1773,11 @@ fn agent_text(error: control::Error) -> String {
     }
 }
 
+/// The equalizer's preset names, in the window's menu order
+fn preset_names() -> Vec<&'static str> {
+    radiotrope::audio::PRESETS.iter().map(|p| p.name).collect()
+}
+
 /// A whole, positive entry id
 fn entry_id(id: f64) -> Result<u64, String> {
     if id >= 1.0 && id.fract() == 0.0 && id <= u64::MAX as f64 {
@@ -1356,6 +1819,18 @@ impl RadioTools {
         if let (Some(place), Some(name)) = (place, name) {
             self.presence.set_name(&place, &name);
         }
+    }
+
+    /// One of the directory's lists, narrowed and cut as the tool asked
+    async fn facet(&self, kind: CategoryType, args: FacetArgs) -> Result<Vec<Category>, String> {
+        let limit = args
+            .limit
+            .map(|v| (v as usize).clamp(1, MAX_CATEGORY_LIMIT))
+            .unwrap_or(DEFAULT_CATEGORY_LIMIT);
+        self.control
+            .categories(kind, args.filter, limit)
+            .await
+            .map_err(agent_text)
     }
 
     /// Remember which agent changed the player, for get_status

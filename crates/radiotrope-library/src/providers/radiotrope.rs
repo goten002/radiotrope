@@ -17,7 +17,7 @@ use crate::network::client::{body_of, fetch_json};
 use crate::network::{ApiCache, HttpClient};
 
 use super::traits::StationProvider;
-use super::types::{Category, CategoryType, SearchOrder, SearchResults, StationFilter};
+use super::types::{genres_of, Category, CategoryType, SearchOrder, SearchResults, StationFilter};
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -92,6 +92,15 @@ struct Facet<T> {
 #[derive(Debug, Deserialize)]
 struct CodeCount {
     code: String,
+    stations: usize,
+}
+
+/// An RDS programme type of `/categories`
+#[derive(Debug, Deserialize)]
+struct ApiCategory {
+    code: u8,
+    name: String,
+    #[serde(default)]
     stations: usize,
 }
 
@@ -297,6 +306,27 @@ impl RadiotropeProvider {
         slug(genre)
     }
 
+    /// The directory's RDS programme types, most stations first
+    fn programme_types(&self) -> Result<Vec<ApiCategory>> {
+        let facet: Facet<ApiCategory> =
+            self.get_cached(self.url("/categories", &[])?, CATEGORY_CACHE_TTL)?;
+        Ok(facet.items)
+    }
+
+    /// The code (1 to 31) of a programme type given by code ("24") or by
+    /// name ("Jazz music"); none for one the directory doesn't have
+    fn category_param(&self, category: &str) -> Option<String> {
+        let category = category.trim();
+        if let Ok(code) = category.parse::<u8>() {
+            return (1..=31).contains(&code).then(|| code.to_string());
+        }
+        self.programme_types()
+            .ok()?
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(category))
+            .map(|c| c.code.to_string())
+    }
+
     /// One station by its directory ID, or by the Radio Browser UUID it was
     /// built from; `None` if the directory doesn't have it
     fn station_at(&self, path: &str) -> Result<Option<Station>> {
@@ -428,6 +458,19 @@ impl StationProvider for RadiotropeProvider {
             );
         }
 
+        // Nobody's filters wait on the programme types: a directory that
+        // can't list them still lists the rest
+        for kind in self.programme_types().unwrap_or_default() {
+            categories.push(
+                Category::new(
+                    kind.code.to_string(),
+                    &kind.name,
+                    CategoryType::ProgrammeType,
+                )
+                .with_station_count(kind.stations),
+            );
+        }
+
         Ok(categories)
     }
 
@@ -458,6 +501,9 @@ impl StationProvider for RadiotropeProvider {
                 .and_then(country_param)
                 .map(|code| ("country", code)),
             CategoryType::Language => language_param(&category.id).map(|code| ("language", code)),
+            CategoryType::ProgrammeType => self
+                .category_param(&category.id)
+                .map(|code| ("category", code)),
         };
         // A category the directory can't be asked for has no stations
         let Some(selected) = selected else {
@@ -507,13 +553,24 @@ impl StationProvider for RadiotropeProvider {
                 None => return Ok(SearchResults::empty()),
             }
         }
-        if let Some(genre) = text(&filter.genre) {
-            params.push(("genre", self.genre_slug(&genre)));
+        // Several genres: stations with any of them
+        if let Some(genres) = text(&filter.genre) {
+            for genre in genres_of(&genres) {
+                params.push(("genre", self.genre_slug(genre)));
+            }
         }
-        // Popular is the directory's default: most played, or the best
-        // match first when a name is given
-        if filter.order == SearchOrder::Name {
-            params.push(("sort", "name".to_string()));
+        if let Some(category) = text(&filter.category) {
+            match self.category_param(&category) {
+                Some(code) => params.push(("category", code)),
+                None => return Ok(SearchResults::empty()),
+            }
+        }
+        match filter.order {
+            // The directory's default: most played, or the best match
+            // first when a name is given
+            SearchOrder::Popular => {}
+            SearchOrder::Name => params.push(("sort", "name".to_string())),
+            SearchOrder::MostPlayed => params.push(("sort", "popularity".to_string())),
         }
         let mut results = self.list(params, limit, offset)?;
         // Codec and bitrate aren't directory filters: keep this page's
@@ -734,6 +791,7 @@ mod tests {
             language: Some("greek".into()),
             codec: Some("AAC".into()),
             min_bitrate: Some(96),
+            category: None,
             order: SearchOrder::Name,
         };
         provider.search_filtered(&filter, 20, 0).unwrap();
@@ -750,6 +808,63 @@ mod tests {
             assert!(list.contains(part), "{part} not in {list}");
         }
         assert!(!list.contains("codec"), "{list}");
+    }
+
+    #[test]
+    fn several_genres_a_programme_type_and_most_played_become_parameters() {
+        let (base, seen) = serve(|target| {
+            let body = if target.starts_with("/v1/genres") {
+                r#"{"items":[{"slug":"jazz","name":"Jazz","stations":4},
+                    {"slug":"blues","name":"Blues","stations":3}],"snapshot":1}"#
+            } else if target.starts_with("/v1/categories") {
+                r#"{"items":[{"code":24,"name":"Jazz music","stations":18}],"snapshot":1}"#
+            } else {
+                r#"{"stations":[],"total":0,"next_cursor":null,"snapshot":1}"#
+            };
+            (200, body.into())
+        });
+        let provider = RadiotropeProvider::with_base_url(&base).unwrap();
+        let filter = StationFilter {
+            name: Some("fm".into()),
+            genre: Some("Jazz, blues".into()),
+            category: Some("jazz music".into()),
+            order: SearchOrder::MostPlayed,
+            ..Default::default()
+        };
+        provider.search_filtered(&filter, 20, 0).unwrap();
+        let list = seen.lock().unwrap().last().unwrap().clone();
+        for part in [
+            "q=fm",
+            "genre=jazz&genre=blues",
+            "category=24",
+            "sort=popularity",
+        ] {
+            assert!(list.contains(part), "{part} not in {list}");
+        }
+
+        // By its code, without asking for the list; one out of range or
+        // unknown finds nothing and isn't sent
+        let by_code = StationFilter {
+            category: Some("7".into()),
+            ..Default::default()
+        };
+        provider.search_filtered(&by_code, 20, 0).unwrap();
+        assert!(seen.lock().unwrap().last().unwrap().contains("category=7"));
+        let before = seen.lock().unwrap().len();
+        for unknown in ["32", "0", "Polka music"] {
+            let filter = StationFilter {
+                category: Some(unknown.into()),
+                ..Default::default()
+            };
+            let found = provider.search_filtered(&filter, 20, 0).unwrap();
+            assert!(found.stations.is_empty(), "{unknown}");
+        }
+        assert!(
+            seen.lock().unwrap()[before..]
+                .iter()
+                .all(|r| !r.contains("/v1/stations")),
+            "no station list was asked for"
+        );
     }
 
     #[test]
@@ -844,6 +959,9 @@ mod tests {
                 "/v1/languages" => {
                     r#"{"items":[{"code":"eng","stations":8},{"code":"qqq","stations":1}],"snapshot":1}"#
                 }
+                "/v1/categories" => {
+                    r#"{"items":[{"code":24,"name":"Jazz music","stations":18}],"snapshot":1}"#
+                }
                 _ => return (404, "{}".into()),
             };
             (200, body.into())
@@ -861,6 +979,24 @@ mod tests {
             .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, ["English", "qqq"]);
+        let kind = of(CategoryType::ProgrammeType).next().unwrap();
+        assert_eq!((kind.id.as_str(), kind.name.as_str()), ("24", "Jazz music"));
+        assert_eq!(kind.station_count, Some(18));
+    }
+
+    #[test]
+    fn a_directory_without_programme_types_still_lists_the_rest() {
+        let (base, _) = serve(|target| match target {
+            "/v1/genres" => (
+                200,
+                r#"{"items":[{"slug":"jazz","name":"Jazz","stations":4}],"snapshot":1}"#.into(),
+            ),
+            "/v1/countries" | "/v1/languages" => (200, r#"{"items":[],"snapshot":1}"#.into()),
+            _ => (404, "{}".into()),
+        });
+        let provider = RadiotropeProvider::with_base_url(&base).unwrap();
+        let all = provider.browse_categories().unwrap();
+        assert_eq!(all.len(), 1);
     }
 
     #[test]
