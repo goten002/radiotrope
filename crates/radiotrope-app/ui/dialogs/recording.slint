@@ -58,14 +58,15 @@ export component RecordingSettingsDialog inherits Rectangle {
         root.show-dialog = false;
     }
 
-    if show-dialog: DialogShell {
+    if show-dialog: shell := DialogShell {
         title: "Recording Settings";
+        subtitle: "Format and folder for new recordings";
         card-width: Defaults.recording-width;
         close-requested => { root.close(); }
 
         // Format and bitrate share a row to keep the dialog short
         HorizontalLayout {
-            spacing: 20px;
+            spacing: Theme.space-20;
             alignment: start;
 
             Field {
@@ -88,8 +89,9 @@ export component RecordingSettingsDialog inherits Rectangle {
                 label: "Bitrate";
                 Dropdown {
                     width: 120px;
-                    // As tall as the Format picker beside it
-                    height: 36px;
+                    label: "Bitrate";
+                    height: Theme.control-field;
+                    popup-bounds: shell.popup-bounds;
                     horizontal-stretch: 0;
                     show-popup: root.snapshot-overlay == "bitrate";
                     items: ["Auto", "96 kbps", "128 kbps", "192 kbps", "256 kbps", "320 kbps"];
@@ -125,17 +127,17 @@ export component RecordingSettingsDialog inherits Rectangle {
 
         if root.error != "": Text {
             text: root.error;
-            color: Theme.danger;
+            color: Theme.danger-text;
             font-size: Theme.font-md;
             wrap: word-wrap;
         }
 
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.space-8;
             alignment: start;
 
             if Platform.has-file-manager: SecondaryButton {
-                label: "Browse...";
+                label: "Browse";
                 clicked => { root.browse(); }
             }
             SecondaryButton {
@@ -158,7 +160,7 @@ export component RecordingSettingsDialog inherits Rectangle {
         }
 
         VerticalLayout {
-            spacing: 2px;
+            spacing: Theme.space-2;
 
             Toggle {
                 label: "Apply equalizer to recording";
@@ -168,11 +170,11 @@ export component RecordingSettingsDialog inherits Rectangle {
             }
             // Lines up with the label (36px switch + 8px gap)
             HorizontalLayout {
-                padding-left: 44px;
+                padding-left: 36px + Theme.space-8;
 
                 Text {
                     text: root.eq-on
-                        ? "Record audio with your current equalizer settings."
+                        ? "Recordings sound like what you hear."
                         : "Turn on the equalizer to use this.";
                     color: Theme.text-secondary;
                     font-size: Theme.font-md;

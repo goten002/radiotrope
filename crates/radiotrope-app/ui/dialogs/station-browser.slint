@@ -1,6 +1,6 @@
 import { DesktopShortcuts, ShortcutAction } from "../shortcuts.slint";
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion } from "../components.slint";
+import { DialogShell, NowPlayingBars, Icon, ButtonKeys, FocusRing, Motion, StatusPanel, ChipVariant } from "../components.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -33,11 +33,12 @@ component StationRow inherits Rectangle {
     callback clicked();
     callback favorite-clicked();
 
-    height: 56px;
+    height: Theme.row-media;
     border-radius: Theme.radius-md;
-    background: root.state == "error" ? Theme.danger.with-alpha(0.12)
-        : root.state != "" ? Theme.accent-soft
-        : touch.has-hover ? Theme.menu-hover : transparent;
+    // As in Favorites: the active row (playing, connecting or failed) has a
+    // tint and an accent rail; a failure shows in the icon and status line
+    background: touch.has-hover ? Theme.hover-bg
+        : root.state != "" ? Theme.accent-soft : transparent;
     animate background { duration: Theme.fast; }
     forward-focus: keys;
 
@@ -60,10 +61,20 @@ component StationRow inherits Rectangle {
         radius: root.border-radius;
     }
 
+    // Accent rail on the active row, as tall as the logo
+    if root.state != "": Rectangle {
+        x: 0;
+        y: (parent.height - 40px) / 2;
+        width: 3px;
+        height: 40px;
+        background: Theme.accent;
+        border-radius: self.width / 2;
+    }
+
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 12px;
-        spacing: 8px;
+        padding-left: Theme.space-12;
+        padding-right: Theme.space-12;
+        spacing: Theme.space-8;
         alignment: stretch;
 
         // Station logo
@@ -89,8 +100,8 @@ component StationRow inherits Rectangle {
 
                 if !root.has-logo: Icon {
                     source: @image-url("../icons/radio.svg");
-                    width: 16px;
-                    height: 16px;
+                    width: Theme.icon-md;
+                    height: Theme.icon-md;
                     colorize: Theme.accent;
                 }
             }
@@ -100,18 +111,18 @@ component StationRow inherits Rectangle {
         VerticalLayout {
             horizontal-stretch: 1;
             alignment: center;
-            spacing: 2px;
+            spacing: Theme.space-2;
 
             HorizontalLayout {
-                spacing: 8px;
+                spacing: Theme.space-8;
 
                 Text {
                     horizontal-stretch: 0;
                     text: root.name;
-                    color: root.state == "error" ? Theme.danger
-                        : root.state != "" ? Theme.accent-text : Theme.text-primary;
+                    color: root.state == "playing" || root.state == "loading"
+                        ? Theme.accent-text : Theme.text-primary;
                     font-size: Theme.font-base;
-                    font-weight: 600;
+                    font-weight: Theme.weight-semibold;
                     overflow: elide;
                 }
 
@@ -127,9 +138,9 @@ component StationRow inherits Rectangle {
                     alignment: center;
                     Icon {
                         source: @image-url("../icons/spinner.svg");
-                        width: 12px;
-                        height: 12px;
-                        colorize: Theme.accent;
+                        width: Theme.icon-sm;
+                        height: Theme.icon-sm;
+                        colorize: Theme.accent-text;
                         rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
                     }
                 }
@@ -139,9 +150,9 @@ component StationRow inherits Rectangle {
                     alignment: center;
                     Icon {
                         source: @image-url("../icons/circle-exclamation.svg");
-                        width: 13px;
-                        height: 13px;
-                        colorize: Theme.danger;
+                        width: Theme.icon-sm;
+                        height: Theme.icon-sm;
+                        colorize: Theme.danger-text;
                     }
                 }
 
@@ -151,7 +162,7 @@ component StationRow inherits Rectangle {
             Text {
                 text: (root.state == "loading" || root.state == "error") && root.status != ""
                     ? root.status : root.country;
-                color: root.state == "error" ? Theme.danger : Theme.text-secondary;
+                color: root.state == "error" ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
             }
@@ -179,7 +190,7 @@ component StationRow inherits Rectangle {
                         text: root.codec;
                         color: Theme.text-secondary;
                         font-size: Theme.font-xs;
-                        font-weight: 600;
+                        font-weight: Theme.weight-semibold;
                         horizontal-alignment: center;
                         overflow: elide;
                     }
@@ -210,18 +221,19 @@ component StationRow inherits Rectangle {
                 width: 30px;
                 height: 30px;
                 border-radius: 15px;
-                background: star-touch.has-hover ? Theme.menu-hover : transparent;
+                background: star-touch.pressed ? Theme.pressed-bg
+                    : star-touch.has-hover ? Theme.hover-bg : transparent;
                 animate background { duration: Theme.fast; }
 
                 accessible-role: button;
-                accessible-label: root.is-favorite ? "Remove from favorites" : "Add to favorites";
+                accessible-label: root.is-favorite ? "Remove from Favorites" : "Add to Favorites";
                 accessible-action-default => { root.favorite-clicked(); }
 
                 Icon {
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
-                    width: 16px;
-                    height: 16px;
+                    width: Theme.icon-md;
+                    height: Theme.icon-md;
                     source: root.is-favorite ? @image-url("../icons/star.svg")
                         : @image-url("../icons/star-regular.svg");
                     colorize: root.is-favorite ? Theme.accent
@@ -246,7 +258,9 @@ component StationRow inherits Rectangle {
 }
 
 // A filter under the search box: "Any country" or the one chosen, with a
-// ✕ to clear it. Clicking it opens the list to choose from.
+// ✕ to clear it. Clicking it opens the list to choose from. It has the
+// search field's height and shape, and both filters share the row equally,
+// so a long value elides rather than moving the other one.
 component FilterChip inherits Rectangle {
     // "Any country" and the like when nothing is chosen
     in property <string> any-label;
@@ -258,13 +272,15 @@ component FilterChip inherits Rectangle {
 
     property <bool> active: root.value != "";
 
-    height: 30px;
+    height: Theme.control-field;
     min-width: 0;
+    preferred-width: 0;
     horizontal-stretch: 1;
-    border-radius: self.height / 2;
-    background: touch.has-hover ? Theme.menu-hover : Theme.surface;
+    border-radius: Theme.radius-sm;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg : Theme.elevated;
     border-width: 1px;
-    border-color: root.active ? Theme.accent : Theme.hairline;
+    border-color: root.active ? Theme.accent : Theme.field-border;
     animate background, border-color { duration: Theme.fast; }
     forward-focus: keys;
 
@@ -286,9 +302,9 @@ component FilterChip inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding-left: 12px;
-        padding-right: root.active ? 4px : 10px;
-        spacing: 6px;
+        padding-left: 10px;
+        padding-right: root.active ? Theme.space-6 : 10px;
+        spacing: Theme.space-6;
 
         if root.active && root.flag.width > 0: VerticalLayout {
             alignment: center;
@@ -304,8 +320,7 @@ component FilterChip inherits Rectangle {
         Text {
             text: root.active ? root.value : root.any-label;
             color: root.active ? Theme.text-primary : Theme.text-secondary;
-            font-size: Theme.font-md;
-            font-weight: root.active ? 600 : 400;
+            font-size: Theme.font-base;
             vertical-alignment: center;
             horizontal-stretch: 1;
             overflow: elide;
@@ -315,8 +330,8 @@ component FilterChip inherits Rectangle {
             alignment: center;
 
             Icon {
-                width: 10px;
-                height: 10px;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
                 source: @image-url("../icons/chevron-down.svg");
                 colorize: Theme.text-secondary;
             }
@@ -324,11 +339,12 @@ component FilterChip inherits Rectangle {
 
         // Clear the filter
         if root.active: Rectangle {
-            width: 22px;
-            height: 22px;
+            width: 24px;
+            height: 24px;
             y: (parent.height - self.height) / 2;
             border-radius: self.height / 2;
-            background: clear-touch.has-hover ? Theme.hairline : transparent;
+            background: clear-touch.pressed ? Theme.pressed-bg
+                : clear-touch.has-hover ? Theme.hover-bg : transparent;
             accessible-role: button;
             accessible-label: "Clear \{root.value}";
             accessible-action-default => { root.cleared(); }
@@ -341,73 +357,11 @@ component FilterChip inherits Rectangle {
             Icon {
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
-                width: 10px;
-                height: 10px;
+                width: Theme.icon-sm;
+                height: Theme.icon-sm;
                 source: @image-url("../icons/xmark.svg");
                 colorize: clear-touch.has-hover ? Theme.text-primary : Theme.text-secondary;
             }
-        }
-    }
-}
-
-// Clears every filter; greyed out while none is set
-component ResetFiltersButton inherits Rectangle {
-    in property <bool> enabled;
-    callback clicked();
-
-    height: 30px;
-    width: row.preferred-width + 24px;
-    border-radius: self.height / 2;
-    background: root.enabled && touch.has-hover ? Theme.menu-hover : transparent;
-    animate background { duration: Theme.fast; }
-    forward-focus: keys;
-
-    accessible-role: button;
-    accessible-label: "Reset filters";
-    accessible-enabled: root.enabled;
-    accessible-action-default => {
-        if root.enabled {
-            root.clicked();
-        }
-    }
-
-    touch := TouchArea {
-        enabled: root.enabled;
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { root.clicked(); }
-    }
-
-    keys := ButtonKeys {
-        enabled: root.enabled;
-        activated => { root.clicked(); }
-    }
-
-    if keys.has-focus: FocusRing {
-        radius: root.border-radius;
-    }
-
-    row := HorizontalLayout {
-        x: 12px;
-        spacing: 6px;
-
-        VerticalLayout {
-            alignment: center;
-
-            Icon {
-                width: 12px;
-                height: 12px;
-                source: @image-url("../icons/rotate-left.svg");
-                colorize: root.enabled ? Theme.accent-text : Theme.text-secondary;
-            }
-        }
-
-        Text {
-            text: "Reset filters";
-            color: root.enabled ? Theme.accent-text : Theme.text-secondary;
-            opacity: root.enabled ? 1 : 0.6;
-            font-size: Theme.font-md;
-            font-weight: 500;
-            vertical-alignment: center;
         }
     }
 }
@@ -420,7 +374,7 @@ export component StationBrowserDialog inherits Rectangle {
     in-out property <string> search-error: "";
     // Seconds until a failed request is tried again on its own
     in-out property <int> retry-in: 0;
-    // The first page's Try again has the focus
+    // The first page's Try Again has the focus
     property <bool> retry-focused;
     in-out property <[BrowseStation]> search-results: [];
     in-out property <[image]> browse-logos: [];
@@ -490,7 +444,7 @@ export component StationBrowserDialog inherits Rectangle {
     }
 
     if show-dialog: DialogShell {
-        title: "Search Radio Stations";
+        title: "Search Stations";
         subtitle: "From the Radiotrope station directory";
         card-width: Defaults.station-browser-width;
         card-height: Defaults.station-browser-height;
@@ -505,16 +459,16 @@ export component StationBrowserDialog inherits Rectangle {
             return reject;
         }
 
-        // Search input
+        // Search input: field and button share one height
         HorizontalLayout {
-            spacing: 8px;
-            height: 36px;
+            spacing: Theme.space-8;
+            height: Theme.control-field;
 
             search-input := StyledLineEdit {
                 horizontal-stretch: 1;
                 clearable: true;
                 init => { self.focus-input(); }
-                placeholder-text: "Search by station name...";
+                placeholder-text: "Search by station name";
                 text <=> root.search-query;
                 accepted(query) => {
                     if root.search-query != "" || root.shown-query != "" {
@@ -536,6 +490,7 @@ export component StationBrowserDialog inherits Rectangle {
 
             AccentButton {
                 label: "Search";
+                height: Theme.control-field;
                 enabled: root.search-query != "";
                 clicked => {
                     if root.search-query != "" {
@@ -545,9 +500,10 @@ export component StationBrowserDialog inherits Rectangle {
             }
         }
 
-        // Filters: country and genre
+        // Filters: country and genre, as tall as the search field
         HorizontalLayout {
-            spacing: 8px;
+            spacing: Theme.space-8;
+            height: Theme.control-field;
 
             FilterChip {
                 any-label: "Any country";
@@ -572,7 +528,11 @@ export component StationBrowserDialog inherits Rectangle {
                 }
             }
 
-            ResetFiltersButton {
+            // Greyed out while no filter is set
+            SecondaryButton {
+                label: "Reset Filters";
+                icon: @image-url("../icons/rotate-left.svg");
+                height: Theme.control-field;
                 enabled: root.filtered;
                 clicked => {
                     root.country-name = "";
@@ -584,20 +544,19 @@ export component StationBrowserDialog inherits Rectangle {
             }
         }
 
-        // Results area
+        // Results area: the list, or one status panel for loading, a
+        // failed first page and no results
         Rectangle {
             vertical-stretch: 1;
             clip: true;
             border-radius: Theme.radius-sm;
             background: Theme.surface;
 
-            // Loading state
-            if root.search-loading && root.search-results.length == 0: Text {
-                text: "Loading...";
-                color: Theme.text-secondary;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+            if root.search-loading && root.search-results.length == 0: StatusPanel {
+                width: parent.width;
+                height: parent.height;
+                busy: true;
+                title: "Loading stations…";
             }
 
             // Counts down to the next try while a request has failed.
@@ -609,7 +568,7 @@ export component StationBrowserDialog inherits Rectangle {
                     root.retry-in -= 1;
                     if root.retry-in == 0 {
                         root.retry();
-                        // Try again goes away while it loads: if it had
+                        // Try Again goes away while it loads: if it had
                         // the focus, keep it in the dialog so Esc still works
                         if root.retry-focused {
                             root.retry-focused = false;
@@ -619,44 +578,30 @@ export component StationBrowserDialog inherits Rectangle {
                 }
             }
 
-            // Error state: the first page failed
+            // Error state: the first page failed. The panel's own button
+            // can't report its focus, so Try Again sits under it, in the
+            // same SecondaryButton style.
             if root.search-error != "" && !root.search-loading
                 && root.search-results.length == 0: VerticalLayout {
+                width: parent.width;
+                height: parent.height;
                 alignment: center;
-                spacing: 6px;
+                padding-bottom: Theme.space-16;
 
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 6px;
-
-                    Icon {
-                        width: 14px;
-                        height: 14px;
-                        source: @image-url("../icons/circle-exclamation.svg");
-                        colorize: Theme.danger;
-                    }
-
-                    Text {
-                        text: root.search-error;
-                        color: Theme.danger;
-                        font-size: Theme.font-base;
-                        font-weight: 500;
-                    }
-                }
-
-                Text {
-                    text: root.retry-in > 0 ? "Trying again in \{root.retry-in}s" : "";
-                    color: Theme.text-secondary;
-                    font-size: Theme.font-md;
-                    horizontal-alignment: center;
+                StatusPanel {
+                    padding-bottom: 0;
+                    icon: @image-url("../icons/circle-exclamation.svg");
+                    variant: ChipVariant.danger;
+                    title: root.search-error;
+                    message: root.retry-in > 0 ? "Trying again in \{root.retry-in} s" : "";
                 }
 
                 HorizontalLayout {
                     alignment: center;
-                    padding-top: 6px;
+                    padding-top: Theme.space-8;
 
                     SecondaryButton {
-                        label: "Try again";
+                        label: "Try Again";
                         changed has-focus => { root.retry-focused = self.has-focus; }
                         clicked => {
                             root.retry-in = 0;
@@ -673,14 +618,13 @@ export component StationBrowserDialog inherits Rectangle {
 
             // Empty state
             if root.search-results.length == 0
-                && !root.search-loading && root.search-error == "": Text {
-                text: root.filtered
-                    ? "No stations found. Try removing a filter."
-                    : "No stations found";
-                color: Theme.text-secondary;
-                font-size: Theme.font-base;
-                horizontal-alignment: center;
-                vertical-alignment: center;
+                && !root.search-loading && root.search-error == "": StatusPanel {
+                width: parent.width;
+                height: parent.height;
+                icon: @image-url("../icons/magnifying-glass.svg");
+                title: "No stations found";
+                message: root.filtered ? "Try removing a filter."
+                    : root.shown-query != "" ? "Check the spelling or try another name." : "";
             }
 
             // Results list
@@ -692,7 +636,7 @@ export component StationBrowserDialog inherits Rectangle {
                     // Infinite scroll: fetch the next page when the view
                     // comes within about five rows of the end
                     changed content-y => {
-                        // After a failure, the countdown or Try again fetches it
+                        // After a failure, the countdown or Try Again fetches it
                         if root.has-more && !root.search-loading-more
                            && root.search-error == ""
                            && self.height - self.content-y > self.content-height - 300px {
@@ -705,11 +649,11 @@ export component StationBrowserDialog inherits Rectangle {
                     // exist, however long the list; Rust loads the logos
                     // of the rows shown
                     rows := Rectangle {
-                        property <length> row-height: 56px;
+                        property <length> row-height: Theme.row-media;
                         property <int> first: max(0, floor(-root.list-scroll / self.row-height) - 2);
                         property <int> pool: ceil(results-flick.height / self.row-height) + 4;
                         property <int> count: max(0, min(root.search-results.length - self.first, self.pool));
-                        height: root.search-results.length * self.row-height + 8px
+                        height: root.search-results.length * self.row-height + 2 * Theme.space-4
                             + (root.has-more ? 40px : 0px);
                         init => { root.show-rows(self.first, self.count); }
                         changed first => { root.show-rows(self.first, self.count); }
@@ -721,9 +665,9 @@ export component StationBrowserDialog inherits Rectangle {
                             // between rows as the list scrolls
                             property <int> idx: rows.first + mod(k - mod(rows.first, rows.count) + rows.count, rows.count);
                             property <BrowseStation> station: root.search-results[self.idx];
-                            x: 4px;
-                            y: 4px + self.idx * rows.row-height;
-                            width: rows.width - 8px;
+                            x: Theme.space-4;
+                            y: Theme.space-4 + self.idx * rows.row-height;
+                            width: rows.width - 2 * Theme.space-4;
                             name: station.name;
                             country: station.country;
                             codec: station.codec;
@@ -751,24 +695,38 @@ export component StationBrowserDialog inherits Rectangle {
                         }
 
                         // Footer while the next page loads
-                        if root.has-more: Text {
+                        if root.has-more && root.search-loading-more: HorizontalLayout {
                             x: 0;
-                            y: 4px + root.search-results.length * rows.row-height;
+                            y: Theme.space-4 + root.search-results.length * rows.row-height;
                             width: rows.width;
                             height: 40px;
-                            text: root.search-loading-more ? "Loading more stations..." : "";
-                            color: Theme.text-secondary;
-                            font-size: Theme.font-md;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                            alignment: center;
+                            spacing: Theme.space-8;
+
+                            VerticalLayout {
+                                alignment: center;
+                                Icon {
+                                    source: @image-url("../icons/spinner.svg");
+                                    width: Theme.icon-sm;
+                                    height: Theme.icon-sm;
+                                    colorize: Theme.accent-text;
+                                    rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
+                                }
+                            }
+                            Text {
+                                text: "Loading more stations…";
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-md;
+                                vertical-alignment: center;
+                            }
                         }
                     }
                 }
 
                 ScrollBar {
-                    x: parent.width - self.width - 2px;
-                    y: 4px;
-                    height: parent.height - 8px;
+                    x: parent.width - self.width - Theme.space-2;
+                    y: Theme.space-4;
+                    height: parent.height - 2 * Theme.space-4;
                     viewport-height: results-flick.height;
                     content-height: results-flick.content-height;
                     content-y <=> results-flick.content-y;
@@ -776,15 +734,15 @@ export component StationBrowserDialog inherits Rectangle {
             }
         }
 
-        // Footer
-        HorizontalLayout {
-            height: 32px;
+        // Footer: how many stations, and a failed next page with its retry.
+        // Only with results; otherwise the status panel takes the room.
+        if root.search-results.length > 0: HorizontalLayout {
+            height: Theme.control-button;
             alignment: stretch;
+            spacing: Theme.space-8;
 
             Text {
-                text: root.search-results.length > 0
-                    ? "\{root.search-results.length} stations"
-                    : "";
+                text: "\{root.search-results.length} stations";
                 color: Theme.text-secondary;
                 font-size: Theme.font-sm;
                 vertical-alignment: center;
@@ -792,48 +750,52 @@ export component StationBrowserDialog inherits Rectangle {
             }
 
             // The next page failed: the list stays, with the reason here
-            if root.search-error != "" && root.search-results.length > 0: HorizontalLayout {
+            if root.search-error != "": HorizontalLayout {
                 horizontal-stretch: 0;
                 alignment: end;
-                spacing: 6px;
+                spacing: Theme.space-6;
 
                 VerticalLayout {
                     alignment: center;
 
                     Icon {
-                        width: 12px;
-                        height: 12px;
+                        width: Theme.icon-sm;
+                        height: Theme.icon-sm;
                         source: @image-url("../icons/circle-exclamation.svg");
-                        colorize: Theme.danger;
+                        colorize: Theme.danger-text;
                     }
                 }
 
                 Text {
                     text: root.search-error;
-                    color: Theme.danger;
+                    color: Theme.danger-text;
                     font-size: Theme.font-sm;
                     vertical-alignment: center;
+                    overflow: elide;
                 }
 
-                Text {
-                    text: root.retry-in > 0 ? "· trying again in \{root.retry-in}s" : "";
+                if root.retry-in > 0: Text {
+                    text: "· trying again in \{root.retry-in} s";
                     color: Theme.text-secondary;
                     font-size: Theme.font-sm;
                     vertical-alignment: center;
                 }
 
-                retry-link := Text {
-                    text: "Try again";
-                    color: retry-touch.has-hover ? Theme.accent : Theme.accent-text;
-                    font-size: Theme.font-sm;
-                    font-weight: 600;
-                    vertical-alignment: center;
+                VerticalLayout {
+                    alignment: center;
+                    padding-left: Theme.space-4;
 
-                    retry-touch := TouchArea {
-                        mouse-cursor: pointer;
+                    SecondaryButton {
+                        label: "Try Again";
+                        height: Theme.row-menu;
                         clicked => {
                             root.retry-in = 0;
                             root.retry();
+                            // It goes away while the page loads: keep the
+                            // focus in the dialog so Esc still closes it
+                            if self.has-focus {
+                                search-input.focus-input();
+                            }
                         }
                     }
                 }

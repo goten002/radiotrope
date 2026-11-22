@@ -1,7 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
 import { FavoriteStation } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { AccentButton, SecondaryButton, DangerButton } from "../buttons.slint";
 import { DialogShell, Field } from "../components.slint";
 
 export component EditFavoriteDialog inherits Rectangle {
@@ -59,12 +58,30 @@ export component EditFavoriteDialog inherits Rectangle {
         title: "Edit Favorite";
         subtitle: root.edit-name;
         card-width: Defaults.edit-favorite-width;
+        auto-focus: false;
+        cancel-label: "Cancel";
+        primary-label: "Save";
+        primary-enabled: root.can-save;
+        primary-requested => { root.save(); }
+        destructive-label: "Remove";
+        destructive-armed: root.confirm-remove;
+        destructive-armed-label: "Press Again to Remove";
+        destructive-requested => {
+            if root.confirm-remove {
+                root.deleted(root.station());
+                root.show-dialog = false;
+            } else {
+                root.confirm-remove = true;
+            }
+        }
         close-requested => { root.show-dialog = false; }
 
         Field {
             label: "Name";
             required: true;
+            // The form starts on its first field; Enter in any field saves
             StyledLineEdit {
+                init => { self.focus-input(); }
                 placeholder-text: "Station name";
                 text <=> root.edit-name;
                 accepted => { root.save(); }
@@ -83,7 +100,7 @@ export component EditFavoriteDialog inherits Rectangle {
 
             if root.error != "": Text {
                 text: root.error;
-                color: Theme.danger;
+                color: Theme.danger-text;
                 font-size: Theme.font-md;
                 wrap: word-wrap;
             }
@@ -92,7 +109,7 @@ export component EditFavoriteDialog inherits Rectangle {
         Field {
             label: "Logo URL";
             StyledLineEdit {
-                placeholder-text: "https://example.com/logo.png";
+                placeholder-text: "Optional · https://example.com/logo.png";
                 text <=> root.edit-logo-url;
                 clearable: true;
                 accepted => { root.save(); }
@@ -102,42 +119,10 @@ export component EditFavoriteDialog inherits Rectangle {
         Field {
             label: "Country";
             StyledLineEdit {
-                placeholder-text: "United Kingdom, London";
+                placeholder-text: "Optional · United Kingdom";
                 text <=> root.edit-country;
                 clearable: true;
                 accepted => { root.save(); }
-            }
-        }
-
-        HorizontalLayout {
-            padding-top: 4px;
-            spacing: 8px;
-
-            // Asks once more before removing, like the row's menu
-            DangerButton {
-                label: root.confirm-remove ? "Press Again to Remove" : "Remove";
-                icon: @image-url("../icons/trash-can.svg");
-                clicked => {
-                    if root.confirm-remove {
-                        root.deleted(root.station());
-                        root.show-dialog = false;
-                    } else {
-                        root.confirm-remove = true;
-                    }
-                }
-            }
-
-            Rectangle { horizontal-stretch: 1; }
-
-            SecondaryButton {
-                label: "Cancel";
-                clicked => { root.show-dialog = false; }
-            }
-
-            AccentButton {
-                label: "Save";
-                enabled: root.can-save;
-                clicked => { root.save(); }
             }
         }
     }
