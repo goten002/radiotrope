@@ -951,7 +951,7 @@ export component App inherits Window {
                 keep-running => { root.quit-keep-running(); }
             }
 
-            // Stations > Report Plays switched on: asks before it is
+            // Stations > Report Play Count switched on: asks before it is
             report-plays-dialog := ReportPlaysDialog {
                 show-dialog <=> ViewOptions.report-plays-asking;
                 allow => {
