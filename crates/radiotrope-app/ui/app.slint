@@ -307,12 +307,10 @@ export component App inherits Window {
     // Star on a search result: add it to favorites or remove it
     callback toggle-browse-favorite(BrowseStation);
 
-    // Favorites to and from a file, and undoing a list taken in
+    // Favorites to and from a file
     callback export-favorites();
     callback import-favorites();
     callback import-favorites-chosen(/* replace */ bool);
-    callback undo-favorites-import();
-    in property <bool> can-undo-import;
     in-out property <bool> show-import-favorites <=> import-dialog.show-dialog;
     in-out property <string> import-title <=> import-dialog.title;
     in-out property <string> import-subtitle <=> import-dialog.subtitle;
@@ -527,8 +525,6 @@ export component App inherits Window {
                         // browser's "Countries" button goes back to the list
                         export-favorites => { root.export-favorites(); }
                         import-favorites => { root.import-favorites(); }
-                        undo-favorites-import => { root.undo-favorites-import(); }
-                        can-undo-import: root.can-undo-import;
                         open-country-picker => {
                             if browser-dialog.country-name != "" {
                                 root.open-country(browser-dialog.country-name, browser-dialog.country-code, browser-dialog.country-flag);

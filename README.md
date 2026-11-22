@@ -105,7 +105,7 @@ opening another player.
 | Search the station directory | **Stations > Search Stations** or **By Country** |
 | Play a stream by its address (stream, PLS, M3U or HLS) | **Open > Network Stream** |
 | Save, reorder and edit favorites | the star on the playing station; drag rows by their logo; right-click a row |
-| Move favorites between computers or phones | **Stations > Export / Import Favorites** (an import can be undone) |
+| Move favorites between computers or phones | **Stations > Export / Import Favorites** (an import shows a preview first) |
 | Shape the sound | **Tools > Equalizer** and **Tools > Filters** (volume leveler, hiss reducer, hum and rumble filters, smooth switching) |
 | Record the station playing | **Tools > Start Recording**; **Tools > Recordings > Settings** for format, bitrate and folder |
 | Start, record or stop at set times | **Tools > Scheduler** (once or weekly, with fade-in and an alarm fallback) |
