@@ -10,26 +10,28 @@ labels, status text, and help. Use “…” only for ongoing activity.
 | Token | Use for |
 | --- | --- |
 | `surface`, `panel`, `card`, `elevated` | List, app chrome, dialog, and inset surfaces, respectively. |
-| `hairline`, `field-border`, `scrim` | Separators, input outlines, and modal backdrops. |
+| `hairline`, `scrim` | Separators and modal backdrops. |
+| `field-border` | The edge of a text field or dropdown: 3:1 against the card. |
 | `shadow`, `shadow-soft` | Modal/elevated and small surface shadows, respectively. |
 | `popup-surface`, `popup-border`, `popup-shadow`, `popup-shadow-blur`, `popup-shadow-offset` | The appearance of an anchored menu, tooltip, or stats bubble. Prefer `PopupCard`. |
 | `text-primary`, `text-secondary`, `text-tertiary`, `menu-text` | Main text, supporting text, low-emphasis text, and idle menu labels. |
 | `accent-default`, `accent-swatches`, `accent-swatch-names`, `accent-base` | Default color, preset colors and spoken names, and the saved user color. |
-| `accent`, `accent-hover`, `accent-pressed` | Normal, hovered, and pressed accent fills. Use raw accent for decoration. |
+| `accent`, `accent-hover`, `accent-pressed` | Normal, hovered, and pressed accent fills of buttons. Use raw accent for decoration. |
+| `accent-graphic`, `on-accent-graphic` | Accent marks and fills that carry meaning (switches, playing bars, progress and level fills), and what is drawn on them. The accent itself where it reaches 3:1 on every plain layer, else darkened (light theme) or lightened (dark theme) only as far as it takes. |
 | `on-accent`, `on-accent-hover`, `on-accent-pressed` | Text and icons over the matching accent fill. Use matching foreground and fill bindings for each state. |
 | `accent-text` | Links and accent text on neutral layers or accent tints, including on hover. Underline hovered or focused links. |
 | `selection-mark` | Checkmarks and other selection indicators on neutral layers. |
 | `accent-soft`, `accent-glow` | Accent-tinted state fills and decorative top glows. |
-| `danger`, `success`, `warning`, `info` | Decorative status colors. |
+| `danger`, `success`, `warning` | Decorative status colors. |
 | `danger-text` / `danger-tint`, `success-text` / `success-tint`, `warning-text` / `warning-tint`, `neutral-text` / `neutral-tint` | Status foreground and background pairs on app or dialog surfaces. |
-| `danger-armed`, `danger-pressed`, `danger-hover` | Tints for two-press confirmation and press feedback, plus the hover color for a solid danger fill. |
+| `danger-armed`, `danger-pressed` | Tints for two-press confirmation and press feedback. |
 | `hover-bg`, `pressed-bg`, `selected-bg` | Interaction surfaces for rows and secondary controls. |
-| `disabled-bg`, `disabled-text` | Unavailable controls. Use secondary text for read-only content. |
+| `disabled-bg`, `disabled-border`, `disabled-text` | Unavailable controls: a fill and edge quieter than an enabled control's. Use secondary text for read-only content. |
 | `focus-ring`, `focus-ring-width`, `focus-ring-offset` | The contrast-safe focus indicator and its geometry. |
 | `selection-bg`, `selection-fg` | Selected text in an editor. |
 | `viz-bg`, `viz-track` | The visualizer well and track. |
-| `font-2xs`, `font-xs`, `font-sm`, `font-md` | Scales, captions, details, and field labels. |
-| `font-base`, `font-lg`, `font-xl`, `font-2xl` | Body text, section headings, stats totals, and keyboard keys. |
+| `font-2xs`, `font-xs`, `font-sm`, `font-md` | Scales (10px), captions (11px), details (12px), and field labels (12px). 10px is the smallest text. |
+| `font-base`, `font-lg`, `font-xl` | Body text, section headings, and stats totals. |
 | `font-title`, `font-station`, `font-hero`, `font-timer`, `font-code` | Dialog titles, station names, the app name, timer readouts, and pairing codes. |
 | `weight-regular`, `weight-semibold` | Body text and emphasized text, including all form labels. |
 | `space-2`, `space-4`, `space-6`, `space-8`, `space-12`, `space-16`, `space-20`, `space-24` | Shared spacing, in pixels. |
@@ -42,10 +44,10 @@ labels, status text, and help. Use “…” only for ongoing activity.
 | `theme-mode`, `system-dark`, `dark-mode`, `panel-gradient`, `rounded-corners` | Theme preferences and the resolved palette. |
 | `text-on(fill)`, `status-text(tone)` | Accessible text over an opaque custom fill or a status tint, respectively. For status roles prefer the named foreground and tint. |
 
-Deprecated compatibility names include `play-icon` (use the matching
-`on-accent*` token), `popup-bg` (use `popup-surface`), and `menu-hover` /
-`menu-bar-hover` (use `pressed-bg` / `hover-bg`). Keep raw status colors for
-decoration and migrate status text to the matching `*-text` token.
+Keep raw status colors for decoration and use the matching `*-text` token
+for status text. `tests/theme_contrast.rs` checks the text tokens (4.5:1) and
+`accent-graphic`, `field-border` and the focus ring (3:1) in both themes and
+for every accent preset; run it after changing a color.
 
 ## Defaults
 
@@ -59,7 +61,7 @@ decoration and migrate status text to the matching `*-text` token.
 | `filter-picker-height`, `station-browser-height` | Fixed card heights for scrollable result views. |
 | `info-tip-width`, `dropdown-max-height`, `dropdown-min-popup-width` | Help bubble width cap and dropdown viewport dimensions. |
 | `accent-picker-height`, `pairing-qr-size` | Color picker and QR display dimensions. |
-| `remote-devices-chrome`, `schedule-empty-height`, `schedule-list-chrome` | Available space calculations for dialog lists. |
+| `remote-devices-chrome`, `schedule-empty-height` | Available space calculations for dialog lists. |
 | `sleep-readout-width`, `sleep-step-minutes`, `sleep-big-step-minutes`, `sleep-max-minutes` | Sleep Timer readout and duration controls. |
 | `volume-width`, `volume-track`, `volume-knob`, `volume-knob-active`, `volume-grab` | Volume slider geometry. |
 | `hover-delay`, `hold-menu-delay`, `hold-drag-delay`, `copied-time`, `value-hint-time`, `repeat-click-guard`, `motion-step`, `drag-scroll-step` | Tooltip delay, gestures, feedback, repeat protection, and animation steps. |
@@ -67,8 +69,7 @@ decoration and migrate status text to the matching `*-text` token.
 Existing dialog-specific width aliases (`filter-picker-width`,
 `pairing-code-width`, `edit-favorite-width`, `network-stream-width`,
 `statistics-width`) remain usable. Use the shared width classes for new
-dialogs. Use `Theme.row-menu` and `Theme.row-dense` in place of deprecated
-`Defaults.dropdown-row-height` and `Defaults.remote-device-height`.
+dialogs.
 
 ## Components
 
@@ -76,24 +77,24 @@ dialogs. Use `Theme.row-menu` and `Theme.row-dense` in place of deprecated
 | --- | --- |
 | `DialogShell` | Modal card with a scrollable body and fixed header and footer. Set `card-height` for a viewport-driven dialog. Page Up / Page Down scroll the body; while the shell itself has the focus (a read-only dialog), the arrows, Home and End do too. |
 | `DialogFooter` | Destructive action on the left, then Cancel and primary on the right. Set `close-only` for information or result dialogs, or `full-width` for touch actions. |
-| `StatusPanel` | Empty, loading, and error states with an icon, short title, optional explanation, and one optional secondary action. |
-| `PopupCard` | A bordered, shadowed surface for menus and bubbles. |
+| `StatusPanel` | Empty, loading, error, and result states with an icon, short title, optional explanation, and one optional secondary action. The `danger` and `success` variants pick their own icon; the title is announced when it changes. |
+| `PopupCard` | A bordered, shadowed surface for menus and bubbles. Fades in when it appears. |
 | `InfoTip` | Short help text shown via keyboard, hover, or tap and confined to the dialog body. |
-| `PopupBounds` | Window-space limits for an anchored popup or help bubble. |
-| `Dropdown` | A single selection with a checked choice, an anchored scrollable popup, and keyboard navigation. |
+| `PopupBounds` | Window-space limits for an anchored popup or help bubble: the dialog body, plus the window's top and bottom for dropdown lists. |
+| `Dropdown` | A single selection with a checked choice, an anchored scrollable popup, and keyboard navigation. The list opens downward, may cover the dialog footer, shows whole rows, and opens upward only when fewer than four rows fit below. |
 | `ChoiceRow` | A menu item or stacked choice with an optional icon, trailing text, and check slot. |
 | `MenuSeparator` | The line between related groups of menu rows. |
-| `Chip`, `ChipVariant` | Compact neutral, accent, danger, success, or warning status. Set `clickable` or `closable` for interactive status. |
+| `Chip`, `ChipVariant` | Compact neutral, accent, danger, success, or warning status. Set `clickable` (adds a thin edge) or `closable` for interactive status. |
 | `AccentButton`, `SecondaryButton`, `DangerButton` | Primary, supporting, and destructive actions. |
 | `IconButton`, `Icon` | A named icon-only action or a decorative glyph. |
 | `ButtonKeys`, `FocusRing` | Space/Enter handlers and visible keyboard focus for custom controls. |
-| `Field`, `StyledLineEdit` | A label and single-line editor with a visible focus ring and optional Clear button. |
-| `Toggle`, `Picker`, `PickerOption`, `PickerChoice` | An on/off setting or a small set of segmented choices. |
-| `ScrollBar` | Vertical thumb, track paging, and drag handling for an existing Flickable. Handle keyboard scrolling in the viewport. |
+| `Field`, `StyledLineEdit` | A label and single-line editor with an optional Clear button. The field shows an accent edge while it has the caret and the full focus ring when reached with Tab. |
+| `Toggle`, `Picker`, `PickerOption`, `MultiPickerOption`, `PickerChoice` | An on/off setting or a small set of segmented choices. `MultiPickerOption` is for options where several can be on (read as checkboxes). |
+| `ScrollBar` | Vertical thumb, track paging, and drag handling for an existing Flickable: a quiet thumb at rest, the track once hovered. Handle keyboard scrolling in the viewport. |
 | `KeyCap`, `KeyCaps` | A keyboard key drawn as a raised cap (`keycap.slint`), and a shortcut's key combinations: "+" between keys pressed together, an optional `separator` such as "or" between alternatives. |
-| `SectionHeader`, `InfoRow`, `LinkRow`, `CreditLink` | Section labels, label/value pairs, and accessible links. |
+| `SectionHeader`, `InfoRow`, `LinkRow`, `CreditLink` | Section labels, label/value pairs, and accessible links. A `selectable` InfoRow is a named, read-only Tab stop with a focus ring. |
 | `Motion`, `NowPlayingBars` | The app's animation clock and a playing indicator. |
-| `AgentsChip`, `AgentsBubble`, `ListenersBubble` | Connection count and details on the main window. |
+| `AgentsChip`, `AgentsBubble`, `ListenersBubble` | Connection count and details on the main window. The chip is a button: pass `label` ("2 agents using the player") and `description` (the names); its list opens on hover and on keyboard focus. |
 
 ## Migration
 
@@ -120,9 +121,41 @@ dialogs. Use `Theme.row-menu` and `Theme.row-dense` in place of deprecated
   DangerButton or `destructive-armed-label` on the footer to keep its width
   steady and use the same visible and spoken “Press Again to Remove” label.
 - Use `ChipVariant.neutral` for Ready and Stopped, `ChipVariant.accent` for
-  connecting and playing, and `ChipVariant.danger` for errors. The legacy
-  `Chip.tone` override remains available for existing screens.
+  connecting and playing, and `ChipVariant.danger` for errors.
 - Set `clearable: true` for optional form fields and search queries. Clear
   appears only while the enabled field has a value, returns focus to the
   field, and emits `cleared()`. Leave it off for required form fields.
   Share dismissal and initial-focus behavior at the dialog level.
+- Name every control for screen readers. Pass `label` to `StyledLineEdit`
+  (the same text as its Field label; without one the placeholder is used)
+  and to `Picker` (the setting's name). Use `MultiPickerOption` where several
+  options can be on at once.
+- Mark fields by text, not color: set `optional: true` on the `Field` of a
+  field that may stay empty (it shows "Optional" after the label), and
+  `required: true` on the `StyledLineEdit` of one that must be filled (it is
+  said after the name). All field labels have one color.
+- Use `Theme.accent-graphic` for an accent mark or fill that carries meaning
+  and sits on a plain layer; keep `Theme.accent` for button fills and
+  decoration, and `Theme.accent-text` for text and icons.
+- Pointer targets are at least 24px. Where the drawing is smaller (`InfoTip`,
+  `Chip`, `AgentsChip`), enlarge the `TouchArea`, not the drawing.
+
+## Icons
+
+One icon per meaning. Outline icons everywhere; solid glyphs only for play,
+stop, the record dot and the filled star.
+
+| Meaning | Icon |
+| --- | --- |
+| Error | `circle-alert.svg` |
+| Success | `circle-check.svg` |
+| Edit | `edit.svg` |
+| Delete or remove | `trash.svg` |
+| Reset | `reset.svg` |
+| Agent | `bot.svg` |
+| Calendar | `calendar.svg` |
+| Dropdown arrow | `chevron-down.svg` (turned while open) |
+
+`StatusPanel` picks the error and success icons from its `variant`. Don't use
+the older twins (`circle-exclamation`, `pencil`, `trash-can`, `rotate-left`,
+`robot`, `calendar-days`); they are being removed.

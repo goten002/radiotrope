@@ -19,9 +19,12 @@ export component AccentButton inherits Rectangle {
                 : touch.pressed ? Theme.accent-pressed
                 : touch.has-hover ? Theme.accent-hover
                 : Theme.accent;
+    border-width: root.enabled ? 0px : 1px;
+    border-color: Theme.disabled-border;
     drop-shadow-blur: root.enabled && touch.has-hover ? 12px : 0px;
     drop-shadow-color: Theme.accent.with-alpha(0.35);
     animate drop-shadow-blur { duration: Theme.fast; }
+    animate background { duration: Theme.fast; }
     forward-focus: focus;
 
     accessible-role: button;
@@ -87,7 +90,7 @@ export component SecondaryButton inherits Rectangle {
     width: root.natural-width;
     border-radius: Theme.radius-sm;
     border-width: 1px;
-    border-color: Theme.hairline;
+    border-color: root.enabled ? Theme.hairline : Theme.disabled-border;
     background: !root.enabled ? Theme.disabled-bg
                 : touch.pressed ? Theme.pressed-bg
                 : touch.has-hover ? Theme.hover-bg
@@ -153,29 +156,26 @@ export component DangerButton inherits Rectangle {
     in property <image> icon;
     // Greyed out and not clickable, but keeps its place
     in property <bool> enabled: true;
-    // Its colour: red, or Theme.success for a go button
-    in property <color> tone: Theme.danger;
     // Set while a destructive action is waiting for its second press.
     in property <bool> armed: false;
     // Supplying both labels reserves room for the longer one before arming.
     in property <string> armed-label;
     property <string> displayed-label: root.armed && root.armed-label != "" ? root.armed-label : root.label;
-    property <color> foreground: !root.enabled ? Theme.disabled-text
-        : root.tone == Theme.danger ? Theme.danger-text
-        : root.tone == Theme.success ? Theme.success-text
-        : root.tone == Theme.warning ? Theme.warning-text : Theme.status-text(root.tone);
+    property <color> foreground: !root.enabled ? Theme.disabled-text : Theme.danger-text;
     callback clicked();
 
     height: Theme.control-button;
-    out property <length> natural-width: row.preferred-width + 28px
+    out property <length> natural-width: row.preferred-width + 2 * Theme.space-16
         + max(0px, alternate-measure.preferred-width - caption.preferred-width);
     width: root.natural-width;
     border-radius: Theme.radius-sm;
+    border-width: root.enabled ? 0px : 1px;
+    border-color: Theme.disabled-border;
     background: !root.enabled ? Theme.disabled-bg
-                : touch.pressed ? root.tone.with-alpha(0.3)
+                : touch.pressed ? Theme.danger-pressed
                 : root.armed ? Theme.danger-armed
-                : touch.has-hover ? root.tone.with-alpha(0.18)
-                : root.tone.with-alpha(0.14);
+                : touch.has-hover ? Theme.danger.with-alpha(0.18)
+                : Theme.danger-tint;
     animate background { duration: Theme.fast; }
     forward-focus: focus;
 
