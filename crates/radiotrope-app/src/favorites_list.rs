@@ -428,12 +428,14 @@ mod tests {
     }
 
     /// A logo as stations have them: full cache size, and not one flat
-    /// colour (that would decode far faster than a real one)
+    /// colour
     fn logo_png(seed: u32) -> Vec<u8> {
         let size = radiotrope_app::data::cache::LOGO_MAX_SIZE;
         let image = image::RgbaImage::from_fn(size, size, |x, y| {
-            let n = (x * 31 + y * 17 + seed * 7).wrapping_mul(2_654_435_761);
-            image::Rgba([(n >> 24) as u8, (n >> 16) as u8, (x + y) as u8, 255])
+            // Blocks of colour: the files stay small (the test writes 500
+            // of them to the temp folder)
+            let n = (x / 16 * 31 + y / 16 * 17 + seed * 7).wrapping_mul(2_654_435_761);
+            image::Rgba([(n >> 24) as u8, (n >> 16) as u8, (n >> 8) as u8, 255])
         });
         let mut png = Vec::new();
         image
