@@ -3,8 +3,9 @@
 //! Windows shows it in the notification area, Linux desktops through the
 //! StatusNotifierItem D-Bus service (KDE, XFCE, Cinnamon, and GNOME with
 //! the AppIndicator extension). The menu is the `tray-icon` crate's, kept
-//! in step with the window by a timer: everything it does goes through the
-//! window's own callbacks, so it acts like the window's controls do.
+//! in step with the window by the window's poll (no timer of its own):
+//! everything it does goes through the window's own callbacks, so it acts
+//! like the window's controls do.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -15,9 +16,10 @@ use tray_icon::menu::{
 };
 use tray_icon::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
-use radiotrope_app::config::ui::{TRAY_FAVORITES, TRAY_FRONT_GRACE, TRAY_REFRESH, TRAY_TEXT_CHARS};
-use radiotrope_app::text::{status::CONNECTING, SEPARATOR};
+use radiotrope_app::config::ui::{TRAY_FAVORITES, TRAY_FRONT_GRACE, TRAY_TEXT_CHARS};
+use radiotrope_app::text::{self, status, SEPARATOR};
 
+use crate::app::state::PlayerPhase;
 use crate::{App, Defaults};
 
 /// Our name on the D-Bus tray, which KDE keeps the icon's settings under
@@ -77,15 +79,19 @@ struct Player {
     station: String,
     station_url: String,
     song: String,
-    playing: bool,
-    loading: bool,
+    phase: PlayerPhase,
     muted: bool,
     recording: bool,
+    /// How long the recording runs, in seconds
+    recording_secs: u64,
     can_record: bool,
     /// When the sleep timer stops playback ("23:30"), empty when off
     sleep_until: String,
-    /// (id, name, url), in the window's order
+    /// (id, name, url), in the window's order: the first
+    /// [`TRAY_FAVORITES`], which are all the menu lists
     favorites: Vec<(String, String, String)>,
+    /// The window lists more favorites than these
+    more_favorites: bool,
 }
 
 /// The tray menu and tooltip for a [`Player`]
@@ -103,27 +109,50 @@ struct View {
     sleeping: bool,
     /// (id, label, ticked)
     favorites: Vec<(String, String, bool)>,
+    /// The line under the favorites, greyed: there are none, or more than
+    /// the menu lists
+    favorites_note: Option<&'static str>,
 }
+
+/// The header of a station that didn't start
+const FAILED: &str = "Can't connect";
+const NO_FAVORITES: &str = "No favorites yet";
+/// Under the last favorite the menu lists, when the window has more
+const MORE_FAVORITES: &str = "More in the window";
 
 impl View {
     fn of(p: &Player) -> Self {
-        let active = p.playing || p.loading;
+        let active = p.phase.is_active();
         let station = cut(&p.station);
         let song = cut(&p.song);
         // The song stays out of the menu (it made the menu very wide); the
         // tooltip still carries it.
-        let header = if !active {
-            "Not playing".to_string()
-        } else if p.loading {
-            format!("{station}{SEPARATOR}{CONNECTING}")
-        } else {
-            station.clone()
+        let header = match p.phase {
+            PlayerPhase::Failed if !station.is_empty() => {
+                format!("{station}{SEPARATOR}{FAILED}")
+            }
+            PlayerPhase::Reconnecting => {
+                format!("{station}{SEPARATOR}{}", status::RECONNECTING)
+            }
+            phase if phase.is_loading() => format!("{station}{SEPARATOR}{}", status::CONNECTING),
+            PlayerPhase::Playing => station.clone(),
+            _ => "Not playing".to_string(),
         };
         let mut tooltip = match (active, song.is_empty()) {
             (false, _) => "Radiotrope".to_string(),
             (true, true) => format!("Radiotrope\n{station}"),
             (true, false) => format!("Radiotrope\n{station}\n{song}"),
         };
+        if p.phase == PlayerPhase::Failed && !station.is_empty() {
+            tooltip.push_str(&format!("\n{station}{SEPARATOR}{FAILED}"));
+        }
+        // To the minute: the tooltip isn't sent again every second
+        if p.recording {
+            tooltip.push_str(&format!(
+                "\nRecording{SEPARATOR}{}",
+                text::minutes(p.recording_secs.max(1))
+            ));
+        }
         if !p.sleep_until.is_empty() {
             tooltip.push_str(&format!("\nSleep Timer stops at {}", p.sleep_until));
         }
@@ -151,6 +180,13 @@ impl View {
             },
             can_record: p.recording || p.can_record,
             sleeping: !p.sleep_until.is_empty(),
+            favorites_note: if p.favorites.is_empty() {
+                Some(NO_FAVORITES)
+            } else if p.more_favorites {
+                Some(MORE_FAVORITES)
+            } else {
+                None
+            },
             favorites,
         }
     }
@@ -167,6 +203,17 @@ fn cut(text: &str) -> String {
     short
 }
 
+/// The seconds of a running time as the window shows it ("4:05",
+/// "1:02:03"); 0 for anything else
+fn clock_secs(clock: &str) -> u64 {
+    clock
+        .split(':')
+        .try_fold(0u64, |secs, part| {
+            Some(secs * 60 + part.parse::<u64>().ok()?)
+        })
+        .unwrap_or(0)
+}
+
 /// Menu text shown as written: `&` marks a keyboard letter in menus on
 /// both systems
 fn menu_text(text: &str) -> String {
@@ -180,6 +227,8 @@ struct Items {
     mute: CheckMenuItem,
     favorites: Submenu,
     favorite_items: Vec<CheckMenuItem>,
+    /// The greyed line under the favorites
+    favorites_note: Option<MenuItem>,
     record: MenuItem,
     sleep_off: MenuItem,
 }
@@ -241,6 +290,7 @@ impl Tray {
                 mute,
                 favorites,
                 favorite_items: Vec::new(),
+                favorites_note: None,
                 record,
                 sleep_off,
             },
@@ -248,8 +298,10 @@ impl Tray {
         })
     }
 
-    /// Bring the menu and tooltip up to `view`, changing only what differs
-    fn show(&mut self, view: View) {
+    /// Bring the menu and tooltip up to `view`, changing only what differs.
+    /// `clicked`: a menu item was just picked. A click ticks or unticks a
+    /// check item on its own, so the ticks are all set again.
+    fn show(&mut self, view: View, clicked: bool) {
         let old = self.shown.as_ref();
         let items = &mut self.items;
         if old.is_none_or(|o| o.header != view.header) {
@@ -265,8 +317,9 @@ impl Tray {
             items.play.set_text(view.play_label);
             items.play.set_enabled(view.can_play);
         }
-        // Set every time: a click ticks or unticks it on its own
-        items.mute.set_checked(view.muted);
+        if clicked || old.is_none_or(|o| o.muted != view.muted) {
+            items.mute.set_checked(view.muted);
+        }
         if old
             .is_none_or(|o| o.record_label != view.record_label || o.can_record != view.can_record)
         {
@@ -276,21 +329,13 @@ impl Tray {
         if old.is_none_or(|o| o.sleeping != view.sleeping) {
             items.sleep_off.set_enabled(view.sleeping);
         }
-        let same_list = old.is_some_and(|o| {
-            o.favorites.len() == view.favorites.len()
-                && o.favorites
-                    .iter()
-                    .zip(&view.favorites)
-                    .all(|(a, b)| a.0 == b.0 && a.1 == b.1)
-        });
+        let same_list = old.is_some_and(|o| same_favorites(o, &view));
         if !same_list {
             for item in items.favorite_items.drain(..) {
                 let _ = items.favorites.remove(&item);
             }
-            if view.favorites.is_empty() {
-                let none = CheckMenuItem::new("No favorites yet", false, false, None);
-                let _ = items.favorites.append(&none);
-                items.favorite_items.push(none);
+            if let Some(note) = items.favorites_note.take() {
+                let _ = items.favorites.remove(&note);
             }
             for (id, name, _) in &view.favorites {
                 let item = CheckMenuItem::with_id(
@@ -303,12 +348,39 @@ impl Tray {
                 let _ = items.favorites.append(&item as &dyn IsMenuItem);
                 items.favorite_items.push(item);
             }
+            if let Some(text) = view.favorites_note {
+                let note = MenuItem::new(text, false, None);
+                let _ = items.favorites.append(&note);
+                items.favorites_note = Some(note);
+            }
         }
-        for (item, (_, _, ticked)) in items.favorite_items.iter().zip(&view.favorites) {
-            item.set_checked(*ticked);
+        // New items start unticked; the others keep the tick they show
+        let shown_ticks = old.filter(|_| same_list && !clicked);
+        for (index, (item, (_, _, ticked))) in
+            items.favorite_items.iter().zip(&view.favorites).enumerate()
+        {
+            let shown = match shown_ticks {
+                Some(o) => o.favorites.get(index).map(|f| f.2),
+                None if same_list => None,
+                None => Some(false),
+            };
+            if shown != Some(*ticked) {
+                item.set_checked(*ticked);
+            }
         }
         self.shown = Some(view);
     }
+}
+
+/// Whether two views list the same favorites, ticks aside: the menu's items
+/// stay as they are
+fn same_favorites(a: &View, b: &View) -> bool {
+    a.favorites_note == b.favorites_note
+        && a.favorites.len() == b.favorites.len()
+        && a.favorites
+            .iter()
+            .zip(&b.favorites)
+            .all(|(a, b)| a.0 == b.0 && a.1 == b.1)
 }
 
 /// The app's icon: the exe's own on Windows (every size, so the display
@@ -327,14 +399,14 @@ fn app_icon() -> Result<tray_icon::Icon, String> {
 
 thread_local! {
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
-    static TIMER: slint::Timer = slint::Timer::default();
     /// The last left click on the icon, to take a double click as one
     static LAST_CLICK: std::cell::Cell<Option<Instant>> = const { std::cell::Cell::new(None) };
     static QUITTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Start the tray: the icon while View > Show Tray Icon is on, and the
-/// clicks on it. Call once, on the UI thread.
+/// clicks on it. Call once, on the UI thread. The window's poll keeps it
+/// in step from then on (see [`refresh`]).
 pub fn start(ui: &App) {
     let ui_weak = ui.as_weak();
     TrayIconEvent::set_event_handler(Some(move |event: TrayIconEvent| {
@@ -364,19 +436,18 @@ pub fn start(ui: &App) {
         let _ = ui_weak.upgrade_in_event_loop(move |ui| act(&ui, action, false));
     }));
 
-    let ui_weak = ui.as_weak();
-    TIMER.with(|timer| {
-        timer.start(slint::TimerMode::Repeated, TRAY_REFRESH, move || {
-            if let Some(ui) = ui_weak.upgrade() {
-                refresh(&ui);
-            }
-        })
-    });
     refresh(ui);
 }
 
-/// Bring the icon and its menu in step with the window
-fn refresh(ui: &App) {
+/// Bring the icon and its menu in step with the window. The window's poll
+/// calls this on every round, so the tray costs nothing between them and
+/// next to nothing with the icon off.
+pub(crate) fn refresh(ui: &App) {
+    refresh_after(ui, false);
+}
+
+/// [`refresh`]; `clicked` right after a menu item was picked
+fn refresh_after(ui: &App, clicked: bool) {
     let wanted = ui.get_tray_icon();
     TRAY.with(|tray| {
         let mut tray = tray.borrow_mut();
@@ -394,7 +465,7 @@ fn refresh(ui: &App) {
             _ => {}
         }
         if let Some(tray) = tray.as_mut() {
-            tray.show(View::of(&player(ui)));
+            tray.show(View::of(&player(ui)), clicked);
         }
     });
     // A hidden window with no tray to bring it back would leave the radio
@@ -405,7 +476,9 @@ fn refresh(ui: &App) {
     }
     // Minimized by the window manager or the taskbar (Windows and X11;
     // on Wayland only our own title bar button can tell)
-    if window.is_visible() && hides_on_minimize(ui) && crate::window_frame::is_minimized(window) {
+    // (the flag as the poll keeps it: asking is a round trip to the X
+    // server)
+    if window.is_visible() && hides_on_minimize(ui) && crate::window_frame::minimized() {
         crate::window_frame::hide_minimized(window);
     }
     let defaults = ui.global::<Defaults>();
@@ -421,29 +494,39 @@ fn refresh(ui: &App) {
 fn player(ui: &App) -> Player {
     let window = ui.window();
     let favorites = ui.get_favorites_list();
+    let recording = ui.get_is_recording();
     Player {
-        window_shown: window.is_visible() && !window.is_minimized(),
+        window_shown: window.is_visible() && !crate::window_frame::minimized(),
         station: ui.get_station_name().to_string(),
         station_url: ui.get_station_url().to_string(),
         song: ui.get_now_playing_title().to_string(),
-        playing: ui.get_is_playing(),
-        loading: ui.get_is_loading(),
+        phase: crate::player_ui::shown_phase(),
         muted: ui.get_is_muted(),
-        recording: ui.get_is_recording(),
+        recording,
+        recording_secs: if recording {
+            clock_secs(&ui.get_recording_text())
+        } else {
+            0
+        },
         can_record: ui.get_can_record(),
         sleep_until: if ui.get_sleep_active() {
             ui.get_sleep_until().to_string()
         } else {
             String::new()
         },
+        // Only the ones the menu lists: the whole list can be a thousand
         favorites: favorites
             .iter()
+            .take(TRAY_FAVORITES)
             .map(|f| (f.id.to_string(), f.name.to_string(), f.url.to_string()))
             .collect(),
+        more_favorites: favorites.row_count() > TRAY_FAVORITES,
     }
 }
 
 fn act(ui: &App, action: Action, click: bool) {
+    // What this changes shows at the next round of the poll: soon
+    crate::player_ui::wake_poll();
     match action {
         Action::ToggleWindow => {
             // A double click (a Windows habit) is one toggle, not two
@@ -463,7 +546,7 @@ fn act(ui: &App, action: Action, click: bool) {
             // A shown window that others cover comes to the front; only one
             // already in front hides
             let window = ui.window();
-            if !window.is_visible() || window.is_minimized() {
+            if !window.is_visible() || crate::window_frame::sample_minimized(window) {
                 show_window(ui);
             } else if !click || crate::window_frame::was_in_front(window, TRAY_FRONT_GRACE) {
                 let _ = ui.hide();
@@ -489,7 +572,7 @@ fn act(ui: &App, action: Action, click: bool) {
         Action::Quit => quit(),
     }
     // Ticks set by the click itself are put right at once
-    refresh(ui);
+    refresh_after(ui, true);
 }
 
 /// Show the window and bring it forward (the tray, a second launch, an
@@ -567,6 +650,17 @@ pub mod host {
             Connection::session().is_ok_and(|conn| check(&conn))
         }
 
+        /// The signals after which the answer of [`check`] may differ: the
+        /// watcher's name got or lost its owner (the panel or GNOME's
+        /// extension started or went away), or a host joined or left it
+        const SIGNALS: [&str; 2] = [
+            "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',\
+             member='NameOwnerChanged',path='/org/freedesktop/DBus',\
+             arg0='org.kde.StatusNotifierWatcher'",
+            "type='signal',interface='org.kde.StatusNotifierWatcher',\
+             path='/StatusNotifierWatcher'",
+        ];
+
         pub fn watch(changed: impl Fn(bool) + Send + 'static) {
             let spawned = std::thread::Builder::new()
                 .name("tray-host".into())
@@ -575,19 +669,50 @@ pub mod host {
                         changed(false);
                         return;
                     };
-                    let mut last = None;
-                    loop {
-                        let now = check(&conn);
-                        if last != Some(now) {
-                            last = Some(now);
-                            changed(now);
+                    // Asked for before the first check, so no change
+                    // between the two is missed
+                    let signals = listen(&conn);
+                    let mut last = check(&conn);
+                    changed(last);
+                    let Ok(signals) = signals else {
+                        // No signals: ask now and then, as before them
+                        loop {
+                            std::thread::sleep(TRAY_HOST_CHECK);
+                            tell(&conn, &mut last, &changed);
                         }
-                        std::thread::sleep(TRAY_HOST_CHECK);
+                    };
+                    // Sleeps until the bus has something for us
+                    for message in signals {
+                        let is_signal =
+                            message.is_ok_and(|m| m.message_type() == zbus::message::Type::Signal);
+                        if is_signal {
+                            tell(&conn, &mut last, &changed);
+                        }
                     }
                 });
             if let Err(e) = spawned {
                 eprintln!("Failed to start the tray check: {e}");
             }
+        }
+
+        /// Check again, and call `changed` if the answer differs
+        fn tell(conn: &Connection, last: &mut bool, changed: &impl Fn(bool)) {
+            let now = check(conn);
+            if now != *last {
+                *last = now;
+                changed(now);
+            }
+        }
+
+        /// Ask the bus for [`SIGNALS`]; the messages that arrive from then
+        /// on
+        fn listen(conn: &Connection) -> zbus::Result<zbus::blocking::MessageIterator> {
+            let messages = zbus::blocking::MessageIterator::from(conn);
+            let dbus = DBusProxy::new(conn)?;
+            for rule in SIGNALS {
+                dbus.add_match_rule(rule.try_into()?)?;
+            }
+            Ok(messages)
         }
     }
 
@@ -611,7 +736,7 @@ mod tests {
             station: "Fly 104".into(),
             station_url: "http://fly/104".into(),
             song: "Dua Lipa - Houdini".into(),
-            playing: true,
+            phase: PlayerPhase::Playing,
             can_record: true,
             favorites: vec![
                 ("a".into(), "Fly 104".into(), "http://fly/104".into()),
@@ -669,7 +794,7 @@ mod tests {
     #[test]
     fn stopped_station_can_play_and_ticks_no_favorite() {
         let p = Player {
-            playing: false,
+            phase: PlayerPhase::Stopped,
             can_record: false,
             ..playing()
         };
@@ -681,14 +806,68 @@ mod tests {
 
     #[test]
     fn starting_station_says_so() {
+        for phase in [PlayerPhase::Connecting, PlayerPhase::Buffering] {
+            let p = Player {
+                phase,
+                song: String::new(),
+                ..playing()
+            };
+            assert_eq!(View::of(&p).header, "Fly 104 · Connecting…");
+            assert_eq!(View::of(&p).play_label, "Stop");
+        }
         let p = Player {
-            playing: false,
-            loading: true,
-            song: String::new(),
+            phase: PlayerPhase::Reconnecting,
             ..playing()
         };
-        assert_eq!(View::of(&p).header, "Fly 104 · Connecting…");
+        assert_eq!(View::of(&p).header, "Fly 104 · Reconnecting…");
         assert_eq!(View::of(&p).play_label, "Stop");
+    }
+
+    #[test]
+    fn a_failed_station_is_named_with_what_went_wrong() {
+        let p = Player {
+            phase: PlayerPhase::Failed,
+            song: String::new(),
+            can_record: false,
+            ..playing()
+        };
+        let v = View::of(&p);
+        assert_eq!(v.header, "Fly 104 · Can't connect");
+        assert_eq!(v.tooltip, "Radiotrope\nFly 104 · Can't connect");
+        // Play tries it again
+        assert_eq!(v.play_label, "Play");
+        assert!(v.can_play);
+        assert!(v.favorites.iter().all(|f| !f.2));
+    }
+
+    #[test]
+    fn a_recording_shows_in_the_tooltip_to_the_minute() {
+        let p = Player {
+            recording: true,
+            recording_secs: clock_secs("12:34"),
+            ..playing()
+        };
+        let v = View::of(&p);
+        assert_eq!(
+            v.tooltip,
+            "Radiotrope\nFly 104\nDua Lipa - Houdini\nRecording · 12 min"
+        );
+        assert_eq!(v.record_label, "Stop Recording");
+        // The same tooltip for the whole minute
+        let later = Player {
+            recording_secs: clock_secs("12:59"),
+            ..p.clone()
+        };
+        assert_eq!(View::of(&later).tooltip, v.tooltip);
+        let started = Player {
+            recording_secs: 0,
+            ..p
+        };
+        assert!(View::of(&started).tooltip.ends_with("Recording · <1 min"));
+        assert_eq!(clock_secs("4:05"), 245);
+        assert_eq!(clock_secs("1:02:03"), 3723);
+        assert_eq!(clock_secs(""), 0);
+        assert_eq!(clock_secs("\u{2014}"), 0);
     }
 
     #[test]
@@ -714,6 +893,28 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(View::of(&p).favorites.len(), TRAY_FAVORITES);
+    }
+
+    #[test]
+    fn the_favorites_say_when_there_are_none_or_more() {
+        assert_eq!(
+            View::of(&Player::default()).favorites_note,
+            Some("No favorites yet")
+        );
+        assert_eq!(View::of(&playing()).favorites_note, None);
+        let more = Player {
+            more_favorites: true,
+            ..playing()
+        };
+        let v = View::of(&more);
+        assert_eq!(v.favorites_note, Some("More in the window"));
+        // The note coming or going rebuilds the list; a tick alone doesn't
+        assert!(!same_favorites(&v, &View::of(&playing())));
+        let stopped = Player {
+            phase: PlayerPhase::Stopped,
+            ..playing()
+        };
+        assert!(same_favorites(&View::of(&stopped), &View::of(&playing())));
     }
 
     #[test]

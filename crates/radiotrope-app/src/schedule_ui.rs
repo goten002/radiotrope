@@ -72,12 +72,7 @@ pub fn setup(
             // The dialog opens on this length next time
             if ui.get_sleep_last() != minutes as i32 {
                 ui.set_sleep_last(minutes as i32);
-                let mut settings =
-                    radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-                settings.sleep_minutes = minutes;
-                if let Err(e) = settings.save() {
-                    eprintln!("Failed to save the sleep timer length: {e}");
-                }
+                crate::window_settings::update_settings(|s| s.sleep_minutes = minutes);
             }
         }
     });
@@ -94,11 +89,7 @@ pub fn setup(
         let cmd_tx = cmd_tx.clone();
         move |on| {
             cmd_tx.send(AppCommand::SetSleepFade(on));
-            let mut settings = radiotrope_app::data::settings::Settings::load().unwrap_or_default();
-            settings.sleep_fade = on;
-            if let Err(e) = settings.save() {
-                eprintln!("Failed to save the sleep timer setting: {e}");
-            }
+            crate::window_settings::update_settings(|s| s.sleep_fade = on);
         }
     });
 

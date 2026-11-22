@@ -1,0 +1,130 @@
+// Keyboard side of a list with rows of one height: the favorites, the
+// search results, the country and genre picker.
+
+import { Theme } from "defaults.slint";
+import { FocusRing } from "component-primitives.slint";
+
+// The list's one Tab stop. It stands for the active row: place it over
+// that row (x, y, width, height) inside the scrolled content, so the focus
+// ring and a screen reader's own highlight are where the row is. The rows
+// are not Tab stops themselves and keep their pointer handling: clicks
+// pass through.
+//
+// The arrows, Page Up / Page Down and Home / End ask the list to move the
+// active row (`move-to`), which the list also scrolls into view; Enter (and
+// Space, unless turned off) activates it. To screen readers this is the
+// focused list item, with the active row's name, description and place
+// ("3 of 42"), so they follow every move.
+export component KeyListCursor inherits FocusScope {
+    // How many rows, which one is active (-1: none yet) and where to
+    // start when the focus arrives with none
+    in property <int> count;
+    in property <int> active: -1;
+    in property <int> start: 0;
+    // Rows a Page key moves by
+    in property <int> page: 1;
+    // What a screen reader says for the active row
+    in property <string> item-label;
+    in property <string> item-description;
+    in property <bool> item-selected;
+    in property <bool> space-activates: true;
+    // Draw the focus ring only when the focus came by Tab
+    in property <bool> ring-on-tab-only: false;
+    in property <length> ring-radius: Theme.radius-sm;
+    in property <length> ring-offset: -1px;
+    // The focus came by Tab (until it leaves again)
+    out property <bool> tab-focus;
+
+    callback move-to(int);
+    callback activated(int);
+    // Up was pressed on the first row: a list under a text field hands
+    // the focus back
+    callback left-at-top();
+    // Other keys, asked first; `accept` ends there
+    callback key(KeyEvent) -> EventResult;
+    key(event) => { return reject; }
+
+    property <bool> has-active: root.active >= 0 && root.active < root.count;
+
+    public function leave-tab-focus() {
+        root.tab-focus = false;
+    }
+
+    focus-on-click: false;
+    enabled: root.count > 0;
+
+    accessible-role: list-item;
+    accessible-label: root.has-active ? root.item-label : "";
+    accessible-description: root.has-active ? root.item-description : "";
+    accessible-item-index: max(0, root.active);
+    accessible-item-count: root.count;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.has-active && root.item-selected;
+    accessible-action-default => {
+        if root.has-active {
+            root.activated(root.active);
+        }
+    }
+
+    function go(index: int) {
+        if root.count > 0 {
+            root.move-to(clamp(index, 0, root.count - 1));
+        }
+    }
+
+    focus-gained(reason) => {
+        root.tab-focus = reason == FocusReason.tab-navigation;
+        // Arrive on the active row, or pick one, and bring it into view
+        root.go(root.has-active ? root.active : root.start);
+    }
+    focus-lost => { root.tab-focus = false; }
+
+    key-pressed(event) => {
+        if root.key(event) == EventResult.accept {
+            return accept;
+        }
+        if event.modifiers.control || event.modifiers.alt || event.modifiers.meta || root.count <= 0 {
+            return reject;
+        }
+        if event.text == Key.UpArrow {
+            if root.has-active && root.active == 0 {
+                root.left-at-top();
+            } else {
+                root.go(root.has-active ? root.active - 1 : root.start);
+            }
+            return accept;
+        }
+        if event.text == Key.DownArrow {
+            root.go(root.has-active ? root.active + 1 : root.start);
+            return accept;
+        }
+        if event.text == Key.PageUp {
+            root.go(root.has-active ? root.active - max(1, root.page) : root.start);
+            return accept;
+        }
+        if event.text == Key.PageDown {
+            root.go(root.has-active ? root.active + max(1, root.page) : root.start);
+            return accept;
+        }
+        if event.text == Key.Home {
+            root.go(0);
+            return accept;
+        }
+        if event.text == Key.End {
+            root.go(root.count - 1);
+            return accept;
+        }
+        if event.text == Key.Return || (event.text == Key.Space && root.space-activates) {
+            if !event.repeat && root.has-active {
+                root.activated(root.active);
+            }
+            return accept;
+        }
+        return reject;
+    }
+
+    if root.has-focus && root.has-active && (root.tab-focus || !root.ring-on-tab-only): FocusRing {
+        radius: root.ring-radius;
+        offset: root.ring-offset;
+    }
+}

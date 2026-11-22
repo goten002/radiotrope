@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Local};
+use radiotrope_library::text::io_reason;
 
 /// The app's name, for its data folder and the write check's file
 const APP_NAME: &str = "radiotrope";
@@ -67,13 +68,35 @@ pub fn folder(custom: Option<&Path>) -> PathBuf {
     }
 }
 
-/// Create `dir` if needed and check that files can be written in it.
+/// Create `dir` if needed and check that files can be written in it. The
+/// error is the app's sentence, with the folder added (the app shows the
+/// folder beside it; here there is only the line).
 pub fn prepare_dir(dir: &Path) -> Result<(), String> {
-    fs::create_dir_all(dir).map_err(|e| format!("Cannot create {}: {e}", dir.display()))?;
+    let shown = display_path(dir);
+    fs::create_dir_all(dir).map_err(|e| {
+        format!(
+            "Can't create the recording folder: {} ({shown})",
+            io_reason(&e)
+        )
+    })?;
     let probe = dir.join(format!(".{APP_NAME}-write-test-{}", std::process::id()));
-    fs::write(&probe, b"").map_err(|e| format!("Cannot write to {}: {e}", dir.display()))?;
+    fs::write(&probe, b"").map_err(|e| {
+        format!(
+            "Can't save files in the recording folder: {} ({shown})",
+            io_reason(&e)
+        )
+    })?;
     let _ = fs::remove_file(&probe);
     Ok(())
+}
+
+/// `path` for the screen, with the home folder shortened to `~`
+pub fn display_path(path: &Path) -> String {
+    match dirs::home_dir().and_then(|home| path.strip_prefix(home).ok().map(Path::to_path_buf)) {
+        Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Some(rest) => format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()),
+        None => path.display().to_string(),
+    }
 }
 
 /// A path in `dir` for a new recording of `station` started at `time`,
@@ -178,6 +201,27 @@ mod tests {
             app::new_file_path(&dir, "Capital FM", at, "mp3")
         );
         assert!(prepare_dir(&dir).is_ok());
+
+        // A folder that can't be made: the app's words, and the folder
+        let blocked = first.join("sub");
+        let ours = prepare_dir(&blocked).unwrap_err();
+        let apps = app::prepare_dir(&blocked).unwrap_err();
+        assert_eq!(ours, format!("{apps} ({})", display_path(&blocked)));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn paths_under_home_start_with_a_tilde() {
+        let home = dirs::home_dir().unwrap();
+        let sep = std::path::MAIN_SEPARATOR;
+        assert_eq!(
+            display_path(&home.join("Music").join("Radiotrope")),
+            format!("~{sep}Music{sep}Radiotrope")
+        );
+        assert_eq!(display_path(&home), "~");
+        let elsewhere = Path::new("/srv/rec");
+        if !elsewhere.starts_with(&home) {
+            assert_eq!(display_path(elsewhere), "/srv/rec");
+        }
     }
 }

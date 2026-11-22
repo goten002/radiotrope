@@ -2,18 +2,19 @@
 //! credited to the favorite playing
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 
 use radiotrope::audio::PlaybackState;
-use radiotrope_app::config::ui::{LISTEN_CREDIT_SECS, MIN_LISTEN_SECS};
+use radiotrope_app::config::ui::{FAVORITES_SAVE_DELAY, LISTEN_CREDIT_SECS, MIN_LISTEN_SECS};
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::types::{FavoriteSort, Station};
 use radiotrope_app::network::logo::LogoService;
 
-use crate::app::delayed_save::DelayedSave;
+use crate::app::delayed_save::{DelayedSave, SaveErrors, Saved, SAVE_RETRY};
 use crate::app::listening::ListenSession;
 use crate::app::state::AppSnapshot;
 use crate::context::{lock, AppContext};
@@ -21,12 +22,99 @@ use crate::favorites_list::{
     invalidate_logo_image, note_favorites_shown, refresh_favorites, update_favorite_stats,
 };
 use crate::player_ui::{fetch_station_logo, play_station_with_metadata, SHOWN_STATION};
+use crate::window_settings::save_reason;
 use crate::{shortcuts, App, FavoriteStation};
+
+/// The thread that saves the favorites, once [`start_saver`] started it
+static SAVER: OnceLock<DelayedSave> = OnceLock::new();
+
+/// Start the thread that saves the favorites: a moment after listening
+/// time is added ([`DelayedSave::request`]), at once after a change the
+/// user made ([`save_favorites`]). A save that fails is logged, shown
+/// through [`SaveErrors`] until one works, and tried again.
+pub(crate) fn start_saver(favorites: &Arc<Mutex<FavoritesManager>>) -> DelayedSave {
+    let saver = saver_of(
+        favorites.clone(),
+        None,
+        SaveErrors::shared().clone(),
+        SAVE_RETRY,
+    );
+    let _ = SAVER.set(saver.clone());
+    saver
+}
+
+/// A saver of `favorites` to `path`, or to where they are kept
+fn saver_of(
+    favorites: Arc<Mutex<FavoritesManager>>,
+    path: Option<PathBuf>,
+    errors: SaveErrors,
+    retry: std::time::Duration,
+) -> DelayedSave {
+    DelayedSave::start_reporting(
+        "favorites-save",
+        FAVORITES_SAVE_DELAY,
+        "favorites",
+        errors,
+        retry,
+        move || save_unheld(&favorites, path.as_deref()),
+    )
+}
+
+/// Save `favorites`, holding them only to copy what there is to save and
+/// to note what was written: the window, agents and phones aren't kept
+/// waiting while the disk is written and the file lock waited for
+fn save_unheld(favorites: &Mutex<FavoritesManager>, path: Option<&Path>) -> Result<Saved, String> {
+    let job = {
+        let favorites = lock(favorites);
+        match path {
+            Some(path) => favorites.begin_save_to(path),
+            None => favorites.begin_save().map_err(|e| save_reason(&e))?,
+        }
+    };
+    let Some(job) = job else {
+        return Ok(Saved::All);
+    };
+    let done = job.write();
+    let mut favorites = lock(favorites);
+    favorites.finish_save(done).map_err(|e| save_reason(&e))?;
+    Ok(if favorites.is_dirty() {
+        Saved::More
+    } else {
+        Saved::All
+    })
+}
+
+/// Save the favorites after a change made in the window. The handler only
+/// changed them in memory: the file is written at once, on the saving
+/// thread, and a failure is shown and retried there.
+pub(crate) fn save_favorites() {
+    match SAVER.get() {
+        Some(saver) => saver.request_now(),
+        None => eprintln!("Favorites: changed before their saving thread was started"),
+    }
+}
+
+/// Save the favorites at exit, on this thread, whatever is or isn't due
+pub(crate) fn save_at_exit(favorites: &Mutex<FavoritesManager>, saver: &DelayedSave) {
+    // A save being run is waited for; one that is due is run
+    saver.flush();
+    // And what a failed save left (nothing is written when nothing is)
+    if let Err(e) = lock(favorites).save() {
+        eprintln!("Can't save favorites: {}", save_reason(&e));
+    }
+}
 
 /// Wire what the favorites list and the header's star do: play, step,
 /// star, edit, remove, move and reorder, and reset a row's figures
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     let shared_state = &ctx.state;
+    // A save that failed, for the header to show until one works
+    {
+        let ui_weak = ui.as_weak();
+        SaveErrors::shared().show_with(move |text| {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| ui.set_save_error(text.into()));
+        });
+    }
     // toggle-favorite callback
     {
         let ctx = ctx.clone();
@@ -64,9 +152,9 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 fav = fav.with_metadata(country_opt, None, HashSet::new());
                 let _ = f.add(fav);
             }
-            let _ = f.save();
             let is_fav = f.is_favorite(&url);
             drop(f);
+            save_favorites();
 
             ui.set_is_station_favorited(is_fav);
             refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
@@ -142,7 +230,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             if !took_in {
                 note_favorites_shown(&f);
             }
-            let _ = f.save();
+            save_favorites();
             if let Some(map) = lock(&SESSION_LISTEN).as_mut() {
                 map.remove(id.as_str());
             }
@@ -188,8 +276,8 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                     "Can't save: this favorite was removed. Close and try again.".into()
                 };
             }
-            let _ = f.save();
             drop(f);
+            save_favorites();
 
             if let Some(ui) = ctx.ui.upgrade() {
                 let edited = EditedFavorite {
@@ -213,8 +301,8 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             let id = station.id.to_string();
             let mut f = lock(&ctx.favorites);
             let _ = f.remove(&id);
-            let _ = f.save();
             drop(f);
+            save_favorites();
             invalidate_logo_image(&id);
 
             if let Some(ui) = ctx.ui.upgrade() {
@@ -236,8 +324,8 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 if f.move_to_edge(&station.id, to_top).is_err() {
                     return;
                 }
-                let _ = f.save();
             }
+            save_favorites();
             if let Some(ui) = ctx.ui.upgrade() {
                 refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
             }
@@ -301,15 +389,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 ui.set_favorite_logos(ModelRc::from(std::rc::Rc::new(VecModel::from(logos))));
             }
 
-            // Save to disk in background
-            let favs_bg = ctx.favorites.clone();
-            std::thread::Builder::new()
-                .name("fav-save".into())
-                .spawn(move || {
-                    let mut f = lock(&favs_bg);
-                    let _ = f.save();
-                })
-                .ok();
+            save_favorites();
         });
     }
 }
@@ -516,5 +596,134 @@ pub(crate) fn show_edited_favorite(
             // Refresh favorites list with the now-cached logo
             refresh_favorites(ui, &favs, &logos);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radiotrope_app::data::types::Favorite;
+    use std::fs;
+
+    /// A folder of this test's own
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "radiotrope-favorites-ui-{name}-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn saved_names(path: &Path) -> Vec<String> {
+        let mut names: Vec<String> = FavoritesManager::load_from(path)
+            .unwrap()
+            .sorted(FavoriteSort::Manual)
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn a_failed_save_sets_the_error_and_is_retried_until_it_works() {
+        let dir = test_dir("retry");
+        // Where the favorites folder should be there is a file: nothing
+        // can be written under it
+        let folder = dir.join("config");
+        fs::write(&folder, "in the way").unwrap();
+        let path = folder.join("favorites.json");
+
+        let favorites = Arc::new(Mutex::new(FavoritesManager::new()));
+        let errors = SaveErrors::default();
+        let saver = saver_of(
+            favorites.clone(),
+            Some(path.clone()),
+            errors.clone(),
+            Duration::from_millis(50),
+        );
+        lock(&favorites)
+            .add(Favorite::new("Jazz", "http://jazz.test"))
+            .unwrap();
+        saver.request_now();
+
+        let waited = Instant::now();
+        while errors.text().is_empty() && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let shown = errors.text();
+        assert!(shown.starts_with("Can't save favorites: "), "{shown}");
+        assert!(!shown.contains("os error"), "{shown}");
+        assert!(lock(&favorites).is_dirty(), "still to be saved");
+
+        // The folder can be written again: the retry saves, asked by nobody
+        fs::remove_file(&folder).unwrap();
+        fs::create_dir_all(&folder).unwrap();
+        let waited = Instant::now();
+        while !errors.text().is_empty() && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(errors.text(), "");
+        assert!(!lock(&favorites).is_dirty());
+        assert_eq!(saved_names(&path), ["Jazz"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_favorites_are_free_while_the_file_lock_is_waited_for() {
+        let dir = test_dir("unheld");
+        let path = dir.join("favorites.json");
+        let favorites = Arc::new(Mutex::new(FavoritesManager::new()));
+        lock(&favorites)
+            .add(Favorite::new("Jazz", "http://jazz.test"))
+            .unwrap();
+        save_unheld(&favorites, Some(&path)).unwrap();
+
+        // Another player is saving: it holds the folder's lock
+        let other = std::thread::spawn({
+            let path = path.clone();
+            move || {
+                let mut other = FavoritesManager::load_from(&path).unwrap();
+                other
+                    .add(Favorite::new("News", "http://news.test"))
+                    .unwrap();
+                other.save_to(&path).unwrap();
+            }
+        });
+        other.join().unwrap();
+
+        lock(&favorites)
+            .add(Favorite::new("Rock", "http://rock.test"))
+            .unwrap();
+        let saving = std::thread::spawn({
+            let favorites = favorites.clone();
+            let path = path.clone();
+            move || save_unheld(&favorites, Some(&path))
+        });
+        // The window can still take the favorites while that runs
+        let waited = Instant::now();
+        while !saving.is_finished() {
+            drop(favorites.try_lock().ok());
+            assert!(waited.elapsed() < Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        assert_eq!(saving.join().unwrap(), Ok(Saved::All));
+        assert_eq!(saved_names(&path), ["Jazz", "News", "Rock"]);
+        // What the other player saved is here too
+        assert_eq!(lock(&favorites).sorted(FavoriteSort::Manual).len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_save_reason_is_in_plain_words() {
+        let e: radiotrope_app::error::AppError =
+            std::io::Error::other("Permission denied (os error 13)").into();
+        assert_eq!(save_reason(&e), "permission denied");
+        let e = radiotrope_app::error::AppError::Config(
+            "Timed out waiting for the lock (os error 11) on x".into(),
+        );
+        assert_eq!(save_reason(&e), "timed out waiting for the lock on x");
     }
 }

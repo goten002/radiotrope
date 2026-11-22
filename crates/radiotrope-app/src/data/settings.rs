@@ -4,15 +4,31 @@
 
 use crate::data::storage;
 use crate::data::types::Station;
-use crate::error::Result;
+use crate::error::{AppError, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use serde_json::{Map, Value};
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Settings data file name
 const SETTINGS_FILE: &str = "settings.json";
 
 /// Settings file format version for migrations
 const SETTINGS_VERSION: u32 = 1;
+
+/// Fields earlier builds saved and no build reads: not kept with the
+/// unknown ones
+const RETIRED_FIELDS: &[&str] = &[
+    "show_tray_icon",
+    "minimize_to_tray",
+    "start_minimized",
+    "show_notifications",
+];
+
+/// How long [`Settings::update`] waits for another player's update
+const LOCK_WAIT: Duration = Duration::from_secs(2);
 
 /// Application settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,6 +227,21 @@ pub struct Settings {
     /// Paired phones may list, download and delete the recordings
     #[serde(default)]
     pub remote_share_recordings: bool,
+
+    /// What the file holds that this build doesn't know (settings of a
+    /// newer version): written back as it was
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+/// [`Settings`] as read from the file: each field on its own (see
+/// [`Settings::from_fields`])
+struct Stored(Settings);
+
+impl<'de> Deserialize<'de> for Stored {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        Map::deserialize(d).map(|fields| Stored(Settings::from_fields(fields)))
+    }
 }
 
 fn default_mcp_address() -> String {
@@ -309,9 +340,13 @@ impl Default for Settings {
             remote_control: false,
             remote_name: None,
             remote_share_recordings: false,
+            extra: Map::new(),
         }
     }
 }
+
+/// Updates of the settings file by this process wait here for their turn
+static UPDATING: Mutex<()> = Mutex::new(());
 
 impl Settings {
     /// Create default settings
@@ -319,20 +354,93 @@ impl Settings {
         Self::default()
     }
 
+    /// The settings in a file's fields, each read on its own: a field this
+    /// build can't read (a wrong type from a hand edit, a choice only a
+    /// newer version has) is left at its default and costs no other.
+    /// Fields it doesn't know are kept in [`extra`](Self::extra).
+    fn from_fields(mut fields: Map<String, Value>) -> Self {
+        for name in RETIRED_FIELDS {
+            fields.remove(*name);
+        }
+        let settings: Settings = match serde_json::from_value(Value::Object(fields.clone())) {
+            Ok(settings) => settings,
+            Err(_) => {
+                let mut readable = Map::new();
+                for (name, value) in fields {
+                    let alone = Map::from_iter([(name.clone(), value.clone())]);
+                    match serde_json::from_value::<Settings>(Value::Object(alone)) {
+                        Ok(_) => {
+                            readable.insert(name, value);
+                        }
+                        Err(e) => eprintln!(
+                            "Settings: \"{name}\" can't be read ({e}); its default is used"
+                        ),
+                    }
+                }
+                serde_json::from_value(Value::Object(readable)).unwrap_or_default()
+            }
+        };
+        settings.note_newer_version();
+        settings
+    }
+
+    /// Log, once per run, that the file was saved by a newer version
+    fn note_newer_version(&self) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static LOGGED: AtomicBool = AtomicBool::new(false);
+        if self.version > SETTINGS_VERSION && !LOGGED.swap(true, Ordering::Relaxed) {
+            eprintln!(
+                "Settings: saved by a newer Radiotrope (version {}, this one knows {}); \
+                 what this one doesn't know is kept as it is",
+                self.version, SETTINGS_VERSION
+            );
+        }
+    }
+
     /// Load settings from default storage location
     pub fn load() -> Result<Self> {
-        match storage::load::<Settings>(SETTINGS_FILE)? {
-            Some(settings) => Ok(settings),
+        Self::load_from(&storage::data_path(SETTINGS_FILE)?)
+    }
+
+    /// Load settings from a specific path
+    pub fn load_from(path: &Path) -> Result<Self> {
+        match storage::load_from::<Stored>(path)? {
+            Some(Stored(settings)) => Ok(settings),
             None => Ok(Self::default()),
         }
     }
 
-    /// Load settings from a specific path
-    pub fn load_from(path: &std::path::Path) -> Result<Self> {
-        match storage::load_from::<Settings>(path)? {
-            Some(settings) => Ok(settings),
-            None => Ok(Self::default()),
+    /// Change the saved settings: read the file, make `change`, write it
+    /// back. Updates run one at a time, in this process and between
+    /// players, so one never undoes another's.
+    ///
+    /// Returns the settings with the change, and how the save went. A file
+    /// that can't be read is never written over: the change is then made
+    /// to the defaults and lasts for this run only.
+    pub fn update(change: impl FnOnce(&mut Settings)) -> (Self, Result<()>) {
+        match storage::data_path(SETTINGS_FILE) {
+            Ok(path) => Self::update_at(&path, change),
+            Err(e) => {
+                let mut settings = Self::default();
+                change(&mut settings);
+                (settings, Err(e))
+            }
         }
+    }
+
+    /// [`update`](Self::update) of the file at `path`
+    pub fn update_at(path: &Path, change: impl FnOnce(&mut Settings)) -> (Self, Result<()>) {
+        let _turn = UPDATING.lock().unwrap_or_else(|e| e.into_inner());
+        let lock = lock_for_update(path);
+        let (mut settings, readable) = match Self::load_from(path) {
+            Ok(settings) => (settings, Ok(())),
+            Err(e) => (Self::default(), Err(e)),
+        };
+        change(&mut settings);
+        let saved = readable
+            .and_then(|()| lock.map(|_| ()))
+            .and_then(|()| settings.save_to(path));
+        (settings, saved)
     }
 
     /// Save settings to default storage location
@@ -367,6 +475,45 @@ impl Settings {
     /// Parse accent color hex string to RGB components
     pub fn accent_color_rgb(&self) -> Option<(u8, u8, u8)> {
         parse_hex_rgb(self.accent_color.as_ref()?)
+    }
+}
+
+/// Take the lock that goes with the settings file at `path`, waiting up to
+/// [`LOCK_WAIT`] for another player's update. `Ok(None)` where files can't
+/// be locked (some network shares and FUSE mounts), or the lock file can't
+/// be made (the save then says why): the update goes ahead without it.
+fn lock_for_update(path: &Path) -> Result<Option<File>> {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".lock");
+    let path = path.with_file_name(name);
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Ok(lock) = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&path)
+    else {
+        return Ok(None);
+    };
+    let deadline = Instant::now() + LOCK_WAIT;
+    loop {
+        match lock.try_lock() {
+            Ok(()) => return Ok(Some(lock)),
+            Err(TryLockError::WouldBlock) => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(AppError::Config(format!(
+                        "Timed out waiting for settings lock {}",
+                        path.display()
+                    )));
+                }
+                std::thread::sleep(remaining.min(Duration::from_millis(25)));
+            }
+            Err(TryLockError::Error(_)) => return Ok(None),
+        }
     }
 }
 
@@ -498,7 +645,6 @@ mod tests {
     use super::*;
     use std::env::temp_dir;
     use std::fs;
-    use std::path::Path;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -826,6 +972,183 @@ mod tests {
     }
 
     #[test]
+    fn an_unknown_choice_or_a_wrong_type_costs_that_setting_only() {
+        let path = temp_path();
+        fs::write(
+            &path,
+            r#"{
+                "volume": 0.4,
+                "theme": "sepia",
+                "recording_format": "flac",
+                "mcp_auth": "token",
+                "muted": "yes",
+                "eq_gains": [1, 2, 3],
+                "window_width": -5,
+                "sleep_minutes": 45,
+                "recording_dir": "/music/radio"
+            }"#,
+        )
+        .unwrap();
+
+        let settings = Settings::load_from(&path).unwrap();
+        // The ones this build can't read are at their defaults
+        assert_eq!(settings.theme, Theme::System);
+        assert_eq!(settings.recording_format, RecordingFormat::Mp3);
+        assert!(!settings.muted);
+        assert_eq!(settings.eq_gains, [0.0; 10]);
+        assert_eq!(settings.window_width, None);
+        // Every other one is as saved
+        assert_eq!(settings.volume, 0.4);
+        assert_eq!(settings.mcp_auth, McpAuth::Token);
+        assert_eq!(settings.sleep_minutes, 45);
+        assert_eq!(settings.recording_dir, Some(PathBuf::from("/music/radio")));
+        // The file was read, not set aside
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn settings_of_a_newer_version_survive_a_save_by_this_one() {
+        let path = temp_path();
+        fs::write(
+            &path,
+            r#"{
+                "version": 7,
+                "volume": 0.7,
+                "zoom": 125,
+                "start_at_login": {"enabled": true, "hidden": false}
+            }"#,
+        )
+        .unwrap();
+
+        let (settings, saved) = Settings::update_at(&path, |s| s.muted = true);
+        saved.unwrap();
+        assert_eq!(settings.extra["zoom"], 125);
+
+        let saved: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(saved["version"], 7);
+        assert_eq!(saved["zoom"], 125);
+        assert_eq!(saved["start_at_login"]["enabled"], true);
+        assert_eq!(saved["muted"], true);
+        assert_eq!(saved["volume"].as_f64().unwrap() as f32, 0.7);
+        // And it reads back the same
+        let again = Settings::load_from(&path).unwrap();
+        assert_eq!(again.extra, settings.extra);
+        assert_eq!(again.version, 7);
+    }
+
+    #[test]
+    fn an_update_changes_what_it_names_and_keeps_the_rest() {
+        let path = temp_path();
+        let (first, saved) = Settings::update_at(&path, |s| s.sleep_minutes = 90);
+        saved.unwrap();
+        assert_eq!(first.sleep_minutes, 90);
+
+        let (second, saved) = Settings::update_at(&path, |s| s.muted = true);
+        saved.unwrap();
+        assert!(second.muted);
+        assert_eq!(second.sleep_minutes, 90);
+        assert_eq!(Settings::load_from(&path).unwrap().sleep_minutes, 90);
+    }
+
+    #[test]
+    fn updates_from_several_threads_all_land() {
+        let path = temp_path();
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                for _ in 0..10 {
+                    Settings::update_at(&path, |s| s.sleep_minutes += 1)
+                        .1
+                        .unwrap();
+                }
+            });
+            scope.spawn(|| {
+                for _ in 0..10 {
+                    Settings::update_at(&path, |s| s.window_width = Some(900))
+                        .1
+                        .unwrap();
+                }
+            });
+            scope.spawn(|| {
+                Settings::update_at(&path, |s| s.muted = true).1.unwrap();
+            });
+        });
+        let settings = Settings::load_from(&path).unwrap();
+        assert_eq!(settings.sleep_minutes, default_sleep_minutes() + 10);
+        assert_eq!(settings.window_width, Some(900));
+        assert!(settings.muted);
+    }
+
+    #[test]
+    fn an_update_waits_for_another_players_and_gives_up_without_saving() {
+        let path = temp_path();
+        Settings::update_at(&path, |s| s.sleep_minutes = 20)
+            .1
+            .unwrap();
+        let held = lock_for_update(&path)
+            .unwrap()
+            .expect("the test folder can lock");
+
+        let (settings, saved) = Settings::update_at(&path, |s| s.sleep_minutes = 75);
+        assert_eq!(settings.sleep_minutes, 75);
+        let error = saved.unwrap_err().to_string();
+        assert!(error.contains("Timed out waiting"), "{error}");
+        assert_eq!(Settings::load_from(&path).unwrap().sleep_minutes, 20);
+
+        drop(held);
+        Settings::update_at(&path, |s| s.sleep_minutes = 75)
+            .1
+            .unwrap();
+        assert_eq!(Settings::load_from(&path).unwrap().sleep_minutes, 75);
+    }
+
+    /// A file that can't be read is not replaced by defaults plus the one
+    /// change (it used to be: every other setting was lost)
+    #[cfg(unix)]
+    #[test]
+    fn a_file_that_cant_be_read_is_never_written_over() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_path();
+        let kept = r#"{"volume": 0.3, "theme": "light", "sleep_minutes": 55}"#;
+        fs::write(&path, kept).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o000)).unwrap();
+        if fs::read_to_string(&path).is_ok() {
+            // Root reads it anyway: nothing to test
+            return;
+        }
+
+        let (settings, saved) = Settings::update_at(&path, |s| s.muted = true);
+        assert!(saved.is_err());
+        // The change still holds for this run
+        assert!(settings.muted);
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), kept);
+        assert!(!storage::backup_path(&path).exists());
+    }
+
+    #[test]
+    fn a_damaged_file_is_kept_aside_not_written_over() {
+        let path = temp_path();
+        fs::write(&path, "{ \"volume\": 0.3, oops").unwrap();
+
+        let (_, saved) = Settings::update_at(&path, |s| s.muted = true);
+        assert!(saved.is_err());
+        assert!(!path.exists(), "nothing was written in its place");
+        let prefix = format!("{}.bad-", path.file_name().unwrap().to_string_lossy());
+        let aside: Vec<_> = fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with(&prefix))
+            .collect();
+        assert_eq!(aside.len(), 1);
+        assert_eq!(
+            fs::read_to_string(aside[0].path()).unwrap(),
+            "{ \"volume\": 0.3, oops"
+        );
+    }
+
+    #[test]
     fn test_invalid_json_returns_error() {
         let path = temp_path();
 
@@ -987,7 +1310,7 @@ mod tests {
     #[test]
     fn old_tray_fields_leave_close_to_tray_off() {
         // What every settings.json written before the tray holds
-        let old: Settings = serde_json::from_str(
+        let Stored(old) = serde_json::from_str(
             r#"{"show_tray_icon": true, "minimize_to_tray": true,
                 "start_minimized": true, "show_notifications": true}"#,
         )

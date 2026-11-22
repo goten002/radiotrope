@@ -21,7 +21,10 @@ component VolumeSlider inherits Rectangle {
 
     property <bool> active: touch.has-hover || touch.pressed;
     property <float> shown: Math.clamp(root.value, 0, 100) / 100;
-    property <color> fill-color: root.muted ? Theme.text-tertiary : Theme.accent;
+    // Off while a dialog is open: the slider leaves the Tab order
+    in property <bool> enabled: true;
+    // accent-graphic keeps 3:1 against the bar in both themes
+    property <color> fill-color: root.muted ? Theme.text-tertiary : Theme.accent-graphic;
     property <length> knob: root.active ? Defaults.volume-knob-active : Defaults.volume-knob;
     animate knob { duration: Theme.fast; }
     // Keeps the value bubble up briefly after a scroll or key press
@@ -31,8 +34,10 @@ component VolumeSlider inherits Rectangle {
     property <bool> key-focus;
 
     accessible-role: slider;
-    accessible-label: "Volume";
-    accessible-value: Math.round(root.value) + "%";
+    // A plain number, so screen readers get a numeric value; the unit is
+    // in the label
+    accessible-label: "Volume, percent";
+    accessible-value: Math.round(root.value);
     accessible-value-minimum: 0;
     accessible-value-maximum: 100;
     accessible-value-step: 5;
@@ -75,7 +80,8 @@ component VolumeSlider inherits Rectangle {
             height: Defaults.volume-track;
             y: (bar.height - self.height) / 2;
             border-radius: self.height / 2;
-            background: Theme.text-primary.with-alpha(0.12);
+            // Visible against the bar (3:1) so the slider can be found
+            background: Theme.text-tertiary.with-alpha(0.5);
 
             // Up to the knob, faint, while a fade holds the sound below it
             if root.level < 0.999: Rectangle {
@@ -164,6 +170,7 @@ component VolumeSlider inherits Rectangle {
 
     // Slider navigation here. M bubbles to the main shortcuts scope.
     keys := FocusScope {
+        enabled: root.enabled;
         focus-gained(reason) => {
             if reason == FocusReason.tab-navigation {
                 root.key-focus = true;
@@ -226,11 +233,18 @@ export component Controls inherits Rectangle {
     // How loud a fade lets it play now, 0.0–1.0 (1 with no fade)
     in property <float> volume-level: 1.0;
     in-out property <bool> is-muted;
+    // Recording: the record button left of the volume
+    in property <bool> is-recording;
+    in property <bool> can-toggle-recording;
+    // Off while a dialog is open: the bar's own buttons leave the Tab order
+    // (the window ignores keys behind a dialog; see app.slint)
+    in property <bool> enabled: true;
 
     callback play-clicked();
     callback stop-clicked();
     callback volume-changed(float);        // 0.0–1.0
     callback mute-clicked();
+    callback toggle-recording();
 
     out property <bool> volume-dragging: vol-slider.touch-pressed;
 
@@ -243,6 +257,8 @@ export component Controls inherits Rectangle {
     property <bool> title-pinned: false;
     // The press on the title came from a touch screen
     property <bool> title-touch-press: false;
+    // The title has the keyboard focus: the full-title bubble shows
+    property <bool> title-key-focus: false;
     property <bool> title-cut: title-measure.preferred-width > np-area.width;
 
     public function step-volume(points: float) {
@@ -371,7 +387,7 @@ export component Controls inherits Rectangle {
                 }
 
                 play-keys := ButtonKeys {
-                    enabled: parent.can-interact;
+                    enabled: parent.can-interact && root.enabled;
                     activated => { root.play-or-stop(); }
                 }
 
@@ -405,13 +421,37 @@ export component Controls inherits Rectangle {
                         text: root.copied ? "Copied to clipboard" : "Now Playing";
                         font-size: Theme.font-xs;
                         color: root.copied ? Theme.accent-text : Theme.text-secondary;
+                        // Read out when the title has been copied
+                        accessible-live-region: polite;
                     }
                 }
                 title-text := Text {
                     text: root.now-playing-title;
                     font-size: Theme.font-md;
-                    color: title-touch.has-hover && Platform.has-clipboard ? Theme.text-primary : Theme.text-secondary;
+                    color: (title-touch.has-hover || title-keys.has-focus) && Platform.has-clipboard
+                        ? Theme.text-primary : Theme.text-secondary;
                     overflow: elide;
+                    // A button that copies the title (no action without a clipboard)
+                    accessible-role: button;
+                    accessible-label: Platform.has-clipboard ? "Copy title: " + root.now-playing-title
+                        : root.now-playing-title;
+                    accessible-action-default => {
+                        if Platform.has-clipboard {
+                            root.copy-title();
+                        }
+                    }
+
+                    title-keys := ButtonKeys {
+                        enabled: Platform.has-clipboard && root.enabled;
+                        activated => { root.copy-title(); }
+                        changed has-focus => { root.title-key-focus = self.has-focus; }
+                    }
+
+                    if title-keys.has-focus: FocusRing {
+                        radius: Theme.radius-sm;
+                        // Inside the edge: the area around the title clips
+                        offset: -1px;
+                    }
 
                     title-touch := TouchArea {
                         mouse-cursor: Platform.has-clipboard ? pointer : default;
@@ -441,6 +481,23 @@ export component Controls inherits Rectangle {
                         triggered => { root.title-hover-ready = true; }
                     }
                 }
+            }
+        }
+
+        // ── Record button, left of the volume ──
+        VerticalLayout {
+            alignment: center;
+            IconButton {
+                width: Theme.control-field;
+                height: Theme.control-field;
+                icon: @image-url("icons/record.svg");
+                icon-size: Theme.icon-lg;
+                label: root.is-recording ? "Stop Recording (R)" : "Start Recording (R)";
+                // Red while recording
+                icon-color: root.is-recording ? Theme.danger : Theme.text-secondary;
+                hover-color: root.is-recording ? Theme.danger : Theme.text-primary;
+                enabled: root.can-toggle-recording;
+                clicked => { root.toggle-recording(); }
             }
         }
 
@@ -479,8 +536,8 @@ export component Controls inherits Rectangle {
                             : root.volume < 0.33 ? @image-url("icons/volume-low.svg")
                             : root.volume < 0.66 ? @image-url("icons/volume-medium.svg")
                             : @image-url("icons/volume-high.svg");
-                        // The volume SVGs carry a margin, so the loudest
-                        // wave isn't clipped by Icon's 1px edge trim
+                        // The volume SVGs keep clear of their edge, so the
+                        // loudest wave isn't clipped by Icon's 1px edge trim
                         icon-size: Theme.icon-lg;
                         label: root.is-muted ? "Unmute" : "Mute";
                         icon-color: Theme.text-secondary;
@@ -496,6 +553,7 @@ export component Controls inherits Rectangle {
                     value: root.volume * 100;
                     muted: root.is-muted;
                     level: root.volume-level;
+                    enabled: root.enabled;
                     value-changed(val) => {
                         root.volume = val / 100;
                         root.volume-changed(root.volume);
@@ -506,7 +564,7 @@ export component Controls inherits Rectangle {
     }
     // Full title above a cut-off one, styled like the favorites stats bubble
     title-bubble := PopupCard {
-        property <bool> shown: root.title-cut && (root.title-hover-ready || root.title-pinned)
+        property <bool> shown: root.title-cut && (root.title-hover-ready || root.title-pinned || root.title-key-focus)
             && root.now-playing-title != "";
         visible: self.opacity > 0;
         opacity: self.shown ? 1 : 0;
