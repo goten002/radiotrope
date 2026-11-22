@@ -87,9 +87,12 @@ const GAVE_UP: &str = "No audio for ";
 
 /// True if `error` (as the engine reports it) says the station's reader
 /// gave up: it already reconnected for [`RECONNECT_GIVE_UP_SECS`] without
-/// getting audio.
+/// getting audio. The station's server or the network is away, and may be
+/// back later: a player starts the station again by
+/// [`OUTAGE_RETRY_DELAYS_SECS`].
 ///
 /// [`RECONNECT_GIVE_UP_SECS`]: crate::config::timeouts::RECONNECT_GIVE_UP_SECS
+/// [`OUTAGE_RETRY_DELAYS_SECS`]: crate::config::timeouts::OUTAGE_RETRY_DELAYS_SECS
 pub fn is_gave_up(error: &str) -> bool {
     error.contains(GAVE_UP)
 }
