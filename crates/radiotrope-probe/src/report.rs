@@ -138,7 +138,8 @@ pub struct Audio {
     pub sample_rate: u32,
     pub channels: u16,
     pub bits_per_sample: Option<u32>,
-    /// Network rate over the listen, including the server's start-up burst
+    /// The stream's bitrate: the bytes received over the seconds of audio
+    /// decoded from them, so the server's start-up burst doesn't inflate it
     pub measured_kbps: Option<f64>,
     /// How long we listened
     pub listened_s: f64,

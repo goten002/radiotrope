@@ -51,7 +51,7 @@ fn network(e: &reqwest::Error, message: String) -> ErrorInfo {
         );
     }
     if e.is_connect() {
-        return info(ErrorCode::Connect, message);
+        return info(ErrorCode::Connect, with_port(e, message));
     }
     from_text(message)
 }
@@ -140,6 +140,19 @@ fn is_tls(text: &str) -> bool {
         .any(|s| text.contains(s))
 }
 
+/// "Can't connect to 127.0.0.1" names the host only; add the port when it
+/// isn't the scheme's own (80, 443), as a station on 8000 is a different
+/// server from the web site on 80
+fn with_port(e: &reqwest::Error, message: String) -> String {
+    let Some(url) = e.url() else {
+        return message;
+    };
+    match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) if message.ends_with(host) => format!("{message}:{port}"),
+        _ => message,
+    }
+}
+
 fn with_cause(message: String, cause: &str) -> String {
     format!("{message} ({cause})")
 }
@@ -148,7 +161,7 @@ fn http(status: u16, message: String) -> ErrorInfo {
     ErrorInfo {
         code: ErrorCode::HttpStatus,
         http_status: Some(status),
-        message,
+        message: capitalised(message),
     }
 }
 
@@ -156,7 +169,17 @@ fn info(code: ErrorCode, message: String) -> ErrorInfo {
     ErrorInfo {
         code,
         http_status: None,
-        message,
+        message: capitalised(message),
+    }
+}
+
+/// Every message starts with a capital, as a sentence does; some engine
+/// texts ("the server sent a web page…") don't
+fn capitalised(message: String) -> String {
+    let mut chars = message.chars();
+    match chars.next() {
+        Some(first) if first.is_lowercase() => first.to_uppercase().chain(chars).collect(),
+        _ => message,
     }
 }
 
@@ -263,6 +286,13 @@ mod tests {
         let (code, text) = as_text(refused);
         assert!(text.starts_with("Can't connect to "), "{text}");
         assert_eq!(code, ErrorCode::Connect, "{text}");
+        let refused = client()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .send()
+            .unwrap_err();
+        let (code, _, message) = code_of(RadioError::Network(refused));
+        assert_eq!(code, ErrorCode::Connect);
+        assert_eq!(message, format!("Can't connect to 127.0.0.1:{port}"));
 
         // No answer in time
         let port = one_shot_server(b"", std::time::Duration::from_secs(2));
@@ -327,8 +357,20 @@ mod tests {
             "the station did not start within 12 s".to_string(),
         ));
         assert_eq!(code, ErrorCode::Timeout);
-        assert_eq!(message, "the station did not start within 12 s");
+        assert_eq!(message, "The station did not start within 12 s");
         assert_eq!(code_of(RadioError::Cancelled).0, ErrorCode::Timeout);
+    }
+
+    #[test]
+    fn every_message_starts_with_a_capital() {
+        let (code, _, message) = code_of(RadioError::Stream(
+            "the server sent a web page instead of audio".to_string(),
+        ));
+        assert_eq!(code, ErrorCode::WebPage);
+        assert_eq!(message, "The server sent a web page instead of audio");
+        assert_eq!(capitalised("éclair".to_string()), "Éclair");
+        assert_eq!(capitalised(String::new()), "");
+        assert_eq!(capitalised("HTTP 404".to_string()), "HTTP 404");
     }
 
     #[test]

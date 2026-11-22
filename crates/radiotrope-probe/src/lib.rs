@@ -21,9 +21,7 @@ pub use radiotrope::config::network::set_user_agent;
 pub use report::{Report, Status};
 
 /// The User-Agent the probe sends unless the program using it called
-/// [`set_user_agent`] before its first check
-pub const USER_AGENT: &str = concat!(
-    "RadiotropeProbe/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/goten002/radiotrope)"
-);
+/// [`set_user_agent`] before its first check: the player's own, so a station
+/// answers the probe as it answers listeners (some refuse agents they don't
+/// know, which would read as a false DOWN)
+pub const USER_AGENT: &str = radiotrope::config::network::USER_AGENT;
