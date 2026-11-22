@@ -31,6 +31,7 @@ mod shortcuts;
 mod stats_ui;
 #[cfg(feature = "desktop")]
 mod tray;
+mod view_options;
 mod viz_ui;
 mod window_settings;
 // The tests open every screen of the snapshot tool
@@ -164,6 +165,9 @@ fn main() {
             }
         }
     };
+
+    // View > Zoom: before any thread starts, and before the window is made
+    view_options::apply_zoom();
 
     // Shared command channel + state
     let (cmd_tx, cmd_rx) = bounded(64);
