@@ -12,7 +12,7 @@ use radiotrope_app::data::types::Station;
 use radiotrope_app::network::logo::LogoService;
 use radiotrope_app::{text, visual};
 
-use crate::app::state::AppSnapshot;
+use crate::app::state::{AppSnapshot, NoticeKind};
 use crate::context::{lock, AppContext};
 use crate::stats_ui::format_bytes;
 use crate::{app, App};
@@ -117,17 +117,28 @@ pub(crate) fn setup(
             // done on the UI thread.
             let spawned = std::thread::Builder::new()
                 .name("open-recordings".into())
-                .spawn(move || match recordings::prepare_dir(&dir) {
-                    Ok(()) => open_folder(&dir),
-                    Err(e) => {
-                        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                            ui.set_recording_folder_error(e.into())
-                        });
+                .spawn(move || {
+                    let opened = recordings::prepare_dir(&dir).and_then(|()| open_folder(&dir));
+                    if let Err(e) = opened {
+                        let _ = ui_weak.upgrade_in_event_loop(move |ui| show_folder_error(&ui, &e));
                     }
                 });
             if let Err(e) = spawned {
-                ui.set_recording_folder_error(format!("Can't open the folder: {e}").into());
+                show_folder_error(
+                    &ui,
+                    &format!("Can't open the recordings folder: {}", text::io_reason(&e)),
+                );
             }
+        }
+    });
+
+    // A notice that stays is closed by a click on it
+    ui.on_dismiss_recording_notice({
+        let ui_weak = ui.as_weak();
+        move || {
+            let Some(ui) = ui_weak.upgrade() else { return };
+            NOTICES.with(|n| n.borrow_mut().close());
+            show_notice(&ui);
         }
     });
 
@@ -230,7 +241,8 @@ pub(crate) fn show_listeners(ui: &App, listeners: &[String]) {
     ui.set_listeners(std::rc::Rc::new(slint::VecModel::from(names)).into());
 }
 
-/// Mirror recording progress and notices into the UI (called every 200 ms).
+/// Mirror recording progress and notices into the UI (called on every
+/// poll). `shown` is the last notice taken from the controller and when.
 pub(crate) fn show_recording_state(
     ui: &App,
     recording: Option<&app::state::RecordingProgress>,
@@ -245,18 +257,122 @@ pub(crate) fn show_recording_state(
         ui.set_recording_size(format_bytes(rec.bytes).into());
     }
 
-    match notice {
-        Some(n) if n.seq != shown.0 => {
-            *shown = (n.seq, Instant::now());
-            ui.set_recording_notice(n.text.as_str().into());
-            ui.set_recording_notice_error(n.is_error);
+    let now = Instant::now();
+    let changed = NOTICES.with(|n| {
+        let mut notices = n.borrow_mut();
+        match notice {
+            Some(n) if n.seq != shown.0 => {
+                *shown = (n.seq, now);
+                notices.post(&n.text, n.kind, now);
+                true
+            }
+            _ => notices.pass(now),
         }
-        _ => {
-            if !ui.get_recording_notice().is_empty() && shown.1.elapsed() >= RECORDING_NOTICE_TIME {
-                ui.set_recording_notice(Default::default());
+    });
+    if changed {
+        show_notice(ui);
+    }
+}
+
+/// A notice under the station
+#[derive(Clone, Debug, PartialEq)]
+struct Notice {
+    text: String,
+    kind: NoticeKind,
+}
+
+/// The notices under the station: one shows at a time. One that stays
+/// (an error, a missed entry) is on screen until it is clicked away; a
+/// newer notice goes in front of it and it comes back afterwards, so a
+/// "Saved" can't wipe out last night's "Missed". The others pass after
+/// [`RECORDING_NOTICE_TIME`].
+#[derive(Debug, Default)]
+struct Notices {
+    /// The one on screen, and since when
+    shown: Option<(Notice, Instant)>,
+    /// Staying notices a newer one went in front of, oldest first
+    behind: Vec<Notice>,
+}
+
+impl Notices {
+    /// Staying notices kept behind the one on screen
+    const KEPT: usize = 8;
+
+    /// Show a new notice
+    fn post(&mut self, text: &str, kind: NoticeKind, now: Instant) {
+        let notice = Notice {
+            text: text.to_string(),
+            kind,
+        };
+        // Said twice (Open Folder pressed again): once is enough
+        self.behind.retain(|n| *n != notice);
+        if let Some((old, _)) = self.shown.take() {
+            if old.kind.stays() && old != notice {
+                self.behind.push(old);
+                if self.behind.len() > Self::KEPT {
+                    self.behind.remove(0);
+                }
             }
         }
+        self.shown = Some((notice, now));
     }
+
+    /// Time goes by: a notice that doesn't stay leaves after a while.
+    /// Returns whether what is on screen changed.
+    fn pass(&mut self, now: Instant) -> bool {
+        match &self.shown {
+            Some((notice, since))
+                if !notice.kind.stays()
+                    && now.saturating_duration_since(*since) >= RECORDING_NOTICE_TIME =>
+            {
+                self.next(now);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The notice on screen was clicked away
+    fn close(&mut self) {
+        self.next(Instant::now());
+    }
+
+    /// The newest notice waiting behind comes on screen, or none
+    fn next(&mut self, now: Instant) {
+        self.shown = self.behind.pop().map(|notice| (notice, now));
+    }
+
+    fn on_screen(&self) -> Option<&Notice> {
+        self.shown.as_ref().map(|(notice, _)| notice)
+    }
+}
+
+/// Draw the notice on screen (or none)
+fn show_notice(ui: &App) {
+    let notice = NOTICES.with(|n| n.borrow().on_screen().cloned());
+    match notice {
+        Some(notice) => {
+            ui.set_recording_notice_kind(notice.kind.id().into());
+            ui.set_recording_notice_stays(notice.kind.stays());
+            ui.set_recording_notice(notice.text.into());
+        }
+        None => ui.set_recording_notice(Default::default()),
+    }
+}
+
+/// The recordings folder can't be opened: said in the Recording Settings
+/// dialog while it is open (beside the folder), else under the station,
+/// where "Open Folder" in the Tools menu and the "Saved" notice are
+fn show_folder_error(ui: &App, error: &str) {
+    if ui.get_recording_dialog_open() {
+        ui.set_recording_folder_error(error.into());
+        return;
+    }
+    NOTICES.with(|n| {
+        n.borrow_mut()
+            .post(error, NoticeKind::Error, Instant::now())
+    });
+    show_notice(ui);
 }
 
 /// Let the user pick the recording folder with the system's folder dialog.
@@ -305,8 +421,9 @@ fn browse_recording_folder(ui_weak: slint::Weak<App>, state: Arc<Mutex<AppSnapsh
 #[cfg(not(feature = "desktop"))]
 fn browse_recording_folder(_ui_weak: slint::Weak<App>, _state: Arc<Mutex<AppSnapshot>>) {}
 
-/// Open a folder in the system file manager.
-fn open_folder(dir: &std::path::Path) {
+/// Open a folder in the system file manager, or say why it didn't start
+/// (a sentence for the user)
+fn open_folder(dir: &std::path::Path) -> Result<(), String> {
     let program = if cfg!(target_os = "macos") {
         "open"
     } else if cfg!(target_os = "windows") {
@@ -322,8 +439,25 @@ fn open_folder(dir: &std::path::Path) {
     match command.spawn() {
         Ok(mut child) => {
             std::thread::spawn(move || child.wait());
+            Ok(())
         }
-        Err(e) => eprintln!("Failed to open {}: {e}", dir.display()),
+        Err(e) => {
+            eprintln!("Failed to open {}: {e}", dir.display());
+            Err(format!(
+                "Can't open the recordings folder: {}",
+                file_manager_reason(program, &e)
+            ))
+        }
+    }
+}
+
+/// Why the file manager didn't start. "Not found" is about the program
+/// that opens folders, not about the folder.
+fn file_manager_reason(program: &str, error: &std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        format!("{program} isn't installed")
+    } else {
+        text::io_reason(error)
     }
 }
 
@@ -342,6 +476,8 @@ thread_local! {
     /// Counts the recording folders asked for, so only the last one asked
     /// for is saved when its check comes back
     static FOLDER_CHECK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The notices under the station
+    static NOTICES: std::cell::RefCell<Notices> = std::cell::RefCell::new(Notices::default());
 }
 
 #[cfg(test)]
@@ -357,5 +493,83 @@ mod tests {
         );
         assert_eq!(path(r"\\nas\music/Radiotrope"), r"\\nas\music\Radiotrope");
         assert_eq!(path(r"D:\Recordings"), r"D:\Recordings");
+    }
+
+    fn text_of(notices: &Notices) -> Option<&str> {
+        notices.on_screen().map(|n| n.text.as_str())
+    }
+
+    #[test]
+    fn a_saved_notice_passes_and_an_error_stays() {
+        let start = Instant::now();
+        let later = start + RECORDING_NOTICE_TIME;
+        let mut notices = Notices::default();
+        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, start);
+        assert!(!notices.pass(later - std::time::Duration::from_millis(1)));
+        assert!(notices.pass(later));
+        assert_eq!(text_of(&notices), None);
+
+        for kind in [NoticeKind::Error, NoticeKind::Scheduler] {
+            notices.post("Missed 07:00: Play Jazz FM", kind, start);
+            assert!(
+                !notices.pass(start + RECORDING_NOTICE_TIME * 1000),
+                "{kind:?}"
+            );
+            assert_eq!(text_of(&notices), Some("Missed 07:00: Play Jazz FM"));
+            notices.close();
+            assert_eq!(text_of(&notices), None);
+        }
+
+        // The Sleep Timer's news passes too
+        notices.post(
+            "Sleep Timer ended; recording continues",
+            NoticeKind::SleepTimer,
+            start,
+        );
+        assert!(notices.pass(later));
+    }
+
+    #[test]
+    fn a_notice_that_stays_comes_back_after_a_newer_one() {
+        let start = Instant::now();
+        let mut notices = Notices::default();
+        notices.post("Missed 07:00: Play Jazz FM", NoticeKind::Scheduler, start);
+        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, start);
+        assert_eq!(text_of(&notices), Some("Saved Jazz FM.mp3"));
+        assert!(notices.pass(start + RECORDING_NOTICE_TIME));
+        assert_eq!(text_of(&notices), Some("Missed 07:00: Play Jazz FM"));
+
+        // Two that stay: the newer first, then the older, then none
+        notices.post(
+            "Recording stopped: no space left on device",
+            NoticeKind::Error,
+            start,
+        );
+        notices.close();
+        assert_eq!(text_of(&notices), Some("Missed 07:00: Play Jazz FM"));
+        notices.close();
+        assert_eq!(text_of(&notices), None);
+    }
+
+    #[test]
+    fn the_same_error_twice_is_shown_once() {
+        let start = Instant::now();
+        let mut notices = Notices::default();
+        let error = "Can't open the recordings folder: permission denied";
+        notices.post(error, NoticeKind::Error, start);
+        notices.post(error, NoticeKind::Error, start);
+        notices.post("Saved Jazz FM.mp3", NoticeKind::Saved, start);
+        notices.post(error, NoticeKind::Error, start);
+        notices.close();
+        assert_eq!(text_of(&notices), None);
+    }
+
+    #[test]
+    fn a_missing_file_manager_is_named() {
+        let missing = std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(
+            file_manager_reason("xdg-open", &missing),
+            "xdg-open isn't installed"
+        );
     }
 }

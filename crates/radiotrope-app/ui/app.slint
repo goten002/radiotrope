@@ -216,10 +216,16 @@ export component App inherits Window {
     in-out property <string> recording-text;
     in-out property <string> recording-size;
     in-out property <string> recording-notice;
+    // What the notice is about ("saved", "scheduler", "sleep" or "error")
+    // and whether it stays until it is clicked away
+    in-out property <string> recording-notice-kind: "saved";
+    in-out property <bool> recording-notice-stays;
+    callback dismiss-recording-notice();
+    // The Recording Settings dialog is open (it shows its folder's errors)
+    out property <bool> recording-dialog-open: recording-dialog.show-dialog;
     // A save of the favorites or settings that failed ("Can't save
     // favorites: permission denied"); empty once a save works
     in property <string> save-error;
-    in-out property <bool> recording-notice-error;
     in-out property <string> recording-folder <=> recording-dialog.folder;
     in-out property <string> recording-default-folder <=> recording-dialog.default-folder;
     in-out property <string> recording-folder-error <=> recording-dialog.error;
@@ -656,7 +662,10 @@ export component App inherits Window {
                         recording-text: root.recording-text;
                         recording-size: root.recording-size;
                         recording-notice: root.recording-notice;
-                        recording-notice-error: root.recording-notice-error;
+                        recording-notice-kind: root.recording-notice-kind;
+                        recording-notice-stays: root.recording-notice-stays;
+                        recording-notice-dismiss => { root.dismiss-recording-notice(); }
+                        save-error: root.save-error;
                         can-open-recordings: Platform.has-file-manager;
                         open-recordings-folder => { root.open-recordings-folder(); }
                         stop-recording => {
