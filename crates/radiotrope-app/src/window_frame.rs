@@ -286,6 +286,14 @@ fn withdraw_x11(window: u32) {
     }
 }
 
+/// Whether the window can be kept above the others (View > Window >
+/// Always on Top). Wayland has no way for an app to ask for that: winit's
+/// `set_window_level`, which Slint's `always-on-top` calls, does nothing
+/// there. X11 and Windows can. True until the system window exists.
+pub fn can_stay_on_top(window: &slint::Window) -> bool {
+    wayland_window(window).is_none()
+}
+
 /// The window's id when it is a Wayland window
 fn wayland_window(window: &slint::Window) -> Option<winit::window::WindowId> {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};

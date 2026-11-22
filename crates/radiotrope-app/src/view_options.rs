@@ -1,10 +1,8 @@
-//! View > Zoom and View > Reduce Motion, and Tools > Connections > Report
-//! Plays to the Station Directory
+//! View > Zoom and Stations > Report Plays
 //!
 //! The zoom is the window's scale: Slint takes one for the whole run, so
 //! it is set before the window is made and a new choice applies at the
-//! next start. Reduce Motion follows the system until it is picked in the
-//! menu.
+//! next start.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -100,24 +98,8 @@ pub(crate) fn setup(ui: &App, settings: &Settings) {
     options.set_report_plays(settings.report_plays);
     options.on_report_plays_changed(set_report_plays);
 
-    match settings.reduce_motion {
-        Some(on) => {
-            ui.set_reduce_motion(on);
-            options.set_reduce_motion_chosen(true);
-        }
-        None => follow_system_motion(ui),
-    }
-
     #[cfg(feature = "desktop")]
     watch_display_scale(ui, settings.known_display_scale());
-}
-
-/// What the menu's Reduce Motion saves: the choice once one was made,
-/// `None` while it follows the system
-pub(crate) fn reduce_motion_choice(ui: &App) -> Option<bool> {
-    ui.global::<ViewOptions>()
-        .get_reduce_motion_chosen()
-        .then(|| ui.get_reduce_motion())
 }
 
 /// The zoom picked in the menu, in percent
@@ -128,25 +110,6 @@ pub(crate) fn zoom_choice(ui: &App) -> u32 {
 /// The menu's Report Plays switch
 pub(crate) fn report_plays_choice(ui: &App) -> bool {
     ui.global::<ViewOptions>().get_report_plays()
-}
-
-/// Take the system's "reduce motion" as the default. It is asked on a
-/// thread of its own (the desktop's settings service may be slow to
-/// answer), and a choice made in the menu meanwhile stands.
-fn follow_system_motion(ui: &App) {
-    let ui_weak = ui.as_weak();
-    let _ = std::thread::Builder::new()
-        .name("system-motion".into())
-        .spawn(move || {
-            let Some(reduce) = system_motion::reduced() else {
-                return;
-            };
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                if !ui.global::<ViewOptions>().get_reduce_motion_chosen() {
-                    ui.set_reduce_motion(reduce);
-                }
-            });
-        });
 }
 
 /// Keep the display's own scale in settings.json for the next start's
@@ -178,98 +141,6 @@ fn watch_display_scale(ui: &App, saved: Option<f32>) {
     });
     // Runs for as long as the app does
     std::mem::forget(timer);
-}
-
-/// The system's "reduce motion" setting
-mod system_motion {
-    /// `None` when the system doesn't say
-    pub(super) fn reduced() -> Option<bool> {
-        imp::reduced()
-    }
-
-    /// Linux desktops: the settings portal, which also carries the theme.
-    /// GNOME's `enable-animations` (GTK's and others' portals pass it on),
-    /// else KDE's animation speed, where 0 is "instant".
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
-    mod imp {
-        use zbus::blocking::Connection;
-        use zbus::zvariant::{OwnedValue, Value};
-
-        fn read(conn: &Connection, namespace: &str, key: &str) -> Option<OwnedValue> {
-            conn.call_method(
-                Some("org.freedesktop.portal.Desktop"),
-                "/org/freedesktop/portal/desktop",
-                Some("org.freedesktop.portal.Settings"),
-                "Read",
-                &(namespace, key),
-            )
-            .ok()?
-            .body()
-            .deserialize::<OwnedValue>()
-            .ok()
-        }
-
-        /// `Read` wraps its answer in a variant of its own
-        fn unwrapped<'a>(value: &'a Value<'a>) -> &'a Value<'a> {
-            match value {
-                Value::Value(inner) => unwrapped(inner),
-                other => other,
-            }
-        }
-
-        pub(super) fn reduced() -> Option<bool> {
-            let conn = Connection::session().ok()?;
-            if let Some(value) = read(&conn, "org.gnome.desktop.interface", "enable-animations") {
-                if let Value::Bool(animations) = unwrapped(&value) {
-                    return Some(!animations);
-                }
-            }
-            let value = read(&conn, "org.kde.kdeglobals.KDE", "AnimationDurationFactor")?;
-            match unwrapped(&value) {
-                Value::F64(factor) => Some(*factor == 0.0),
-                Value::Str(factor) => factor.trim().parse::<f64>().ok().map(|f| f == 0.0),
-                _ => None,
-            }
-        }
-    }
-
-    /// Windows: Settings > Accessibility > Visual effects > Animation effects
-    #[cfg(windows)]
-    mod imp {
-        pub(super) fn reduced() -> Option<bool> {
-            #[link(name = "user32")]
-            extern "system" {
-                fn SystemParametersInfoW(
-                    action: u32,
-                    param: u32,
-                    value: *mut core::ffi::c_void,
-                    win_ini: u32,
-                ) -> i32;
-            }
-            const SPI_GETCLIENTAREAANIMATION: u32 = 0x1042;
-            // A Win32 BOOL
-            let mut animations: i32 = 1;
-            // SAFETY: this action writes one BOOL to the pointer it is
-            // given, which is a live i32 of ours
-            let read = unsafe {
-                SystemParametersInfoW(
-                    SPI_GETCLIENTAREAANIMATION,
-                    0,
-                    (&mut animations as *mut i32).cast(),
-                    0,
-                )
-            };
-            (read != 0).then_some(animations == 0)
-        }
-    }
-
-    /// The Pi's kiosk and other systems: nothing to ask
-    #[cfg(not(any(all(target_os = "linux", feature = "desktop"), windows)))]
-    mod imp {
-        pub(super) fn reduced() -> Option<bool> {
-            None
-        }
-    }
 }
 
 #[cfg(test)]

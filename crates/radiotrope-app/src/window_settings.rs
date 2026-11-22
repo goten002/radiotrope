@@ -76,7 +76,7 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
     ui.set_show_station_stats(settings.show_station_stats);
     ui.set_show_visualizer(settings.show_visualizer);
     ui.set_panel_gradient(settings.panel_gradient);
-    // Zoom, Reduce Motion and the play reports
+    // Zoom and the play reports
     crate::view_options::setup(ui, settings);
     #[cfg(feature = "desktop")]
     {
@@ -106,6 +106,10 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
                     ui.set_corners_available(corners.available);
                     ui.set_draw_corners(corners.drawn);
                     ui.set_corners_hint(corners.hint.into());
+                    // The saved choice stays set, and works again on X11
+                    let on_top = window_frame::can_stay_on_top(ui.window());
+                    ui.set_on_top_available(on_top);
+                    ui.set_on_top_hint(if on_top { "" } else { "Not on Wayland" }.into());
                 }
             };
             window_frame::watch_window(ui.window(), apply_corners.clone());
@@ -116,6 +120,18 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
                     // Wayland never says a window was minimized, so our
                     // own button hides to the tray itself
                     if tray::hides_on_minimize(&ui) {
+                        let _ = ui.hide();
+                    } else {
+                        window_frame::minimize(ui.window());
+                    }
+                }
+            });
+            // Ctrl+W hides the window and never quits (Ctrl+Q does): to the
+            // tray when there is an icon to bring it back, else minimized
+            let ui_weak = ui.as_weak();
+            ui.on_hide_window(move || {
+                if let Some(ui) = ui_weak.upgrade() {
+                    if tray::has_tray(&ui) {
                         let _ = ui.hide();
                     } else {
                         window_frame::minimize(ui.window());
@@ -366,8 +382,6 @@ pub(crate) struct WindowSettings {
     pub(crate) panel_gradient: bool,
     /// View > Zoom in percent, for the next start
     pub(crate) zoom: u32,
-    /// View > Reduce Motion; `None` follows the system
-    pub(crate) reduce_motion: Option<bool>,
     pub(crate) report_plays: bool,
     /// Custom title bar, rounded corners and always on top (not on the Pi)
     pub(crate) frame: Option<(bool, bool, bool)>,
@@ -434,7 +448,6 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         show_visualizer: ui.get_show_visualizer(),
         panel_gradient: ui.get_panel_gradient(),
         zoom,
-        reduce_motion: crate::view_options::reduce_motion_choice(ui),
         report_plays: crate::view_options::report_plays_choice(ui),
         frame: cfg!(not(feature = "embedded")).then(|| {
             (
@@ -528,7 +541,6 @@ impl WindowSettings {
         settings.show_visualizer = w.show_visualizer;
         settings.panel_gradient = w.panel_gradient;
         settings.zoom = w.zoom;
-        settings.reduce_motion = w.reduce_motion;
         settings.report_plays = w.report_plays;
         if let Some((custom_title_bar, rounded_corners, always_on_top)) = w.frame {
             settings.custom_title_bar = custom_title_bar;

@@ -150,12 +150,6 @@ const SHOTS: &[Shot] = &[
         "Playing station with codec, now-playing metadata and favorite row stats.",
     ),
     Shot::new(
-        "main-reduce-motion",
-        "main",
-        "reduce-motion",
-        "Playing with View > Reduce Motion on: steady bars and dot, a still visualizer.",
-    ),
-    Shot::new(
         "main-error",
         "main",
         "error",
@@ -174,10 +168,10 @@ const SHOTS: &[Shot] = &[
         "REC chip after one press: a second press stops the recording.",
     ),
     Shot::new(
-        "main-viz-name",
+        "main-viz-hover",
         "main",
         "viz-name",
-        "Visualizer tile showing its style name after a click or on hover.",
+        "Visualizer tile with its hover outline (no style name in the tile).",
     ),
     Shot::new(
         "main-sleep-countdown",
@@ -378,7 +372,7 @@ const SHOTS: &[Shot] = &[
         "menu-zoom",
         "view-group",
         "zoom",
-        "Zoom choices expanded in the View menu, with Reduce Motion below.",
+        "Zoom choices expanded in the View menu.",
     ),
     Shot::new(
         "menu-window-options",
@@ -1475,7 +1469,6 @@ fn configure(ui: &App, shot: &Shot) {
             "sleep" => {
                 configure_sleep(ui);
             }
-            "reduce-motion" => ui.set_reduce_motion(true),
             "schedule" => {
                 ui.set_schedule_label("Record in 0:12".into());
             }

@@ -282,6 +282,8 @@ component CheckMenuItem inherits MenuRowBase {
     in property <bool> checked;
     // A faint note on the right, before the tick
     in property <string> hint;
+    // What the option does, for screen readers only (the menu stays short)
+    in property <string> description;
     // One of a set where another is always ticked (the visualizer styles):
     // no faint tick while this one is off
     in property <bool> one-of-set;
@@ -299,7 +301,7 @@ component CheckMenuItem inherits MenuRowBase {
 
     accessible-role: checkbox;
     accessible-label: root.label;
-    accessible-description: root.hint;
+    accessible-description: root.hint != "" ? root.hint : root.description;
     accessible-enabled: root.enabled;
     accessible-checkable: true;
     accessible-checked: root.checked;
@@ -748,6 +750,10 @@ export component MenuBar inherits Rectangle {
 
     callback open-network-stream();
     callback open-station-search();
+    // Stations > Find in Favorites: the favorites' find field (as `/`),
+    // greyed with no favorites
+    callback find-favorites();
+    in property <bool> has-favorites: true;
     callback export-favorites();
     callback import-favorites();
     callback open-statistics();
@@ -809,6 +815,10 @@ export component MenuBar inherits Rectangle {
     in property <bool> custom-frame;
     in-out property <bool> maximized;
     in-out property <bool> always-on-top;
+    // Wayland has no way for an app to keep its window on top, so the item
+    // is greyed there with this note; the saved choice is kept
+    in property <bool> on-top-available: true;
+    in property <string> on-top-hint;
     callback minimize();
     callback toggle-custom-frame();
     in-out property <bool> rounded-corners;
@@ -927,8 +937,8 @@ export component MenuBar inherits Rectangle {
     property <[bool]> open-usable: [
         true, !Platform.has-power-off, Platform.has-power-off, Platform.has-power-off,
     ];
-    property <[bool]> stations-usable: [true, Platform.has-file-manager, Platform.has-file-manager];
-    property <[bool]> window-usable: [true, true, true, true];
+    property <[bool]> stations-usable: [true, root.has-favorites, Platform.has-file-manager, Platform.has-file-manager, true];
+    property <[bool]> window-usable: [true, true, root.on-top-available, true];
     property <[bool]> view-usable: [
         // 0 Theme, 1 Accent Color, 2 Show Listening Stats, 3 Visualizer
         true, true, true, true,
@@ -937,15 +947,15 @@ export component MenuBar inherits Rectangle {
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
-        // 12 Zoom, 13-17 its percentages, 18 Reduce Motion
+        // 12 Zoom, 13-17 its percentages
         Platform.has-window-frame,
         root.zoom-open, root.zoom-open, root.zoom-open, root.zoom-open, root.zoom-open,
-        true,
-        // 19 Window, 20 Use System Title Bar, 21 Rounded Corners, 22 Always on Top
+        // 18 Window, 19 Use System Title Bar, 20 Rounded Corners, 21 Always on Top
         Platform.has-window-frame, root.window-open,
-        root.window-open && root.custom-frame && root.corners-available, root.window-open,
-        // 23 System Tray, 24 Show Tray Icon, 25-27 the three tray choices,
-        // 28 Start at Login
+        root.window-open && root.custom-frame && root.corners-available,
+        root.window-open && root.on-top-available,
+        // 22 System Tray, 23 Show Tray Icon, 24-26 the three tray choices,
+        // 27 Start at Login
         Platform.has-tray, root.tray-open, root.tray-usable, root.tray-usable, root.tray-usable,
         root.tray-open,
     ];
@@ -956,10 +966,9 @@ export component MenuBar inherits Rectangle {
         true, root.tools-group == "recordings", Platform.has-file-manager && root.tools-group == "recordings",
         // 7 Sleep Timer, 8 Scheduler
         true, true,
-        // 9 Connections, 10 Agents (MCP), 11 Remote Control, 12 Report Plays
+        // 9 Connections, 10 Agents (MCP), 11 Remote Control
         true, root.tools-group == "connections", root.tools-group == "connections",
-        root.tools-group == "connections",
-        // 13 Wi-Fi Settings
+        // 12 Wi-Fi Settings
         Platform.has-wifi,
     ];
     property <[bool]> help-usable: [DesktopShortcuts.enabled, true];
@@ -1250,10 +1259,21 @@ export component MenuBar inherits Rectangle {
                     stations-popup.close();
                 }
             }
+            MenuItem {
+                slot: 1;
+                label: "Find in Favorites";
+                enabled: root.has-favorites;
+                shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.find-favorites) : "";
+                icon: @image-url("icons/star-regular.svg");
+                clicked => {
+                    stations-popup.close();
+                    root.find-favorites();
+                }
+            }
             MenuSeparator {}
             // Need a file dialog, which the kiosk build lacks
             MenuItem {
-                slot: 1;
+                slot: 2;
                 label: "Export Favorites";
                 enabled: Platform.has-file-manager;
                 icon: @image-url("icons/file-export.svg");
@@ -1263,13 +1283,27 @@ export component MenuBar inherits Rectangle {
                 }
             }
             MenuItem {
-                slot: 2;
+                slot: 3;
                 label: "Import Favorites";
                 enabled: Platform.has-file-manager;
                 icon: @image-url("icons/file-import.svg");
                 clicked => {
                     root.import-favorites();
                     stations-popup.close();
+                }
+            }
+            MenuSeparator {}
+            // A play of a station from the directory (Search Stations)
+            // tells the directory its id, for its "most played" lists
+            CheckMenuItem {
+                slot: 4;
+                label: "Report Plays";
+                icon: @image-url("icons/chart-column.svg");
+                description: "Tells the station directory which station you play, to rank popular stations.";
+                checked: ViewOptions.report-plays;
+                clicked => {
+                    ViewOptions.report-plays = !ViewOptions.report-plays;
+                    ViewOptions.report-plays-changed(ViewOptions.report-plays);
                 }
             }
         }
@@ -1310,6 +1344,8 @@ export component MenuBar inherits Rectangle {
                 slot: 2;
                 label: "Always on Top";
                 icon: @image-url("icons/thumbtack.svg");
+                enabled: root.on-top-available;
+                hint: root.on-top-available ? "" : root.on-top-hint;
                 checked: root.always-on-top;
                 clicked => {
                     root.always-on-top = !root.always-on-top;
@@ -1345,8 +1381,8 @@ export component MenuBar inherits Rectangle {
             // Left on a row of an open group folds it
             fold-to: root.style-open && MenuNav.active >= 6 && MenuNav.active <= 11 ? 5
                 : root.zoom-open && MenuNav.active >= 13 && MenuNav.active <= 17 ? 12
-                : root.window-open && MenuNav.active >= 20 && MenuNav.active <= 22 ? 19
-                : root.tray-open && MenuNav.active >= 24 && MenuNav.active <= 28 ? 23 : -1;
+                : root.window-open && MenuNav.active >= 19 && MenuNav.active <= 21 ? 18
+                : root.tray-open && MenuNav.active >= 23 && MenuNav.active <= 27 ? 22 : -1;
             fold => { root.view-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { view-popup.close(); }
@@ -1451,21 +1487,10 @@ export component MenuBar inherits Rectangle {
                         : "Applies the next time Radiotrope starts."];
                 }
             }
-            // Follows the system's setting until it is picked here
-            CheckMenuItem {
-                slot: 18;
-                label: "Reduce Motion";
-                icon: @image-url("icons/eye.svg");
-                checked: Theme.reduce-motion;
-                clicked => {
-                    Theme.reduce-motion = !Theme.reduce-motion;
-                    ViewOptions.reduce-motion-chosen = true;
-                }
-            }
             // The set-once options, folded into groups (desktop only)
             if Platform.has-window-frame || Platform.has-tray: MenuSeparator {}
             if Platform.has-window-frame: GroupMenuItem {
-                slot: 19;
+                slot: 18;
                 label: "Window";
                 icon: @image-url("icons/window-maximize.svg");
                 open: root.window-open;
@@ -1473,7 +1498,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.window-open: VerticalLayout {
                 CheckMenuItem {
-                    slot: 20;
+                    slot: 19;
                     // Chrome's wording: ticked means the system frame
                     label: "Use System Title Bar";
                     icon: @image-url("icons/window-maximize.svg");
@@ -1485,7 +1510,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 21;
+                    slot: 20;
                     // The system title bar has its own corners
                     label: "Rounded Corners";
                     icon: @image-url("icons/rounded-corner.svg");
@@ -1499,10 +1524,12 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 22;
+                    slot: 21;
                     label: "Always on Top";
                     icon: @image-url("icons/thumbtack.svg");
                     indent: Theme.space-16;
+                    enabled: root.on-top-available;
+                    hint: root.on-top-available ? "" : root.on-top-hint;
                     checked: root.always-on-top;
                     clicked => {
                         root.always-on-top = !root.always-on-top;
@@ -1510,7 +1537,7 @@ export component MenuBar inherits Rectangle {
                 }
             }
             if Platform.has-tray: GroupMenuItem {
-                slot: 23;
+                slot: 22;
                 label: "System Tray";
                 icon: @image-url("icons/window-restore.svg");
                 open: root.tray-open;
@@ -1518,7 +1545,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.tray-open: VerticalLayout {
                 CheckMenuItem {
-                    slot: 24;
+                    slot: 23;
                     label: "Show Tray Icon";
                     icon: @image-url("icons/window-restore.svg");
                     indent: Theme.space-16;
@@ -1529,7 +1556,7 @@ export component MenuBar inherits Rectangle {
                 }
                 // Greyed with no tray to hide in; they keep their ticks
                 CheckMenuItem {
-                    slot: 25;
+                    slot: 24;
                     label: "Close to Tray";
                     icon: @image-url("icons/rectangle-xmark.svg");
                     indent: Theme.space-16;
@@ -1540,7 +1567,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 26;
+                    slot: 25;
                     label: "Minimize to Tray";
                     icon: @image-url("icons/square-minus.svg");
                     indent: Theme.space-16;
@@ -1551,7 +1578,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 27;
+                    slot: 26;
                     label: "Start Hidden in Tray";
                     icon: @image-url("icons/eye-slash.svg");
                     indent: Theme.space-16;
@@ -1563,7 +1590,7 @@ export component MenuBar inherits Rectangle {
                 }
                 // Saved in the autostart file or the Run key, not the settings
                 CheckMenuItem {
-                    slot: 28;
+                    slot: 27;
                     label: "Start at Login";
                     icon: @image-url("icons/desktop.svg");
                     indent: Theme.space-16;
@@ -1636,7 +1663,7 @@ export component MenuBar inherits Rectangle {
             title-width: root.title-width;
             usable: root.tools-usable;
             fold-to: root.tools-group == "recordings" && MenuNav.active >= 5 && MenuNav.active <= 6 ? 4
-                : root.tools-group == "connections" && MenuNav.active >= 10 && MenuNav.active <= 12 ? 9 : -1;
+                : root.tools-group == "connections" && MenuNav.active >= 10 && MenuNav.active <= 11 ? 9 : -1;
             fold => { root.tools-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { tools-popup.close(); }
@@ -1758,23 +1785,10 @@ export component MenuBar inherits Rectangle {
                         tools-popup.close();
                     }
                 }
-                // A play of a station from the directory tells the
-                // directory its id, for the "most played" lists
-                CheckMenuItem {
-                    slot: 12;
-                    label: "Report Plays to the Station Directory";
-                    icon: @image-url("icons/chart-column.svg");
-                    indent: Theme.space-16;
-                    checked: ViewOptions.report-plays;
-                    clicked => {
-                        ViewOptions.report-plays = !ViewOptions.report-plays;
-                        ViewOptions.report-plays-changed(ViewOptions.report-plays);
-                    }
-                }
             }
             if Platform.has-wifi: MenuSeparator {}
             if Platform.has-wifi: MenuItem {
-                slot: 13;
+                slot: 12;
                 label: "Wi-Fi Settings";
                 icon: @image-url("icons/wifi.svg");
                 clicked => {
