@@ -9,6 +9,7 @@ component FilterRow inherits HorizontalLayout {
     in property <string> info;
     // The first row's bubble opens below, so the dialog doesn't cut it off
     in property <bool> info-below: false;
+    in property <bool> show-info;
     // False when the row's own control takes the switch's place
     in property <bool> has-switch: true;
     in-out property <bool> checked;
@@ -36,6 +37,7 @@ component FilterRow inherits HorizontalLayout {
             alignment: center;
             InfoTip {
                 text: root.info;
+                open: root.show-info;
                 open-right: true;
                 open-below: root.info-below;
             }
@@ -64,6 +66,7 @@ component Line inherits Rectangle {
 // channels in the header.
 export component FiltersDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    in-out property <bool> show-leveler-info;
     in-out property <bool> leveler-on: true;
     // "quiet", "normal" or "loud"
     in-out property <string> level-target: "normal";
@@ -101,6 +104,7 @@ export component FiltersDialog inherits Rectangle {
                 name: "Volume Leveler";
                 info: "Some stations are much louder than others. The leveler turns loud ones down and quiet ones up, so you don't have to reach for the volume when you switch. Quiet, Normal and Loud set how loud they all play.";
                 info-below: true;
+                show-info: root.show-leveler-info;
                 has-switch: false;
 
                 Picker {

@@ -131,6 +131,7 @@ export component RowLabel inherits Text {
 // Which AI agents may use the player: on this computer, and over the network
 export component AgentsDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
+    in property <string> snapshot-overlay;
     // False in a --mcp --standalone player: agents reach the main one
     in property <bool> available: true;
     in-out property <bool> network-on: false;
@@ -218,6 +219,7 @@ export component AgentsDialog inherits Rectangle {
             spacing: 8px;
             RowLabel { text: "Agent"; }
             Dropdown {
+                show-popup: root.snapshot-overlay == "agent";
                 items: root.apps;
                 selected <=> root.app;
                 changed(index) => { root.app-changed(index); }
@@ -233,7 +235,10 @@ export component AgentsDialog inherits Rectangle {
             }
             if root.local-note != "": VerticalLayout {
                 alignment: center;
-                InfoTip { text: root.local-note; }
+                InfoTip {
+                    text: root.local-note;
+                    open: root.snapshot-overlay == "local-info";
+                }
             }
         }
 
@@ -282,6 +287,7 @@ export component AgentsDialog inherits Rectangle {
             spacing: 8px;
             RowLabel { text: "Listen on"; }
             Dropdown {
+                show-popup: root.snapshot-overlay == "interface";
                 items: root.listen-options;
                 selected <=> root.listen;
                 enabled: root.network-fields;
@@ -315,6 +321,7 @@ export component AgentsDialog inherits Rectangle {
             Dropdown {
                 width: 96px;
                 horizontal-stretch: 0;
+                show-popup: root.snapshot-overlay == "auth";
                 items: root.auths;
                 selected <=> root.auth;
                 enabled: root.network-fields;
@@ -356,7 +363,10 @@ export component AgentsDialog inherits Rectangle {
             }
             if root.network-note != "": VerticalLayout {
                 alignment: center;
-                InfoTip { text: root.network-note; }
+                InfoTip {
+                    text: root.network-note;
+                    open: root.snapshot-overlay == "network-info";
+                }
             }
         }
     }

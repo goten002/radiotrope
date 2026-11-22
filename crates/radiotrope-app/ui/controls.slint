@@ -25,7 +25,7 @@ component VolumeSlider inherits Rectangle {
     property <length> knob: root.active ? Defaults.volume-knob-active : Defaults.volume-knob;
     animate knob { duration: Theme.fast; }
     // Keeps the value bubble up briefly after a scroll or key press
-    property <bool> nudged;
+    in-out property <bool> nudged;
     // The focus came from the keyboard (Tab, or keys used after a click),
     // so the focus ring shows
     property <bool> key-focus;
@@ -214,6 +214,13 @@ component VolumeSlider inherits Rectangle {
 }
 
 export component Controls inherits Rectangle {
+    in property <string> snapshot-overlay;
+    changed snapshot-overlay => {
+        if root.snapshot-overlay == "volume-bubble" { vol-slider.nudged = true; }
+        if root.snapshot-overlay == "title-bubble" { root.title-hover-ready = true; }
+        if root.snapshot-overlay == "title-copied" { root.copied = true; }
+    }
+
     in property <bool> is-playing;
     // A station is connecting: the button offers Stop, so pressing it
     // again cancels the connection instead of starting it over
