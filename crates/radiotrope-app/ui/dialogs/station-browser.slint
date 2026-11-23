@@ -200,7 +200,7 @@ component StationRow inherits Rectangle {
                     height: Theme.icon-md;
                     source: root.is-favorite ? @image-url("../icons/star.svg")
                         : @image-url("../icons/star-regular.svg");
-                    colorize: root.is-favorite ? Theme.selection-mark
+                    colorize: root.is-favorite ? Theme.accent-graphic
                         : star-touch.has-hover ? Theme.text-primary : surface.faint-color;
                 }
 
@@ -235,7 +235,7 @@ component FilterToggle inherits Rectangle {
     border-color: root.shown ? Theme.accent-graphic : Theme.field-border;
     background: touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg
-        : root.shown ? Theme.selected-bg : Theme.elevated;
+        : root.shown ? Theme.accent-tint : Theme.elevated;
     animate background, border-color { duration: Theme.fast; }
     forward-focus: keys;
 
@@ -279,7 +279,7 @@ component FilterToggle inherits Rectangle {
         width: Theme.icon-md;
         height: Theme.icon-md;
         source: @image-url("../icons/filter.svg");
-        colorize: root.shown || root.filtered ? Theme.selection-mark
+        colorize: root.shown || root.filtered ? Theme.accent-graphic
             : touch.has-hover ? Theme.text-primary : Theme.text-secondary;
         animate colorize { duration: Theme.fast; }
     }
@@ -957,7 +957,7 @@ export component StationBrowserDialog inherits Rectangle {
                                     source: @image-url("../icons/spinner.svg");
                                     width: Theme.icon-sm;
                                     height: Theme.icon-sm;
-                                    colorize: Theme.selection-mark;
+                                    colorize: Theme.accent-graphic;
                                     rotation: mod(Motion.tick / Theme.spin-period, 1) * 360deg;
                                 }
                             }

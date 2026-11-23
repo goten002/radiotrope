@@ -193,6 +193,18 @@ mod tests {
     }
 
     #[test]
+    fn a_removed_phone_is_gone_at_once() {
+        // Only paired phones are listed: removing one in the dialog takes
+        // it off even with its stream still counted and a call going
+        let t = Instant::now();
+        let mut p = Presence::default();
+        p.stream_opened("a", t);
+        let listening: HashSet<String> = ["a".to_string()].into();
+        assert_eq!(online(&["a"], &p, &listening, t).len(), 1);
+        assert!(online(&[], &p, &listening, t).is_empty());
+    }
+
+    #[test]
     fn gone_phones_are_forgotten() {
         let t = Instant::now();
         let mut p = Presence::default();

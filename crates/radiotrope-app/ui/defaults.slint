@@ -4,6 +4,44 @@
 //
 // Components use these instead of literal values, so both themes (and the
 // accent color) apply everywhere.
+//
+// ── Colour roles ──
+// One meaning, one token, the same rule in the dark and the light theme.
+// The accent is the user's colour (any colour, white and black too), so
+// only the fill shows it as picked; graphics and text move it toward white
+// (dark theme) or black (light theme) just far enough to be seen.
+//
+//   Neutral layers
+//   surface            the list area behind the rows
+//   panel              header and bottom bar
+//   card               dialogs, menus and bubbles
+//   elevated           wells inside a layer: inputs, tracks, inset boxes
+//   logo-tile          behind a station logo or the radio in its place
+//   hairline           1px separators and the edge of every tile
+//
+//   Accent
+//   accent-fill        filled controls: Play, primary buttons, a picked
+//   (-hover, -pressed) option. The colour as picked, unless it would vanish
+//                      into the layers (white on white).
+//   on-accent          text and icons on those fills (black or white, 4.5:1)
+//   (-hover, -pressed)
+//   accent-graphic     marks that carry meaning on a layer: stars, checks,
+//                      the playing bars and row rail, spinners, the radio
+//                      in a logo tile, slider and progress fills, switches,
+//                      the visualizer, active edges. 3:1.
+//   on-accent-graphic  what is drawn on an accent-graphic fill (a knob)
+//   accent-text        accent-coloured text, and an icon that is part of
+//                      that text (a chip's dot, "Copied"). 4.5:1.
+//   accent-tint        background of the current or selected row and of
+//                      accent chips
+//   accent-tint-strong the same, hovered or highlighted
+//   accent-glow        decoration only: the glow on panels and dialogs
+//
+// accent-graphic and accent-text keep their ratio on every neutral layer,
+// hovered and pressed rows included, and on both tints over them. The
+// tints are a wash of accent-graphic, so they show for any accent.
+// `tests/theme_contrast.rs` checks that for every preset and for white and
+// near-black accents.
 
 import { Palette } from "std-widgets.slint";
 
@@ -31,6 +69,11 @@ export global Theme {
     out property <color> card: dark-mode ? #25272b : #ffffff;
     // Inputs, tracks and wells inside a card
     out property <color> elevated: dark-mode ? #1b1c1f : #f0f0f4;
+    // Behind a station logo, and behind the radio drawn where there is
+    // none: a well, like the visualizer tile at the other end of the header.
+    // Every logo tile has a hairline edge, so a logo with a white or a
+    // black background keeps its outline in either theme.
+    out property <color> logo-tile: elevated;
     // 1px borders and separators
     out property <color> hairline: dark-mode ? #ffffff14 : #00000014;
     // Backdrop behind dialogs
@@ -48,7 +91,7 @@ export global Theme {
     // ── Accent ──
     // Default accent, also what "Restore Default" goes back to
     out property <color> accent-default: #f7931e;
-    // Colours offered in the Accent Color dialog, two rows of five
+    // Colours offered in the Accent Color dialog, in one row
     out property <[color]> accent-swatches: [
         #f7931e, #ed5b00, #e62d42, #d56199, #9141ac,
         #3584e4, #2190a4, #3a944a, #c88800, #6f8396,
@@ -60,26 +103,40 @@ export global Theme {
     ];
     // The accent in use (the user's choice, saved in settings)
     in-out property <color> accent-base: accent-default;
-    out property <color> accent: accent-base;
-    out property <color> accent-hover: accent-base.darker(0.15);
-    // Accent for text and icons on surfaces: the accent itself in the dark
-    // theme and a darker one in the light theme, moved toward white (dark)
-    // or black (light) only as far as it takes to reach 4.5:1 there
-    out property <color> accent-text: readable(dark-mode ? accent-base : accent-base.darker(0.5),
-        dark-mode ? #ffffff : #000000);
-    out property <color> accent-pressed: accent-hover.darker(0.1);
-    out property <color> on-accent: text-on(accent);
-    out property <color> on-accent-hover: text-on(accent-hover);
-    out property <color> on-accent-pressed: text-on(accent-pressed);
-    // Accent for graphics that carry meaning (switches, fills, the playing
-    // bars): the accent itself where it reaches 3:1 on every plain layer,
-    // else moved toward white (dark) or black (light) only as far as it
-    // takes. Buttons and text keep `accent` and `accent-text`.
-    out property <color> accent-graphic: visible(accent-base, dark-mode ? #ffffff : #000000);
+
+    // Fill of a filled control (Play, primary buttons, a picked option):
+    // the colour as picked, a little darker under the pointer and pressed.
+    // Only a colour that would vanish into the layers (white in the light
+    // theme, black in the dark one) is moved, until its shape can be seen.
+    out property <color> accent-fill: findable(accent-base);
+    out property <color> accent-fill-hover: accent-fill.darker(0.15);
+    out property <color> accent-fill-pressed: accent-fill-hover.darker(0.1);
+    // Text and icons on those fills
+    out property <color> on-accent: text-on(accent-fill);
+    out property <color> on-accent-hover: text-on(accent-fill-hover);
+    out property <color> on-accent-pressed: text-on(accent-fill-pressed);
+    // Marks that carry meaning (stars, checks, the playing bars, the radio
+    // in a logo tile, slider fills, switches, the visualizer): the accent
+    // itself where it shows at 3:1, else moved toward white (dark theme)
+    // or black (light theme) only as far as it takes
+    out property <color> accent-graphic: showing(accent-base);
     out property <color> on-accent-graphic: text-on(accent-graphic);
-    // Tints for badges, selected rows and header glows
-    out property <color> accent-soft: accent-base.with-alpha(dark-mode ? 0.16 : 0.12);
+    // Accent-coloured text, and an icon that is part of it: the same, to
+    // 4.5:1
+    out property <color> accent-text: reading(accent-base);
+    // Background of the current or selected row and of accent chips, and
+    // the stronger one while that is hovered or highlighted. A wash of
+    // accent-graphic, so it shows for a white or a black accent too.
+    out property <color> accent-tint: accent-graphic.with-alpha(dark-mode ? 0.16 : 0.12);
+    out property <color> accent-tint-strong: accent-graphic.with-alpha(dark-mode ? 0.24 : 0.18);
+    // Decoration: the glow on the header, the controls and dialogs
     out property <color> accent-glow: accent-base.with-alpha(dark-mode ? 0.18 : 0.14);
+
+    // Earlier names of the roles above, for the files that still use them
+    out property <color> accent: accent-fill;
+    out property <color> accent-hover: accent-fill-hover;
+    out property <color> accent-pressed: accent-fill-pressed;
+    out property <color> accent-soft: accent-tint;
 
     // ── Status ──
     out property <color> danger: dark-mode ? #ef5b5b : #d33b3b;
@@ -120,8 +177,9 @@ export global Theme {
     out property <length> popup-shadow-offset: 3px;
     out property <color> hover-bg: dark-mode ? #2d3034 : elevated;
     out property <color> pressed-bg: dark-mode ? #33363b : #ebebef;
-    out property <color> selected-bg: accent-soft;
-    out property <color> selection-mark: accent-text;
+    // Earlier names of accent-tint and accent-graphic
+    out property <color> selected-bg: accent-tint;
+    out property <color> selection-mark: accent-graphic;
     // Edge of a text field or dropdown: 3:1 against the card, so the
     // control can be found without relying on its fill
     out property <color> field-border: dark-mode ? #75777c : #8e9096;
@@ -129,7 +187,7 @@ export global Theme {
 
     // ── Visualizer ──
     // Selected text in inputs: an accent tint, not the style's own colour
-    out property <color> selection-bg: accent.with-alpha(dark-mode ? 0.4 : 0.3);
+    out property <color> selection-bg: accent-base.with-alpha(dark-mode ? 0.4 : 0.3);
     out property <color> selection-fg: text-primary;
     out property <color> viz-bg: dark-mode ? #141517 : elevated;
     out property <color> viz-track: dark-mode ? #ffffff0d : #0000000d;
@@ -221,24 +279,92 @@ export global Theme {
         return contrast(#000000, fill) >= contrast(#ffffff, fill) ? #000000 : #ffffff;
     }
 
-    // Accent text reads at 4.5:1 on the lightest (dark theme) or darkest
-    // (light theme) background it sits on: an accent-tinted card or list
-    // (selected rows, dialog glow), and its own 14% tint on the panel (chips)
-    pure function reads-well(c: color) -> bool {
-        // Bound hue and surface blending by the brightest or darkest
-        // surface used for text, then account for the strongest tint.
-        let surface-limit = pressed-bg;
-        let accent-limit = accent.mix(surface-limit, 0.26);
-        let chip-base = dark-mode ? card : surface;
-        let chip-limit = c.mix(chip-base, 0.26);
-        let composite-limit = (dark-mode ? luminance(accent-limit) >= luminance(chip-limit)
-                                    : luminance(accent-limit) <= luminance(chip-limit))
-            ? accent-limit : chip-limit;
-        let tint-limit = (dark-mode ? luminance(composite-limit) >= luminance(surface-limit)
-                                    : luminance(composite-limit) <= luminance(surface-limit))
-            ? composite-limit : surface-limit;
-        return contrast(c, tint-limit) >= 4.5
-            && (dark-mode ? luminance(c) > luminance(tint-limit) : luminance(c) < luminance(tint-limit));
+    // `c` has `ratio`:1 where it is hardest to see, from the readable side
+    // (lighter than the layer in the dark theme, darker in the light
+    // theme). That is a pressed row, or a tint (`share` of `wash`) over
+    // the layer under tints that is closest to `c`: the card in the dark
+    // theme, a well in the light one.
+    pure function stands-out(c: color, wash: color, share: float, ratio: float) -> bool {
+        let washed = wash.mix(dark-mode ? card : elevated, share);
+        let limit = (dark-mode ? luminance(washed) >= luminance(pressed-bg)
+                               : luminance(washed) <= luminance(pressed-bg))
+            ? washed : pressed-bg;
+        return contrast(c, limit) >= ratio
+            && (dark-mode ? luminance(c) > luminance(limit) : luminance(c) < luminance(limit));
+    }
+
+    // A mark shows at 3:1, also on the strong tint (a highlighted current
+    // row), which is a wash of the mark's own colour
+    pure function shows(c: color) -> bool {
+        return stands-out(c, c, dark-mode ? 0.24 : 0.18, 3.0);
+    }
+
+    // Text reads at 4.5:1, also on the strongest tint it is on: a pressed
+    // accent chip, 26% of accent-graphic
+    pure function reads(c: color) -> bool {
+        return stands-out(c, accent-graphic, 0.26, 4.5);
+    }
+
+    // `c` if it shows, else `c` moved toward white (dark theme) or black
+    // (light theme) just far enough (to within 1/64 of the way, by halving
+    // the step six times)
+    pure function showing(c: color) -> color {
+        if shows(c) {
+            return c;
+        }
+        let to = dark-mode ? #ffffff : #000000;
+        // `lo`: a share of `to` that is not enough; lo + step is
+        let lo1 = shows(c.mix(to, 0.5)) ? 0.0 : 0.5;
+        let lo2 = shows(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
+        let lo3 = shows(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
+        let lo4 = shows(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
+        let lo5 = shows(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
+        let lo6 = shows(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
+        return c.mix(to, 1 - lo6 - 0.015625);
+    }
+
+    // The same search for text
+    pure function reading(c: color) -> color {
+        if reads(c) {
+            return c;
+        }
+        let to = dark-mode ? #ffffff : #000000;
+        let lo1 = reads(c.mix(to, 0.5)) ? 0.0 : 0.5;
+        let lo2 = reads(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
+        let lo3 = reads(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
+        let lo4 = reads(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
+        let lo5 = reads(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
+        let lo6 = reads(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
+        return c.mix(to, 1 - lo6 - 0.015625);
+    }
+
+    // A fill can be told from the layers it sits on at 1.5:1, lighter or
+    // darker: enough for its shape, since what is on it has its own 4.5:1
+    pure function found(c: color) -> bool {
+        return contrast(c, surface) >= 1.5 && contrast(c, card) >= 1.5 && contrast(c, elevated) >= 1.5;
+    }
+
+    // The same from the readable side only, which is where `findable` moves to
+    pure function found-ahead(c: color) -> bool {
+        let limit = dark-mode ? card : elevated;
+        return contrast(c, limit) >= 1.5
+            && (dark-mode ? luminance(c) > luminance(limit) : luminance(c) < luminance(limit));
+    }
+
+    // `c` if it can be found, else `c` moved toward white (dark theme) or
+    // black (light theme) just far enough (the same search as `showing`)
+    pure function findable(c: color) -> color {
+        if found(c) {
+            return c;
+        }
+        let to = dark-mode ? #ffffff : #000000;
+        let lo1 = found-ahead(c.mix(to, 0.5)) ? 0.0 : 0.5;
+        let lo2 = found-ahead(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
+        let lo3 = found-ahead(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
+        let lo4 = found-ahead(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
+        let lo5 = found-ahead(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
+        let lo6 = found-ahead(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
+        return c.mix(to, 1 - lo6 - 0.015625);
     }
 
     // WCAG foreground for a custom status color over the strongest
@@ -254,43 +380,6 @@ export global Theme {
             return opaque;
         }
         return dark-mode ? text-on(limit) : #000000;
-    }
-
-    // `c` if it reads well, else `c` moved toward `to` just far enough
-    // (to within 1/64 of the way, by halving the step six times)
-    pure function readable(c: color, to: color) -> color {
-        if reads-well(c) {
-            return c;
-        }
-        // `lo`: a share of `to` that is not enough; lo + step is
-        let lo1 = reads-well(c.mix(to, 0.5)) ? 0.0 : 0.5;
-        let lo2 = reads-well(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
-        let lo3 = reads-well(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
-        let lo4 = reads-well(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
-        let lo5 = reads-well(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
-        let lo6 = reads-well(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
-        return c.mix(to, 1 - lo6 - 0.015625);
-    }
-
-    // A graphic shows at 3:1 on the plain layer closest to it in
-    // brightness: the card in the dark theme, inputs in the light one
-    pure function shows-well(c: color) -> bool {
-        return contrast(c, dark-mode ? card : elevated) >= 3.0;
-    }
-
-    // `c` if it shows well, else `c` moved toward `to` just far enough
-    // (the same search as `readable`)
-    pure function visible(c: color, to: color) -> color {
-        if shows-well(c) {
-            return c;
-        }
-        let lo1 = shows-well(c.mix(to, 0.5)) ? 0.0 : 0.5;
-        let lo2 = shows-well(c.mix(to, 1 - lo1 - 0.25)) ? lo1 : lo1 + 0.25;
-        let lo3 = shows-well(c.mix(to, 1 - lo2 - 0.125)) ? lo2 : lo2 + 0.125;
-        let lo4 = shows-well(c.mix(to, 1 - lo3 - 0.0625)) ? lo3 : lo3 + 0.0625;
-        let lo5 = shows-well(c.mix(to, 1 - lo4 - 0.03125)) ? lo4 : lo4 + 0.03125;
-        let lo6 = shows-well(c.mix(to, 1 - lo5 - 0.015625)) ? lo5 : lo5 + 0.015625;
-        return c.mix(to, 1 - lo6 - 0.015625);
     }
 }
 
@@ -336,7 +425,8 @@ export global Defaults {
     out property <length> agents-width: station-browser-width;
     // Width of an ⓘ help bubble
     out property <length> info-tip-width: 280px;
-    out property <length> accent-color-width: 400px;
+    // Ten swatches side by side
+    out property <length> accent-color-width: 440px;
     // Height of the custom colour square in the Accent Color dialog
     out property <length> accent-picker-height: 120px;
     out property <length> dialog-width-compact: 360px;

@@ -175,7 +175,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             width: Theme.icon-lg;
                             height: Theme.icon-lg;
                             source: @image-url("../icons/wifi.svg");
-                            colorize: root.powered ? Theme.accent-text : Theme.text-tertiary;
+                            colorize: root.powered ? Theme.accent-graphic : Theme.text-tertiary;
                         }
                     }
 
@@ -303,7 +303,7 @@ export component WifiSettingsDialog inherits Rectangle {
                             height: Theme.row-touch;
                             background: row-ta.pressed ? Theme.pressed-bg
                                 : row-ta.has-hover && self.can-open ? Theme.hover-bg
-                                : network.connected ? Theme.accent-soft.with-alpha(0.08)
+                                : network.connected ? Theme.accent-tint
                                 : transparent;
                             animate background { duration: Theme.fast; }
                             opacity: root.powered ? 1 : 0.45;
@@ -655,7 +655,7 @@ export component WifiSettingsDialog inherits Rectangle {
                         horizontal-stretch: 1;
                         border-radius: Theme.radius-md;
                         border-width: 1px;
-                        border-color: Theme.accent-text;
+                        border-color: Theme.accent-graphic;
                         background: Theme.elevated;
 
                         HorizontalLayout {

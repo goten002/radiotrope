@@ -1739,6 +1739,532 @@ async fn a_phone_downloads_and_deletes_a_recording() {
     assert_eq!(player.request_raw("GET", &path, &auth).await.0, 404);
 }
 
+/// A player sharing `folder` with a paired phone; the phone's token
+async fn sharing(player: &Player, folder: &std::path::Path) -> String {
+    let token = player.pair("phone-1").await;
+    std::fs::create_dir_all(folder).unwrap();
+    player.state.lock().unwrap().recording_setup.dir = Some(folder.to_path_buf());
+    player.shared.recordings.set_on(true);
+    token
+}
+
+/// A recording of `size` bytes written a minute ago
+fn large_recording(path: &std::path::Path, size: u64) {
+    let file = std::fs::File::create(path).unwrap();
+    file.set_len(size).unwrap();
+    file.set_modified(std::time::SystemTime::now() - Duration::from_secs(60))
+        .unwrap();
+}
+
+/// Ask for `path` and read the answer's first bytes; the connection and
+/// what was read so far
+async fn start_download(player: &Player, path: &str, token: &str) -> (Conn, usize) {
+    let mut stream = player.connect().await;
+    let request =
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 16 * 1024];
+    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("no answer within 5 s")
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"),
+        "the download starts"
+    );
+    (stream, n)
+}
+
+/// Read until the player ends the answer; how much came
+async fn read_to_close(stream: &mut Conn) -> usize {
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut total = 0;
+    loop {
+        let read = tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf))
+            .await
+            .expect("the player never ended the answer");
+        match read {
+            Ok(0) | Err(_) => return total,
+            Ok(n) => total += n,
+        }
+    }
+}
+
+async fn recording_id(player: &Player, token: &str) -> (String, String) {
+    let (_, list) = player
+        .request("GET", "/v1/recordings", Some(token), None)
+        .await;
+    let first = &list["recordings"][0];
+    (
+        first["id"].as_str().expect("a recording").to_string(),
+        first["etag"].as_str().unwrap().to_string(),
+    )
+}
+
+#[tokio::test]
+async fn a_new_pairing_gives_no_more_guesses_at_the_code() {
+    let player = Player::start();
+    let mut guesses = 0;
+    let mut locked = false;
+    // Two guesses at each code, then ask for a new one before it is used up
+    'guessing: for _ in 0..50 {
+        let (status, started) = player
+            .request(
+                "POST",
+                "/v1/pair",
+                None,
+                Some(json!({"device_id": "guesser", "device_name": "Pixel"})),
+            )
+            .await;
+        if status == 423 {
+            locked = true;
+            break;
+        }
+        assert_eq!(status, 202, "{started}");
+        let id = started["pairing_id"].as_str().unwrap().to_string();
+        for _ in 0..2 {
+            let wrong = format!(
+                "{:04}",
+                (player.shown_code().parse::<u32>().unwrap() + 1) % 10_000
+            );
+            let (status, body) = player
+                .request(
+                    "POST",
+                    &format!("/v1/pair/{id}/code"),
+                    None,
+                    Some(json!({ "code": wrong })),
+                )
+                .await;
+            guesses += 1;
+            if status == 423 {
+                assert_eq!(body["code"], "pairing_locked");
+                locked = true;
+                break 'guessing;
+            }
+            assert_eq!(status, 403, "{body}");
+        }
+    }
+    assert!(locked, "{guesses} guesses and pairing still goes on");
+    assert_eq!(guesses, super::pairing::MAX_WRONG_GUESSES);
+    // No code is shown anymore, and no new pairing starts
+    assert!(player
+        .shared
+        .pairing
+        .lock()
+        .unwrap()
+        .shown(Instant::now())
+        .is_none());
+    let (status, _) = player
+        .request(
+            "POST",
+            "/v1/pair",
+            None,
+            Some(json!({"device_id": "other", "device_name": "Pixel"})),
+        )
+        .await;
+    assert_eq!(status, 423);
+    // Until the user opens the dialog
+    player.shared.pairing.lock().unwrap().unlock();
+    player.pair("phone-1").await;
+}
+
+#[tokio::test]
+async fn ids_that_are_paths_reach_no_file() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    old_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.mp3"),
+        b"0123456789",
+    );
+    // Beside the folder, and in a folder inside it
+    let outside = player.dir.join("Rock - 2026-10-08 20-15-03.mp3");
+    old_recording(&outside, b"private");
+    std::fs::create_dir_all(folder.join("sub")).unwrap();
+    let inside = folder.join("sub").join("Pop - 2026-10-08 20-15-03.mp3");
+    old_recording(&inside, b"private");
+    let (_, etag) = recording_id(&player, &token).await;
+    let delete = format!("{auth}If-Match: {etag}\r\n");
+    let any = format!("{auth}If-Match: *\r\n");
+
+    let absolute = outside
+        .to_string_lossy()
+        .replace('\\', "%5C")
+        .replace(['/', ' ', ':'], "%2F");
+    let long = "a".repeat(4000);
+    let ids = [
+        "..",
+        ".",
+        "%2e%2e",
+        "%2E%2E%2Fremote.json",
+        "..%2fremote.json",
+        "..%5cremote.json",
+        "..%2FRock%20-%202026-10-08%2020-15-03.mp3",
+        "sub%2FPop%20-%202026-10-08%2020-15-03.mp3",
+        "Jazz%20FM%20-%202026-10-08%2020-15-03.mp3",
+        "Jazz%20FM%20-%202026-10-08%2020-15-03.mp3%00",
+        "%00",
+        "remote.json%00.mp3",
+        "%c0%ae%c0%ae%c0%afremote.json",
+        "%ef%bc%8e%ef%bc%8e%ef%bc%8fremote.json",
+        "CON",
+        "NUL.mp3",
+        "Jazz%20FM%20-%202026-10-08%2020-15-03.mp3::$DATA",
+        absolute.as_str(),
+        long.as_str(),
+    ];
+    for id in ids {
+        let path = format!("/v1/recordings/{id}");
+        let (status, head, body) = player.request_raw("GET", &path, &auth).await;
+        assert_eq!(status, 404, "GET {id}: {head}");
+        assert!(!String::from_utf8_lossy(&body).contains("private"));
+        for headers in [&delete, &any] {
+            let (status, head, _) = player.request_raw("DELETE", &path, headers).await;
+            assert_eq!(status, 404, "DELETE {id}: {head}");
+        }
+    }
+    // Deeper paths are no request at all
+    for path in [
+        "/v1/recordings/../remote.json",
+        "/v1/recordings/sub/Pop%20-%202026-10-08%2020-15-03.mp3",
+        "/v1/recordings//etc/passwd",
+    ] {
+        assert_eq!(
+            player.request_raw("GET", path, &auth).await.0,
+            404,
+            "{path}"
+        );
+        assert_eq!(
+            player.request_raw("DELETE", path, &delete).await.0,
+            404,
+            "{path}"
+        );
+    }
+    assert!(outside.exists() && inside.exists());
+    assert!(folder.join("Jazz FM - 2026-10-08 20-15-03.mp3").exists());
+    assert!(player.dir.join("remote.json").exists());
+}
+
+#[tokio::test]
+async fn only_recordings_are_reached_whatever_the_folder_holds() {
+    let player = Player::start();
+    // The folder is one with other things in it (a home folder, say)
+    let folder = player.dir.clone();
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    old_recording(&folder.join("notes.txt"), b"private");
+    old_recording(&folder.join("song.mp3"), b"private");
+    old_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.flac"),
+        b"private",
+    );
+    // One being written, under its temporary name, and one left by a crash
+    old_recording(
+        &folder.join(".Jazz FM - 2026-10-08 20-15-03.mp3.part"),
+        b"half",
+    );
+    old_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.mp3.part"),
+        b"half",
+    );
+    std::fs::create_dir_all(folder.join("Rock - 2026-10-08 20-15-03.mp3")).unwrap();
+
+    let (status, list) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(status, 200, "{list}");
+    assert_eq!(
+        list["recordings"],
+        json!([]),
+        "none of these is a recording"
+    );
+
+    // Nor by the ids such names would have
+    let delete = format!("{auth}If-Match: *\r\n");
+    for name in [
+        "notes.txt",
+        "remote.json",
+        "favorites.json",
+        "song.mp3",
+        ".Jazz FM - 2026-10-08 20-15-03.mp3.part",
+        "Jazz FM - 2026-10-08 20-15-03.mp3.part",
+        "Rock - 2026-10-08 20-15-03.mp3",
+    ] {
+        let path = format!("/v1/recordings/{}", player.shared.recordings.id(name));
+        assert_eq!(
+            player.request_raw("GET", &path, &auth).await.0,
+            404,
+            "{name}"
+        );
+        assert_eq!(
+            player.request_raw("DELETE", &path, &delete).await.0,
+            404,
+            "{name}"
+        );
+        assert!(folder.join(name).exists(), "{name}");
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_link_put_in_place_of_a_recording_is_not_followed() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    let file = folder.join("Jazz FM - 2026-10-08 20-15-03.mp3");
+    old_recording(&file, b"0123456789");
+    let secret = player.dir.join("secret.txt");
+    old_recording(&secret, b"private!!!");
+    let (id, etag) = recording_id(&player, &token).await;
+    let path = format!("/v1/recordings/{id}");
+
+    // After the phone listed it, the file becomes a link out of the folder
+    // (to a file of the same size and age)
+    std::fs::remove_file(&file).unwrap();
+    std::os::unix::fs::symlink(&secret, &file).unwrap();
+    let (status, _, body) = player.request_raw("GET", &path, &auth).await;
+    assert_eq!(status, 404);
+    assert!(!String::from_utf8_lossy(&body).contains("private"));
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 404);
+    assert!(secret.exists(), "what the link points to stays");
+    assert!(
+        std::fs::symlink_metadata(&file).is_ok(),
+        "and so does the link: it is no recording"
+    );
+
+    // A link to a folder outside, in the folder: nothing in it is listed
+    std::fs::remove_file(&file).unwrap();
+    let elsewhere = player.dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    old_recording(&elsewhere.join("Pop - 2026-10-08 20-15-03.mp3"), b"private");
+    std::os::unix::fs::symlink(&elsewhere, folder.join("Pop - 2026-10-08 20-15-03.mp3")).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, folder.join("link")).unwrap();
+    let (_, list) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(list["recordings"], json!([]));
+
+    // A second name (hard link) for a file is a file of its own: deleting
+    // it leaves the other name's file as it was
+    let twin = folder.join("Twin - 2026-10-08 20-15-03.mp3");
+    std::fs::hard_link(&secret, &twin).unwrap();
+    let (id, etag) = recording_id(&player, &token).await;
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+    let path = format!("/v1/recordings/{id}");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 204);
+    assert!(!twin.exists());
+    assert_eq!(std::fs::read(&secret).unwrap(), b"private!!!");
+}
+
+#[tokio::test]
+async fn a_recording_changed_since_it_was_listed_is_not_deleted() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    let file = folder.join("Jazz FM - 2026-10-08 20-15-03.mp3");
+    old_recording(&file, b"0123456789");
+    let (id, etag) = recording_id(&player, &token).await;
+    let path = format!("/v1/recordings/{id}");
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+
+    // Another file took the name
+    old_recording(&file, b"another recording");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 412);
+    assert_eq!(player.request_raw("GET", &path, &headers).await.0, 412);
+    // "Any" is no ETag
+    let any = format!("{auth}If-Match: *\r\n");
+    assert_eq!(player.request_raw("DELETE", &path, &any).await.0, 412);
+    // Written to right now (recorded by another Radiotrope, say)
+    std::fs::write(&file, b"still going").unwrap();
+    let (_, etag) = recording_id(&player, &token).await;
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 409);
+    assert_eq!(player.request_raw("GET", &path, &auth).await.0, 409);
+    assert!(file.exists());
+}
+
+#[tokio::test]
+async fn sharing_turned_off_refuses_every_recordings_request() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    let file = folder.join("Jazz FM - 2026-10-08 20-15-03.mp3");
+    large_recording(&file, 64 * 1024 * 1024);
+    let (id, etag) = recording_id(&player, &token).await;
+    let path = format!("/v1/recordings/{id}");
+
+    // A download is on its way when the user turns sharing off
+    let (mut stream, _) = start_download(&player, &path, &token).await;
+    player.shared.recordings.set_on(false);
+    let got = read_to_close(&mut stream).await;
+    assert!(
+        got < 48 * 1024 * 1024,
+        "the download went on after sharing was turned off: {got} bytes"
+    );
+
+    let (status, body) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(
+        (status, body["code"].as_str()),
+        (403, Some("recordings_off"))
+    );
+    assert_eq!(player.request_raw("GET", &path, &auth).await.0, 403);
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 403);
+    assert_eq!(player.request_raw("DELETE", &path, &auth).await.0, 403);
+    assert!(file.exists());
+}
+
+#[tokio::test]
+async fn a_removed_phone_loses_its_download_its_events_and_its_token() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    let file = folder.join("Jazz FM - 2026-10-08 20-15-03.mp3");
+    large_recording(&file, 64 * 1024 * 1024);
+    let (id, etag) = recording_id(&player, &token).await;
+    let path = format!("/v1/recordings/{id}");
+
+    let (mut download, _) = start_download(&player, &path, &token).await;
+    let mut events = player.connect().await;
+    let request = format!(
+        "GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\
+         Connection: close\r\n\r\n"
+    );
+    events.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 4096];
+    let n = events.read(&mut buf).await.unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+
+    // The user removes the phone in the Remote Control dialog
+    assert!(player.shared.store.lock().unwrap().remove("phone-1"));
+
+    let got = read_to_close(&mut download).await;
+    assert!(
+        got < 48 * 1024 * 1024,
+        "the download went on for a removed phone: {got} bytes"
+    );
+    // The event stream ends rather than telling on
+    read_to_close(&mut events).await;
+
+    let (status, _) = player
+        .request("GET", "/v1/recordings", Some(&token), None)
+        .await;
+    assert_eq!(status, 401);
+    assert_eq!(player.request_raw("GET", &path, &auth).await.0, 401);
+    let headers = format!("{auth}If-Match: {etag}\r\n");
+    assert_eq!(player.request_raw("DELETE", &path, &headers).await.0, 401);
+    assert!(file.exists());
+}
+
+#[tokio::test]
+async fn pairing_again_ends_what_the_old_token_started() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let old = sharing(&player, &folder).await;
+    large_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.mp3"),
+        64 * 1024 * 1024,
+    );
+    let (id, _) = recording_id(&player, &old).await;
+    let path = format!("/v1/recordings/{id}");
+    let (mut download, _) = start_download(&player, &path, &old).await;
+
+    // The same phone id pairs again: a new token, the old one is over
+    let new = player.pair("phone-1").await;
+    let got = read_to_close(&mut download).await;
+    assert!(
+        got < 48 * 1024 * 1024,
+        "{got} bytes with a token that ended"
+    );
+    let (status, _) = player.request("GET", "/v1/state", Some(&old), None).await;
+    assert_eq!(status, 401);
+    let (status, _) = player.request("GET", "/v1/state", Some(&new), None).await;
+    assert_eq!(status, 200);
+}
+
+#[tokio::test]
+async fn a_download_nobody_takes_gives_up_its_place() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    large_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.mp3"),
+        64 * 1024 * 1024,
+    );
+    let (id, _) = recording_id(&player, &token).await;
+    let path = format!("/v1/recordings/{id}");
+
+    // The phone asks, then reads nothing more
+    let (stalled, _) = start_download(&player, &path, &token).await;
+    // One at a time for a phone
+    let headers = format!("{auth}Range: bytes=0-9\r\n");
+    assert_eq!(player.request_raw("GET", &path, &headers).await.0, 429);
+    // The stalled one ends by itself, and the phone can download again
+    let started = Instant::now();
+    loop {
+        let (status, _, body) = player.request_raw("GET", &path, &headers).await;
+        if status == 206 {
+            assert_eq!(body.len(), 10);
+            break;
+        }
+        assert_eq!(status, 429);
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "the stalled download keeps its place"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    drop(stalled);
+}
+
+#[tokio::test]
+async fn web_pages_get_no_recordings_and_no_way_in() {
+    let player = Player::start();
+    let folder = player.dir.join("rec");
+    let token = sharing(&player, &folder).await;
+    old_recording(
+        &folder.join("Jazz FM - 2026-10-08 20-15-03.mp3"),
+        b"0123456789",
+    );
+    let (id, etag) = recording_id(&player, &token).await;
+    let path = format!("/v1/recordings/{id}");
+    // A page in a browser on the network, even one that got hold of a token
+    let page = format!(
+        "Authorization: Bearer {token}\r\nOrigin: http://evil.example\r\nIf-Match: {etag}\r\n"
+    );
+    for method in ["GET", "DELETE", "OPTIONS"] {
+        let (status, head, _) = player.request_raw(method, &path, &page).await;
+        assert_eq!(status, 403, "{method}: {head}");
+        assert!(
+            !head.to_ascii_lowercase().contains("access-control-"),
+            "no page is ever allowed: {head}"
+        );
+    }
+    // The token is the only way in: a cookie is nothing
+    let cookie = format!("Cookie: token={token}; Authorization=Bearer {token}\r\n");
+    assert_eq!(player.request_raw("GET", &path, &cookie).await.0, 401);
+    // and the answers set none
+    let auth = format!("Authorization: Bearer {token}\r\n");
+    let (status, head, _) = player.request_raw("GET", &path, &auth).await;
+    assert_eq!(status, 200);
+    let head = head.to_ascii_lowercase();
+    assert!(!head.contains("set-cookie"));
+    assert_eq!(
+        header_value(&head, "x-content-type-options").unwrap(),
+        "nosniff"
+    );
+    assert_eq!(header_value(&head, "cache-control").unwrap(), "no-store");
+}
+
 #[tokio::test]
 async fn stats_are_blank_with_nothing_playing() {
     let player = Player::start();

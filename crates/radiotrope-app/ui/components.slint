@@ -89,7 +89,7 @@ export component IconButton inherits Rectangle {
         : root.danger-armed ? (touch.pressed ? Theme.danger-pressed : Theme.danger-armed)
         : touch.pressed ? Theme.pressed-bg
         : root.hovered ? Theme.hover-bg
-        : root.active ? Theme.selected-bg : transparent;
+        : root.active ? Theme.accent-tint : transparent;
     animate background { duration: Theme.fast; }
     forward-focus: focus;
 
@@ -114,7 +114,7 @@ export component IconButton inherits Rectangle {
         height: root.icon-size;
         colorize: !root.enabled ? Theme.disabled-text
             : root.danger-armed ? Theme.danger-text
-            : root.active ? Theme.selection-mark
+            : root.active ? Theme.accent-graphic
             : root.hovered ? root.hover-color : root.icon-color;
         animate colorize { duration: Theme.fast; }
     }
@@ -350,7 +350,7 @@ export component Chip inherits Rectangle {
         : root.variant == ChipVariant.success ? Theme.success-text
         : root.variant == ChipVariant.warning ? Theme.warning-text
         : Theme.neutral-text;
-    property <color> tint: root.variant == ChipVariant.accent ? Theme.accent-text
+    property <color> tint: root.variant == ChipVariant.accent ? Theme.accent-graphic
         : root.variant == ChipVariant.danger ? Theme.danger
         : root.variant == ChipVariant.success ? Theme.success
         : root.variant == ChipVariant.warning ? Theme.warning : Theme.text-secondary;
@@ -388,12 +388,14 @@ export component Chip inherits Rectangle {
     border-width: root.clickable ? 1px : 0px;
     border-color: root.tint.with-alpha(0.35);
     property <color> resting-tint: root.variant == ChipVariant.accent
-        ? root.tint.with-alpha(0.14)
+        ? Theme.accent-tint
         : root.variant == ChipVariant.danger ? Theme.danger-tint
         : root.variant == ChipVariant.success ? Theme.success-tint
         : root.variant == ChipVariant.warning ? Theme.warning-tint : Theme.neutral-tint;
     background: touch.pressed ? root.tint.with-alpha(0.26)
-        : touch.has-hover && root.interactive ? root.tint.with-alpha(0.22) : root.resting-tint;
+        : touch.has-hover && root.interactive
+            ? (root.variant == ChipVariant.accent ? Theme.accent-tint-strong : root.tint.with-alpha(0.22))
+        : root.resting-tint;
     property <bool> interactive: root.clickable || root.closable;
     forward-focus: keys;
 
@@ -656,7 +658,7 @@ export component StatusPanel inherits VerticalLayout {
             colorize: root.variant == ChipVariant.danger ? Theme.danger-text
                 : root.variant == ChipVariant.success ? Theme.success-text
                 : root.variant == ChipVariant.warning ? Theme.warning-text
-                : root.busy || root.variant == ChipVariant.accent ? Theme.accent-text
+                : root.busy || root.variant == ChipVariant.accent ? Theme.accent-graphic
                 : Theme.text-secondary;
             rotation: root.busy ? root.spinner-time / Theme.spin-period * 360deg : 0deg;
         }
@@ -1002,7 +1004,7 @@ export component DialogShell inherits Rectangle {
                 width: parent.width;
                 height: 110px;
                 visible: Theme.panel-gradient;
-                background: @linear-gradient(180deg, Theme.accent-glow 0%, Theme.accent.with-alpha(0) 100%);
+                background: @linear-gradient(180deg, Theme.accent-glow 0%, Theme.accent-glow.with-alpha(0) 100%);
             }
 
             layout := VerticalLayout {
@@ -1399,7 +1401,7 @@ export component AgentsChip inherits Rectangle {
     width: row.preferred-width + 14px;
     height: 22px;
     border-radius: Theme.radius-sm;
-    background: Theme.accent-text.with-alpha(touch.has-hover || keys.has-focus ? 0.22 : 0.14);
+    background: touch.has-hover || keys.has-focus ? Theme.accent-tint-strong : Theme.accent-tint;
     animate background { duration: Theme.fast; }
     forward-focus: keys;
 
@@ -1522,7 +1524,7 @@ export component AgentsBubble inherits PopupCard {
                         width: 13px;
                         height: 13px;
                         source: agent.network ? @image-url("icons/network-wired.svg") : @image-url("icons/desktop.svg");
-                        colorize: agent.connected ? Theme.accent-text : Theme.text-tertiary;
+                        colorize: agent.connected ? Theme.accent-graphic : Theme.text-tertiary;
                     }
                 }
                 Text {
@@ -1574,7 +1576,7 @@ export component ChoiceRow inherits Rectangle {
         : root.danger-armed ? (touch.pressed ? Theme.danger-pressed : Theme.danger-armed)
         : touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg
-        : root.selected && root.checkable ? Theme.selected-bg : transparent;
+        : root.selected && root.checkable ? Theme.accent-tint : transparent;
     animate background { duration: Theme.fast; }
     forward-focus: keys;
 
@@ -1639,7 +1641,7 @@ export component ChoiceRow inherits Rectangle {
                 width: Theme.icon-sm;
                 height: self.width;
                 source: @image-url("icons/tick.svg");
-                colorize: root.enabled ? Theme.selection-mark : Theme.disabled-text;
+                colorize: root.enabled ? Theme.accent-graphic : Theme.disabled-text;
             }
         }
     }
@@ -1890,7 +1892,7 @@ export component PickerOption inherits Rectangle {
     border-radius: Theme.radius-sm;
     // Disabled: only the selected option keeps a (quiet) fill
     background: !root.enabled ? (root.selected ? Theme.pressed-bg : transparent)
-        : root.selected ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
+        : root.selected ? (touch.pressed ? Theme.accent-fill-pressed : touch.has-hover ? Theme.accent-fill-hover : Theme.accent-fill)
         : touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg : transparent;
     animate background { duration: Theme.fast; }

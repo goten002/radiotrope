@@ -66,9 +66,9 @@ fn a_drag_in_the_picker_never_scrolls_the_dialog() {
         move |color| picked.borrow_mut().push(color)
     });
 
-    // The square spans x 140..500 and y 243..307 here: up from near its
+    // The square spans x 120..520 and y 200..264 here: up from near its
     // bottom to near its top is from dark to bright
-    drag(&ui, &time, (320.0, 300.0), (320.0, 248.0));
+    drag(&ui, &time, (320.0, 257.0), (320.0, 205.0));
     let last = *picked.borrow().last().expect("a color was picked");
     let value = last.to_hsva().value;
     assert!(
@@ -77,11 +77,11 @@ fn a_drag_in_the_picker_never_scrolls_the_dialog() {
     );
 
     // Along the hue bar, drifting down off it: the hue follows to the end
-    drag(&ui, &time, (190.0, 336.0), (420.0, 380.0));
+    drag(&ui, &time, (190.0, 293.0), (432.0, 337.0));
     let last = picked.borrow().last().expect("a hue was picked").to_hsva();
     assert!(
         (280.0..296.0).contains(&last.hue),
-        "the drag ended at hue 288 (x 420 on a 14..346 track), got {}",
+        "the drag ended at hue 288 (x 432 on a 14..386 track), got {}",
         last.hue
     );
 }

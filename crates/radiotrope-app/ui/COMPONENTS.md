@@ -16,16 +16,18 @@ labels, status text, and help. Use “…” only for ongoing activity.
 | `popup-surface`, `popup-border`, `popup-shadow`, `popup-shadow-blur`, `popup-shadow-offset` | The appearance of an anchored menu, tooltip, or stats bubble. Prefer `PopupCard`. |
 | `text-primary`, `text-secondary`, `text-tertiary`, `menu-text` | Main text, supporting text, low-emphasis text, and idle menu labels. |
 | `accent-default`, `accent-swatches`, `accent-swatch-names`, `accent-base` | Default color, preset colors and spoken names, and the saved user color. |
-| `accent`, `accent-hover`, `accent-pressed` | Normal, hovered, and pressed accent fills of buttons. Use raw accent for decoration. |
-| `accent-graphic`, `on-accent-graphic` | Accent marks and fills that carry meaning (switches, playing bars, progress and level fills), and what is drawn on them. The accent itself where it reaches 3:1 on every plain layer, else darkened (light theme) or lightened (dark theme) only as far as it takes. |
+| `accent-fill`, `accent-fill-hover`, `accent-fill-pressed` | Normal, hovered, and pressed fills of filled controls (Play, primary buttons, a picked option): the color as picked, moved only where it would vanish into the layers. |
 | `on-accent`, `on-accent-hover`, `on-accent-pressed` | Text and icons over the matching accent fill. Use matching foreground and fill bindings for each state. |
-| `accent-text` | Links and accent text on neutral layers or accent tints, including on hover. Underline hovered or focused links. |
-| `selection-mark` | Checkmarks and other selection indicators on neutral layers. |
-| `accent-soft`, `accent-glow` | Accent-tinted state fills and decorative top glows. |
+| `accent-graphic`, `on-accent-graphic` | Accent marks that carry meaning (stars, checks, playing bars and the row rail, spinners, the radio in a logo tile, slider and progress fills, switches, the visualizer, active edges), and what is drawn on them. The accent itself where it reaches 3:1, else darkened (light theme) or lightened (dark theme) only as far as it takes. |
+| `accent-text` | Links and accent text on neutral layers or accent tints, and an icon that is part of that text. 4.5:1. Underline hovered or focused links. |
+| `accent-tint`, `accent-tint-strong` | Background of the current or selected row and of accent chips, and the same while hovered or highlighted. |
+| `accent-glow` | Decorative top and side glows only. |
+| `accent`, `accent-hover`, `accent-pressed`, `accent-soft`, `selected-bg`, `selection-mark` | Earlier names of `accent-fill` (and its states), `accent-tint` (twice) and `accent-graphic`. Don't use them in new code. |
+| `logo-tile` | Behind a station logo or the radio in its place. Use `StationLogo`. |
 | `danger`, `success`, `warning` | Decorative status colors. |
 | `danger-text` / `danger-tint`, `success-text` / `success-tint`, `warning-text` / `warning-tint`, `neutral-text` / `neutral-tint` | Status foreground and background pairs on app or dialog surfaces. |
 | `danger-armed`, `danger-pressed` | Tints for two-press confirmation and press feedback. |
-| `hover-bg`, `pressed-bg`, `selected-bg` | Interaction surfaces for rows and secondary controls. |
+| `hover-bg`, `pressed-bg` | Interaction surfaces for rows and secondary controls. |
 | `disabled-bg`, `disabled-border`, `disabled-text` | Unavailable controls: a fill and edge quieter than an enabled control's. Use secondary text for read-only content. |
 | `focus-ring`, `focus-ring-width`, `focus-ring-offset` | The contrast-safe focus indicator and its geometry. |
 | `selection-bg`, `selection-fg` | Selected text in an editor. |
@@ -45,9 +47,11 @@ labels, status text, and help. Use “…” only for ongoing activity.
 | `text-on(fill)`, `status-text(tone)` | Accessible text over an opaque custom fill or a status tint, respectively. For status roles prefer the named foreground and tint. |
 
 Keep raw status colors for decoration and use the matching `*-text` token
-for status text. `tests/theme_contrast.rs` checks the text tokens (4.5:1) and
-`accent-graphic`, `field-border` and the focus ring (3:1) in both themes and
-for every accent preset; run it after changing a color.
+for status text. The table at the top of `defaults.slint` says which accent
+token each meaning takes. `tests/theme_contrast.rs` checks the text tokens
+(4.5:1) and `accent-graphic`, `field-border` and the focus ring (3:1) in both
+themes, for every accent preset and for white and near-black accents; run it
+after changing a color.
 
 ## Defaults
 
