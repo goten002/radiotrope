@@ -1030,12 +1030,13 @@ export component MenuBar inherits Rectangle {
         root.tray-open,
     ];
     property <[bool]> tools-usable: [
-        // 0 Statistics, 1 Filters, 2 Equalizer, 3 Start Recording
-        true, true, true, root.can-toggle-recording,
-        // 4 Recordings, 5 Settings, 6 Open Folder
-        true, root.tools-group == "recordings", Platform.has-file-manager && root.tools-group == "recordings",
-        // 7 Sleep Timer, 8 Scheduler
+        // 0 Start Recording, 1 Recordings, 2 Settings, 3 Open Folder
+        root.can-toggle-recording, true, root.tools-group == "recordings",
+        Platform.has-file-manager && root.tools-group == "recordings",
+        // 4 Sleep Timer, 5 Scheduler
         true, true,
+        // 6 Statistics, 7 Filters, 8 Equalizer
+        true, true, true,
         // 9 Connections, 10 Agents (MCP), 11 Remote Control
         true, root.tools-group == "connections", root.tools-group == "connections",
         // 12 Wi-Fi Settings
@@ -1719,7 +1720,7 @@ export component MenuBar inherits Rectangle {
             title-x: root.title-x;
             title-width: root.title-width;
             usable: root.tools-usable;
-            fold-to: root.tools-group == "recordings" && MenuNav.active >= 5 && MenuNav.active <= 6 ? 4
+            fold-to: root.tools-group == "recordings" && MenuNav.active >= 2 && MenuNav.active <= 3 ? 1
                 : root.tools-group == "connections" && MenuNav.active >= 10 && MenuNav.active <= 11 ? 9 : -1;
             fold => { root.tools-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
@@ -1727,34 +1728,6 @@ export component MenuBar inherits Rectangle {
 
             MenuItem {
                 slot: 0;
-                label: "Statistics";
-                icon: @image-url("icons/chart-column.svg");
-                clicked => {
-                    root.open-statistics();
-                    tools-popup.close();
-                }
-            }
-            MenuItem {
-                slot: 1;
-                label: "Filters";
-                icon: @image-url("icons/wave-square.svg");
-                clicked => {
-                    root.open-filters();
-                    tools-popup.close();
-                }
-            }
-            MenuItem {
-                slot: 2;
-                label: "Equalizer";
-                icon: @image-url("icons/sliders.svg");
-                clicked => {
-                    root.open-equalizer();
-                    tools-popup.close();
-                }
-            }
-            MenuSeparator {}
-            MenuItem {
-                slot: 3;
                 label: root.is-recording ? "Stop Recording" : "Start Recording";
                 shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.record) : "";
                 // Greyed out until a station plays
@@ -1766,7 +1739,7 @@ export component MenuBar inherits Rectangle {
                 }
             }
             GroupMenuItem {
-                slot: 4;
+                slot: 1;
                 label: "Recordings";
                 icon: @image-url("icons/folder.svg");
                 open: root.tools-group == "recordings";
@@ -1774,7 +1747,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.tools-group == "recordings": VerticalLayout {
                 MenuItem {
-                    slot: 5;
+                    slot: 2;
                     label: "Settings";
                     icon: @image-url("icons/gear.svg");
                     indent: Theme.space-16;
@@ -1784,7 +1757,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 if Platform.has-file-manager: MenuItem {
-                    slot: 6;
+                    slot: 3;
                     label: "Open Folder";
                     icon: @image-url("icons/folder-open.svg");
                     indent: Theme.space-16;
@@ -1796,7 +1769,7 @@ export component MenuBar inherits Rectangle {
             }
             MenuSeparator {}
             MenuItem {
-                slot: 7;
+                slot: 4;
                 label: "Sleep Timer";
                 icon: @image-url("icons/moon.svg");
                 clicked => {
@@ -1805,11 +1778,39 @@ export component MenuBar inherits Rectangle {
                 }
             }
             MenuItem {
-                slot: 8;
+                slot: 5;
                 label: "Scheduler";
                 icon: @image-url("icons/calendar.svg");
                 clicked => {
                     root.open-schedule();
+                    tools-popup.close();
+                }
+            }
+            MenuSeparator {}
+            MenuItem {
+                slot: 6;
+                label: "Statistics";
+                icon: @image-url("icons/chart-column.svg");
+                clicked => {
+                    root.open-statistics();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                slot: 7;
+                label: "Filters";
+                icon: @image-url("icons/wave-square.svg");
+                clicked => {
+                    root.open-filters();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                slot: 8;
+                label: "Equalizer";
+                icon: @image-url("icons/sliders.svg");
+                clicked => {
+                    root.open-equalizer();
                     tools-popup.close();
                 }
             }
