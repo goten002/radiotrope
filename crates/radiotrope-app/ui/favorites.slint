@@ -257,7 +257,7 @@ component FavoriteRow inherits Rectangle {
     height: RowMetrics.row-height;
     border-radius: Theme.radius-md;
     border-width: root.is-drag-source ? 1px : 0;
-    border-color: Theme.selection-mark;
+    border-color: Theme.accent-graphic;
     background: root.is-drag-source ? Theme.elevated : transparent;
     // Lifted look while dragged
     drop-shadow-blur: root.is-drag-source ? Theme.space-16 : 0;
@@ -1023,7 +1023,7 @@ export component Favorites inherits Rectangle {
                 width: 32px;
                 height: 32px;
                 source: @image-url("icons/star-regular.svg");
-                colorize: Theme.accent-text;
+                colorize: Theme.accent-graphic;
             }
         }
 

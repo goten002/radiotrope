@@ -69,7 +69,7 @@ component LengthChip inherits Rectangle {
     border-width: root.selected ? 0px : 1px;
     border-color: Theme.field-border;
     background: root.selected
-        ? (touch.pressed ? Theme.accent-pressed : touch.has-hover ? Theme.accent-hover : Theme.accent)
+        ? (touch.pressed ? Theme.accent-fill-pressed : touch.has-hover ? Theme.accent-fill-hover : Theme.accent-fill)
         : touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg
         : transparent;

@@ -89,7 +89,7 @@ component EntryRow inherits Rectangle {
     height: root.entry.last != "" ? Theme.row-dense + Theme.space-16 : Theme.row-dense;
     border-radius: Theme.radius-md;
     background: touch.has-hover ? Theme.hover-bg
-        : root.entry.running ? Theme.accent-soft : Theme.elevated;
+        : root.entry.running ? Theme.accent-tint : Theme.elevated;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
@@ -133,7 +133,7 @@ component EntryRow inherits Rectangle {
                     : @image-url("../icons/play.svg");
                 colorize: !root.entry.enabled ? Theme.text-tertiary
                     : root.entry.action == "record" ? Theme.danger
-                    : root.entry.action == "play" ? Theme.accent-text : Theme.text-secondary;
+                    : root.entry.action == "play" ? Theme.accent-graphic : Theme.text-secondary;
             }
         }
 
