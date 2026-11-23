@@ -570,7 +570,10 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "readlink /proc/$$/fd/0 /proc/$$/fd/1 /proc/$$/fd/2 > '{0}.tmp' && mv '{0}.tmp' '{0}'\n",
+                // Read before any redirection, which some shells (dash) make
+                // in their own process
+                "fds=$(readlink /proc/$$/fd/0 /proc/$$/fd/1 /proc/$$/fd/2)\n\
+                 printf '%s\\n' \"$fds\" > '{0}.tmp' && mv '{0}.tmp' '{0}'\n",
                 out.display()
             ),
         )
