@@ -1852,7 +1852,7 @@ async fn ids_that_are_paths_reach_no_file() {
     let absolute = outside
         .to_string_lossy()
         .replace('\\', "%5C")
-        .replace(|c: char| c == '/' || c == ' ' || c == ':', "%2F");
+        .replace(['/', ' ', ':'], "%2F");
     let long = "a".repeat(4000);
     let ids = [
         "..",
