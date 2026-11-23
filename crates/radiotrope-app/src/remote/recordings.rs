@@ -17,7 +17,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
 use hmac::{Hmac, KeyInit, Mac};
@@ -26,11 +26,12 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::Serialize;
 use sha2::Sha256;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio_util::sync::CancellationToken;
 
 use radiotrope_app::data::recordings;
 
-use super::server::{error, json, no_content, Body, Events, Shared};
+use super::server::{error, json, no_content, Body, Caller, Events, Shared};
 
 /// Downloads one phone may run at once
 const DOWNLOADS_PER_PHONE: usize = 1;
@@ -38,6 +39,12 @@ const DOWNLOADS_PER_PHONE: usize = 1;
 const DOWNLOADS_TOTAL: usize = 2;
 /// Bytes read and sent at a time
 const CHUNK: usize = 64 * 1024;
+/// A download whose phone takes nothing for this long ends, and frees its
+/// place
+#[cfg(not(test))]
+const STALLED: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const STALLED: Duration = Duration::from_secs(2);
 /// A file written to this recently may still be being written (by the
 /// player's command line, say): it is treated as being recorded
 const STILL_WRITING: Duration = Duration::from_secs(10);
@@ -101,6 +108,8 @@ impl Recordings {
         use std::hash::{Hash, Hasher};
         self.saw_recording(recording);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // Keyed, so the number tells nothing about the folder's path
+        self.key.hash(&mut hasher);
         self.changes.load(Ordering::SeqCst).hash(&mut hasher);
         self.is_on().hash(&mut hasher);
         folder.hash(&mut hasher);
@@ -133,7 +142,7 @@ impl Recordings {
     }
 
     /// The id phones use for the file `name`
-    fn id(&self, name: &str) -> String {
+    pub(super) fn id(&self, name: &str) -> String {
         let mut mac = <Hmac<Sha256> as KeyInit>::new_from_slice(&self.key)
             .expect("HMAC takes any key length");
         mac.update(name.as_bytes());
@@ -340,6 +349,15 @@ fn where_now(shared: &Shared) -> (PathBuf, Option<PathBuf>) {
     )
 }
 
+/// An id as the list gives them: 32 hex digits. Anything else (a path,
+/// say) names no recording, and the folder isn't even looked at.
+fn is_id(id: &str) -> bool {
+    id.len() == 32
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 fn sharing_off() -> Response<Body> {
     error(
         StatusCode::FORBIDDEN,
@@ -415,7 +433,7 @@ pub(super) async fn list_all(shared: &Shared) -> Response<Body> {
 /// for. `If-Match` refuses a file that changed since the phone listed it.
 pub(super) async fn download(
     shared: &Shared,
-    device_id: &str,
+    caller: &Caller,
     id: &str,
     request: &Request<Incoming>,
     cancel: CancellationToken,
@@ -423,6 +441,10 @@ pub(super) async fn download(
     if !shared.recordings.is_on() {
         return sharing_off();
     }
+    if !is_id(id) {
+        return not_found();
+    }
+    let device_id = caller.device_id.as_str();
     let (folder, entries) = match listed(shared).await {
         Ok(listed) => listed,
         Err(e) => return unreadable(e),
@@ -484,32 +506,46 @@ pub(super) async fn download(
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(4);
     let checks = shared.clone();
     let device_id = device_id.to_string();
+    let token = caller.token.clone();
     let spawned = std::thread::Builder::new()
         .name("recording-sender".into())
         .spawn(move || {
             let _place = place;
+            // Still wanted: the phone is connected and paired, sharing is
+            // on, and Remote Control is on
+            let wanted = || {
+                !cancel.is_cancelled()
+                    && checks.recordings.is_on()
+                    && checks.still_paired(&device_id, &token)
+            };
             let mut left = length;
             let mut buffer = vec![0u8; CHUNK];
             while left > 0 {
-                // Still wanted: the phone is connected and paired, sharing
-                // is on, and Remote Control is on
-                if cancel.is_cancelled()
-                    || !checks.recordings.is_on()
-                    || checks.device_name(&device_id).is_none()
-                {
+                if !wanted() {
                     return;
                 }
-                let want = buffer.len().min(left as usize);
+                let want = left.min(CHUNK as u64) as usize;
                 let read = match file.read(&mut buffer[..want]) {
                     Ok(0) | Err(_) => return,
                     Ok(n) => n,
                 };
                 left -= read as u64;
-                if tx
-                    .blocking_send(Bytes::copy_from_slice(&buffer[..read]))
-                    .is_err()
-                {
-                    return;
+                // Handed over as the phone takes them. While it doesn't,
+                // keep checking, and give up on a phone that stopped.
+                let mut piece = Bytes::copy_from_slice(&buffer[..read]);
+                let waiting_since = Instant::now();
+                let mut pause = Duration::from_millis(1);
+                loop {
+                    match tx.try_send(piece) {
+                        Ok(()) => break,
+                        Err(TrySendError::Closed(_)) => return,
+                        Err(TrySendError::Full(back)) => piece = back,
+                    }
+                    if !wanted() || waiting_since.elapsed() >= STALLED {
+                        return;
+                    }
+                    std::thread::sleep(pause);
+                    pause = (pause * 2).min(Duration::from_millis(20));
                 }
             }
         });
@@ -540,6 +576,8 @@ pub(super) async fn download(
     set(http::header::ACCEPT_RANGES, "bytes".into());
     set(http::header::ETAG, entry.etag.clone());
     set(http::header::CACHE_CONTROL, "no-store".into());
+    // Audio to save, whatever the bytes look like
+    set(http::header::X_CONTENT_TYPE_OPTIONS, "nosniff".into());
     set(
         http::header::CONTENT_DISPOSITION,
         format!(
@@ -573,6 +611,9 @@ pub(super) async fn delete(
             "Send the recording's ETag in If-Match to delete it",
         );
     };
+    if !is_id(id) {
+        return not_found();
+    }
     let (folder, entries) = match listed(shared).await {
         Ok(listed) => listed,
         Err(e) => return unreadable(e),
@@ -588,8 +629,13 @@ pub(super) async fn delete(
     }
     let path = folder.join(&entry.name);
     let etag_listed = entry.etag.clone();
+    let switch = shared.recordings.clone();
     let removed = tokio::task::spawn_blocking(move || {
-        // Checked once more right before: still the same plain file
+        // Checked once more right before: still shared, and still the same
+        // plain file. Removing a name never follows a link.
+        if !switch.is_on() {
+            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "off"));
+        }
         let meta = fs::symlink_metadata(&path)?;
         if !meta.file_type().is_file() || is_reparse_point(&meta) || etag(&meta) != etag_listed {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "changed"));
@@ -605,6 +651,7 @@ pub(super) async fn delete(
             no_content()
         }
         Err(e) if e.kind() == io::ErrorKind::InvalidData => changed(),
+        Err(_) if !shared.recordings.is_on() => sharing_off(),
         Err(e) if e.kind() == io::ErrorKind::NotFound => not_found(),
         Err(e) => error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -707,6 +754,15 @@ mod tests {
         assert_eq!(ok("passwd"), None);
         assert_eq!(ok("../x - 2026-10-08 20-15-03.mp3"), None);
         assert_eq!(ok("é - 2026-10-08 20-15-0é.mp3"), None);
+        // One still being written, under its temporary name
+        assert_eq!(ok(".Jazz FM - 2026-10-08 20-15-03.mp3.part"), None);
+        assert_eq!(ok("Jazz FM - 2026-10-08 20-15-03.mp3.part"), None);
+        // Nothing that could name another place or another stream of a file
+        assert_eq!(ok("..\\x - 2026-10-08 20-15-03.mp3"), None);
+        assert_eq!(ok("/etc/x - 2026-10-08 20-15-03.mp3"), None);
+        assert_eq!(ok("C:\\x - 2026-10-08 20-15-03.mp3"), None);
+        assert_eq!(ok(".."), None);
+        assert_eq!(ok(""), None);
     }
 
     #[test]
@@ -770,6 +826,34 @@ mod tests {
         assert_eq!(a.id(name), a.id(name));
         assert_ne!(a.id(name), b.id(name));
         assert_ne!(a.id(name), a.id("B - 2026-10-01 10-00-00.mp3"));
+    }
+
+    #[test]
+    fn ids_are_32_hex_digits() {
+        let recordings = Recordings::default();
+        assert!(is_id(&recordings.id("A - 2026-10-01 10-00-00.mp3")));
+        for bad in [
+            "",
+            "..",
+            "%2e%2e",
+            "..%2fremote.json",
+            "0123456789abcdef0123456789abcdeF",
+            "0123456789abcdef0123456789abcde",
+            "0123456789abcdef0123456789abcdef0",
+            "0123456789abcdef0123456789abcd\0f",
+        ] {
+            assert!(!is_id(bad), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn the_number_phones_watch_does_not_tell_the_folder() {
+        let a = Recordings::default();
+        let b = Recordings::default();
+        let folder = Path::new("/home/someone/Music/Radiotrope");
+        assert_eq!(a.rev(folder, None), a.rev(folder, None));
+        assert_ne!(a.rev(folder, None), b.rev(folder, None));
+        assert_ne!(a.rev(folder, None), a.rev(Path::new("/other"), None));
     }
 
     #[cfg(unix)]

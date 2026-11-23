@@ -99,6 +99,14 @@ impl Shared {
             .map(|d| d.name.clone())
     }
 
+    /// The phone `device_id` is still paired with the token it showed:
+    /// false once it was removed, or paired again (which gives a new token)
+    pub(super) fn still_paired(&self, device_id: &str, token: &str) -> bool {
+        self.store()
+            .find_by_token(token)
+            .is_some_and(|d| d.id == device_id)
+    }
+
     /// Save the paired phones off the async thread, and wait until they
     /// are on disk
     async fn save_store(&self) {
@@ -292,8 +300,10 @@ async fn serve_connection(
 }
 
 /// A paired phone making a request
-struct Caller {
-    device_id: String,
+pub(super) struct Caller {
+    pub(super) device_id: String,
+    /// The token it showed, to tell later whether it is still paired
+    pub(super) token: String,
 }
 
 pub async fn handle(
@@ -352,7 +362,7 @@ pub async fn handle(
             let rev = shared.control.favorites_generation().await;
             json(StatusCode::OK, &state_now(shared, rev))
         }
-        (&Method::GET, ["v1", "events"]) => events(shared, cancel),
+        (&Method::GET, ["v1", "events"]) => events(shared, caller, cancel),
         (&Method::POST, ["v1", "listen", "webrtc"]) => {
             webrtc::offer(shared, &caller.device_id, local, request, cancel).await
         }
@@ -404,7 +414,7 @@ pub async fn handle(
         }
         (&Method::GET, ["v1", "recordings"]) => recordings::list_all(shared).await,
         (&Method::GET, ["v1", "recordings", id]) => {
-            recordings::download(shared, &caller.device_id, id, &request, cancel).await
+            recordings::download(shared, &caller, id, &request, cancel).await
         }
         (&Method::DELETE, ["v1", "recordings", id]) => {
             recordings::delete(shared, id, &request).await
@@ -439,7 +449,10 @@ fn authorize(shared: &Shared, request: &Request<Incoming>) -> Option<Caller> {
         tokio::spawn(async move { saving.save_store().await });
         shared.changed();
     }
-    Some(Caller { device_id })
+    Some(Caller {
+        device_id,
+        token: presented.to_string(),
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -877,8 +890,9 @@ fn state_now(shared: &Shared, favorites_rev: u64) -> State {
     state
 }
 
-/// The state now, then again whenever it changes, as Server-Sent Events
-fn events(shared: &Shared, cancel: CancellationToken) -> Response<Body> {
+/// The state now, then again whenever it changes, as Server-Sent Events,
+/// until the phone is unpaired
+fn events(shared: &Shared, caller: Caller, cancel: CancellationToken) -> Response<Body> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
     let control = shared.control.clone();
     let shared = shared.clone();
@@ -886,6 +900,10 @@ fn events(shared: &Shared, cancel: CancellationToken) -> Response<Body> {
         let mut last: Option<State> = None;
         let mut quiet_since = Instant::now();
         loop {
+            // Removed in the dialog, or paired again: this stream ends
+            if !shared.still_paired(&caller.device_id, &caller.token) {
+                return;
+            }
             let rev = control.favorites_generation().await;
             let state = state_now(&shared, rev);
             let message = if last.as_ref() != Some(&state) {
