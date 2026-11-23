@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use slint::ComponentHandle;
 
 use radiotrope::audio::health::{FailureReason, HealthState};
-use radiotrope::audio::{HissLevel, LevelPhase, SharedStats, StreamStats};
+use radiotrope::audio::{LevelPhase, SharedStats, StreamStats};
 use radiotrope::stream::StreamType;
 use radiotrope_app::text;
 use radiotrope_app::text::{status, MISSING, SEPARATOR};
@@ -62,7 +62,7 @@ pub(crate) fn setup(
             let stats_copy = s.clone();
             drop(s);
             update_stats_ui(&ui, &stats_copy);
-            let (leveler, hum, hiss) = {
+            let (leveler, hum) = {
                 let s = lock(&state);
                 (
                     leveler_text(
@@ -70,13 +70,11 @@ pub(crate) fn setup(
                         s.level.as_deref().map(|r| (r.phase(), r.gain_db())),
                     ),
                     hum_text(s.hum_filter, s.hum.as_ref().and_then(|h| h.hz())),
-                    hiss_text(s.hiss),
                 )
             };
             let stats = ui.global::<StatsData>();
             stats.set_leveler(leveler.into());
             stats.set_hum(hum.into());
-            stats.set_hiss(hiss.into());
         })
     };
     // Every 200 ms while the dialog is open; it stops itself once closed
@@ -202,7 +200,6 @@ pub(crate) fn clear_stats_ui(ui: &App) {
         StatsData::set_underruns,
         StatsData::set_leveler,
         StatsData::set_hum,
-        StatsData::set_hiss,
     ] {
         set(&stats, MISSING.into());
     }
@@ -219,15 +216,6 @@ fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
         Some((LevelPhase::Learning, _)) => "Learning".into(),
         Some((LevelPhase::Settled, gain_db)) => level_text(gain_db),
         _ => MISSING.into(),
-    }
-}
-
-/// The Hiss Reducer's strength on the Statistics dialog
-fn hiss_text(level: HissLevel) -> &'static str {
-    match level {
-        HissLevel::Off => "Off",
-        HissLevel::Light => "Light",
-        HissLevel::Strong => "Strong",
     }
 }
 

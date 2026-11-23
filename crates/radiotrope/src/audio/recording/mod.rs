@@ -12,9 +12,13 @@
 //! The taps never block playback: batches are handed over with `try_send`,
 //! and if the writer falls behind, batches are dropped and counted.
 //!
+//! The file is written under a hidden temporary name and gets its own name
+//! when it is complete (see [`recover_partial_recordings`] for one a crash
+//! left behind).
+//!
 //! The same taps also feed [`Listen`], which streams the station to phones.
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
 use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::mem;
 use std::num::NonZero;
@@ -32,6 +36,7 @@ use crate::error::RadioError;
 mod listen;
 mod mp3;
 mod opus;
+mod part;
 mod wav;
 
 pub use listen::{
@@ -40,6 +45,7 @@ pub use listen::{
 };
 #[cfg(test)]
 pub(crate) use opus::encode_ogg_opus;
+pub use part::{recover_partial_recordings, Recovered};
 
 /// Samples per batch sent to the writer (about 46 ms of 44.1 kHz stereo).
 const BATCH_SAMPLES: usize = 4096;
@@ -111,7 +117,9 @@ pub struct RecordingTags {
 /// What to record and where
 #[derive(Debug, Clone)]
 pub struct RecordingOptions {
-    /// File to create. It must not exist yet.
+    /// File to create. It must not exist yet. It is written under a hidden
+    /// temporary name and gets this one when the recording ends (a
+    /// numbered one if this was taken meanwhile).
     pub path: PathBuf,
     pub format: RecordingFormat,
     /// Bitrate for MP3 and Opus, in kbps (clamped to what each supports);
@@ -124,6 +132,8 @@ pub struct RecordingOptions {
 /// Progress of the current (or just finished) recording
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordingStatus {
+    /// The recording's file: while it runs, the name it will get; once
+    /// stopped, where it is
     pub path: PathBuf,
     /// Bytes written to the file so far
     pub bytes_written: u64,
@@ -151,6 +161,8 @@ struct WriterStats {
     dropped_batches: AtomicU64,
     failed: AtomicBool,
     error: Mutex<Option<String>>,
+    /// Where the file went once complete, when not the path asked for
+    saved_as: Mutex<Option<PathBuf>>,
 }
 
 struct ActiveRecording {
@@ -243,21 +255,19 @@ impl Recorder {
         if self.lock_active().is_some() {
             return Err(RadioError::Audio("Already recording".to_string()));
         }
-        let file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&options.path)
-            .map_err(|e| {
-                RadioError::Audio(format!("Can't create {}: {e}", options.path.display()))
-            })?;
-        self.start_writing(options, file)
+        let file = part::create(&options.path).map_err(|e| {
+            RadioError::Audio(format!("Can't create {}: {e}", options.path.display()))
+        })?;
+        self.start_writing(options, file, true)
     }
 
-    /// Start recording into `file` (created for `options.path`)
+    /// Start recording into `file` (created for `options.path`). With
+    /// `temporary`, `file` is the temporary file, named once complete.
     fn start_writing(
         &self,
         options: RecordingOptions,
         mut file: impl RecordingFile + Send + 'static,
+        temporary: bool,
     ) -> Result<(), RadioError> {
         let mut active = self.lock_active();
         if active.is_some() {
@@ -270,11 +280,16 @@ impl Recorder {
         // Header patches at the end need a file that can seek (a pipe can't)
         let seekable = file.stream_position().is_ok();
         let writer_stats = stats.clone();
+        let wanted = options.path.clone();
         let handle = thread::Builder::new()
             .name("recording-writer".to_string())
             .spawn(move || {
                 let encoder = new_encoder(format, tags, kbps, seekable);
-                writer_loop(file, encoder, rx, writer_stats)
+                // Returns once the file is complete and closed
+                writer_loop(file, encoder, rx, &writer_stats);
+                if temporary {
+                    name_finished_file(&wanted, &writer_stats);
+                }
             })
             .map_err(|e| RadioError::Audio(format!("Failed to spawn recording thread: {e}")))?;
 
@@ -386,8 +401,13 @@ fn status_of(path: &Path, stats: &WriterStats) -> RecordingStatus {
     } else {
         None
     };
+    let saved_as = stats
+        .saved_as
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     RecordingStatus {
-        path: path.to_path_buf(),
+        path: saved_as.unwrap_or_else(|| path.to_path_buf()),
         bytes_written: stats.bytes_written.load(Ordering::Relaxed),
         duration: Duration::from_micros(stats.duration_micros.load(Ordering::Relaxed)),
         dropped_batches: stats.dropped_batches.load(Ordering::Relaxed),
@@ -662,11 +682,41 @@ fn writer_loop<F: RecordingFile>(
     file: F,
     encoder: Box<dyn AudioEncoder>,
     rx: Receiver<WriterMsg>,
-    stats: Arc<WriterStats>,
+    stats: &WriterStats,
 ) {
-    if let Err(e) = write_recording(file, encoder, &rx, &stats) {
-        *stats.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(e);
-        stats.failed.store(true, Ordering::SeqCst);
+    if let Err(e) = write_recording(file, encoder, &rx, stats) {
+        fail(stats, e);
+    }
+}
+
+/// Note that writing failed, unless it already had (the first reason is
+/// the one to tell)
+fn fail(stats: &WriterStats, error: String) {
+    let mut slot = stats.error.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() {
+        *slot = Some(error);
+    }
+    stats.failed.store(true, Ordering::SeqCst);
+}
+
+/// Give the finished recording of `wanted` its name, also after a write
+/// error: what was written plays
+fn name_finished_file(wanted: &Path, stats: &WriterStats) {
+    match part::finish(wanted) {
+        Ok(saved) => {
+            if saved != wanted {
+                *stats.saved_as.lock().unwrap_or_else(|e| e.into_inner()) = Some(saved);
+            }
+        }
+        Err(e) => {
+            // It stays under its temporary name, which is where it is
+            let temporary = part::part_path(wanted);
+            fail(
+                stats,
+                format!("Can't name the recording {}: {e}", wanted.display()),
+            );
+            *stats.saved_as.lock().unwrap_or_else(|e| e.into_inner()) = Some(temporary);
+        }
     }
 }
 
@@ -1023,6 +1073,89 @@ mod tests {
         assert!(recorder.start(options(&third, TapPoint::BeforeEq)).is_err());
         recorder.stop().unwrap();
         assert!(recorder.stop().is_none());
+    }
+
+    const FORMATS: [RecordingFormat; 3] = [
+        RecordingFormat::Mp3,
+        RecordingFormat::Opus,
+        RecordingFormat::Wav,
+    ];
+
+    #[test]
+    fn recording_is_hidden_until_it_is_complete() {
+        for format in FORMATS {
+            let path = temp_path(&format!("hidden-{format:?}")).with_extension(format.extension());
+            let part = part::part_path(&path);
+            let recorder = Recorder::new();
+            let mut opts = options(&path, TapPoint::BeforeEq);
+            opts.format = format;
+            recorder.start(opts).unwrap();
+            play_through(
+                SamplesBuffer::new(
+                    NonZero::new(2).unwrap(),
+                    NonZero::new(44_100).unwrap(),
+                    sine(44_100, 2, 0.5),
+                ),
+                &recorder,
+                TapPoint::BeforeEq,
+            );
+            assert!(part.exists() && !path.exists(), "{format:?}");
+            // While it runs, the name it will get is the one to show
+            assert_eq!(recorder.status().unwrap().path, path);
+
+            let status = recorder.stop().unwrap();
+            assert_eq!(status.error, None);
+            assert_eq!(status.path, path);
+            assert!(path.exists() && !part.exists(), "{format:?}");
+            let (_, _, frames) = decode(&path, format.extension());
+            assert!(frames > 0, "{format:?}");
+        }
+    }
+
+    #[test]
+    fn a_name_taken_meanwhile_gets_a_number() {
+        let path = temp_path("taken-meanwhile");
+        let recorder = Recorder::new();
+        recorder.start(options(&path, TapPoint::BeforeEq)).unwrap();
+        std::fs::write(&path, b"someone else's").unwrap();
+        let status = recorder.stop().unwrap();
+        assert_eq!(status.path, path.with_file_name("test (2).mp3"));
+        assert!(status.path.exists());
+        assert_eq!(std::fs::read(&path).unwrap(), b"someone else's");
+    }
+
+    #[test]
+    fn leftovers_with_audio_are_saved_and_empty_ones_removed() {
+        for format in FORMATS {
+            let ext = format.extension();
+            // A crash leaves the temporary file as it was
+            let (with_audio, _) = record(&format!("left-{format:?}"), format, &[(44_100, 2, 1.0)]);
+            let dir = with_audio.parent().unwrap().to_path_buf();
+            std::fs::rename(&with_audio, part::part_path(&with_audio)).unwrap();
+
+            let empty = dir.join(format!("Empty FM.{ext}"));
+            let recorder = Recorder::new();
+            let mut opts = options(&empty, TapPoint::BeforeEq);
+            opts.format = format;
+            recorder.start(opts).unwrap();
+            recorder.stop().unwrap();
+            std::fs::rename(&empty, part::part_path(&empty)).unwrap();
+
+            let mut done = recover_partial_recordings(&dir);
+            done.sort_by_key(|r| matches!(r, Recovered::Removed(_)));
+            assert_eq!(
+                done,
+                [
+                    Recovered::Saved(with_audio.clone()),
+                    Recovered::Removed(part::part_path(&empty)),
+                ],
+                "{format:?}"
+            );
+            let (_, _, frames) = decode(&with_audio, ext);
+            assert!(frames > 0, "{format:?}");
+            let left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+            assert_eq!(left.len(), 1, "{format:?}");
+        }
     }
 
     #[test]
@@ -1581,7 +1714,11 @@ mod tests {
         let (release, released) = bounded::<()>(0);
         let recorder = Recorder::new();
         recorder
-            .start_writing(wav_options(Path::new("stuck")), StuckDisk { released })
+            .start_writing(
+                wav_options(Path::new("stuck")),
+                StuckDisk { released },
+                false,
+            )
             .unwrap();
         play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
 
@@ -1600,7 +1737,7 @@ mod tests {
 
         // The stuck writer doesn't block the next recording
         recorder
-            .start_writing(wav_options(Path::new("next")), full_disk(usize::MAX))
+            .start_writing(wav_options(Path::new("next")), full_disk(usize::MAX), false)
             .unwrap();
         play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
         let status = recorder.stop().unwrap();
@@ -1613,7 +1750,7 @@ mod tests {
     fn a_crashed_writer_is_not_reported_as_saved() {
         let recorder = Recorder::new();
         recorder
-            .start_writing(wav_options(Path::new("crash")), PanickingDisk)
+            .start_writing(wav_options(Path::new("crash")), PanickingDisk, false)
             .unwrap();
         play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
 
@@ -1652,7 +1789,7 @@ mod tests {
         let recorder = Recorder::new();
         let opts = options(Path::new("pipe"), TapPoint::BeforeEq);
         recorder
-            .start_writing(opts, Unseekable(disk.clone()))
+            .start_writing(opts, Unseekable(disk.clone()), false)
             .unwrap();
         play_through(half_a_second(), &recorder, TapPoint::BeforeEq);
         let status = recorder.stop().unwrap();

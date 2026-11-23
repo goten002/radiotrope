@@ -79,6 +79,10 @@ fn run(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     };
     let favorites = favorites::stations(&manager);
     let settings = read_settings();
+    // Recordings a crash left unfinished; said before the screen is taken
+    radiotrope::audio::recover_partial_recordings(&recording::folder(
+        settings.recording_dir.as_deref(),
+    ));
 
     let station = cli.station();
     let start = match station.as_deref() {
