@@ -1173,10 +1173,10 @@ fn after_open(ui: &App, shot: &Shot) {
         ("edit-favorite", "error") => press(ui, Key::Return),
         _ if shot.name == "scheduler-save-error" => press(ui, Key::Return),
         _ if shot.name == "menu-view-end" => press(ui, Key::End),
-        // Up from the top lands on the last row, Connections; once more is
-        // Equalizer
+        // Up from the top lands on the last row, Connections; then
+        // Statistics, then Equalizer
         _ if shot.name == "menu-tools-keys" => {
-            for _ in 0..2 {
+            for _ in 0..3 {
                 press(ui, Key::UpArrow);
                 slint::platform::update_timers_and_animations();
             }

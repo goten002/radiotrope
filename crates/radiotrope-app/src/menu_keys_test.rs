@@ -43,10 +43,10 @@ fn the_menus_work_with_the_keyboard_only() {
     let press_keys = |list: &[Key]| keys(&ui, &time, list);
 
     // F10, Down: the Open menu with its first row; Right three times: the
-    // Tools menu; Up from its first row wraps to the last, Connections, and
-    // the row above that is Equalizer
+    // Tools menu; Up from its first row wraps to the last, Connections;
+    // above it are Statistics, then Equalizer
     press_keys(&[
-        F10, DownArrow, RightArrow, RightArrow, RightArrow, UpArrow, UpArrow,
+        F10, DownArrow, RightArrow, RightArrow, RightArrow, UpArrow, UpArrow, UpArrow,
     ]);
     assert!(!ui.get_dialog_open(), "nothing opens before Enter");
     press_keys(&[Return]);
@@ -61,10 +61,10 @@ fn the_menus_work_with_the_keyboard_only() {
     press_keys(&[Return]);
     assert_eq!(ui.get_theme_mode(), "light", "Enter on View > Theme");
 
-    // Five rows down is the Visualizer Style group: Right unfolds it, its
+    // Four rows down is the Visualizer Style group: Right unfolds it, its
     // second style is Spectrum
     assert_eq!(ui.get_viz_mode(), "wave");
-    press_keys(&[DownArrow, DownArrow, DownArrow, DownArrow, DownArrow]);
+    press_keys(&[DownArrow, DownArrow, DownArrow, DownArrow]);
     press_keys(&[RightArrow, DownArrow, DownArrow, Return]);
     assert_eq!(ui.get_viz_mode(), "spectrum", "View > Visualizer Style");
     // Left folds the group and goes back to its row; Enter unfolds it
