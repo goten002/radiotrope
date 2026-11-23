@@ -1007,13 +1007,15 @@ export component MenuBar inherits Rectangle {
     property <[bool]> stations-usable: [true, root.has-favorites, Platform.has-file-manager, Platform.has-file-manager, true];
     property <[bool]> window-usable: [true, true, true];
     property <[bool]> view-usable: [
-        // 0 Theme, 1 Accent Color, 2 Show Listening Stats, 3 Visualizer
-        true, true, true, true,
-        // 4 Station Colors in Visualizer, 5 Visualizer Style, 6-11 its styles
-        root.show-visualizer, true,
+        // 0 Theme, 1 Accent Color, 2 Visualizer, 3 Station Colors in Visualizer
+        true, true, true, root.show-visualizer,
+        // 4 Visualizer Style, 5-10 its styles
+        true,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
         root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
+        // 11 Show Listening Stats
+        true,
         // 12 Zoom, 13-17 its percentages (those too large for the screen greyed)
         Platform.has-window-frame,
         root.zoom-open && ViewOptions.zoom-choices[0] <= ViewOptions.zoom-fits,
@@ -1035,7 +1037,7 @@ export component MenuBar inherits Rectangle {
         Platform.has-file-manager && root.tools-group == "recordings",
         // 4 Sleep Timer, 5 Scheduler
         true, true,
-        // 6 Statistics, 7 Filters, 8 Equalizer
+        // 6 Filters, 7 Equalizer, 8 Statistics
         true, true, true,
         // 9 Connections, 10 Agents (MCP), 11 Remote Control
         true, root.tools-group == "connections", root.tools-group == "connections",
@@ -1448,7 +1450,7 @@ export component MenuBar inherits Rectangle {
             title-width: root.title-width;
             usable: root.view-usable;
             // Left on a row of an open group folds it
-            fold-to: root.style-open && MenuNav.active >= 6 && MenuNav.active <= 11 ? 5
+            fold-to: root.style-open && MenuNav.active >= 5 && MenuNav.active <= 10 ? 4
                 : root.zoom-open && MenuNav.active >= 13 && MenuNav.active <= 17 ? 12
                 : root.window-open && MenuNav.active >= 19 && MenuNav.active <= 20 ? 18
                 : root.tray-open && MenuNav.active >= 22 && MenuNav.active <= 26 ? 21 : -1;
@@ -1473,16 +1475,6 @@ export component MenuBar inherits Rectangle {
             MenuSeparator {}
             CheckMenuItem {
                 slot: 2;
-                label: "Show Listening Stats";
-                icon: @image-url("icons/clock.svg");
-                checked: root.show-station-stats;
-                clicked => {
-                    root.show-station-stats = !root.show-station-stats;
-                }
-            }
-            MenuSeparator {}
-            CheckMenuItem {
-                slot: 3;
                 label: "Visualizer";
                 icon: @image-url("icons/visualizer.svg");
                 checked: root.show-visualizer;
@@ -1492,7 +1484,7 @@ export component MenuBar inherits Rectangle {
             }
             // Keeps its choice while the visualizer is off
             CheckMenuItem {
-                slot: 4;
+                slot: 3;
                 label: "Station Colors in Visualizer";
                 icon: @image-url("icons/fill-drip.svg");
                 enabled: root.show-visualizer;
@@ -1504,7 +1496,7 @@ export component MenuBar inherits Rectangle {
             // The six styles a click on the tile goes through, in the same
             // order; the choice is kept while the visualizer is off
             GroupMenuItem {
-                slot: 5;
+                slot: 4;
                 label: "Visualizer Style";
                 icon: @image-url("icons/wave-square.svg");
                 open: root.style-open;
@@ -1519,7 +1511,7 @@ export component MenuBar inherits Rectangle {
                     { id: "vu", label: "VU" },
                     { id: "hbars", label: "Horizontal VU" },
                 ]: CheckMenuItem {
-                    slot: 6 + i;
+                    slot: 5 + i;
                     label: style.label;
                     indent: Theme.space-16;
                     enabled: root.show-visualizer;
@@ -1529,6 +1521,15 @@ export component MenuBar inherits Rectangle {
                 }
             }
             MenuSeparator {}
+            CheckMenuItem {
+                slot: 11;
+                label: "Show Listening Stats";
+                icon: @image-url("icons/clock.svg");
+                checked: root.show-station-stats;
+                clicked => {
+                    root.show-station-stats = !root.show-station-stats;
+                }
+            }
             // The whole window larger or smaller. Slint takes the scale
             // when the window is made, so a choice waits for the next start.
             if Platform.has-window-frame: GroupMenuItem {
@@ -1789,15 +1790,6 @@ export component MenuBar inherits Rectangle {
             MenuSeparator {}
             MenuItem {
                 slot: 6;
-                label: "Statistics";
-                icon: @image-url("icons/chart-column.svg");
-                clicked => {
-                    root.open-statistics();
-                    tools-popup.close();
-                }
-            }
-            MenuItem {
-                slot: 7;
                 label: "Filters";
                 icon: @image-url("icons/wave-square.svg");
                 clicked => {
@@ -1806,11 +1798,20 @@ export component MenuBar inherits Rectangle {
                 }
             }
             MenuItem {
-                slot: 8;
+                slot: 7;
                 label: "Equalizer";
                 icon: @image-url("icons/sliders.svg");
                 clicked => {
                     root.open-equalizer();
+                    tools-popup.close();
+                }
+            }
+            MenuItem {
+                slot: 8;
+                label: "Statistics";
+                icon: @image-url("icons/chart-column.svg");
+                clicked => {
+                    root.open-statistics();
                     tools-popup.close();
                 }
             }
