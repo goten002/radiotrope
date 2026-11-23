@@ -301,33 +301,6 @@ impl Control {
         self.send(AppCommand::Stop)
     }
 
-    /// Switch the equalizer on or off and pick a preset by its name, as
-    /// the window's Equalizer does; what is `None` stays. Tells the
-    /// preset's name as the player spells it.
-    pub fn set_equalizer(
-        &self,
-        enabled: Option<bool>,
-        preset: Option<&str>,
-    ) -> Result<Option<&'static str>, Error> {
-        let preset = match preset {
-            Some(name) => Some(
-                radiotrope::audio::find_preset(name.trim())
-                    .ok_or_else(|| {
-                        Error::Failed(format!("No equalizer preset named {:?}", name.trim()))
-                    })?
-                    .name,
-            ),
-            None => None,
-        };
-        if let Some(name) = preset {
-            self.send(AppCommand::SetEqPreset(name.to_string()))?;
-        }
-        if let Some(on) = enabled {
-            self.send(AppCommand::SetEqEnabled(on))?;
-        }
-        Ok(preset)
-    }
-
     /// Set the volume (0 to 1); unmutes above 0. Tells whether it was muted.
     pub fn set_volume(&self, volume: f32) -> Result<bool, Error> {
         let volume = volume.clamp(0.0, 1.0);
@@ -1239,34 +1212,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(plays.load(Ordering::SeqCst), 0, "counted when it plays");
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn the_equalizer_takes_a_preset_by_name_and_refuses_an_unknown_one() {
-        let (cmd_tx, cmd_rx) = crossbeam_channel::bounded(8);
-        let control = Control::new(
-            cmd_tx,
-            Arc::new(Mutex::new(AppSnapshot::default())),
-            Arc::new(Mutex::new(FavoritesManager::new())),
-        );
-        let preset = radiotrope::audio::PRESETS[1].name;
-        let named = control
-            .set_equalizer(Some(true), Some(&preset.to_uppercase()))
-            .unwrap();
-        assert_eq!(named, Some(preset), "as the player spells it");
-        assert!(matches!(
-            cmd_rx.try_recv(),
-            Ok(AppCommand::SetEqPreset(name)) if name == preset
-        ));
-        assert!(matches!(
-            cmd_rx.try_recv(),
-            Ok(AppCommand::SetEqEnabled(true))
-        ));
-        // Nothing is sent for a preset the player doesn't have
-        assert!(control
-            .set_equalizer(Some(false), Some("No Such Sound"))
-            .is_err());
-        assert!(cmd_rx.try_recv().is_err());
     }
 
     #[tokio::test]
