@@ -237,19 +237,6 @@ fn station_cover_png(logo_service: &LogoService, station: &Station) -> Option<Ve
     (png.len() <= MAX_COVER_BYTES).then_some(png)
 }
 
-/// The phones listening, for the menu bar chip (set only when they change)
-pub(crate) fn show_listeners(ui: &App, listeners: &[String]) {
-    use slint::Model as _;
-    let shown = ui.get_listeners();
-    if shown.row_count() == listeners.len()
-        && shown.iter().zip(listeners).all(|(a, b)| a.as_str() == b)
-    {
-        return;
-    }
-    let names: Vec<slint::SharedString> = listeners.iter().map(|n| n.into()).collect();
-    ui.set_listeners(std::rc::Rc::new(slint::VecModel::from(names)).into());
-}
-
 /// Mirror recording progress and notices into the UI (called on every
 /// poll). `shown` is the last notice taken from the controller and when.
 pub(crate) fn show_recording_state(

@@ -3,7 +3,7 @@ import { KeyboardShortcutsDialog } from "dialogs/keyboard-shortcuts.slint";
 export { DesktopShortcuts, ShortcutAction, ShortcutRow } from "shortcuts.slint";
 import "fonts/Inter/static/Inter_18pt-Regular.ttf";
 import "fonts/Inter/static/Inter_18pt-SemiBold.ttf";
-import { MenuBar } from "menu-bar.slint";
+import { MenuBar, ConnectedPhone, PhonesBubble } from "menu-bar.slint";
 import { Playback } from "playback.slint";
 import { Favorites, FavoriteStation, FavoritesFind } from "favorites.slint";
 import { Controls } from "controls.slint";
@@ -26,11 +26,11 @@ import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.s
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { QuitDialog } from "dialogs/quit.slint";
 import { ReportPlaysDialog } from "dialogs/report-plays.slint";
-import { TextUtil, AgentsBubble, AgentRow, ListenersBubble, Motion } from "components.slint";
+import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
 export { FavoritesFind }
 export { HexColor } from "dialogs/accent-color.slint";
-export { AboutInfo, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice }
+export { AboutInfo, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice, ConnectedPhone }
 
 export component App inherits Window {
     // The station in the taskbar and window lists while one is loaded
@@ -235,8 +235,10 @@ export component App inherits Window {
     in-out property <bool> is-recording;
     in-out property <bool> can-record;
     property <bool> can-toggle-recording: root.can-record || root.is-recording;
-    // Phones listening over Remote Control, for the chip in the menu bar
-    in property <[string]> listeners;
+    // Phones with the Remote app connected, for the chip in the menu bar,
+    // and how many of them listen
+    in property <[ConnectedPhone]> remote-phones;
+    in property <int> remote-phones-listening;
     in-out property <string> recording-text;
     in-out property <string> recording-size;
     in-out property <string> recording-notice;
@@ -677,7 +679,8 @@ export component App inherits Window {
                         open-schedule => { schedule-dialog.open(); }
                         menus-enabled: !root.dialog-open;
                         agent-count: root.agent-count;
-                        listeners: root.listeners;
+                        phones: root.remote-phones;
+                        phones-listening: root.remote-phones-listening;
                     }
                     playback := Playback {
                         station-name: root.station-name;
@@ -986,11 +989,11 @@ export component App inherits Window {
             triggered => { Motion.tick += self.interval; }
         }
 
-        // The menu bar's listeners bubble, over the header below it
-        if menu-bar.listeners-bubble-open: ListenersBubble {
-            x: menu-bar.listeners-bubble-right - self.width;
-            y: menu-bar.listeners-bubble-top;
-            phones: root.listeners;
+        // The menu bar's phones bubble, over the header below it
+        if menu-bar.phones-bubble-open: PhonesBubble {
+            x: menu-bar.phones-bubble-right - self.width;
+            y: menu-bar.phones-bubble-top;
+            phones: root.remote-phones;
         }
 
         // The menu bar's agents bubble, over the header below it

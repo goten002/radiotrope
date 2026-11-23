@@ -94,7 +94,7 @@ dialogs.
 | `KeyCap`, `KeyCaps` | A keyboard key drawn as a raised cap (`keycap.slint`), and a shortcut's key combinations: "+" between keys pressed together, an optional `separator` such as "or" between alternatives. |
 | `SectionHeader`, `InfoRow`, `LinkRow`, `CreditLink` | Section labels, label/value pairs, and accessible links. A `selectable` InfoRow is a named, read-only Tab stop with a focus ring. |
 | `Motion`, `NowPlayingBars` | The app's animation clock and a playing indicator. |
-| `AgentsChip`, `AgentsBubble`, `ListenersBubble` | Connection count and details on the main window. The chip is a button: pass `label` ("2 agents using the player") and `description` (the names); its list opens on hover and on keyboard focus. |
+| `AgentsChip`, `AgentsBubble`, `PhonesBubble` (menu-bar.slint) | Connection count and details on the main window. The chip is a button: pass `label` ("2 agents using the player") and `description` (the names); its list opens on hover and on keyboard focus. |
 
 ## Migration
 

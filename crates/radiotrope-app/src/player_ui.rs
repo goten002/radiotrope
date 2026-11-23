@@ -22,7 +22,7 @@ use crate::app::state::{AppSnapshot, PlayerPhase};
 use crate::context::{lock, AppContext};
 use crate::favorites_list::{refresh_favorites, FAVORITES_SHOWN};
 use crate::favorites_ui::track_listening;
-use crate::recording_ui::{show_listeners, show_recording_state};
+use crate::recording_ui::show_recording_state;
 use crate::stats_ui::{format_playtime, EngineStats};
 use crate::viz_ui::viz_wanted;
 use crate::window_settings::{
@@ -308,11 +308,6 @@ impl Poll {
         let filters = FilterSettings::of(&s);
         let recording = s.recording.clone();
         let recording_notice = s.recording_notice.clone();
-        let listeners = s
-            .listen
-            .as_ref()
-            .map(|l| l.listener_names())
-            .unwrap_or_default();
         let schedule_view = schedule_ui::View::of(&s);
         let settings_now = window_settings(&s, ui);
         drop(s);
@@ -325,7 +320,6 @@ impl Poll {
         }
 
         schedule_ui::show_state(ui, schedule_view);
-        show_listeners(ui, &listeners);
         show_recording_state(
             ui,
             recording.as_ref(),
