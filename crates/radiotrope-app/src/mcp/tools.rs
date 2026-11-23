@@ -20,7 +20,6 @@ use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::FavoritesManager;
 use radiotrope_app::data::flags::code_for_country;
-use radiotrope_app::data::recordings;
 use radiotrope_app::data::schedule::{self, Action, Entry};
 use radiotrope_app::data::types::{url_to_id, Favorite};
 #[cfg(test)]
@@ -48,12 +47,6 @@ const MAX_CATEGORY_LIMIT: usize = 500;
 const NOTHING_FOUND: &str = "No station matches. Filter values must be ones the directory has: \
                              list_genres, list_countries, list_languages and list_categories \
                              list them.";
-/// Where the user's consent to report plays is given
-const REPORT_PLAYS_NOTE: &str = "Whether plays of directory stations are counted in the \
-                                 directory. This is the user's consent: only the user can \
-                                 change it, in the window (Stations > Report Play Count). No \
-                                 tool can.";
-
 /// Everything the tools reach into: the player, through the control layer
 /// the Remote API shares, and what agents alone keep
 #[derive(Clone)]
@@ -230,18 +223,6 @@ pub struct ReorderFavoritesArgs {
     /// Favorite ids (from list_favorites) in the order wanted. Favorites
     /// left out keep their order, after these.
     pub ids: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct EqualizerArgs {
-    /// true to switch the equalizer on, false to switch it off; leave out
-    /// to keep it as it is
-    #[serde(default)]
-    pub enabled: Option<bool>,
-    /// Preset name, e.g. "Rock" (get_settings lists them); leave out to
-    /// keep the current sound
-    #[serde(default)]
-    pub preset: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -662,43 +643,6 @@ pub struct ProgrammeTypeItem {
 pub struct ProgrammeTypeList {
     /// Largest first
     pub categories: Vec<ProgrammeTypeItem>,
-}
-
-/// The settings agents can read
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct Settings {
-    pub equalizer: EqualizerInfo,
-    /// What start_recording and scheduled recordings use; changed in the
-    /// window (Tools > Recording Settings)
-    pub recording: RecordingSettings,
-    pub report_play_count: ReportPlays,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct EqualizerInfo {
-    pub enabled: bool,
-    /// The preset in use; none when the bands were set by hand
-    pub preset: Option<String>,
-    /// The preset names set_equalizer takes
-    pub presets: Vec<String>,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct RecordingSettings {
-    /// Folder the files go to
-    pub folder: String,
-    /// "mp3", "opus" or "wav"
-    pub format: String,
-    /// Bitrate for MP3 and Opus; none: the format's usual one
-    pub bitrate_kbps: Option<u32>,
-    /// Whether the equalizer's sound is recorded (only while it is on)
-    pub with_equalizer: bool,
-}
-
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct ReportPlays {
-    pub allowed: bool,
-    pub note: String,
 }
 
 /// A directory station in the tools' words
@@ -1408,85 +1352,9 @@ impl RadioTools {
     }
 
     #[tool(
-        title = "Equalizer",
-        description = "Switch the equalizer on or off, and pick one of its presets by name \
-                       (get_settings lists the presets and shows the equalizer now)",
-        annotations(
-            read_only_hint = false,
-            destructive_hint = false,
-            idempotent_hint = true,
-            open_world_hint = false
-        )
-    )]
-    async fn set_equalizer(
-        &self,
-        Parameters(args): Parameters<EqualizerArgs>,
-        ctx: RequestContext<RoleServer>,
-    ) -> Result<String, String> {
-        if args.enabled.is_none() && args.preset.is_none() {
-            return Err("Give enabled, preset or both".into());
-        }
-        let preset = self
-            .control
-            .set_equalizer(args.enabled, args.preset.as_deref())
-            .map_err(|e| match e {
-                control::Error::Failed(text) if text.starts_with("No equalizer preset") => {
-                    format!("{text}. The presets: {}", preset_names().join(", "))
-                }
-                other => agent_text(other),
-            })?;
-        let on = args
-            .enabled
-            .unwrap_or_else(|| self.control.snapshot().eq_enabled);
-        let text = match (preset, args.enabled) {
-            (Some(name), _) if on => format!("Equalizer on, preset {name}"),
-            (Some(name), _) => format!(
-                "Preset {name} chosen; the equalizer is off (set enabled to true to hear it)"
-            ),
-            (None, Some(true)) => "Equalizer on".to_string(),
-            (None, _) => "Equalizer off".to_string(),
-        };
-        self.note_change(&ctx, text.to_lowercase());
-        Ok(text)
-    }
-
-    #[tool(
-        title = "Settings",
-        description = "Read the player's settings an agent may need: the equalizer (on or \
-                       off, preset, the preset names), the recording settings (folder, \
-                       format, bitrate) and whether Report Play Count is allowed. Read-only: \
-                       set_equalizer changes the equalizer; the recording settings and \
-                       Report Play Count are changed by the user, in the window.",
-        annotations(read_only_hint = true, open_world_hint = false)
-    )]
-    async fn get_settings(&self) -> Json<Settings> {
-        let s = self.control.snapshot();
-        let setup = &s.recording_setup;
-        Json(Settings {
-            equalizer: EqualizerInfo {
-                enabled: s.eq_enabled,
-                preset: s.eq_preset_name.clone().filter(|name| !name.is_empty()),
-                presets: preset_names().into_iter().map(str::to_string).collect(),
-            },
-            recording: RecordingSettings {
-                folder: recordings::folder(setup.dir.as_deref())
-                    .display()
-                    .to_string(),
-                format: setup.format.extension().to_string(),
-                bitrate_kbps: setup.bitrate,
-                with_equalizer: setup.with_eq,
-            },
-            report_play_count: ReportPlays {
-                allowed: crate::view_options::report_plays(),
-                note: REPORT_PLAYS_NOTE.to_string(),
-            },
-        })
-    }
-
-    #[tool(
         title = "Start recording",
-        description = "Record the station playing to a file, in the format and folder set in \
-                       the player's recording settings (get_settings shows them)",
+        description = "Record the station playing to a file, in the format and folder the \
+                       user set in the player's recording settings",
         annotations(
             read_only_hint = false,
             destructive_hint = false,
@@ -1718,11 +1586,6 @@ fn agent_text(error: control::Error) -> String {
         ),
         other => other.to_string(),
     }
-}
-
-/// The equalizer's preset names, in the window's menu order
-fn preset_names() -> Vec<&'static str> {
-    radiotrope::audio::PRESETS.iter().map(|p| p.name).collect()
 }
 
 /// A whole, positive entry id

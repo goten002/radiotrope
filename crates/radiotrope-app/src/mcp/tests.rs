@@ -276,6 +276,10 @@ async fn a_legacy_client_gets_its_own_version_and_no_reply_to_notifications() {
         .as_str()
         .unwrap()
         .contains("get_status"));
+    assert!(init["instructions"]
+        .as_str()
+        .unwrap()
+        .contains("never change or read the player's settings"));
 
     // A cancel for an unknown request is a notification too: no reply, so
     // the next line read is the answer to ping
@@ -314,9 +318,14 @@ async fn every_tool_has_a_title_and_behaviour_hints() {
     s.legacy_handshake("2025-11-25").await;
     let list = s.request("tools/list", json!({})).await;
     let tools = list["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 26);
+    assert_eq!(tools.len(), 24);
     for tool in tools {
         let name = tool["name"].as_str().unwrap();
+        // The player's settings are the user's: no tool reads or changes them
+        assert!(
+            !name.contains("setting") && !name.contains("equalizer"),
+            "{name}"
+        );
         assert!(tool["title"].is_string(), "{name} has no title");
         assert!(tool["annotations"].is_object(), "{name} has no annotations");
     }
@@ -767,11 +776,6 @@ async fn an_agents_play_is_counted_only_if_the_user_allowed_it() {
         .is_none(),
         "nor once it plays"
     );
-    let settings = s.call("get_settings", json!({})).await;
-    assert_eq!(
-        settings["structuredContent"]["report_play_count"]["allowed"],
-        false
-    );
 
     // No tool takes it as an argument, and one slipped in changes nothing
     let list = s.request("tools/list", json!({})).await;
@@ -784,8 +788,8 @@ async fn an_agents_play_is_counted_only_if_the_user_allowed_it() {
         );
     }
     for (tool, mut args) in [
-        ("set_equalizer", json!({"enabled": false})),
-        ("get_settings", json!({})),
+        ("get_status", json!({})),
+        ("set_volume", json!({"volume": 50})),
         ("play_station", json!({"id": "jazz-id", "wait_seconds": 0})),
     ] {
         args["report_plays"] = json!(true);
@@ -805,11 +809,6 @@ async fn an_agents_play_is_counted_only_if_the_user_allowed_it() {
     crate::view_options::set_report_plays(true);
     s.call("play_station", json!({"id": "jazz-id", "wait_seconds": 0}))
         .await;
-    let settings = s.call("get_settings", json!({})).await;
-    assert_eq!(
-        settings["structuredContent"]["report_play_count"]["allowed"],
-        true
-    );
     // Looking a station up is not a play
     s.call("get_station", json!({"id": "jazz-id"})).await;
     tokio::time::sleep(Duration::from_millis(150)).await;
@@ -890,104 +889,6 @@ async fn favorites_are_found_by_text_and_put_in_a_new_order() {
     assert_eq!(r["isError"], true, "{r}");
     let all = s.call("list_favorites", json!({})).await;
     assert_eq!(names(&all), ["News 24", "Jazz FM", "Rock FM"]);
-}
-
-#[tokio::test]
-async fn the_equalizer_is_switched_and_given_a_preset() {
-    let mut s = Session::start(Duration::ZERO).await;
-    s.legacy_handshake("2025-11-25").await;
-    let presets = radiotrope::audio::PRESETS;
-    let preset = presets[1].name;
-
-    let r = s
-        .call(
-            "set_equalizer",
-            json!({"enabled": true, "preset": preset.to_lowercase()}),
-        )
-        .await;
-    assert_eq!(text(&r), format!("Equalizer on, preset {preset}"));
-    assert!(matches!(
-        s.commands.try_recv(),
-        Ok(AppCommand::SetEqPreset(name)) if name == preset
-    ));
-    assert!(matches!(
-        s.commands.try_recv(),
-        Ok(AppCommand::SetEqEnabled(true))
-    ));
-
-    // A preset alone leaves the switch as it is, and says so when off
-    let r = s.call("set_equalizer", json!({"preset": preset})).await;
-    assert!(text(&r).contains("the equalizer is off"), "{r}");
-    assert!(matches!(
-        s.commands.try_recv(),
-        Ok(AppCommand::SetEqPreset(_))
-    ));
-    assert!(s.commands.try_recv().is_err());
-
-    let r = s.call("set_equalizer", json!({"enabled": false})).await;
-    assert_eq!(text(&r), "Equalizer off");
-    assert!(matches!(
-        s.commands.try_recv(),
-        Ok(AppCommand::SetEqEnabled(false))
-    ));
-
-    // An unknown preset names the ones there are; nothing given is refused
-    let r = s
-        .call("set_equalizer", json!({"preset": "No Such Sound"}))
-        .await;
-    assert_eq!(r["isError"], true, "{r}");
-    assert!(text(&r).contains(presets[0].name), "{r}");
-    let r = s.call("set_equalizer", json!({})).await;
-    assert_eq!(r["isError"], true, "{r}");
-    assert!(s.commands.try_recv().is_err());
-}
-
-#[tokio::test]
-async fn settings_show_the_equalizer_and_the_recording_settings() {
-    let mut s = Session::start(Duration::ZERO).await;
-    s.legacy_handshake("2025-11-25").await;
-    let preset = radiotrope::audio::PRESETS[1].name;
-    {
-        let mut st = s.state.lock().unwrap();
-        st.eq_enabled = true;
-        st.eq_preset_name = Some(preset.into());
-        st.recording_setup = crate::app::state::RecordingSetup {
-            dir: Some(std::env::temp_dir().join("rt-settings-test")),
-            format: radiotrope::audio::RecordingFormat::Opus,
-            bitrate: Some(96),
-            with_eq: true,
-        };
-    }
-    let r = s.call("get_settings", json!({})).await;
-    let settings = &r["structuredContent"];
-    assert_eq!(settings["equalizer"]["enabled"], true);
-    assert_eq!(settings["equalizer"]["preset"], preset);
-    assert_eq!(
-        settings["equalizer"]["presets"].as_array().unwrap().len(),
-        radiotrope::audio::PRESETS.len()
-    );
-    assert_eq!(
-        settings["recording"],
-        json!({
-            "folder": std::env::temp_dir().join("rt-settings-test").display().to_string(),
-            "format": "opus",
-            "bitrate_kbps": 96,
-            "with_equalizer": true,
-        })
-    );
-    let note = settings["report_play_count"]["note"].as_str().unwrap();
-    assert!(note.contains("only the user"), "{note}");
-    assert!(!note.contains("  "), "{note}");
-    // Reading changes nothing
-    assert!(s.commands.try_recv().is_err());
-    let by_name = s.request("tools/list", json!({})).await["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|t| t["name"] == "get_settings")
-        .unwrap()
-        .clone();
-    assert_eq!(by_name["annotations"]["readOnlyHint"], true);
 }
 
 #[tokio::test]
