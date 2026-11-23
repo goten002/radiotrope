@@ -43,9 +43,10 @@ fn the_menus_work_with_the_keyboard_only() {
     let press_keys = |list: &[Key]| keys(&ui, &time, list);
 
     // F10, Down: the Open menu with its first row; Right three times: the
-    // Tools menu; its third row is Equalizer
+    // Tools menu; Up from its first row wraps to the last, Connections, and
+    // the row above that is Equalizer
     press_keys(&[
-        F10, DownArrow, RightArrow, RightArrow, RightArrow, DownArrow, DownArrow,
+        F10, DownArrow, RightArrow, RightArrow, RightArrow, UpArrow, UpArrow,
     ]);
     assert!(!ui.get_dialog_open(), "nothing opens before Enter");
     press_keys(&[Return]);

@@ -87,15 +87,12 @@ fn recording_starts_from_r_and_the_tools_menu_and_stops_from_the_rec_chip() {
     settle(&time);
     assert_eq!(toggles.get(), 1, "R starts a recording");
 
-    // Tools > Start Recording, its fourth row: F10, Down opens the first
+    // Tools > Start Recording, its first row: F10, Down opens the first
     // menu, Right three times is Tools
     keys(
         &ui,
         &time,
-        &[
-            F10, DownArrow, RightArrow, RightArrow, RightArrow, DownArrow, DownArrow, DownArrow,
-            Return,
-        ],
+        &[F10, DownArrow, RightArrow, RightArrow, RightArrow, Return],
     );
     assert_eq!(toggles.get(), 2, "Tools > Start Recording");
 
