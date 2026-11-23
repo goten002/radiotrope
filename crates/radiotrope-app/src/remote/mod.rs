@@ -9,6 +9,7 @@ mod controls;
 mod library;
 pub mod mdns;
 pub mod pairing;
+pub mod presence;
 pub mod recordings;
 pub mod server;
 pub mod state;
@@ -123,6 +124,7 @@ impl Remote {
                 calls: Default::default(),
                 tls,
                 recordings: Default::default(),
+                presence: Default::default(),
             },
             running: Mutex::new(None),
             asked: AtomicU64::new(0),
@@ -247,6 +249,21 @@ impl Remote {
         let mut devices = self.store().devices.clone();
         devices.sort_by_key(|d| std::cmp::Reverse(d.last_used.max(d.paired_at)));
         devices
+    }
+
+    /// The paired phones with the app connected now (see [`presence`]),
+    /// used most recently first. Doesn't wait for a server being set up:
+    /// the window shows none itself while Remote Control is off.
+    pub fn online(&self) -> Vec<presence::Online> {
+        let devices = self.devices();
+        let paired: Vec<&str> = devices.iter().map(|d| d.id.as_str()).collect();
+        let listening = webrtc::listening(&self.shared.calls());
+        presence::online(
+            &paired,
+            &presence::lock(&self.shared.presence),
+            &listening,
+            Instant::now(),
+        )
     }
 
     /// Forget a phone; its token stops working at once

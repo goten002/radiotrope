@@ -186,6 +186,7 @@ impl Player {
             calls: Default::default(),
             tls: server::tls_config(&cert).unwrap(),
             recordings: Default::default(),
+            presence: Default::default(),
         };
         let server = server::start(SocketAddr::from(([127, 0, 0, 1], 0)), shared.clone()).unwrap();
         Player {
@@ -607,6 +608,43 @@ async fn the_event_stream_starts_with_the_state_and_follows_it() {
 
     player.state.lock().unwrap().volume = 0.2;
     read_until(&mut stream, &mut seen, "\"volume\":20").await;
+}
+
+#[tokio::test]
+async fn a_phone_is_connected_while_its_event_stream_is_open() {
+    use super::presence::{self, GRACE};
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    // Pairing alone isn't a connected app
+    let connected =
+        |at: Instant| presence::lock(&player.shared.presence).is_connected("phone-1", at);
+    assert!(!connected(Instant::now()));
+
+    let mut stream = player.connect().await;
+    let request = format!(
+        "GET /v1/events HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {token}\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).await.unwrap();
+    let mut buf = [0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buf))
+        .await
+        .expect("no event within 5 s")
+        .unwrap();
+    assert!(n > 0);
+    // Open: connected even past the grace
+    assert!(connected(Instant::now() + GRACE * 2));
+
+    // Closed: only the grace is left
+    drop(stream);
+    let started = Instant::now();
+    while connected(Instant::now() + GRACE) {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the stream stays counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(connected(Instant::now()));
 }
 
 #[tokio::test]
@@ -1449,6 +1487,7 @@ async fn a_paired_phone_listens_over_webrtc_and_hangs_up() {
     let calling = std::thread::spawn(move || phone.run(&sdp, Duration::from_secs(3)));
     let (_, state) = player.request("GET", "/v1/state", Some(&token), None).await;
     assert_eq!(state["listeners"], json!(["Pixel"]));
+    assert!(super::webrtc::listening(&player.shared.calls()).contains("phone-1"));
     let (packets, hung_up) = calling.join().unwrap();
     assert!(!hung_up);
     assert!(packets.len() >= 40, "only {} packets", packets.len());

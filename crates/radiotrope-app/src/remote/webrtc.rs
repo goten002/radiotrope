@@ -67,6 +67,11 @@ pub struct Call {
 /// Calls by their id
 pub type Calls = HashMap<String, Call>;
 
+/// The phones with a call in progress
+pub(super) fn listening(calls: &Calls) -> std::collections::HashSet<String> {
+    calls.values().map(|c| c.device_id.clone()).collect()
+}
+
 #[derive(Deserialize)]
 struct Offer {
     sdp: String,
