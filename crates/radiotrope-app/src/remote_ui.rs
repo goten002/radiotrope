@@ -3,8 +3,9 @@
 //!
 //! Every change is saved at once and the server set up again to match.
 //! A timer shows what the server changed on its own: phones pairing,
-//! paired or seen. It runs only while the server is on or the dialog is
-//! open: with both off, nothing can change.
+//! paired, seen, connecting or listening (the dialog's list and the menu
+//! bar's phones chip). It runs only while the server is on or the dialog
+//! is open: with both off, nothing can change.
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -16,8 +17,9 @@ use radiotrope_app::config::remote::{PORT, WEBRTC_PORTS};
 use radiotrope_app::data::remote::Device;
 use radiotrope_app::data::settings::Settings;
 
+use crate::remote::presence::Online;
 use crate::remote::{Remote, Status};
-use crate::{App, RemoteDevice};
+use crate::{App, ConnectedPhone, RemoteDevice};
 
 /// How often the window looks for a pairing phone or a change in the list
 const REFRESH: std::time::Duration = std::time::Duration::from_millis(250);
@@ -37,7 +39,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> Rc<s
     ui.set_remote_name_placeholder(crate::remote::mdns::computer_name().into());
     ui.set_remote_address_note(address_note().into());
     let Some(remote) = remote else { return timer };
-    show_devices(ui, &remote.devices());
+    show_devices(ui, &remote.devices(), &[]);
     remote.apply_later(settings, show_status_later(ui));
 
     // Wakes the stopped timer: the server was turned on, or the dialog opened
@@ -102,7 +104,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> Rc<s
             wake();
             remote.unlock_pairing();
             if let Some(ui) = ui_weak.upgrade() {
-                show_devices(&ui, &remote.devices());
+                show_devices(&ui, &remote.devices(), &online(&ui, &remote));
             }
         }
     });
@@ -112,7 +114,7 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> Rc<s
         move |id| {
             remote.remove_device(&id);
             if let Some(ui) = ui_weak.upgrade() {
-                show_devices(&ui, &remote.devices());
+                show_devices(&ui, &remote.devices(), &online(&ui, &remote));
             }
         }
     });
@@ -186,10 +188,11 @@ pub fn setup(ui: &App, remote: Option<Arc<Remote>>, settings: &Settings) -> Rc<s
             }
         }
         let changes = remote.changes();
-        let rows = rows(&remote.devices(), now());
+        let rows = rows(&remote.devices(), &online(&ui, &remote), now());
         if changes != seen_changes || rows != shown_devices {
             seen_changes = changes;
             ui.set_remote_devices(Rc::new(VecModel::from(rows.clone())).into());
+            show_phones(&ui, &rows);
             shown_devices = rows;
         }
         // Off and out of sight: sleep until the server or the dialog wakes it
@@ -270,19 +273,62 @@ fn short_status(status: &Status) -> &'static str {
     }
 }
 
-fn show_devices(ui: &App, devices: &[Device]) {
-    ui.set_remote_devices(Rc::new(VecModel::from(rows(devices, now()))).into());
+/// The phones with the app connected now; none while Remote Control is
+/// off (a server going away may not have let go of them yet)
+fn online(ui: &App, remote: &Remote) -> Vec<Online> {
+    if ui.get_remote_on() {
+        remote.online()
+    } else {
+        Vec::new()
+    }
 }
 
-fn rows(devices: &[Device], now: i64) -> Vec<RemoteDevice> {
+fn show_devices(ui: &App, devices: &[Device], online: &[Online]) {
+    let rows = rows(devices, online, now());
+    ui.set_remote_devices(Rc::new(VecModel::from(rows.clone())).into());
+    show_phones(ui, &rows);
+}
+
+fn rows(devices: &[Device], online: &[Online], now: i64) -> Vec<RemoteDevice> {
     devices
         .iter()
-        .map(|d| RemoteDevice {
-            id: d.id.as_str().into(),
-            name: d.name.as_str().into(),
-            seen: seen_label(d.last_used.max(d.paired_at), now).into(),
+        .map(|d| {
+            let seen = online.iter().find(|o| o.id == d.id);
+            RemoteDevice {
+                id: d.id.as_str().into(),
+                name: d.name.as_str().into(),
+                seen: seen_label(d.last_used.max(d.paired_at), now).into(),
+                connected: seen.is_some(),
+                listening: seen.is_some_and(|o| o.listening),
+            }
         })
         .collect()
+}
+
+/// The connected phones of the dialog's `rows`, for the menu bar's chip,
+/// and how many of them listen
+fn connected_phones(rows: &[RemoteDevice]) -> (Vec<ConnectedPhone>, i32) {
+    let phones: Vec<ConnectedPhone> = rows
+        .iter()
+        .filter(|r| r.connected)
+        .map(|r| ConnectedPhone {
+            name: r.name.clone(),
+            listening: r.listening,
+        })
+        .collect();
+    let listening = phones.iter().filter(|p| p.listening).count() as i32;
+    (phones, listening)
+}
+
+/// The menu bar's phones chip (set only when it changes)
+fn show_phones(ui: &App, rows: &[RemoteDevice]) {
+    use slint::Model as _;
+    let (phones, listening) = connected_phones(rows);
+    let shown = ui.get_remote_phones();
+    if shown.row_count() != phones.len() || !shown.iter().eq(phones.iter().cloned()) {
+        ui.set_remote_phones(Rc::new(VecModel::from(phones)).into());
+    }
+    ui.set_remote_phones_listening(listening);
 }
 
 /// "Used just now", "Used 5 min ago", "Used 3 h ago", "Used 2 days ago"
@@ -340,6 +386,49 @@ mod tests {
         assert_eq!(seen_label(0, 3 * 86_400), "Used 3 days ago");
         // A clock set back
         assert_eq!(seen_label(500, 100), "Used just now");
+    }
+
+    fn device(id: &str, name: &str) -> Device {
+        Device {
+            id: id.into(),
+            name: name.into(),
+            token: String::new(),
+            paired_at: 0,
+            last_used: 0,
+        }
+    }
+
+    #[test]
+    fn rows_say_which_phones_are_connected_and_listening() {
+        let devices = [
+            device("a", "Maya's phone"),
+            device("b", "Kitchen tablet"),
+            device("c", "Old phone"),
+        ];
+        let online = [
+            Online {
+                id: "a".into(),
+                listening: true,
+            },
+            Online {
+                id: "b".into(),
+                listening: false,
+            },
+        ];
+        let rows = rows(&devices, &online, 0);
+        let flags: Vec<(bool, bool)> = rows.iter().map(|r| (r.connected, r.listening)).collect();
+        assert_eq!(flags, [(true, true), (true, false), (false, false)]);
+
+        // The chip: the connected ones, in the dialog's order
+        let (phones, listening) = connected_phones(&rows);
+        let names: Vec<&str> = phones.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["Maya's phone", "Kitchen tablet"]);
+        assert_eq!(listening, 1);
+
+        // Nobody connected: no chip
+        let (phones, listening) = connected_phones(&super::rows(&devices, &[], 0));
+        assert!(phones.is_empty());
+        assert_eq!(listening, 0);
     }
 
     #[test]

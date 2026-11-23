@@ -25,8 +25,8 @@ use crate::headless::HeadlessPlatform;
 use crate::mcp::setup::{self, AgentApp};
 use crate::{
     flag_image, remote_ui::qr_image, show_eq_presets, AboutInfo, AgentRow, App, BrowseStation,
-    Defaults, FavoriteStation, FilterEntry, RemoteDevice, ScheduleDraft, ScheduleRow, ViewOptions,
-    VizData,
+    ConnectedPhone, Defaults, FavoriteStation, FilterEntry, RemoteDevice, ScheduleDraft,
+    ScheduleRow, ViewOptions, VizData,
 };
 
 #[derive(clap::ValueEnum, Clone, Copy, Default)]
@@ -497,10 +497,16 @@ const SHOTS: &[Shot] = &[
         "Connected and recently seen AI agents.",
     ),
     Shot::new(
-        "listeners-bubble",
+        "phones-chip",
         "bubble",
-        "listeners",
-        "Phones listening to the current stream.",
+        "phones-one",
+        "Menu bar chip: one phone with the Remote app connected.",
+    ),
+    Shot::new(
+        "phones-bubble",
+        "bubble",
+        "phones",
+        "Phones connected (two), the one listening marked.",
     ),
     Shot::new(
         "search-results",
@@ -1506,12 +1512,23 @@ fn seed_connections(ui: &App) {
         RemoteDevice {
             id: "phone-1".into(),
             name: "Maya's phone".into(),
-            seen: "Used 5 min ago".into(),
+            seen: "Used just now".into(),
+            connected: true,
+            listening: true,
+        },
+        RemoteDevice {
+            id: "phone-3".into(),
+            name: "Studio iPad".into(),
+            seen: "Used just now".into(),
+            connected: true,
+            listening: false,
         },
         RemoteDevice {
             id: "phone-2".into(),
             name: "Kitchen tablet".into(),
             seen: "Used yesterday".into(),
+            connected: false,
+            listening: false,
         },
     ]));
 }
@@ -1819,8 +1836,23 @@ fn configure(ui: &App, shot: &Shot) {
                         connected: false,
                     },
                 ]));
+            } else if shot.state == "phones-one" {
+                ui.set_remote_phones(model([ConnectedPhone {
+                    name: "Maya's phone".into(),
+                    listening: false,
+                }]));
             } else {
-                ui.set_listeners(strings(["Maya's phone", "Kitchen tablet"]));
+                ui.set_remote_phones(model([
+                    ConnectedPhone {
+                        name: "Maya's phone".into(),
+                        listening: true,
+                    },
+                    ConnectedPhone {
+                        name: "Studio iPad".into(),
+                        listening: false,
+                    },
+                ]));
+                ui.set_remote_phones_listening(1);
             }
         }
         "agents" => {

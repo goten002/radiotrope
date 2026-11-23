@@ -1,9 +1,79 @@
 import { DesktopShortcuts, ShortcutAction } from "shortcuts.slint";
-import { Theme, ViewOptions } from "defaults.slint";
+import { Theme, Defaults, ViewOptions } from "defaults.slint";
 import { ScrollBar } from "scroll-bar.slint";
-import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Picker } from "components.slint";
+import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Picker, Chip, ChipVariant } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
+
+// A phone with the Radiotrope Remote app connected, for the menu bar chip
+export struct ConnectedPhone {
+    name: string,
+    // The station's sound is sent to it
+    listening: bool,
+}
+
+// A connected phone as screen readers hear it in the chip's description
+global PhoneNames {
+    pure public function name(phone: ConnectedPhone) -> string {
+        phone.listening ? phone.name + " (listening)" : phone.name
+    }
+}
+
+// The phones chip's list: the phones connected, each listening one with a
+// "Listening" chip (as in the Remote Control dialog)
+export component PhonesBubble inherits PopupCard {
+    in property <[ConnectedPhone]> phones;
+
+    width: max(Defaults.info-tip-width, bubble.preferred-width);
+    height: bubble.preferred-height;
+
+    bubble := VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 8px;
+        padding-bottom: 10px;
+        spacing: 6px;
+
+        Text {
+            text: root.phones.length == 1 ? "PHONE CONNECTED" : "PHONES CONNECTED";
+            color: Theme.text-secondary;
+            font-size: Theme.font-xs;
+            font-weight: Theme.weight-semibold;
+            letter-spacing: 0.5px;
+        }
+
+        for phone in root.phones: HorizontalLayout {
+            spacing: 8px;
+
+            VerticalLayout {
+                alignment: center;
+                Icon {
+                    width: 13px;
+                    height: 13px;
+                    source: @image-url("icons/phone.svg");
+                    colorize: Theme.text-secondary;
+                }
+            }
+            Text {
+                text: phone.name;
+                color: Theme.text-primary;
+                font-size: Theme.font-md;
+                font-weight: Theme.weight-semibold;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if phone.listening: VerticalLayout {
+                alignment: center;
+                Chip {
+                    text: "Listening";
+                    variant: ChipVariant.success;
+                    keep: true;
+                }
+            }
+        }
+    }
+}
 
 // Where the arrow keys are in the open menu. Every row has a slot number
 // in its menu; one menu is open at a time, so one place holds the active
@@ -791,16 +861,18 @@ export component MenuBar inherits Rectangle {
     out property <length> agents-bubble-right;
     out property <length> agents-bubble-top;
     property <bool> agents-hover: false;
-    // Phones listening to the player (Remote Control): a chip beside the
-    // agents chip, only while there are any
-    in property <[string]> listeners;
-    out property <bool> listeners-bubble-open: root.listeners.length > 0 && root.listeners-hover;
-    out property <length> listeners-bubble-right;
-    out property <length> listeners-bubble-top;
-    property <bool> listeners-hover: false;
-    changed listeners => {
-        if root.listeners.length == 0 {
-            root.listeners-hover = false;
+    // Phones with the Radiotrope Remote app connected (Remote Control): a
+    // chip beside the agents chip, only while there are any
+    in property <[ConnectedPhone]> phones;
+    // How many of them listen to the station
+    in property <int> phones-listening;
+    out property <bool> phones-bubble-open: root.phones.length > 0 && root.phones-hover;
+    out property <length> phones-bubble-right;
+    out property <length> phones-bubble-top;
+    property <bool> phones-hover: false;
+    changed phones => {
+        if root.phones.length == 0 {
+            root.phones-hover = false;
         }
     }
     // The chip goes away with the last agent, and its hover with it
@@ -1042,25 +1114,27 @@ export component MenuBar inherits Rectangle {
             }
         }
 
-        if root.listeners.length > 0: VerticalLayout {
+        if root.phones.length > 0: VerticalLayout {
             alignment: center;
             padding-right: 6px;
             AgentsChip {
-                count: root.listeners.length;
-                label: root.listeners.length == 1 ? "1 phone listening" : root.listeners.length + " phones listening";
+                count: root.phones.length;
+                // "2 phones connected, 1 listening"
+                label: (root.phones.length == 1 ? "1 phone connected" : root.phones.length + " phones connected")
+                    + (root.phones-listening > 0 ? ", " + root.phones-listening + " listening" : "");
                 // The names in the bubble (the first three)
-                description: root.listeners[0]
-                    + (root.listeners.length > 1 ? ", " + root.listeners[1] : "")
-                    + (root.listeners.length > 2 ? ", " + root.listeners[2] : "")
-                    + (root.listeners.length > 3 ? " and " + (root.listeners.length - 3) + " more" : "");
-                snapshot-bubble: root.snapshot-bubble == "listeners";
-                icon: @image-url("icons/headphones.svg");
+                description: PhoneNames.name(root.phones[0])
+                    + (root.phones.length > 1 ? ", " + PhoneNames.name(root.phones[1]) : "")
+                    + (root.phones.length > 2 ? ", " + PhoneNames.name(root.phones[2]) : "")
+                    + (root.phones.length > 3 ? " and " + (root.phones.length - 3) + " more" : "");
+                snapshot-bubble: root.snapshot-bubble == "phones";
+                icon: @image-url("icons/phone.svg");
                 show-bubble(right, top) => {
-                    root.listeners-bubble-right = right;
-                    root.listeners-bubble-top = top;
-                    root.listeners-hover = true;
+                    root.phones-bubble-right = right;
+                    root.phones-bubble-top = top;
+                    root.phones-hover = true;
                 }
-                hide-bubble => { root.listeners-hover = false; }
+                hide-bubble => { root.phones-hover = false; }
             }
         }
 

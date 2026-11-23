@@ -5,11 +5,15 @@ import { DialogShell, Toggle, InfoTip, IconButton, Icon, Chip, ChipVariant, Sect
 import { CopyLine, RowLabel } from "agents.slint";
 import { ScrollBar } from "../scroll-bar.slint";
 
-// A paired phone, and when it was last used ("Used 5 min ago")
+// A paired phone, when it was last used ("Used 5 min ago"), and whether
+// the app is connected now and listening (the menu bar's phones chip
+// shows the same)
 export struct RemoteDevice {
     id: string,
     name: string,
     seen: string,
+    connected: bool,
+    listening: bool,
 }
 
 component DeviceRow inherits Rectangle {
@@ -54,6 +58,16 @@ component DeviceRow inherits Rectangle {
                 color: root.confirm-remove ? Theme.danger-text : Theme.text-secondary;
                 font-size: Theme.font-sm;
                 overflow: elide;
+            }
+        }
+
+        // Nothing for a phone that isn't connected
+        if root.device.connected || root.device.listening: VerticalLayout {
+            alignment: center;
+            Chip {
+                text: root.device.listening ? "Listening" : "Connected";
+                variant: root.device.listening ? ChipVariant.success : ChipVariant.neutral;
+                keep: true;
             }
         }
 

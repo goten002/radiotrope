@@ -38,7 +38,7 @@ use radiotrope_app::network::logo::LogoService;
 
 use super::pairing::{CheckError, Pairing, StartError};
 use super::state::State;
-use super::{controls, library, recordings, webrtc, WindowHooks};
+use super::{controls, library, presence, recordings, webrtc, WindowHooks};
 use crate::control::{self, Control, Played, MAX_NAME_CHARS, MAX_URL_CHARS};
 
 pub(super) type Body = BoxBody<Bytes, Infallible>;
@@ -75,6 +75,8 @@ pub struct Shared {
     pub tls: Arc<rustls::ServerConfig>,
     /// Recordings shared with phones
     pub recordings: Arc<recordings::Recordings>,
+    /// Which phones have the app connected now
+    pub presence: Arc<Mutex<presence::Presence>>,
 }
 
 impl Shared {
@@ -355,6 +357,7 @@ pub async fn handle(
         );
         return response;
     };
+    presence::lock(&shared.presence).request(&caller.device_id, Instant::now());
 
     match (&method, parts.as_slice()) {
         (&Method::DELETE, ["v1", "pair"]) => unpair(shared, &caller).await,
@@ -896,7 +899,10 @@ fn events(shared: &Shared, caller: Caller, cancel: CancellationToken) -> Respons
     let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(8);
     let control = shared.control.clone();
     let shared = shared.clone();
+    // The phone counts as connected while the stream is open
+    let open = presence::StreamGuard::open(&shared.presence, &caller.device_id);
     tokio::spawn(async move {
+        let _open = open;
         let mut last: Option<State> = None;
         let mut quiet_since = Instant::now();
         loop {
