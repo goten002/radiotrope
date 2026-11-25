@@ -61,16 +61,22 @@ fn the_menus_work_with_the_keyboard_only() {
     press_keys(&[Return]);
     assert_eq!(ui.get_theme_mode(), "light", "Enter on View > Theme");
 
-    // Four rows down is the Visualizer Style group: Right unfolds it, its
-    // second style is Spectrum
+    // Two rows down is Visualizer: Enter turns it off, which greys Station
+    // Colors in Visualizer under it, so Down skips that row to Show
+    // Listening Stats; Up skips it again on the way back
+    assert!(ui.get_show_visualizer());
+    press_keys(&[DownArrow, DownArrow, Return]);
+    assert!(!ui.get_show_visualizer(), "View > Visualizer");
+    assert!(ui.get_show_station_stats());
+    press_keys(&[DownArrow, Return]);
+    assert!(
+        !ui.get_show_station_stats(),
+        "Down skips the greyed Station Colors row"
+    );
+    press_keys(&[UpArrow, Return]);
+    assert!(ui.get_show_visualizer(), "Up skips it too, to Visualizer");
+    // The style is changed only on the tile
     assert_eq!(ui.get_viz_mode(), "wave");
-    press_keys(&[DownArrow, DownArrow, DownArrow, DownArrow]);
-    press_keys(&[RightArrow, DownArrow, DownArrow, Return]);
-    assert_eq!(ui.get_viz_mode(), "spectrum", "View > Visualizer Style");
-    // Left folds the group and goes back to its row; Enter unfolds it
-    // again, and the first style under it is Wave
-    press_keys(&[LeftArrow, Return, DownArrow, Return]);
-    assert_eq!(ui.get_viz_mode(), "wave", "the group row after Left");
 
     // Home is the theme row again; Up from there goes round to the last
     // row, the folded System Tray group, and the one above it is Window
@@ -85,7 +91,7 @@ fn the_menus_work_with_the_keyboard_only() {
         "View > Window > Rounded Corners"
     );
 
-    // Left folds the Window group and stops on its row (slot 18); Left
+    // Left folds the Window group and stops on its row (slot 11); Left
     // again is Stations, whose first row opens the search. The View menu's
     // own first row must not take the focus back on the way.
     press_keys(&[LeftArrow, LeftArrow]);

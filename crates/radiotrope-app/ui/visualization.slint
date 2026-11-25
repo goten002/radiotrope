@@ -1,4 +1,5 @@
-import { Theme } from "defaults.slint";
+import { Theme, Defaults } from "defaults.slint";
+import { PopupCard } from "components.slint";
 import { ButtonKeys, FocusRing } from "component-primitives.slint";
 
 // Live audio levels, written from Rust about 30 times a second
@@ -52,7 +53,7 @@ export global VizStyle {
         return "wave";
     }
 
-    // The style's name as the View menu and the tile show it
+    // The style's name, as the tile's hint and screen readers give it
     public pure function mode-name(mode: string) -> string {
         if mode == "spectrum" { return "Spectrum"; }
         if mode == "mirror" { return "Mirror"; }
@@ -428,22 +429,27 @@ export component VizContent inherits Rectangle {
 }
 
 // 70px tile in the header: a button that cycles the style (click, Space or
-// Enter). Hovering outlines it; the style's name is only spoken (screen
-// readers), not drawn over the picture.
+// Enter), the only way to change it. Hovering outlines it, and after a rest
+// a hint to its left names the style and says a click changes it; the name
+// is never drawn over the picture.
 export component Visualization inherits Rectangle {
     in property <bool> is-loading;
     in-out property <string> viz-mode: "wave";
     // Off while a dialog is open: the tile leaves the Tab order
     in property <bool> enabled: true;
-    // Headless capture: the outline as on hover
+    // Headless capture: the outline and the hint as on hover
     in property <bool> snapshot-name;
+    property <string> hint: "Visualizer: " + VizStyle.mode-name(root.viz-mode) + ". Click for the next style";
+    // The pointer has rested on the tile, or Tab reached it
+    property <bool> hint-ready: false;
+    property <bool> hint-shown: (root.hint-ready && (touch.has-hover || keys.has-focus)) || root.snapshot-name;
 
     width: 70px;
     height: 70px;
 
     accessible-role: button;
-    accessible-label: "Visualizer style: " + VizStyle.mode-name(root.viz-mode);
-    accessible-description: "Changes to " + VizStyle.mode-name(VizStyle.next-mode(root.viz-mode));
+    accessible-label: "Visualizer: " + VizStyle.mode-name(root.viz-mode);
+    accessible-description: "Click for the next style, " + VizStyle.mode-name(VizStyle.next-mode(root.viz-mode));
     accessible-action-default => { root.next(); }
 
     function next() {
@@ -480,5 +486,37 @@ export component Visualization inherits Rectangle {
 
     if keys.has-focus: FocusRing {
         radius: Theme.radius-md;
+    }
+
+    hint-timer := Timer {
+        interval: Defaults.hover-delay;
+        running: (touch.has-hover || keys.has-focus) && !root.hint-ready;
+        triggered => { root.hint-ready = true; }
+    }
+    changed hint-shown => {
+        if !touch.has-hover && !keys.has-focus { root.hint-ready = false; }
+    }
+
+    // The hint, to the left of the tile (the header's right end), like a
+    // chip's bubble; the tile says it already to screen readers
+    if root.hint-shown: PopupCard {
+        width: hint-layout.preferred-width;
+        height: hint-layout.preferred-height;
+        x: -self.width - Theme.space-6;
+        y: (root.height - self.height) / 2;
+
+        hint-layout := VerticalLayout {
+            padding-left: Theme.space-12;
+            padding-right: Theme.space-12;
+            padding-top: Theme.space-8;
+            padding-bottom: Theme.space-8;
+
+            Text {
+                text: root.hint;
+                font-size: Theme.font-md;
+                color: Theme.text-primary;
+                accessible-role: none;
+            }
+        }
     }
 }
