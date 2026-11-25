@@ -1,9 +1,10 @@
 # The Linux release files, for x86_64 and aarch64, and the checks that they
 # install and start on the distributions they are for.
 #
-# Called by release.yml with the version it expects; run it by hand (Actions >
-# Package Linux > Run workflow) to get the files as workflow artefacts from
-# any branch. It never publishes anything.
+# Called by release.yml with the version it expects, and run by pull requests
+# that change the Linux packaging; run it by hand (Actions > Package Linux >
+# Run workflow) to get the files as workflow artefacts. It never publishes
+# anything.
 #
 # Artefacts: dist-linux-<arch> (tarball, .deb, .rpm, AppImage and its .zsync),
 # dist-linux-flatpak-<arch> (the .flatpak bundle) and dist-probe-linux-<arch>
@@ -20,6 +21,17 @@ on:
         required: false
         default: ""
   workflow_dispatch:
+  # A pull request that changes the Linux packaging runs it too: artefacts only
+  pull_request:
+    paths:
+      - Makefile
+      - packaging/linux/**
+      - packaging/appimage/**
+      - packaging/flatpak/**
+      - packaging/arch/**
+      - packaging/probe/**
+      - crates/radiotrope-app/Cargo.toml
+      - .github/workflows/package-linux.yml
 
 permissions:
   contents: read
