@@ -6,16 +6,16 @@
 #
 # Usage: packaging/macos/bundle.sh [OUT_DIR]     (default: target/dist)
 #
-# The three programs are built for arm64 and x86_64 and joined with lipo
+# The two programs are built for arm64 and x86_64 and joined with lipo
 # (one download for every Mac), and all go inside the bundle:
 #
 #   Radiotrope.app/Contents/
 #     Info.plist, PkgInfo
-#     MacOS/radiotrope, radiotrope-cli, radiotrope-probe   (universal)
+#     MacOS/radiotrope, radiotrope-cli   (universal)
 #     Resources/Radiotrope.icns, update-mode, LICENSE, THIRD-PARTY-LICENSES
 #     Resources/man/man1/*.1, Resources/completions/{bash,zsh,fish}/
 #
-# The Homebrew cask (phase 3) links the CLI, the probe, the man pages and the
+# The Homebrew cask (phase 3) links the CLI, the man pages and the
 # completions from there into the PATH.
 #
 # Nothing is signed with a certificate yet: the bundle gets an ad-hoc
@@ -37,7 +37,9 @@ mkdir -p "${1:-target/dist}"
 OUT=$(cd "${1:-target/dist}" && pwd)
 ARCHS=${ARCHS:-aarch64 x86_64}
 FORMATS=${FORMATS:-dmg zip}
-PROGRAMS="radiotrope radiotrope-cli radiotrope-probe"
+# Not radiotrope-probe: it is a separate download, in no package (owner
+# decision)
+PROGRAMS="radiotrope radiotrope-cli"
 APP_ID=app.radiotrope.Radiotrope
 
 # The oldest macOS the programs run on: the compiler's and the linker's
@@ -71,7 +73,7 @@ echo "Radiotrope $VERSION for macOS $MIN_MACOS+ ($ARCHS): $FORMATS -> $OUT"
 if [ -z "${SKIP_BUILD:-}" ]; then
     for arch in $ARCHS; do
         cargo build --release --locked --target "$arch-apple-darwin" \
-            -p radiotrope-app -p radiotrope-cli -p radiotrope-probe
+            -p radiotrope-app -p radiotrope-cli
     done
     cargo run --locked --quiet -p xtask -- man-and-completions target/generated
 fi
@@ -164,7 +166,7 @@ sips -z 1024 1024 assets/icons/icon-512.png --out "$ICONSET/icon_512x512@2x.png"
 iconutil -c icns -o "$APP/Contents/Resources/Radiotrope.icns" "$ICONSET"
 
 # 4. Ad-hoc signature of the programs and the bundle, which seals Info.plist
-#    and Resources (--deep: the CLI and the probe too). Phase 3 replaces this
+#    and Resources (--deep: the CLI too). Phase 3 replaces this
 #    with the Developer ID signature (entitlements.plist, hardened runtime,
 #    inner programs first) and notarization.
 codesign --force --deep --sign - "$APP"

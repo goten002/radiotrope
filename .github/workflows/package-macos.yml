@@ -83,7 +83,7 @@ jobs:
           app=dist/stage/Radiotrope.app
           find "$app" -type f | sed "s|^$app/||" | sort
           plutil -p "$app/Contents/Info.plist"
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             lipo -info "$app/Contents/MacOS/$p"
           done
           codesign -dv --verbose=2 "$app" 2>&1
@@ -153,7 +153,7 @@ jobs:
           codesign -dv "$app" 2>&1 | tee sig.txt
           grep -q 'Signature=adhoc' sig.txt
           spctl --assess --type execute --verbose "$app" || echo "Gatekeeper rejects it, as expected for an unsigned app"
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             archs=$(lipo -archs "$app/Contents/MacOS/$p")
             echo "$p: $archs"
             for a in arm64 x86_64; do
@@ -164,10 +164,12 @@ jobs:
           test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "${VERSION%%-*}"
           test "$(cat "$app/Contents/Resources/update-mode")" = notify
           test -s "$app/Contents/Resources/Radiotrope.icns"
+          # The probe is a separate download, in no package
+          test ! -e "$app/Contents/MacOS/radiotrope-probe"
 
       - name: Programs report their version
         run: |
-          for p in radiotrope-cli radiotrope-probe; do
+          for p in radiotrope-cli; do
             out=$(mnt/Radiotrope.app/Contents/MacOS/$p --version)
             echo "$out"
             test "$out" = "$p $VERSION"

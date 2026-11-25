@@ -311,12 +311,11 @@ phone can't find or control the player. To change it later: **System
 Settings > Privacy & Security > Local Network**. With the macOS firewall on,
 it also asks once whether to accept incoming connections.
 
-**The terminal player and the station checker** are inside the app. To run
-them from Terminal, link them into your `PATH`:
+**The terminal player** is inside the app. To run it from Terminal, link it
+into your `PATH`:
 
 ```bash
 sudo ln -s /Applications/Radiotrope.app/Contents/MacOS/radiotrope-cli /usr/local/bin/
-sudo ln -s /Applications/Radiotrope.app/Contents/MacOS/radiotrope-probe /usr/local/bin/
 ```
 
 **Updates.** Radiotrope tells you when a newer version is out (Help > Check

@@ -260,7 +260,7 @@ To build them for a version:
    the version (or empty for the workspace version; a version that doesn't
    match `Cargo.toml` stops the run).
 2. The **Build (universal)** job runs `packaging/macos/bundle.sh dist` on
-   `macos-15`: release builds of the three programs for `aarch64-apple-darwin`
+   `macos-15`: release builds of the player and the CLI for `aarch64-apple-darwin`
    and `x86_64-apple-darwin` (`MACOSX_DEPLOYMENT_TARGET=12.0`), `lipo` into
    universal programs, the `Radiotrope.app` bundle (Info.plist from
    `packaging/macos/`, icon, `update-mode` = `notify`, licences, man pages,
@@ -268,7 +268,7 @@ To build them for a version:
    program lacks an architecture, asks for another macOS, or links anything
    outside the system (FDK, Homebrew). The run's summary has the sizes.
 3. The **Smoke test** jobs mount the DMG on Apple Silicon and on Intel,
-   verify the signature and the architectures, run the CLI and the probe,
+   verify the signature and the architectures, run the CLI,
    and start the app (screenshots in `macos-package-smoke-<arch>`).
 4. Download the artefact `dist-macos`:
    `radiotrope-<ver>-macos-universal.dmg` and `.zip`. To attach them to a

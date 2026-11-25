@@ -24,23 +24,21 @@ Radiotrope.app/Contents/
   PkgInfo
   MacOS/radiotrope           the player (universal: lipo of arm64 + x86_64)
   MacOS/radiotrope-cli       the terminal player
-  MacOS/radiotrope-probe     the station checker
   Resources/Radiotrope.icns  from assets/icons
   Resources/update-mode      "notify": About says when a newer version is out
   Resources/LICENSE, THIRD-PARTY-LICENSES
-  Resources/man/man1/        man pages of the three programs
+  Resources/man/man1/        man pages of the two programs
   Resources/completions/     bash, zsh, fish
 ```
 
-The CLI and the probe are inside the bundle rather than in a separate
-download: one file for everyone, and the Homebrew cask (phase 3) links them
-into the PATH with `binary` stanzas, the man pages with `manpage`, and the
+The CLI is inside the bundle rather than in a separate download: one file
+for everyone, and the Homebrew cask (phase 3) links it into the PATH with a
+`binary` stanza, the man pages with `manpage`, and the
 completions with `bash_completion`, `zsh_completion` and `fish_completion`.
 Without Homebrew:
 
 ```bash
 sudo ln -s /Applications/Radiotrope.app/Contents/MacOS/radiotrope-cli /usr/local/bin/
-sudo ln -s /Applications/Radiotrope.app/Contents/MacOS/radiotrope-probe /usr/local/bin/
 ```
 
 `Info.plist` declares:
@@ -70,7 +68,7 @@ ARCHS=aarch64 packaging/macos/bundle.sh   # one architecture, quicker
 SKIP_BUILD=1 packaging/macos/bundle.sh    # reuse the release builds
 ```
 
-`bundle.sh` builds the three programs for both targets (release profile,
+`bundle.sh` builds the two programs for both targets (release profile,
 `--locked`), joins each pair with `lipo`, and fails if a program is missing an
 architecture, asks for another macOS than 12.0, or links a library outside
 `/usr/lib` and `/System` (Homebrew, FDK AAC). It then writes the bundle, the
@@ -90,8 +88,8 @@ macOS-shaped icon (a rounded square on a 1024 canvas) is still to be drawn.
 2. **Smoke test** on `macos-15` (arm64) and `macos-15-intel` (x86_64): mounts
    the DMG, checks the Applications link, `codesign --verify --deep
    --strict` and that the signature is ad hoc, both architectures in each
-   program, the bundle id, version and `update-mode`; runs the CLI and the
-   probe with `--version`; copies the app to an Applications folder, starts
+   program, the bundle id, version and `update-mode`; runs the CLI with
+   `--version`; copies the app to an Applications folder, starts
    it for 15 seconds (screenshot, log), then again through `open` (Launch
    Services, as Finder does). Screenshots and logs are kept as
    `macos-package-smoke-<arch>`.
