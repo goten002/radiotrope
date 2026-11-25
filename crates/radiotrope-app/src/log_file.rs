@@ -97,10 +97,7 @@ pub fn open(path: &Path) -> Option<File> {
 /// desktop's menu, the Dock or Finder, at login, or by a service manager),
 /// send it to [`path`]: the engine's messages and a panic's. Run before
 /// anything prints.
-#[cfg(all(
-    any(target_os = "linux", target_os = "macos"),
-    feature = "desktop"
-))]
+#[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "desktop"))]
 pub fn set_up() {
     use std::os::fd::AsRawFd;
 

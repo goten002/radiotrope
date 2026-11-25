@@ -89,8 +89,8 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
     if cfg!(not(feature = "embedded")) {
         // (a settings file from before macOS had its own default says "our
         // title bar", and the View menu has nothing to change it there)
-        let custom_frame = settings.custom_title_bar
-            && radiotrope_app::data::settings::CUSTOM_TITLE_BAR_OFFERED;
+        let custom_frame =
+            settings.custom_title_bar && radiotrope_app::data::settings::CUSTOM_TITLE_BAR_OFFERED;
         ui.set_custom_frame(custom_frame);
         ui.set_rounded_corners(settings.rounded_corners);
         // Windows 11 rounds the window itself, macOS a window with its

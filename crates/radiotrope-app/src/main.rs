@@ -148,10 +148,7 @@ fn main() {
     // Started from the desktop, with no terminal to read it: the window's
     // messages go to the log file. Not with `--mcp`, whose client reads
     // what we print.
-    #[cfg(all(
-        any(target_os = "linux", target_os = "macos"),
-        feature = "desktop"
-    ))]
+    #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "desktop"))]
     if !args.mcp {
         log_file::set_up();
     }
@@ -267,8 +264,7 @@ fn main() {
     };
     shortcuts::install(&ui);
     // What the menus leave out on macOS (ui/platform/desktop)
-    ui.global::<Platform>()
-        .set_macos(cfg!(target_os = "macos"));
+    ui.global::<Platform>().set_macos(cfg!(target_os = "macos"));
     ui.on_locate_favorite(|model, highlighted, playing, action, page| {
         shortcuts::favorite_highlight(
             model.iter().map(|station| station.url),
