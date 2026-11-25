@@ -6,16 +6,14 @@
 //! - Linux: `$XDG_STATE_HOME/radiotrope/radiotrope.log`
 //!   (`~/.local/state/radiotrope/radiotrope.log`)
 //! - Windows: `%LOCALAPPDATA%\radiotrope\radiotrope.log`
+//! - macOS: `~/Library/Logs/radiotrope/radiotrope.log`, where Console.app
+//!   lists it under Log Reports
 //!
 //! and in portable mode, the `data\local` folder beside the program. The
 //! file is started afresh past 1 MB, the old one kept as `radiotrope.old.log`.
 
-// The kiosk build and macOS have no log file: only the path's "none" is
-// used there
-#![cfg_attr(
-    not(any(windows, all(target_os = "linux", feature = "desktop"))),
-    allow(dead_code)
-)]
+// The kiosk build has no log file: only the path's "none" is used there
+#![cfg_attr(not(any(windows, feature = "desktop")), allow(dead_code))]
 
 use std::fs::File;
 use std::io::Write;
@@ -27,20 +25,37 @@ pub const MAX_BYTES: u64 = 1024 * 1024;
 /// The log file's name
 const FILE_NAME: &str = "radiotrope.log";
 
+/// Whether this build keeps a log file: the desktop app, not the Pi's
+/// kiosk build, which logs to the journal
+const HAS_LOG_FILE: bool = cfg!(any(
+    windows,
+    all(
+        any(target_os = "linux", target_os = "macos"),
+        feature = "desktop"
+    )
+));
+
 /// Where this program's log goes when stderr isn't read. `None` where
-/// there is none (the Pi's kiosk build logs to the journal, macOS to its
-/// console), or the folders are unknown.
+/// there is none (the Pi's kiosk build logs to the journal), or the
+/// folders are unknown.
 pub fn path() -> Option<PathBuf> {
-    if !cfg!(any(windows, all(target_os = "linux", feature = "desktop"))) {
+    if !HAS_LOG_FILE {
         return None;
     }
     let dirs = radiotrope_app::data::storage::data_dirs();
     let dir = if cfg!(windows) || dirs.portable.is_some() {
         dirs.local.clone()?
+    } else if cfg!(target_os = "macos") {
+        mac_log_dir(&dirs::home_dir()?)
     } else {
         dirs::state_dir()?.join("radiotrope")
     };
     Some(dir.join(FILE_NAME))
+}
+
+/// macOS keeps each program's logs in a folder of `~/Library/Logs`
+fn mac_log_dir(home: &Path) -> PathBuf {
+    home.join("Library").join("Logs").join("radiotrope")
 }
 
 /// The file the old log is kept in: `radiotrope.old.log`
@@ -78,10 +93,11 @@ pub fn open(path: &Path) -> Option<File> {
     Some(file)
 }
 
-/// On Linux, when stderr is not a terminal (started from the desktop's
-/// menu, at login, or by a service manager), send it to [`path`]: the
-/// engine's messages and a panic's. Run before anything prints.
-#[cfg(all(target_os = "linux", feature = "desktop"))]
+/// On Linux and macOS, when stderr is not a terminal (started from the
+/// desktop's menu, the Dock or Finder, at login, or by a service manager),
+/// send it to [`path`]: the engine's messages and a panic's. Run before
+/// anything prints.
+#[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "desktop"))]
 pub fn set_up() {
     use std::os::fd::AsRawFd;
 
@@ -182,6 +198,23 @@ mod tests {
         let path = dir.path().join("state").join("radiotrope").join(FILE_NAME);
         assert!(open(&path).is_some());
         assert!(path.exists());
+    }
+
+    #[test]
+    fn the_mac_log_is_in_the_library_logs_folder() {
+        assert_eq!(
+            mac_log_dir(Path::new("/Users/anna")).join(FILE_NAME),
+            Path::new("/Users/anna/Library/Logs/radiotrope/radiotrope.log")
+        );
+        #[cfg(all(target_os = "macos", feature = "desktop"))]
+        {
+            let path = path().unwrap();
+            assert!(
+                path.ends_with("Library/Logs/radiotrope/radiotrope.log"),
+                "{path:?}"
+            );
+            assert!(path.starts_with(dirs::home_dir().unwrap()), "{path:?}");
+        }
     }
 
     #[cfg(all(target_os = "linux", feature = "desktop"))]

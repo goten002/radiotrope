@@ -383,6 +383,8 @@ pub struct Corners {
 ///   see-through. That needs a compositor: every Wayland desktop has one,
 ///   on X11 one may be missing (the corners would show black), so it is
 ///   asked again on every call.
+/// - macOS rounds a window that has the system's title bar, which is the
+///   only kind the player has there; one without it would be ours to draw.
 pub fn set_corners(window: &slint::Window, custom_frame: bool, rounded: bool) -> Corners {
     #[cfg(target_os = "windows")]
     {
@@ -419,12 +421,18 @@ pub fn set_corners(window: &slint::Window, custom_frame: bool, rounded: bool) ->
     }
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     {
-        let _ = (window, custom_frame, rounded);
-        Corners {
-            available: true,
-            drawn: true,
-            hint: "",
-        }
+        let _ = (window, rounded);
+        mac_corners(custom_frame)
+    }
+}
+
+/// [`set_corners`] on macOS: the system rounds a window with its title bar
+#[cfg(any(test, not(any(target_os = "windows", target_os = "linux"))))]
+fn mac_corners(custom_frame: bool) -> Corners {
+    Corners {
+        available: true,
+        drawn: custom_frame,
+        hint: "",
     }
 }
 
@@ -569,4 +577,19 @@ fn platform_menu(
     _pressed: bool,
 ) -> bool {
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn macos_rounds_a_window_with_its_title_bar() {
+        // The system's title bar (the only one there): nothing for us to
+        // draw, and menus and dialogs are round with the window
+        let framed = mac_corners(false);
+        assert!(framed.available && !framed.drawn);
+        // A window without it would be ours to round
+        assert!(mac_corners(true).drawn);
+    }
 }

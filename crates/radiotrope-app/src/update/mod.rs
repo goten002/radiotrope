@@ -168,7 +168,7 @@ pub fn policy() -> &'static Policy {
 }
 
 /// Where a mode file may be: beside the installed files (written by the
-/// package) and, on Linux, in /etc (written by an administrator)
+/// package) and, on Linux and macOS, in /etc (written by an administrator)
 pub fn mode_files(exe: Option<&Path>) -> Vec<PathBuf> {
     let mut paths = Vec::new();
     if cfg!(unix) {
@@ -177,12 +177,25 @@ pub fn mode_files(exe: Option<&Path>) -> Vec<PathBuf> {
     if let Some(dir) = exe.and_then(Path::parent) {
         if cfg!(windows) {
             paths.push(dir.join(MODE_FILE));
+        } else if let Some(file) = bundle_mode_file(exe).filter(|_| cfg!(target_os = "macos")) {
+            paths.push(file);
         } else if let Some(prefix) = dir.parent() {
             // <prefix>/bin/radiotrope -> <prefix>/share/radiotrope/update-mode
             paths.push(prefix.join("share").join("radiotrope").join(MODE_FILE));
         }
     }
     paths
+}
+
+/// The mode file of a macOS app bundle:
+/// `Radiotrope.app/Contents/MacOS/radiotrope` ->
+/// `Radiotrope.app/Contents/Resources/update-mode`. `None` for a program
+/// that isn't inside a bundle (built from source, or a package's `bin`).
+fn bundle_mode_file(exe: Option<&Path>) -> Option<PathBuf> {
+    let programs = exe?.parent()?;
+    let contents = programs.parent()?;
+    (programs.file_name()? == "MacOS" && contents.file_name()? == "Contents")
+        .then(|| contents.join("Resources").join(MODE_FILE))
 }
 
 /// How the program at `exe` was installed
@@ -398,6 +411,32 @@ mod tests {
                 [
                     PathBuf::from("/etc/radiotrope/update-mode"),
                     PathBuf::from("/usr/share/radiotrope/update-mode"),
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn a_mac_bundle_keeps_its_mode_file_in_resources() {
+        let exe = Path::new("/Applications/Radiotrope.app/Contents/MacOS/radiotrope");
+        assert_eq!(
+            bundle_mode_file(Some(exe)),
+            Some(PathBuf::from(
+                "/Applications/Radiotrope.app/Contents/Resources/update-mode"
+            ))
+        );
+        // Not a bundle: Homebrew's or a source build's bin folder
+        for exe in ["/opt/homebrew/bin/radiotrope", "/usr/bin/radiotrope"] {
+            assert_eq!(bundle_mode_file(Some(Path::new(exe))), None, "{exe}");
+        }
+        assert_eq!(bundle_mode_file(None), None);
+
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                mode_files(Some(exe)),
+                [
+                    PathBuf::from("/etc/radiotrope/update-mode"),
+                    PathBuf::from("/Applications/Radiotrope.app/Contents/Resources/update-mode"),
                 ]
             );
         }

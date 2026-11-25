@@ -8,13 +8,21 @@ use std::rc::Rc;
 
 use ShortcutAction::*;
 
+/// A Mac keyboard: its modifiers are shown by their symbols
+const MAC: bool = cfg!(target_os = "macos");
+
 /// The Control key as the platform names it (Slint reports Command as
 /// Control on macOS).
-const CTRL: &str = if cfg!(target_os = "macos") {
-    "⌘"
-} else {
-    "Ctrl"
-};
+const CTRL: &str = if MAC { "⌘" } else { "Ctrl" };
+
+/// The Alt key: Option on a Mac keyboard
+const ALT: &str = if MAC { "⌥" } else { "Alt" };
+
+/// Keys pressed together as a menu hint: "Ctrl+F". On macOS the modifier's
+/// symbol stands right before the key: "⌘F".
+fn combo_hint(combo: &[&str], mac: bool) -> String {
+    combo.join(if mac { "" } else { "+" })
+}
 
 /// The ways to press a shortcut, each a list of keycap labels pressed together.
 type Caps = &'static [&'static [&'static str]];
@@ -35,7 +43,8 @@ impl Keys {
 
 struct Binding {
     action: ShortcutAction,
-    /// The menu hint, e.g. "Ctrl+F"
+    /// The menu hint, e.g. "Space". Empty for a key pressed with a
+    /// modifier, whose hint is made from its keycaps ("Ctrl+F", "⌘F").
     label: &'static str,
     caps: Caps,
     keys: Keys,
@@ -53,15 +62,10 @@ impl Binding {
         }
     }
 
-    const fn control(
-        action: ShortcutAction,
-        label: &'static str,
-        caps: Caps,
-        key: &'static str,
-    ) -> Self {
+    const fn control(action: ShortcutAction, caps: Caps, key: &'static str) -> Self {
         Self {
             control: true,
-            ..Self::new(action, label, caps, Keys::Text(key))
+            ..Self::new(action, "", caps, Keys::Text(key))
         }
     }
 }
@@ -76,11 +80,11 @@ const BINDINGS: &[Binding] = &[
     Binding::new(PreviousFavorite, "P", &[&["P"]], Keys::Text("p")),
     Binding::new(ToggleFavorite, "F", &[&["F"]], Keys::Text("f")),
     Binding::new(FindFavorites, "/", &[&["/"]], Keys::Text("/")),
-    Binding::control(UndoRemove, "Ctrl+Z", &[&[CTRL, "Z"]], "z"),
-    Binding::control(Search, "Ctrl+F", &[&[CTRL, "F"]], "f"),
-    Binding::control(NetworkStream, "Ctrl+O", &[&[CTRL, "O"]], "o"),
-    Binding::control(HideWindow, "Ctrl+W", &[&[CTRL, "W"]], "w"),
-    Binding::control(Quit, "Ctrl+Q", &[&[CTRL, "Q"]], "q"),
+    Binding::control(UndoRemove, &[&[CTRL, "Z"]], "z"),
+    Binding::control(Search, &[&[CTRL, "F"]], "f"),
+    Binding::control(NetworkStream, &[&[CTRL, "O"]], "o"),
+    Binding::control(HideWindow, &[&[CTRL, "W"]], "w"),
+    Binding::control(Quit, &[&[CTRL, "Q"]], "q"),
     Binding::new(
         Help,
         "F1",
@@ -117,10 +121,11 @@ const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, Caps)] = &[
     (FavoriteClear, Key::Escape, "Esc", &[&["Esc"]]),
 ];
 
-// Alt with an arrow moves the highlighted favorite one place
+// Alt with an arrow moves the highlighted favorite one place (the hint is
+// made from the keycaps: "Alt+↑", "⌥↑")
 const MOVE_KEYS: &[(ShortcutAction, Key, &str, Caps)] = &[
-    (FavoriteMoveUp, Key::UpArrow, "Alt+↑", &[&["Alt", "↑"]]),
-    (FavoriteMoveDown, Key::DownArrow, "Alt+↓", &[&["Alt", "↓"]]),
+    (FavoriteMoveUp, Key::UpArrow, "", &[&[ALT, "↑"]]),
+    (FavoriteMoveDown, Key::DownArrow, "", &[&[ALT, "↓"]]),
 ];
 
 /// The keys of a dialog row: shortcuts from the tables above, or keys that
@@ -281,8 +286,10 @@ fn match_key(text: &str, modifiers: Modifiers, repeat: bool, desktop: bool) -> S
         .map_or(Unhandled, |binding| binding.action)
 }
 
-fn label(action: ShortcutAction) -> &'static str {
-    BINDINGS
+/// The hint shown for `action` in a menu or a line of text ("or press
+/// Ctrl+F"), in the platform's own spelling
+fn label(action: ShortcutAction) -> String {
+    let written = BINDINGS
         .iter()
         .find(|binding| binding.action == action)
         .map(|binding| binding.label)
@@ -293,7 +300,14 @@ fn label(action: ShortcutAction) -> &'static str {
                 .find(|(id, _, _, _)| *id == action)
                 .map(|(_, _, label, _)| *label)
         })
-        .unwrap_or("")
+        .unwrap_or("");
+    if !written.is_empty() {
+        return written.into();
+    }
+    caps(action)
+        .first()
+        .map(|combo| combo_hint(combo, MAC))
+        .unwrap_or_default()
 }
 
 fn caps(action: ShortcutAction) -> Caps {
@@ -316,6 +330,7 @@ fn spoken_key(cap: &str) -> &str {
     match cap {
         "Ctrl" => "Control",
         "⌘" => "Command",
+        "⌥" => "Option",
         "Esc" => "Escape",
         "↑" => "Up arrow",
         "↓" => "Down arrow",
@@ -684,17 +699,58 @@ mod tests {
             (NextFavorite, "N"),
             (PreviousFavorite, "P"),
             (ToggleFavorite, "F"),
-            (Search, "Ctrl+F"),
-            (NetworkStream, "Ctrl+O"),
-            (HideWindow, "Ctrl+W"),
-            (Quit, "Ctrl+Q"),
             (Help, "F1"),
             (FindFavorites, "/"),
-            (UndoRemove, "Ctrl+Z"),
-            (FavoriteMoveUp, "Alt+↑"),
-            (FavoriteMoveDown, "Alt+↓"),
+            (FavoriteUp, "↑ / ↓"),
+            (FavoriteMenu, "Shift+F10 / Menu key"),
         ] {
             assert_eq!(label(action), expected);
+        }
+        // With a modifier: in the platform's spelling
+        let with_modifier = if MAC {
+            [
+                (Search, "⌘F"),
+                (NetworkStream, "⌘O"),
+                (HideWindow, "⌘W"),
+                (Quit, "⌘Q"),
+                (UndoRemove, "⌘Z"),
+                (FavoriteMoveUp, "⌥↑"),
+                (FavoriteMoveDown, "⌥↓"),
+            ]
+        } else {
+            [
+                (Search, "Ctrl+F"),
+                (NetworkStream, "Ctrl+O"),
+                (HideWindow, "Ctrl+W"),
+                (Quit, "Ctrl+Q"),
+                (UndoRemove, "Ctrl+Z"),
+                (FavoriteMoveUp, "Alt+↑"),
+                (FavoriteMoveDown, "Alt+↓"),
+            ]
+        };
+        for (action, expected) in with_modifier {
+            assert_eq!(label(action), expected);
+        }
+    }
+
+    #[test]
+    fn hints_are_spelled_as_the_platform_does() {
+        assert_eq!(combo_hint(&["Ctrl", "F"], false), "Ctrl+F");
+        assert_eq!(combo_hint(&["Alt", "↑"], false), "Alt+↑");
+        // macOS: the symbol, then the key, with nothing between
+        assert_eq!(combo_hint(&["⌘", "F"], true), "⌘F");
+        assert_eq!(combo_hint(&["⌥", "↑"], true), "⌥↑");
+        assert_eq!(spoken_key("⌘"), "Command");
+        assert_eq!(spoken_key("⌥"), "Option");
+        // Every action has a hint, and none shows the other platform's key
+        for action in actions() {
+            let hint = label(action);
+            assert!(!hint.is_empty(), "{action:?} has no hint");
+            if MAC {
+                assert!(!hint.contains("Ctrl") && !hint.contains("Alt"), "{hint}");
+            } else {
+                assert!(!hint.contains('⌘') && !hint.contains('⌥'), "{hint}");
+            }
         }
     }
 
@@ -763,10 +819,13 @@ mod tests {
             dialog_row("Move through favorites").spoken,
             "Move through favorites: Up arrow, Down arrow"
         );
-        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             dialog_row("Search stations").spoken,
-            "Search stations: Control F"
+            if MAC {
+                "Search stations: Command F"
+            } else {
+                "Search stations: Control F"
+            }
         );
     }
 
@@ -777,17 +836,24 @@ mod tests {
         assert_eq!(row.spoken, "Find in favorites: Slash");
 
         let row = dialog_row("Move the highlighted favorite");
-        assert_eq!(row.alternatives, [&["Alt", "↑"][..], &["Alt", "↓"][..]]);
+        assert_eq!(row.alternatives, [&[ALT, "↑"][..], &[ALT, "↓"][..]]);
         assert_eq!(row.separator, "or");
         assert_eq!(
             row.spoken,
-            "Move the highlighted favorite: Alt Up arrow or Alt Down arrow"
+            if MAC {
+                "Move the highlighted favorite: Option Up arrow or Option Down arrow"
+            } else {
+                "Move the highlighted favorite: Alt Up arrow or Alt Down arrow"
+            }
         );
 
-        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             dialog_row("Undo removing a favorite").spoken,
-            "Undo removing a favorite: Control Z"
+            if MAC {
+                "Undo removing a favorite: Command Z"
+            } else {
+                "Undo removing a favorite: Control Z"
+            }
         );
         assert_eq!(
             dialog_row("Go to the menu bar").spoken,
