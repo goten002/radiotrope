@@ -1,21 +1,167 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { FavoriteStation } from "../favorites.slint";
+import { FavoriteStation, StationStream } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
-import { DialogShell, Field } from "../components.slint";
+import { DialogShell, Field, IconButton, ButtonKeys, FocusRing } from "../components.slint";
+import { SecondaryButton } from "../buttons.slint";
+
+// Changes to the dialog's list of streams, worked out in Rust (a list
+// can't be changed in place here)
+export global StreamEdit {
+    // Why the address typed can't be added; empty when it can
+    pure callback problem([StationStream], string) -> string;
+    // The list with the address typed at the end
+    pure callback added([StationStream], string) -> [StationStream];
+    // The list without the row at the index
+    pure callback removed([StationStream], int) -> [StationStream];
+    // The list with the row at the index moved by -1 (up) or 1 (down)
+    pure callback moved([StationStream], int, int) -> [StationStream];
+}
+
+// One stream of the station: a radio button that makes it the default (the
+// one played), what is known of it and its address, and its place in the
+// list (the others are tried in order when the default doesn't connect)
+component StreamRow inherits Rectangle {
+    in property <StationStream> stream;
+    in property <bool> is-default;
+    // The station's only stream: nothing to move, and it can't be removed
+    in property <bool> alone;
+    in property <bool> first;
+    in property <bool> last;
+    callback picked();
+    callback move(int);
+    callback remove();
+
+    property <string> text: root.stream.label == "" ? root.stream.url
+        : root.stream.label + " · " + root.stream.url;
+
+    height: Theme.row-menu;
+    border-radius: Theme.radius-sm;
+    background: touch.pressed ? Theme.pressed-bg
+        : touch.has-hover ? Theme.hover-bg
+        : root.is-default ? Theme.accent-tint : transparent;
+    animate background { duration: Theme.fast; }
+
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+
+    HorizontalLayout {
+        padding-left: Theme.space-8;
+        padding-right: Theme.space-2;
+        spacing: Theme.space-8;
+
+        // The radio button, and the row's Tab stop
+        VerticalLayout {
+            alignment: center;
+
+            radio := Rectangle {
+                width: Theme.icon-md;
+                height: Theme.icon-md;
+                border-radius: self.width / 2;
+                border-width: root.is-default ? 2px : 1px;
+                border-color: root.is-default ? Theme.accent-graphic : Theme.field-border;
+                forward-focus: keys;
+
+                accessible-role: radio-button;
+                accessible-label: root.is-default ? "Default stream, \{root.text}" : "Make default, \{root.text}";
+                accessible-checkable: true;
+                accessible-checked: root.is-default;
+                accessible-action-default => { root.picked(); }
+
+                if root.is-default: Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: parent.width - 8px;
+                    height: self.width;
+                    border-radius: self.width / 2;
+                    background: Theme.accent-graphic;
+                }
+
+                keys := ButtonKeys {
+                    activated => { root.picked(); }
+                }
+
+                if keys.has-focus: FocusRing {
+                    radius: parent.border-radius;
+                }
+            }
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            color: Theme.text-primary;
+            font-size: Theme.font-md;
+            vertical-alignment: center;
+            overflow: elide;
+            accessible-role: none;
+        }
+
+        if !root.alone: HorizontalLayout {
+            spacing: 0px;
+
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    width: 26px;
+                    height: 26px;
+                    icon: @image-url("../icons/chevron-up.svg");
+                    icon-size: Theme.icon-sm;
+                    label: "Move Up";
+                    enabled: !root.first;
+                    clicked => { root.move(-1); }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    width: 26px;
+                    height: 26px;
+                    icon: @image-url("../icons/chevron-down.svg");
+                    icon-size: Theme.icon-sm;
+                    label: "Move Down";
+                    enabled: !root.last;
+                    clicked => { root.move(1); }
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                IconButton {
+                    width: 26px;
+                    height: 26px;
+                    icon: @image-url("../icons/xmark.svg");
+                    icon-size: Theme.icon-sm;
+                    label: "Remove Stream";
+                    clicked => { root.remove(); }
+                }
+            }
+        }
+    }
+}
 
 export component EditFavoriteDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <string> edit-id;
     in-out property <string> edit-name;
+    // The default stream's address: the one played
     in-out property <string> edit-url;
+    // Every stream, in the order they are tried after the default
+    in-out property <[StationStream]> edit-streams;
+    // The address typed to add, and why it can't be
+    in-out property <string> new-stream;
+    property <string> new-stream-problem: StreamEdit.problem(root.edit-streams, root.new-stream);
     in-out property <string> edit-logo-url;
     in-out property <string> edit-country;
     // Why the last Save didn't go through (nothing was changed); cleared
-    // when the URL is edited
+    // when the streams are changed
     property <string> error;
     // Remove was clicked once: the next click removes
     in-out property <bool> confirm-remove: false;
     property <bool> can-save: root.edit-name != "" && root.edit-url != "";
+    property <bool> can-add: root.new-stream != "" && root.new-stream-problem == "";
 
     // Saves the changes; returns why it couldn't (e.g. another favorite
     // has the URL), or "" when saved
@@ -26,6 +172,8 @@ export component EditFavoriteDialog inherits Rectangle {
         self.edit-id = station.id;
         self.edit-name = station.name;
         self.edit-url = station.url;
+        self.edit-streams = station.streams;
+        self.new-stream = "";
         self.edit-logo-url = station.logo-url;
         self.edit-country = station.country;
         self.error = "";
@@ -44,11 +192,33 @@ export component EditFavoriteDialog inherits Rectangle {
         }
     }
 
+    // Add the address typed to the list; Enter in its field does this
+    // instead of saving, and saves once the field is empty
+    function add-stream() {
+        if !root.can-add {
+            return;
+        }
+        root.edit-streams = StreamEdit.added(root.edit-streams, root.new-stream);
+        root.new-stream = "";
+        root.error = "";
+    }
+
+    function remove-stream(index: int) {
+        let was-default = root.edit-streams[index].url == root.edit-url;
+        root.edit-streams = StreamEdit.removed(root.edit-streams, index);
+        // The default is gone: the first is the default now
+        if was-default {
+            root.edit-url = root.edit-streams[0].url;
+        }
+        root.error = "";
+    }
+
     function station() -> FavoriteStation {
         return {
             id: root.edit-id,
             name: root.edit-name,
             url: root.edit-url,
+            streams: root.edit-streams,
             logo-url: root.edit-logo-url,
             country: root.edit-country,
         };
@@ -91,24 +261,81 @@ export component EditFavoriteDialog inherits Rectangle {
         }
 
         Field {
-            label: "Stream URL";
+            label: root.edit-streams.length == 1 ? "Stream" : "Streams";
             required: true;
-            StyledLineEdit {
-                label: "Stream URL";
-                required: true;
-                placeholder-text: "https://stream.example.com/radio";
-                text <=> root.edit-url;
-                accepted => { root.save(); }
-                edited => { root.error = ""; }
+
+            // The streams, the default marked: it plays, and the others
+            // are tried in order when it doesn't connect
+            Rectangle {
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.field-border;
+                background: Theme.elevated;
+                accessible-role: radio-group;
+                accessible-label: "Default stream";
+
+                VerticalLayout {
+                    padding: Theme.space-4;
+                    spacing: Theme.space-2;
+
+                    for stream[index] in root.edit-streams: StreamRow {
+                        stream: stream;
+                        is-default: stream.url == root.edit-url;
+                        alone: root.edit-streams.length == 1;
+                        first: index == 0;
+                        last: index == root.edit-streams.length - 1;
+                        picked => {
+                            root.edit-url = stream.url;
+                            root.error = "";
+                        }
+                        move(by) => {
+                            root.edit-streams = StreamEdit.moved(root.edit-streams, index, by);
+                            root.error = "";
+                        }
+                        remove => { root.remove-stream(index); }
+                    }
+                }
             }
 
-            if root.error != "": Text {
-                text: root.error;
+            HorizontalLayout {
+                spacing: Theme.space-8;
+
+                StyledLineEdit {
+                    horizontal-stretch: 1;
+                    label: "Stream URL to add";
+                    placeholder-text: "Add a stream URL";
+                    text <=> root.new-stream;
+                    clearable: true;
+                    accepted => {
+                        if root.new-stream == "" {
+                            root.save();
+                        } else {
+                            root.add-stream();
+                        }
+                    }
+                }
+
+                SecondaryButton {
+                    label: "Add";
+                    enabled: root.can-add;
+                    clicked => { root.add-stream(); }
+                }
+            }
+
+            if root.new-stream-problem != "" || root.error != "": Text {
+                text: root.new-stream-problem != "" ? root.new-stream-problem : root.error;
                 color: Theme.danger-text;
                 font-size: Theme.font-md;
                 wrap: word-wrap;
                 // Save didn't go through: said at once
                 accessible-live-region: assertive;
+            }
+
+            if root.edit-streams.length > 1 && root.new-stream-problem == "" && root.error == "": Text {
+                text: "The default plays. The others are tried in order if it doesn't connect.";
+                color: Theme.text-tertiary;
+                font-size: Theme.font-sm;
+                wrap: word-wrap;
             }
         }
 

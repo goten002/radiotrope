@@ -9,10 +9,27 @@ import { Platform } from "@platform/wifi.slint";
 import { StationState, StationRowSurface, StationLogo, StationStateMark } from "station-row.slint";
 import { KeyListCursor } from "key-list.slint";
 
+// One of a station's streams, for a list of them
+export struct StationStream {
+    url: string,
+    // What is known of it: "AAC · 128 kbps", or empty
+    label: string,
+    // The server it comes from: "stream.example.org"
+    host: string,
+    // As the station keeps it (codec "" and bitrate 0: not known)
+    codec: string,
+    bitrate: int,
+    hls: bool,
+    status: string,
+}
+
 export struct FavoriteStation {
     id: string,
     name: string,
+    // The default stream's address
     url: string,
+    // Every stream, in order, the default among them
+    streams: [StationStream],
     logo-url: string,
     country: string,
     // Stats: total listening time ("3 h 25 min"), when last played

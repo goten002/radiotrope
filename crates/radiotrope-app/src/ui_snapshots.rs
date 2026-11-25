@@ -120,7 +120,9 @@ impl Shot {
         let dropdown = matches!(
             self.state,
             "presets" | "bitrate" | "agent" | "interface" | "auth" | "station" | "date" | "volume"
-        ) || self.state.starts_with("filter-");
+        ) || self.state.starts_with("filter-")
+            // A search result's list of streams
+            || self.name == "search-streams";
         let nested = match self.screen {
             "remote" => matches!(self.state, "code" | "qr"),
             "schedule" => !matches!(self.state, "" | "empty" | "remove" | "last-result"),
@@ -515,6 +517,12 @@ const SHOTS: &[Shot] = &[
         "Station results; the filters are hidden behind the button beside the search field.",
     ),
     Shot::new(
+        "search-streams",
+        "search",
+        "streams",
+        "The streams of the first result, opened from its codec and bitrate: the one it plays is ticked.",
+    ),
+    Shot::new(
         "search-no-logos",
         "search",
         "no-logos",
@@ -657,6 +665,12 @@ const SHOTS: &[Shot] = &[
         "edit-favorite",
         "",
         "Existing favorite values in the edit form.",
+    ),
+    Shot::new(
+        "edit-favorite-streams",
+        "edit-favorite",
+        "streams",
+        "A favorite with three streams: the default marked, each with Move Up, Move Down and Remove.",
     ),
     Shot::new(
         "edit-favorite-remove",
@@ -1121,6 +1135,7 @@ fn stage(
     // The shortcut list and the menu hints, as in the live app
     crate::shortcuts::install(&ui);
     crate::favorites_ui::install_find(&ui);
+    crate::stream_edit::install(&ui);
     let window = made.take().ok_or("Slint did not create a window adapter")?;
     let defaults = ui.global::<Defaults>();
     ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
@@ -1329,6 +1344,31 @@ fn station_url(index: usize) -> SharedString {
     format!("https://radio.example/stream/{}", index + 1).into()
 }
 
+/// The streams of fixture station `index`: its own, or with `several`
+/// that one and two backups, as the directory lists a station
+fn fixture_streams(index: usize, several: bool) -> ModelRc<crate::StationStream> {
+    use radiotrope_app::data::types::Stream;
+    let own = Stream::new(station_url(index).as_str());
+    let streams = if several {
+        vec![
+            own.with_audio_info(Some("AAC".into()), Some(192)),
+            Stream::new(format!(
+                "https://backup.radio.example/stream/{}.mp3",
+                index + 1
+            ))
+            .with_audio_info(Some("MP3".into()), Some(128)),
+            Stream::new(format!(
+                "https://relay.radio.example/a-long-mount-name/stream-{}-low.mp3",
+                index + 1
+            ))
+            .with_audio_info(Some("MP3".into()), Some(64)),
+        ]
+    } else {
+        vec![own]
+    };
+    model(streams.iter().map(crate::stream_edit::row))
+}
+
 fn seed(ui: &App) {
     ui.set_favorites_list(model(STATIONS.iter().enumerate().map(
         |(index, &(name, country, _))| {
@@ -1337,6 +1377,7 @@ fn seed(ui: &App) {
                 name: name.into(),
                 country: country.into(),
                 url: station_url(index),
+                streams: fixture_streams(index, index == 1),
                 logo_url: format!("https://radio.example/logos/{}.png", index + 1).into(),
                 listen_time: radiotrope_app::text::minutes(
                     ((8 - index) * 60 + 34 + index * 2) as u64 * 60,
@@ -1714,6 +1755,7 @@ fn configure(ui: &App, shot: &Shot) {
                     | "next-loading"
                     | "next-error"
                     | "keyboard"
+                    | "streams"
             ) || shot.name == "search-filtered-hidden"
                 || shot.state.starts_with("filter-")
             {
@@ -2013,6 +2055,15 @@ fn set_results(ui: &App) {
             provider_id: format!("directory-{index}").into(),
             codec: codec.into(),
             bitrate,
+            // The first has several streams to pick from
+            streams: fixture_streams(
+                if index < 2 {
+                    logo_index
+                } else {
+                    index + STATIONS.len()
+                },
+                index == 0,
+            ),
             is_favorite: index < 2,
         },
     )));
