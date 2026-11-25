@@ -552,6 +552,12 @@ const SHOTS: &[Shot] = &[
         "The streams of the first result, opened from its codec and bitrate: the one it plays is ticked.",
     ),
     Shot::new(
+        "search-long-text",
+        "search",
+        "long-text",
+        "A search longer than the field: the text scrolls with the caret and stops before the clear button.",
+    ),
+    Shot::new(
         "search-no-logos",
         "search",
         "no-logos",
@@ -700,6 +706,12 @@ const SHOTS: &[Shot] = &[
         "edit-favorite",
         "streams",
         "A favorite with three streams: the default marked, each with Move Up, Move Down and Remove.",
+    ),
+    Shot::new(
+        "edit-favorite-long",
+        "edit-favorite",
+        "long",
+        "Very long logo and stream URLs: the text stops before the clear button, the default stream's URL is elided before its buttons and the next row is hovered.",
     ),
     Shot::new(
         "edit-favorite-remove",
@@ -1268,6 +1280,10 @@ fn after_open(ui: &App, shot: &Shot) {
             }
         }
         // Down from the text field goes into the list, then moves in it
+        ("search", "long-text") => type_text(
+            ui,
+            "classical music from the late romantic period with a long name that runs past the field",
+        ),
         ("search", "keyboard") => {
             for _ in 0..2 {
                 press(ui, Key::DownArrow);
@@ -1295,6 +1311,12 @@ fn after_open(ui: &App, shot: &Shot) {
         // The pointer on the chip after the status, under the station
         ui.window().dispatch_event(WindowEvent::PointerMoved {
             position: slint::LogicalPosition::new(300.0, 112.0),
+        });
+    }
+    if shot.name == "edit-favorite-long" {
+        // The pointer on the second stream row
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: slint::LogicalPosition::new(300.0, 266.0),
         });
     }
     if shot.screen == "favorite-menu" {
@@ -1883,6 +1905,7 @@ fn configure(ui: &App, shot: &Shot) {
                 }
             }
         }
+        "edit-favorite" if shot.state == "long" => configure_long_urls(ui),
         "edit-favorite" if shot.state == "error" => {
             ui.on_edit_favorite(|_| {
                 "Can't save: this favorite was removed. Close and try again.".into()
@@ -2100,6 +2123,27 @@ fn configure_updates(ui: &App, shot: &Shot) {
         pre: String::new(),
     };
     show_view(ui, &view(phase, newer.then_some(&version), mode));
+}
+
+/// The first favorite (the one Edit Favorite opens) with a logo URL and
+/// stream URLs far longer than their fields and rows
+fn configure_long_urls(ui: &App) {
+    use radiotrope_app::data::types::Stream;
+    let long = "https://streaming.radio.example/live/a-very-long-mount-point-name/\
+                with/several/levels/of/folders/stream-320k.aac?listener=desktop&token=0123456789abcdef";
+    let streams = [
+        Stream::new(long).with_audio_info(Some("AAC".into()), Some(320)),
+        Stream::new(format!("{long}&backup=1")).with_audio_info(Some("MP3".into()), Some(128)),
+        Stream::new(station_url(0).as_str()),
+    ];
+    let favorites = ui.get_favorites_list();
+    let mut first = favorites.row_data(0).unwrap_or_default();
+    first.url = long.into();
+    first.streams = model(streams.iter().map(crate::stream_edit::row));
+    first.logo_url = "https://cdn.radio.example/images/stations/logos/high-resolution/\
+                      a-very-long-logo-file-name-for-this-station-2048x2048.png"
+        .into();
+    favorites.set_row_data(0, first);
 }
 
 /// Names longer than the header and the rows have room for

@@ -438,7 +438,10 @@ export global Defaults {
     out property <length> filter-picker-width: dialog-width-compact;
     out property <length> filter-picker-height: 640px;
     out property <length> dialog-width-form: 460px;
-    out property <length> edit-favorite-width: dialog-width-form;
+    // As wide as Search Stations, shrinking with the window like every
+    // dialog: its streams show codec, bitrate and a URL beside Move Up,
+    // Move Down and Remove, and its fields hold long URLs
+    out property <length> edit-favorite-width: station-browser-width;
     out property <length> equalizer-width: 580px;
     out property <length> network-stream-width: dialog-width-form;
     out property <length> import-favorites-width: dialog-width-form;
