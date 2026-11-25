@@ -1,0 +1,161 @@
+name: CI (macOS)
+
+# macOS is not a release target yet: this run is the evidence for the macOS
+# review (what builds, which tests pass) on Apple Silicon and on Intel, and
+# keeps what works from breaking unnoticed. Nothing here is signed, and
+# nothing is released: the programs are kept with the run as an artifact, to
+# try on a Mac. Triggered like ci.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main, 'polish/**']
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: ci-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+          - os: macos-15-intel
+            arch: x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: The machine
+        run: |
+          sw_vers
+          uname -m
+          xcodebuild -version || true
+          cmake --version | head -1
+      - name: cargo build
+        run: cargo build --workspace
+      - name: cargo clippy
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo clippy --workspace --all-targets --message-format=short -- -D warnings 2>&1 | tee clippy.log; then
+            sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
+      # No libfdk-aac here: the AAC+ tests skip, as in ci.yml's Test job
+      - name: cargo test
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! cargo test --workspace --no-fail-fast 2>&1 | tee test.log; then
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
+            exit 1
+          fi
+      - name: Programs start
+        if: success() || failure()
+        run: |
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            target/debug/$p --version
+          done
+      # What the programs need from the system: the frameworks they link,
+      # the oldest macOS they ask for, and how they are signed (the linker
+      # signs ad hoc on Apple Silicon)
+      - name: Linked libraries, minimum macOS, signature
+        if: success() || failure()
+        run: |
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            echo "== $p"
+            file target/debug/$p
+            otool -L target/debug/$p
+            vtool -show-build target/debug/$p || otool -l target/debug/$p | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN'
+            codesign -dv target/debug/$p 2>&1 || true
+          done
+      # AAC+ plays through Homebrew's libfdk-aac, loaded at run time. A test
+      # that skips for want of the library is reported, not failed: the
+      # review says where the loader has to look on macOS.
+      - name: AAC+ with Homebrew's fdk-aac
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -o pipefail
+          brew install fdk-aac
+          ls -l "$(brew --prefix)/lib" | grep -i fdk
+          cargo test -p radiotrope aac -- --nocapture 2>&1 | tee aac.log
+          if grep -q "skipped: no libfdk-aac" aac.log; then
+            echo "::warning::libfdk-aac from Homebrew ($(brew --prefix)/lib) was not found by the loader"
+          fi
+      # Every screen drawn by the software renderer (headless, no audio or
+      # network), as ci.yml's UI snapshots job does on Linux
+      - name: Render the screens
+        if: success() || failure()
+        run: |
+          cargo run -p radiotrope-app --features ui-snapshots --bin radiotrope -- --ui-snapshots ui-snapshots --theme dark
+          find ui-snapshots -name '*.png' | wc -l
+          test -n "$(find ui-snapshots -name '*.png')"
+      # The app itself for a few seconds, with a picture of the screen: does
+      # the window open with the desktop renderer (FemtoVG on OpenGL)? The
+      # runner has a display but may have no sound device.
+      - name: The app opens its window
+        if: success() || failure()
+        shell: bash
+        run: |
+          mkdir -p smoke
+          export HOME="$PWD/smoke/home"
+          mkdir -p "$HOME"
+          system_profiler SPAudioDataType > smoke/audio-devices.txt 2>&1 || true
+          RUST_LOG=debug target/debug/radiotrope > smoke/app.log 2>&1 &
+          pid=$!
+          sleep 20
+          screencapture -x smoke/screen.png || true
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "still running after 20 s"
+            kill -TERM "$pid"
+            sleep 3
+            kill -0 "$pid" 2>/dev/null && { echo "::warning::the app did not quit on SIGTERM"; kill -KILL "$pid"; }
+          else
+            wait "$pid" || echo "::warning::the app exited by itself with status $?"
+          fi
+          echo "--- app.log"; tail -100 smoke/app.log
+          echo "--- files the app made"; find "$HOME" -type f | sed "s|$HOME|~|" | sort
+          cat smoke/audio-devices.txt
+      # A tar keeps the programs executable (the artifact's zip would not).
+      # Not a release: debug builds, unsigned, kept for two weeks.
+      - name: Pack the programs
+        if: success() || failure()
+        run: |
+          tar -C target/debug -czf radiotrope-macos-${{ matrix.arch }}.tar.gz radiotrope radiotrope-cli radiotrope-probe
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: radiotrope-macos-${{ matrix.arch }}
+          path: radiotrope-macos-${{ matrix.arch }}.tar.gz
+          if-no-files-found: warn
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: macos-evidence-${{ matrix.arch }}
+          path: |
+            smoke/screen.png
+            smoke/app.log
+            smoke/audio-devices.txt
+            ui-snapshots/
+            test.log
+            clippy.log
+            aac.log
+          if-no-files-found: warn
+          retention-days: 14
