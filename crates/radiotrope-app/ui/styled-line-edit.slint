@@ -18,10 +18,17 @@ export component StyledLineEdit inherits Rectangle {
     callback edited(string);
     callback cleared();
 
-    property <length> margin: 10px;
+    // Where the text starts: as in the dropdowns and the read-only boxes
+    // (Address, Command), so text in a column of controls lines up
+    property <length> margin: Theme.space-12;
     property <bool> show-clear: root.clearable && root.text != "" && root.enabled;
-    // Space on the right for the text: the margin, plus the ✕ button when shown
-    property <length> right-margin: root.show-clear ? 32px : root.margin;
+    // The ✕ button: its size and its gap from the field's right edge
+    property <length> clear-size: Theme.space-24;
+    property <length> clear-inset: Theme.space-6;
+    // Space on the right of the text: the margin, or when the ✕ shows, the
+    // button and a gap before it (the text stops there, never under it)
+    property <length> right-margin: root.show-clear
+        ? root.clear-size + root.clear-inset + Theme.space-4 : root.margin;
     // The focus came by Tab (the key is released in the field it moved to):
     // the full focus ring shows. After a click the field only gets an
     // accent edge.
@@ -52,49 +59,58 @@ export component StyledLineEdit inherits Rectangle {
         accessible-role: none;
     }
 
-    input := TextInput {
-        property <length> computed-x;
-
-        x: min(root.margin, max(root.width - root.right-margin - self.width - self.text-cursor-width,
-               self.computed-x + root.margin));
-        width: max(root.width - root.margin - root.right-margin, self.preferred-width);
+    // The text's viewport, inside the margins: long text scrolls with the
+    // caret there and never runs into the margins or under the ✕
+    view := Rectangle {
+        x: root.margin;
+        width: max(0px, root.width - root.margin - root.right-margin);
         height: root.height;
-        text <=> root.text;
-        // Greyed out while the field can't be used
-        color: root.enabled ? Theme.text-primary : Theme.disabled-text;
-        font-size: Theme.font-base;
-        vertical-alignment: center;
-        single-line: true;
-        enabled: root.enabled;
-        selection-background-color: Theme.selection-bg;
-        selection-foreground-color: Theme.selection-fg;
-        accessible-label: (root.label != "" ? root.label : root.placeholder-text)
-            + (root.required ? ", required" : "");
-        accessible-placeholder-text: root.placeholder-text;
+        clip: true;
 
-        cursor-position-changed(cursor-position) => {
-            if cursor-position.x + self.computed-x < root.margin {
-                self.computed-x = -cursor-position.x + root.margin;
-            } else if cursor-position.x + self.computed-x > root.width - root.margin - root.right-margin - self.text-cursor-width {
-                self.computed-x = root.width - cursor-position.x - root.margin - root.right-margin - self.text-cursor-width;
-            }
-        }
+        input := TextInput {
+            // How far the text is scrolled left (0 or less)
+            property <length> scroll;
 
-        changed has-focus => {
-            if self.has-focus {
-                root.ensure-visible(ScrollBehavior.instant);
-            } else {
-                root.key-focus = false;
+            x: min(0px, max(view.width - self.width - self.text-cursor-width, self.scroll));
+            width: max(view.width, self.preferred-width);
+            height: root.height;
+            text <=> root.text;
+            // Greyed out while the field can't be used
+            color: root.enabled ? Theme.text-primary : Theme.disabled-text;
+            font-size: Theme.font-base;
+            vertical-alignment: center;
+            single-line: true;
+            enabled: root.enabled;
+            selection-background-color: Theme.selection-bg;
+            selection-foreground-color: Theme.selection-fg;
+            accessible-label: (root.label != "" ? root.label : root.placeholder-text)
+                + (root.required ? ", required" : "");
+            accessible-placeholder-text: root.placeholder-text;
+
+            cursor-position-changed(cursor-position) => {
+                if cursor-position.x + self.scroll < 0px {
+                    self.scroll = -cursor-position.x;
+                } else if cursor-position.x + self.scroll > view.width - self.text-cursor-width {
+                    self.scroll = view.width - cursor-position.x - self.text-cursor-width;
+                }
             }
-        }
-        key-released(event) => {
-            if event.text == Key.Tab || event.text == Key.Backtab {
-                root.key-focus = true;
+
+            changed has-focus => {
+                if self.has-focus {
+                    root.ensure-visible(ScrollBehavior.instant);
+                } else {
+                    root.key-focus = false;
+                }
             }
-            return reject;
+            key-released(event) => {
+                if event.text == Key.Tab || event.text == Key.Backtab {
+                    root.key-focus = true;
+                }
+                return reject;
+            }
+            accepted => { root.accepted(root.text); }
+            edited => { root.edited(root.text); }
         }
-        accepted => { root.accepted(root.text); }
-        edited => { root.edited(root.text); }
     }
 
     // Draw inside the field so scrolling or clipping never hides the ring.
@@ -104,9 +120,9 @@ export component StyledLineEdit inherits Rectangle {
     }
 
     if root.show-clear: IconButton {
-        x: root.width - self.width - Theme.space-6;
+        x: root.width - self.width - root.clear-inset;
         y: (root.height - self.height) / 2;
-        width: Theme.space-24;
+        width: root.clear-size;
         height: self.width;
         icon-size: Theme.icon-sm;
         icon: @image-url("icons/xmark.svg");
