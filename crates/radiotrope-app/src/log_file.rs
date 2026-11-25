@@ -10,8 +10,12 @@
 //! and in portable mode, the `data\local` folder beside the program. The
 //! file is started afresh past 1 MB, the old one kept as `radiotrope.old.log`.
 
-// The kiosk build has no log file: only the path's "none" is used there
-#![cfg_attr(not(any(windows, feature = "desktop")), allow(dead_code))]
+// The kiosk build and macOS have no log file: only the path's "none" is
+// used there
+#![cfg_attr(
+    not(any(windows, all(target_os = "linux", feature = "desktop"))),
+    allow(dead_code)
+)]
 
 use std::fs::File;
 use std::io::Write;
