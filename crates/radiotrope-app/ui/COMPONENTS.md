@@ -40,7 +40,7 @@ labels, status text, and help. Use “…” only for ongoing activity.
 | `icon-sm`, `icon-compact`, `icon-md`, `icon-lg` | Inline/close (12px), compact (14px), standard (16px), and playback (20px) glyphs. |
 | `control-button`, `control-field`, `control-touch` | Regular button (34px), text field (36px), and touch action (44px) heights. |
 | `row-menu`, `row-dense`, `row-media`, `row-touch` | Menu (28px), dense list (48px), station list (56px), and touch list (64px) row heights. |
-| `radius-sm`, `radius-md`, `radius-lg`, `dialog-radius` | Control, popup, and large corners, plus the dialog shape set by the rounded-corner preference. Derive pills and circles from their height. |
+| `radius-sm`, `radius-md`, `radius-lg`, `popup-radius`, `dialog-radius` | Control, popup, and large corners. `popup-radius` and `dialog-radius` are the outer corners of floating panels (menus, bubbles, dialog cards): square when the window is (`round-surfaces`, set by the window from View > Window > Rounded Corners, the title bar and the platform). Controls inside keep their own radius. Derive pills and circles from their height. |
 | `dialog-padding`, `dialog-gap`, `viewport-inset` | Dialog content padding, section gaps, and the space reserved at the viewport edge. |
 | `fast`, `normal`, `bars-period`, `bars-period-step`, `pulse-period`, `spin-period`, `tune-period` | Control transitions, playback bars, status pulse, spinner, and visualizer tuning time. |
 | `theme-mode`, `system-dark`, `dark-mode`, `panel-gradient`, `rounded-corners` | Theme preferences and the resolved palette. |

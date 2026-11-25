@@ -459,6 +459,12 @@ const SHOTS: &[Shot] = &[
         "tools",
         "Tools menu walked with the arrow keys: the focus ring on Equalizer.",
     ),
+    Shot::new(
+        "menu-tools-square",
+        "menu",
+        "tools",
+        "Tools menu with View > Window > Rounded Corners off: square like the window.",
+    ),
     Shot::new("menu-help", "menu", "help", "Help menu."),
     Shot::new(
         "menu-window",
@@ -952,6 +958,12 @@ const SHOTS: &[Shot] = &[
         "about",
         "",
         "About Radiotrope with build details and links.",
+    ),
+    Shot::new(
+        "about-square",
+        "about",
+        "",
+        "About Radiotrope with Rounded Corners off: a square dialog card.",
     ),
     Shot::new(
         "accent-color",
@@ -1567,6 +1579,11 @@ fn seed_statistics(ui: &App) {
 fn configure(ui: &App, shot: &Shot) {
     if shot.name == "menu-zoom-pending" {
         ui.global::<ViewOptions>().set_zoom(130);
+    }
+    // View > Window > Rounded Corners off: the window, menus and dialogs
+    // are square
+    if shot.name.ends_with("-square") {
+        ui.set_rounded_corners(false);
     }
     match shot.screen {
         "main" => match shot.state {

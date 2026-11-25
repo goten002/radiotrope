@@ -32,6 +32,14 @@ export { FavoritesFind }
 export { HexColor } from "dialogs/accent-color.slint";
 export { AboutInfo, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice, ConnectedPhone }
 
+// Hands the window's corner shape to Theme.round-surfaces: a global
+// property can't take a binding from the window, but one linked to it
+// here can (a `changed` handler would miss what Rust sets before the
+// event loop runs)
+component SurfaceCorners {
+    in property <bool> round <=> Theme.round-surfaces;
+}
+
 export component App inherits Window {
     // The station in the taskbar and window lists while one is loaded
     title: root.station-url != "" && root.station-name != ""
@@ -133,6 +141,17 @@ export component App inherits Window {
     callback rounded-corners-changed();
     out property <length> corner-radius: root.custom-frame && root.rounded-corners && root.corners-available
         && root.draw-corners && !root.maximized && !root.full-screen ? Defaults.window-radius : 0px;
+    // Whether the window's corners are round, whatever its size: our title
+    // bar with Rounded Corners on where they can be shown, or the system
+    // frame where the system rounds it (Windows 11). Menus, popups and
+    // dialogs follow it through Theme.round-surfaces. Not when maximized:
+    // they'd change shape with the window's size.
+    out property <bool> window-rounded: root.custom-frame
+        ? root.rounded-corners && root.corners-available
+        : !root.draw-corners && root.corners-available;
+    SurfaceCorners {
+        round: root.window-rounded;
+    }
     callback minimize-window();
     // Use our title bar (true) or the system one; Rust keeps the content size
     callback switch-title-bar(bool);
