@@ -185,7 +185,7 @@ const SHOTS: &[Shot] = &[
         "main-viz-hover",
         "main",
         "viz-name",
-        "Visualizer tile with its hover outline (no style name in the tile).",
+        "Visualizer tile on hover: its outline, and the hint that a click changes the style.",
     ),
     Shot::new(
         "main-sleep-countdown",
@@ -423,12 +423,6 @@ const SHOTS: &[Shot] = &[
         "view-group",
         "theme",
         "Theme selector in the View menu, with the current theme selected.",
-    ),
-    Shot::new(
-        "menu-visualizer-style",
-        "view-group",
-        "style",
-        "Visualizer styles expanded in the View menu.",
     ),
     Shot::new(
         "menu-zoom",

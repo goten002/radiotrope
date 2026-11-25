@@ -149,9 +149,18 @@ export component Playback inherits Rectangle {
     in property <bool> enabled: true;
 
     // Headless capture: "recording-confirm" arms the REC chip, "viz-name"
-    // shows the visualizer style's name, "chip-bubble" shows the bubble of
+    // shows the visualizer tile as on hover (with its hint), "chip-bubble" shows the bubble of
     // the chip under the pointer without the wait
     in property <string> snapshot-overlay;
+
+    // The visualizer tile's hint (VizHint, drawn by the window): open, and
+    // where, in the window: under the tile, its right edge on the tile's
+    property <bool> viz-hovered: false;
+    out property <bool> viz-hint-open: root.show-visualizer && root.has-station
+        && ((root.viz-hovered && root.enabled) || root.snapshot-overlay == "viz-name");
+    // The tile is the header's last item, centred in its height
+    out property <length> viz-hint-right: root.absolute-position.x + root.width - Theme.space-12;
+    out property <length> viz-hint-top: root.absolute-position.y + (root.height + 70px) / 2;
 
     property <image> empty-image;
     // The REC chip was pressed once and waits for a second press to stop
@@ -474,6 +483,7 @@ export component Playback inherits Rectangle {
                 is-loading: root.is-loading;
                 enabled: root.enabled;
                 snapshot-name: root.snapshot-overlay == "viz-name";
+                hint-wanted(on) => { root.viz-hovered = on; }
             }
         }
     }
