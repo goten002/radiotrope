@@ -2136,6 +2136,10 @@ mod menu_keys_tests;
 mod key_list_tests;
 
 #[cfg(test)]
+#[path = "stream_lists_test.rs"]
+mod stream_lists_tests;
+
+#[cfg(test)]
 #[path = "favorites_keys_test.rs"]
 mod favorites_keys_tests;
 

@@ -43,9 +43,15 @@ impl StationProvider for FakeDirectory {
         _: usize,
     ) -> radiotrope_app::error::Result<SearchResults> {
         std::thread::sleep(self.delay);
-        let mut jazz = Station::new("Jazz FM", "http://jazz.test/stream");
-        jazz.codec = Some("MP3".into());
-        jazz.bitrate = Some(128);
+        use radiotrope_app::data::types::Stream;
+        let mut jazz = Station::new("Jazz FM", "http://jazz.test/stream").with_streams(vec![
+            Stream::new("http://jazz.test/stream").with_audio_info(Some("MP3".into()), Some(128)),
+            Stream {
+                status: Some("suspect".into()),
+                ..Stream::new("http://jazz.test/backup")
+                    .with_audio_info(Some("AAC".into()), Some(64))
+            },
+        ]);
         jazz.genres = ["smooth".to_string(), "jazz".to_string()].into();
         let news = Station::new("News 24", "http://news.test/stream");
         let stations: Vec<Station> = [jazz, news]
@@ -406,6 +412,17 @@ async fn search_returns_details_and_marks_favorites() {
     assert_eq!(jazz["bitrate_kbps"], 128);
     assert_eq!(jazz["genres"], json!(["jazz", "smooth"]));
     assert_eq!(jazz["favorite_id"], url_to_id("http://jazz.test/stream"));
+    // Every stream is listed, the default first
+    assert_eq!(jazz["url"], "http://jazz.test/stream");
+    assert_eq!(
+        jazz["streams"],
+        json!([
+            {"url": "http://jazz.test/stream", "codec": "MP3", "bitrate_kbps": 128,
+             "hls": false, "status": null},
+            {"url": "http://jazz.test/backup", "codec": "AAC", "bitrate_kbps": 64,
+             "hls": false, "status": "suspect"},
+        ])
+    );
 
     // Nothing given lists the most popular stations
     let result = s.call("search_stations", json!({"query": " "})).await;
@@ -997,6 +1014,67 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
             }
         }
     });
+}
+
+#[tokio::test]
+async fn a_favorite_lists_its_streams_and_plays_its_default_with_the_others_as_backups() {
+    use radiotrope_app::data::types::{Favorite, Stream};
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    {
+        let mut station = Station::new("Three FM", "http://three.test/a").with_streams(vec![
+            Stream::new("http://three.test/a"),
+            Stream::new("http://three.test/b").with_audio_info(Some("MP3".into()), Some(96)),
+            Stream::new("http://three.test/c"),
+        ]);
+        // The user picked the second as the default
+        station.set_default("http://three.test/b");
+        let mut favorites = s.favorites.lock().unwrap();
+        favorites.add(Favorite::from_station(station)).unwrap();
+    }
+
+    let list = s.call("list_favorites", json!({})).await;
+    let three = list["structuredContent"]["favorites"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["name"] == "Three FM")
+        .cloned()
+        .unwrap();
+    assert_eq!(three["url"], "http://three.test/b");
+    let urls: Vec<&str> = three["streams"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|stream| stream["url"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "http://three.test/a",
+            "http://three.test/b",
+            "http://three.test/c"
+        ]
+    );
+    assert_eq!(three["streams"][1]["bitrate_kbps"], 96);
+
+    let id = url_to_id("http://three.test/b");
+    s.call("play_favorite", json!({"id": id, "wait_seconds": 0}))
+        .await;
+    let Ok(AppCommand::Play { url, backups, .. }) = s.commands.try_recv() else {
+        panic!("the favorite must be played");
+    };
+    assert_eq!(url, "http://three.test/b");
+    assert_eq!(backups, ["http://three.test/a", "http://three.test/c"]);
+
+    // A directory station plays its first stream, the others standing by
+    s.call("play_station", json!({"id": "jazz-id", "wait_seconds": 0}))
+        .await;
+    let Ok(AppCommand::Play { url, backups, .. }) = s.commands.try_recv() else {
+        panic!("the station must be played");
+    };
+    assert_eq!(url, "http://jazz.test/stream");
+    assert!(backups.is_empty(), "this one has a single stream");
 }
 
 #[tokio::test]

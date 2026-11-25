@@ -49,6 +49,8 @@ pub(crate) fn setup_header(ui: &App, ctx: &AppContext, last_station: Option<&Sta
     if let Some(station) = last_station {
         ui.set_station_name(station.name.as_str().into());
         ui.set_station_url(station.url.as_str().into());
+        // Play starts it with the streams it had
+        *lock(&LAST_BACKUPS) = (station.url.clone(), station.backups());
         let shown = show_station(&station.url);
         if let Some(ref logo_url) = station.logo_url {
             ui.set_station_logo_url(logo_url.as_str().into());
@@ -838,7 +840,7 @@ static LAST_BACKUPS: Mutex<(String, Vec<String>)> = Mutex::new((String::new(), V
 
 /// The other streams of the station at `url`, when it is the one started
 /// last from the UI
-fn backups_of(url: &str) -> Vec<String> {
+pub(crate) fn backups_of(url: &str) -> Vec<String> {
     let last = lock(&LAST_BACKUPS);
     if last.0 == url {
         last.1.clone()

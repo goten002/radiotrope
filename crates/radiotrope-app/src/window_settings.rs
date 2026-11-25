@@ -388,7 +388,13 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
                 .clone()
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| radiotrope_app::data::types::name_from_url(url));
+            // With its other streams, so the next run can fall back to them
             let mut station = Station::new(&name, url);
+            let streams = std::iter::once(url.clone())
+                .chain(crate::player_ui::backups_of(url))
+                .map(radiotrope_app::data::types::Stream::new)
+                .collect();
+            station.set_streams(streams, url);
             let logo_url = ui.get_station_logo_url().to_string();
             if !logo_url.is_empty() {
                 station = station.with_logo(&logo_url);

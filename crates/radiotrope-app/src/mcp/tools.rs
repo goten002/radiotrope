@@ -21,7 +21,7 @@ use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
 use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::flags::code_for_country;
 use radiotrope_app::data::schedule::{self, Action, Entry};
-use radiotrope_app::data::types::{url_to_id, Favorite};
+use radiotrope_app::data::types::{url_to_id, Favorite, Station};
 #[cfg(test)]
 use radiotrope_app::providers::ProviderRegistry;
 use radiotrope_app::providers::{Category, CategoryType, SearchOrder, StationFilter};
@@ -528,6 +528,9 @@ pub struct StationRef {
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct StreamInfo {
+    /// The stream playing: the station's default, or one of its other
+    /// streams after the default didn't connect
+    pub url: Option<String>,
     pub codec: String,
     /// e.g. "ICY", "HLS"
     #[serde(rename = "type")]
@@ -544,14 +547,46 @@ pub struct RecordingInfo {
     pub bytes: u64,
 }
 
+/// One of a station's streams
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct StreamItem {
+    pub url: String,
+    pub codec: Option<String>,
+    pub bitrate_kbps: Option<u32>,
+    /// An HLS stream
+    pub hls: bool,
+    /// How the directory last found it: "online", "suspect", "down" or
+    /// "offline"; not given for a stream the user added
+    pub status: Option<String>,
+}
+
+/// A station's streams in the tools' words, in their order
+fn stream_items(station: &Station) -> Vec<StreamItem> {
+    station
+        .streams
+        .iter()
+        .map(|s| StreamItem {
+            url: s.url.clone(),
+            codec: s.codec.clone(),
+            bitrate_kbps: s.bitrate.filter(|b| *b > 0),
+            hls: s.hls,
+            status: s.status.clone(),
+        })
+        .collect()
+}
+
 /// A station of the directory, as search_stations and get_station give it
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct FoundStation {
     /// Id for play_station and get_station
     pub id: Option<String>,
     pub name: String,
-    /// Stream URL to pass to play_url or add_favorite
+    /// The default stream's URL, to pass to play_url or add_favorite
     pub url: String,
+    /// Every stream of the station, the default among them. play_station
+    /// plays the default and tries the others in order if it doesn't
+    /// connect.
+    pub streams: Vec<StreamItem>,
     /// Country name, with the region when known ("Greece, Attica")
     pub country: Option<String>,
     /// Two-letter ISO code of the country, to search by it
@@ -654,6 +689,7 @@ fn found_station(
 ) -> FoundStation {
     FoundStation {
         id: s.provider_id.clone().filter(|id| !id.is_empty()),
+        streams: stream_items(&s),
         favorite_id,
         genres: sorted_genres(&s.genres),
         // "Greece, Attica": the country comes first
@@ -679,7 +715,12 @@ pub struct FavoriteItem {
     /// Id for play_favorite and remove_favorite; stays the same for a URL
     pub id: String,
     pub name: String,
+    /// The default stream's URL: the one play_favorite plays
     pub url: String,
+    /// Every stream of the favorite, the default among them; the others
+    /// are tried in order if the default doesn't connect. The user picks
+    /// the default in the app.
+    pub streams: Vec<StreamItem>,
     pub country: Option<String>,
     pub genres: Vec<String>,
     pub play_count: u32,
@@ -971,6 +1012,7 @@ impl RadioTools {
         let stream =
             (s.playback != PlaybackState::Stopped && !s.codec_name.is_empty()).then(|| {
                 StreamInfo {
+                    url: s.stream_url.clone(),
                     codec: s.codec_name.clone(),
                     stream_type: s.stream_type.clone(),
                     bitrate_kbps: s.bitrate,
@@ -1221,6 +1263,7 @@ impl RadioTools {
                 id: fav.id(),
                 name: fav.name().to_string(),
                 url: fav.url().to_string(),
+                streams: stream_items(&fav.station),
                 country: fav.station.country.clone(),
                 genres: sorted_genres(&fav.station.genres),
                 play_count: stats.play_count,

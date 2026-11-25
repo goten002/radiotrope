@@ -162,6 +162,10 @@ export component EditFavoriteDialog inherits Rectangle {
     in-out property <bool> confirm-remove: false;
     property <bool> can-save: root.edit-name != "" && root.edit-url != "";
     property <bool> can-add: root.new-stream != "" && root.new-stream-problem == "";
+    // A row's button was used and went away with the list it was in (the
+    // rows are made anew): the field for a new address takes the focus,
+    // so the keys stay in the dialog
+    property <int> focus-add-request;
 
     // Saves the changes; returns why it couldn't (e.g. another favorite
     // has the URL), or "" when saved
@@ -211,6 +215,13 @@ export component EditFavoriteDialog inherits Rectangle {
             root.edit-url = root.edit-streams[0].url;
         }
         root.error = "";
+        root.focus-add-request += 1;
+    }
+
+    function move-stream(index: int, by: int) {
+        root.edit-streams = StreamEdit.moved(root.edit-streams, index, by);
+        root.error = "";
+        root.focus-add-request += 1;
     }
 
     function station() -> FavoriteStation {
@@ -288,10 +299,7 @@ export component EditFavoriteDialog inherits Rectangle {
                             root.edit-url = stream.url;
                             root.error = "";
                         }
-                        move(by) => {
-                            root.edit-streams = StreamEdit.moved(root.edit-streams, index, by);
-                            root.error = "";
-                        }
+                        move(by) => { root.move-stream(index, by); }
                         remove => { root.remove-stream(index); }
                     }
                 }
@@ -302,6 +310,8 @@ export component EditFavoriteDialog inherits Rectangle {
 
                 StyledLineEdit {
                     horizontal-stretch: 1;
+                    property <int> focus-request: root.focus-add-request;
+                    changed focus-request => { self.focus-input(); }
                     label: "Stream URL to add";
                     placeholder-text: "Add a stream URL";
                     text <=> root.new-stream;

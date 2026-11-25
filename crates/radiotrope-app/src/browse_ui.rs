@@ -471,7 +471,7 @@ fn station_of(item: &BrowseStation) -> Station {
 
 /// The row with the stream at `index` of its streams as the one it plays;
 /// unchanged when it has no such stream
-fn with_stream(mut item: BrowseStation, index: i32) -> BrowseStation {
+pub(crate) fn with_stream(mut item: BrowseStation, index: i32) -> BrowseStation {
     let picked = usize::try_from(index)
         .ok()
         .and_then(|index| item.streams.row_data(index));
@@ -736,6 +736,141 @@ pub(crate) fn flag_image(country_code: Option<&str>, country: Option<&str>) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory station with three streams, as its row
+    fn three_streams() -> BrowseStation {
+        use radiotrope_app::data::types::Stream;
+        let station = Station::new("Jazz FM", "http://a.test")
+            .with_streams(vec![
+                Stream::new("http://a.test").with_audio_info(Some("AAC".into()), Some(128)),
+                Stream {
+                    hls: true,
+                    status: Some("online".into()),
+                    ..Stream::new("http://b.test").with_audio_info(Some("MP3".into()), Some(64))
+                },
+                Stream::new("http://c.test"),
+            ])
+            .with_provider(
+                radiotrope_app::providers::radiotrope::PROVIDER_ID,
+                Some("st_0000000000001".into()),
+            )
+            .with_logo("http://a.test/logo.png")
+            .with_metadata(Some("Greece".into()), None, Default::default());
+        station_to_browse(&station)
+    }
+
+    #[test]
+    fn a_row_shows_the_default_stream_and_keeps_them_all() {
+        let row = three_streams();
+        assert_eq!(
+            (row.url.as_str(), row.codec.as_str(), row.bitrate),
+            ("http://a.test", "AAC", 128)
+        );
+        assert_eq!(row.streams.row_count(), 3);
+
+        // And is the station it came from
+        let station = station_of(&row);
+        assert_eq!(station.url, "http://a.test");
+        assert_eq!(station.backups(), ["http://b.test", "http://c.test"]);
+        assert!(station.streams[1].hls);
+        assert_eq!(station.streams[1].status.as_deref(), Some("online"));
+        assert_eq!(station.provider_id.as_deref(), Some("st_0000000000001"));
+        assert_eq!(station.country.as_deref(), Some("Greece"));
+        assert_eq!(station.logo_url.as_deref(), Some("http://a.test/logo.png"));
+    }
+
+    #[test]
+    fn picking_a_stream_makes_it_the_one_the_row_plays() {
+        let row = with_stream(three_streams(), 1);
+        assert_eq!(
+            (row.url.as_str(), row.codec.as_str(), row.bitrate),
+            ("http://b.test", "MP3", 64)
+        );
+        let station = station_of(&row);
+        assert_eq!(station.url, "http://b.test");
+        // The list keeps the directory's order; the others are tried in it
+        assert_eq!(station.backups(), ["http://a.test", "http://c.test"]);
+        let play = PlayMetadata::of(&station);
+        assert_eq!(play.url, "http://b.test");
+        assert_eq!(play.backups, ["http://a.test", "http://c.test"]);
+
+        // A stream nothing is known of shows no codec or bitrate
+        let row = with_stream(row, 2);
+        assert_eq!(
+            (row.url.as_str(), row.codec.as_str(), row.bitrate),
+            ("http://c.test", "", 0)
+        );
+        // No such stream: the row stays
+        assert_eq!(with_stream(row.clone(), 3).url, "http://c.test");
+        assert_eq!(with_stream(row, -1).url, "http://c.test");
+    }
+
+    #[test]
+    fn a_row_without_a_list_is_a_station_with_its_one_stream() {
+        let row = BrowseStation {
+            name: "Old".into(),
+            url: "http://old.test".into(),
+            codec: "MP3".into(),
+            bitrate: 96,
+            ..Default::default()
+        };
+        let station = station_of(&row);
+        assert_eq!(station.streams.len(), 1);
+        assert_eq!(station.bitrate, Some(96));
+        assert_eq!(station.provider_id, None);
+    }
+
+    #[test]
+    fn a_stream_picked_for_a_favorite_becomes_its_default() {
+        use radiotrope_app::data::types::{url_to_id, Favorite};
+        let mut favs = FavoritesManager::new();
+        // Starred from the row: it has every stream
+        favs.add(Favorite::from_station(station_of(&three_streams())))
+            .unwrap();
+
+        // Its row shows the favorite's default; picking it again changes nothing
+        assert!(!pick_favorite_stream(&mut favs, &three_streams()));
+
+        let picked = with_stream(three_streams(), 2);
+        assert!(pick_favorite_stream(&mut favs, &picked));
+        let fav = favs.get(&url_to_id("http://c.test")).unwrap();
+        assert_eq!(fav.url(), "http://c.test");
+        assert_eq!(fav.station.streams.len(), 3);
+        assert_eq!(favs.count(), 1);
+
+        // Results listed later show that default on its row
+        let row = show_favorite_default(&favs, three_streams());
+        assert_eq!(row.url, "http://c.test");
+
+        // A station that is no favorite: nothing to change
+        let mut none = FavoritesManager::new();
+        assert!(!pick_favorite_stream(&mut none, &picked));
+        assert_eq!(
+            show_favorite_default(&none, three_streams()).url,
+            "http://a.test"
+        );
+    }
+
+    #[test]
+    fn a_favorite_takes_in_a_stream_it_didnt_have() {
+        use radiotrope_app::data::types::{url_to_id, Favorite};
+        let mut favs = FavoritesManager::new();
+        // Saved when the directory listed one stream for it
+        favs.add(Favorite::new("Jazz FM", "http://a.test").with_provider(
+            radiotrope_app::providers::radiotrope::PROVIDER_ID,
+            Some("st_0000000000001".into()),
+        ))
+        .unwrap();
+        assert!(pick_favorite_stream(
+            &mut favs,
+            &with_stream(three_streams(), 1)
+        ));
+        let fav = favs.get(&url_to_id("http://b.test")).unwrap();
+        let urls: Vec<&str> = fav.station.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["http://a.test", "http://b.test"]);
+        assert_eq!(fav.station.bitrate, Some(64));
+        assert!(fav.station.streams[1].hls);
+    }
 
     #[test]
     fn filter_entries_take_the_kind_asked_for_with_the_code_the_directory_wants() {
