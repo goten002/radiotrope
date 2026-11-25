@@ -737,6 +737,7 @@ mod tests {
         give_up(&mut controller);
         controller.handle_command(AppCommand::Play {
             url: "http://127.0.0.1:1/other".into(),
+            backups: Vec::new(),
             name: Some("Other FM".into()),
             logo_url: None,
             country: None,

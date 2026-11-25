@@ -193,12 +193,12 @@ impl Control {
 
     /// Start a station and wait up to `wait` for it to play or fail.
     /// `sent` runs once the player has the command.
+    ///
+    /// `play` is the station's default stream, its other streams (tried
+    /// in order when the default doesn't connect), and what it shows.
     pub async fn play(
         &self,
-        url: String,
-        name: Option<String>,
-        logo_url: Option<String>,
-        country: Option<String>,
+        play: PlayMetadata,
         wait: Duration,
         sent: impl FnOnce(),
     ) -> Result<Played, Error> {
@@ -209,10 +209,11 @@ impl Control {
         // The logo and country go with it, so the header shows them as it
         // does for a station picked in the UI
         self.send(AppCommand::Play {
-            url,
-            name,
-            logo_url,
-            country,
+            url: play.url,
+            backups: play.backups,
+            name: play.name,
+            logo_url: play.logo_url,
+            country: play.country,
             taken: Some(taken),
         })?;
         sent();
@@ -280,19 +281,12 @@ impl Control {
             .map_err(|e| Error::Failed(format!("Can't look up the station: {e}")))?
     }
 
-    /// A favorite's URL, name, logo and country, to play it
-    pub async fn favorite_to_play(
-        &self,
-        id: String,
-    ) -> Result<(String, String, Option<String>, Option<String>), Error> {
+    /// A favorite's streams (its default, and the others as backups),
+    /// name, logo and country, to play it
+    pub async fn favorite_to_play(&self, id: String) -> Result<PlayMetadata, Error> {
         self.with_favorites(move |_, favorites| {
             let fav = favorites.get(&id).ok_or(Error::NoFavorite(id))?;
-            Ok((
-                fav.url().to_string(),
-                fav.name().to_string(),
-                fav.station.logo_url.clone(),
-                fav.station.country.clone(),
-            ))
+            Ok(PlayMetadata::of(&fav.station))
         })
         .await?
     }

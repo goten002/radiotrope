@@ -5,7 +5,7 @@ import "fonts/Inter/static/Inter_18pt-Regular.ttf";
 import "fonts/Inter/static/Inter_18pt-SemiBold.ttf";
 import { MenuBar, ConnectedPhone, PhonesBubble } from "menu-bar.slint";
 import { Playback } from "playback.slint";
-import { Favorites, FavoriteStation, FavoritesFind } from "favorites.slint";
+import { Favorites, FavoriteStation, StationStream, FavoritesFind } from "favorites.slint";
 import { Controls } from "controls.slint";
 import { Theme, Defaults, ViewOptions } from "defaults.slint";
 import { NetworkStreamDialog } from "dialogs/network-stream.slint";
@@ -13,7 +13,7 @@ import { ImportFavoritesDialog } from "dialogs/import-favorites.slint";
 import { StatisticsDialog, StatsData, StreamHealth } from "dialogs/statistics.slint";
 import { StationBrowserDialog, BrowseStation } from "dialogs/station-browser.slint";
 import { FilterEntry } from "filter-dropdown.slint";
-import { EditFavoriteDialog } from "dialogs/edit-favorite.slint";
+import { EditFavoriteDialog, StreamEdit } from "dialogs/edit-favorite.slint";
 import { RecordingSettingsDialog } from "dialogs/recording.slint";
 import { AgentsDialog } from "dialogs/agents.slint";
 import { RemoteControlDialog, PairingCodeDialog, PairingQrDialog, RemoteDevice } from "dialogs/remote-control.slint";
@@ -28,9 +28,9 @@ import { QuitDialog } from "dialogs/quit.slint";
 import { ReportPlaysDialog } from "dialogs/report-plays.slint";
 import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle } from "visualization.slint";
-export { FavoritesFind }
+export { FavoritesFind, StreamEdit }
 export { HexColor } from "dialogs/accent-color.slint";
-export { AboutInfo, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice, ConnectedPhone }
+export { AboutInfo, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, StationStream, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice, ConnectedPhone }
 
 // Hands the window's corner shape to Theme.round-surfaces: a global
 // property can't take a binding from the window, but one linked to it
@@ -82,7 +82,7 @@ export component App inherits Window {
             }
         }
         if screen == "edit-favorite" {
-            edit-dialog.open(root.favorites-list[0]);
+            edit-dialog.open(root.favorites-list[detail == "streams" ? 1 : 0]);
             edit-dialog.confirm-remove = detail == "remove";
         }
         if screen == "statistics" { stats-dialog.show-dialog = true; }
@@ -436,6 +436,8 @@ export component App inherits Window {
     callback retry-browse();
     // Star on a search result: add it to favorites or remove it
     callback toggle-browse-favorite(BrowseStation);
+    // A stream was picked from a search result's menu (row, stream)
+    callback pick-browse-stream(int, int);
 
     // Favorites to and from a file
     callback export-favorites();
@@ -860,6 +862,7 @@ export component App inherits Window {
                 retry() => { root.retry-browse(); }
                 station-selected(station) => { root.play-station(station); }
                 favorite-toggled(station) => { root.toggle-browse-favorite(station); }
+                stream-picked(row, stream) => { root.pick-browse-stream(row, stream); }
                 visible-rows-changed() => { root.browse-rows-changed(); }
                 closed() => { root.browse-closed(); }
             }

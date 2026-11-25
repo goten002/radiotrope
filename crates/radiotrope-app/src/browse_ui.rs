@@ -158,22 +158,10 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                 Some(id) => removed = crate::favorites_ui::remove_keeping_place(&mut f, &id),
                 None => {
                     use radiotrope_app::data::types::Favorite;
-                    let mut fav = Favorite::new(item.name.as_str(), item.url.as_str())
-                        .with_metadata(
-                            Some(item.country.to_string()).filter(|c| !c.is_empty()),
-                            None,
-                            Default::default(),
-                        )
-                        .with_provider(
-                            radiotrope_app::providers::radiotrope::PROVIDER_ID,
-                            Some(item.provider_id.to_string()).filter(|id| !id.is_empty()),
-                        )
-                        .with_audio_info(
-                            Some(item.codec.to_string()).filter(|c| !c.is_empty()),
-                            u32::try_from(item.bitrate).ok().filter(|b| *b > 0),
-                        );
+                    // With every stream the directory lists, and the one
+                    // the row plays as its default
+                    let fav = Favorite::from_station(station_of(&item));
                     if !item.logo_url.is_empty() {
-                        fav = fav.with_logo(item.logo_url.as_str());
                         // The browser already has the logo: no new download
                         if let Some(png) = row_logos.logos().cached_png(&item.logo_url) {
                             let _ = ctx.logos.cache().put_logo(&fav, &png);
@@ -259,28 +247,31 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                         ),
                     );
                 }
-                let logo_url = station.logo_url.to_string();
-                let country = station.country.to_string();
-                play_station_with_metadata(
-                    &ui,
-                    &ctx,
-                    PlayMetadata {
-                        url: station.url.to_string(),
-                        name: Some(station.name.to_string()),
-                        logo_url: if logo_url.is_empty() {
-                            None
-                        } else {
-                            Some(logo_url)
-                        },
-                        country: if country.is_empty() {
-                            None
-                        } else {
-                            Some(country)
-                        },
-                        provider_id: Some(station.provider_id.to_string())
-                            .filter(|id| !id.is_empty()),
-                    },
-                );
+                // Its default stream, with the others to fall back to
+                play_station_with_metadata(&ui, &ctx, PlayMetadata::of(&station_of(&station)));
+            }
+        });
+    }
+
+    // A stream picked from a row's menu: the row plays that one from now
+    // on, and so does the station's favorite, if it has one
+    {
+        let ctx = ctx.clone();
+        ui.on_pick_browse_stream(move |row, stream| {
+            let Some(ui) = ctx.ui.upgrade() else { return };
+            let model = ui.get_search_results();
+            let Some(item) = usize::try_from(row)
+                .ok()
+                .and_then(|row| model.row_data(row))
+            else {
+                return;
+            };
+            let item = with_stream(item, stream);
+            model.set_row_data(row as usize, item.clone());
+            let changed = pick_favorite_stream(&mut lock(&ctx.favorites), &item);
+            if changed {
+                crate::favorites_ui::save_favorites();
+                refresh_favorites(&ui, &ctx.favorites, &ctx.logos);
             }
         });
     }
@@ -389,6 +380,9 @@ fn show_browse_results(
         let f = lock(favs);
         for item in &mut new_items {
             item.is_favorite = browse_is_favorite(&f, item);
+            if item.is_favorite {
+                *item = show_favorite_default(&f, item.clone());
+            }
         }
     }
     let (mut items, mut logos) = if append {
@@ -439,9 +433,90 @@ fn station_to_browse(s: &Station) -> BrowseStation {
             .unwrap_or("")
             .into(),
         bitrate: s.bitrate.unwrap_or(0) as i32,
+        streams: crate::stream_edit::rows_of(s),
         provider_id: s.provider_id.as_deref().unwrap_or("").into(),
         is_favorite: false,
     }
+}
+
+/// The station a row stands for: its streams, with the one the row plays
+/// (the directory's first, or the one picked from the row's stream menu)
+/// as its default
+fn station_of(item: &BrowseStation) -> Station {
+    let streams: Vec<_> = item
+        .streams
+        .iter()
+        .map(|row| crate::stream_edit::stream_of(&row))
+        .collect();
+    let mut station = Station::new(item.name.as_str(), item.url.as_str())
+        .with_audio_info(
+            Some(item.codec.to_string()).filter(|c| !c.is_empty()),
+            u32::try_from(item.bitrate).ok().filter(|b| *b > 0),
+        )
+        .with_metadata(
+            Some(item.country.to_string()).filter(|c| !c.is_empty()),
+            None,
+            Default::default(),
+        )
+        .with_provider(
+            radiotrope_app::providers::radiotrope::PROVIDER_ID,
+            Some(item.provider_id.to_string()).filter(|id| !id.is_empty()),
+        )
+        .with_logo_opt(Some(item.logo_url.to_string()).filter(|l| !l.is_empty()));
+    if streams.iter().any(|s| s.url == station.url) {
+        station.set_streams(streams, item.url.as_str());
+    }
+    station
+}
+
+/// The row with the stream at `index` of its streams as the one it plays;
+/// unchanged when it has no such stream
+pub(crate) fn with_stream(mut item: BrowseStation, index: i32) -> BrowseStation {
+    let picked = usize::try_from(index)
+        .ok()
+        .and_then(|index| item.streams.row_data(index));
+    if let Some(stream) = picked {
+        item.url = stream.url;
+        item.codec = stream.codec;
+        item.bitrate = stream.bitrate;
+    }
+    item
+}
+
+/// A favorite plays its own default stream, whatever the directory lists
+/// first: its row in the results shows that one as the stream it plays
+fn show_favorite_default(favs: &FavoritesManager, item: BrowseStation) -> BrowseStation {
+    let default = favs
+        .find_match(&item.url, Some(item.provider_id.as_str()))
+        .map(|fav| fav.url().to_string());
+    let index = default.and_then(|url| item.streams.iter().position(|row| row.url == url.as_str()));
+    match index.and_then(|index| i32::try_from(index).ok()) {
+        Some(index) => with_stream(item, index),
+        None => item,
+    }
+}
+
+/// A stream was picked from a row's menu, to be played. A favorite takes
+/// it as its default (and into its streams, when it didn't have it), so
+/// it is what the favorite plays from now on. True when a favorite changed.
+fn pick_favorite_stream(favs: &mut FavoritesManager, item: &BrowseStation) -> bool {
+    let Some(fav) = favs
+        .find_match(&item.url, Some(item.provider_id.as_str()))
+        .cloned()
+    else {
+        return false;
+    };
+    if fav.url() == item.url.as_str() {
+        return false;
+    }
+    let mut streams = fav.station.streams.clone();
+    if !streams.iter().any(|s| s.url == item.url.as_str()) {
+        let picked = station_of(item).default_stream();
+        streams.push(picked);
+    }
+    let update =
+        radiotrope_app::data::types::FavoriteUpdate::new().streams(streams, item.url.as_str());
+    favs.update(&fav.id(), update).is_ok()
 }
 
 /// How many genres a row names
@@ -661,6 +736,141 @@ pub(crate) fn flag_image(country_code: Option<&str>, country: Option<&str>) -> s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A directory station with three streams, as its row
+    fn three_streams() -> BrowseStation {
+        use radiotrope_app::data::types::Stream;
+        let station = Station::new("Jazz FM", "http://a.test")
+            .with_streams(vec![
+                Stream::new("http://a.test").with_audio_info(Some("AAC".into()), Some(128)),
+                Stream {
+                    hls: true,
+                    status: Some("online".into()),
+                    ..Stream::new("http://b.test").with_audio_info(Some("MP3".into()), Some(64))
+                },
+                Stream::new("http://c.test"),
+            ])
+            .with_provider(
+                radiotrope_app::providers::radiotrope::PROVIDER_ID,
+                Some("st_0000000000001".into()),
+            )
+            .with_logo("http://a.test/logo.png")
+            .with_metadata(Some("Greece".into()), None, Default::default());
+        station_to_browse(&station)
+    }
+
+    #[test]
+    fn a_row_shows_the_default_stream_and_keeps_them_all() {
+        let row = three_streams();
+        assert_eq!(
+            (row.url.as_str(), row.codec.as_str(), row.bitrate),
+            ("http://a.test", "AAC", 128)
+        );
+        assert_eq!(row.streams.row_count(), 3);
+
+        // And is the station it came from
+        let station = station_of(&row);
+        assert_eq!(station.url, "http://a.test");
+        assert_eq!(station.backups(), ["http://b.test", "http://c.test"]);
+        assert!(station.streams[1].hls);
+        assert_eq!(station.streams[1].status.as_deref(), Some("online"));
+        assert_eq!(station.provider_id.as_deref(), Some("st_0000000000001"));
+        assert_eq!(station.country.as_deref(), Some("Greece"));
+        assert_eq!(station.logo_url.as_deref(), Some("http://a.test/logo.png"));
+    }
+
+    #[test]
+    fn picking_a_stream_makes_it_the_one_the_row_plays() {
+        let row = with_stream(three_streams(), 1);
+        assert_eq!(
+            (row.url.as_str(), row.codec.as_str(), row.bitrate),
+            ("http://b.test", "MP3", 64)
+        );
+        let station = station_of(&row);
+        assert_eq!(station.url, "http://b.test");
+        // The list keeps the directory's order; the others are tried in it
+        assert_eq!(station.backups(), ["http://a.test", "http://c.test"]);
+        let play = PlayMetadata::of(&station);
+        assert_eq!(play.url, "http://b.test");
+        assert_eq!(play.backups, ["http://a.test", "http://c.test"]);
+
+        // A stream nothing is known of shows no codec or bitrate
+        let row = with_stream(row, 2);
+        assert_eq!(
+            (row.url.as_str(), row.codec.as_str(), row.bitrate),
+            ("http://c.test", "", 0)
+        );
+        // No such stream: the row stays
+        assert_eq!(with_stream(row.clone(), 3).url, "http://c.test");
+        assert_eq!(with_stream(row, -1).url, "http://c.test");
+    }
+
+    #[test]
+    fn a_row_without_a_list_is_a_station_with_its_one_stream() {
+        let row = BrowseStation {
+            name: "Old".into(),
+            url: "http://old.test".into(),
+            codec: "MP3".into(),
+            bitrate: 96,
+            ..Default::default()
+        };
+        let station = station_of(&row);
+        assert_eq!(station.streams.len(), 1);
+        assert_eq!(station.bitrate, Some(96));
+        assert_eq!(station.provider_id, None);
+    }
+
+    #[test]
+    fn a_stream_picked_for_a_favorite_becomes_its_default() {
+        use radiotrope_app::data::types::{url_to_id, Favorite};
+        let mut favs = FavoritesManager::new();
+        // Starred from the row: it has every stream
+        favs.add(Favorite::from_station(station_of(&three_streams())))
+            .unwrap();
+
+        // Its row shows the favorite's default; picking it again changes nothing
+        assert!(!pick_favorite_stream(&mut favs, &three_streams()));
+
+        let picked = with_stream(three_streams(), 2);
+        assert!(pick_favorite_stream(&mut favs, &picked));
+        let fav = favs.get(&url_to_id("http://c.test")).unwrap();
+        assert_eq!(fav.url(), "http://c.test");
+        assert_eq!(fav.station.streams.len(), 3);
+        assert_eq!(favs.count(), 1);
+
+        // Results listed later show that default on its row
+        let row = show_favorite_default(&favs, three_streams());
+        assert_eq!(row.url, "http://c.test");
+
+        // A station that is no favorite: nothing to change
+        let mut none = FavoritesManager::new();
+        assert!(!pick_favorite_stream(&mut none, &picked));
+        assert_eq!(
+            show_favorite_default(&none, three_streams()).url,
+            "http://a.test"
+        );
+    }
+
+    #[test]
+    fn a_favorite_takes_in_a_stream_it_didnt_have() {
+        use radiotrope_app::data::types::{url_to_id, Favorite};
+        let mut favs = FavoritesManager::new();
+        // Saved when the directory listed one stream for it
+        favs.add(Favorite::new("Jazz FM", "http://a.test").with_provider(
+            radiotrope_app::providers::radiotrope::PROVIDER_ID,
+            Some("st_0000000000001".into()),
+        ))
+        .unwrap();
+        assert!(pick_favorite_stream(
+            &mut favs,
+            &with_stream(three_streams(), 1)
+        ));
+        let fav = favs.get(&url_to_id("http://b.test")).unwrap();
+        let urls: Vec<&str> = fav.station.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["http://a.test", "http://b.test"]);
+        assert_eq!(fav.station.bitrate, Some(64));
+        assert!(fav.station.streams[1].hls);
+    }
 
     #[test]
     fn filter_entries_take_the_kind_asked_for_with_the_code_the_directory_wants() {

@@ -1,10 +1,10 @@
 import { DesktopShortcuts, ShortcutAction } from "../shortcuts.slint";
 import { Theme, Defaults } from "../defaults.slint";
-import { DialogShell, Icon, IconButton, ButtonKeys, FocusRing, Motion, PopupCard, StatusPanel, ChipVariant } from "../components.slint";
+import { DialogShell, Icon, IconButton, ButtonKeys, FocusRing, Motion, PopupCard, StatusPanel, ChipVariant, ChoiceRow } from "../components.slint";
 import { StationState, StationRowSurface, StationLogo, StationStateMark } from "../station-row.slint";
 import { KeyListCursor } from "../key-list.slint";
 import { FilterDropdown, FilterEntry } from "../filter-dropdown.slint";
-import { RecordingGuard } from "../favorites.slint";
+import { RecordingGuard, StationStream } from "../favorites.slint";
 import { StyledLineEdit } from "../styled-line-edit.slint";
 import { AccentButton, SecondaryButton } from "../buttons.slint";
 import { ScrollBar } from "../scroll-bar.slint";
@@ -18,6 +18,10 @@ export struct BrowseStation {
     genres: string,
     codec: string,
     bitrate: int,
+    // Every stream of the station, in the directory's order. `url`, `codec`
+    // and `bitrate` are those of the one the row plays: the first, or the
+    // one picked from the row's stream menu.
+    streams: [StationStream],
     // Provider's station ID, used to recognize favorites with a different URL
     provider-id: string,
     // Already in favorites (set from Rust, kept up to date)
@@ -47,8 +51,14 @@ component StationRow inherits Rectangle {
     in property <string> description;
     in property <int> row-index;
     in property <int> row-count;
+    // The station has several streams and one can be picked: the codec
+    // and bitrate are a button that opens the list of them
+    in property <bool> has-streams;
+    // That list is open for this row
+    in property <bool> streams-open;
     callback clicked();
     callback favorite-clicked();
+    callback streams-clicked();
 
     height: Theme.row-media;
 
@@ -129,48 +139,104 @@ component StationRow inherits Rectangle {
             }
         }
 
-        // Codec badge, sized to its text
-        VerticalLayout {
-            alignment: center;
-            width: 64px;
+        // Codec and bitrate of the stream the row plays. With several
+        // streams they are a button that lists them, to play another.
+        Rectangle {
+            width: 152px;
 
-            if root.codec != "": HorizontalLayout {
-                alignment: end;
+            Rectangle {
+                y: (parent.height - self.height) / 2;
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: !root.has-streams ? transparent
+                    : streams-touch.pressed ? Theme.pressed-bg
+                    : streams-touch.has-hover || root.streams-open ? Theme.hover-bg : transparent;
+                animate background { duration: Theme.fast; }
 
-                Rectangle {
-                    width: min(64px, codec-text.preferred-width + 12px);
-                    height: 18px;
-                    border-radius: Theme.radius-sm;
-                    background: Theme.elevated;
-                    border-width: 1px;
-                    border-color: Theme.hairline;
+                // The button, for screen readers (a role can't depend on
+                // a property)
+                if root.has-streams: Rectangle {
+                    accessible-role: button;
+                    accessible-label: "Streams";
+                    accessible-action-default => { root.streams-clicked(); }
+                }
 
-                    codec-text := Text {
-                        x: 6px;
-                        width: parent.width - 12px;
-                        text: root.codec;
-                        color: Theme.text-secondary;
-                        font-size: Theme.font-xs;
-                        font-weight: Theme.weight-semibold;
-                        horizontal-alignment: center;
-                        overflow: elide;
-                        accessible-role: none;
+                // Without several streams the click is the row's
+                streams-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        if root.has-streams {
+                            root.streams-clicked();
+                        } else {
+                            root.clicked();
+                        }
                     }
                 }
             }
-        }
 
-        // Bitrate
-        VerticalLayout {
-            alignment: center;
-            width: 60px;
+            HorizontalLayout {
+                padding-left: Theme.space-4;
+                padding-right: Theme.space-4;
+                spacing: Theme.space-8;
 
-            Text {
-                text: root.bitrate > 0 ? "\{root.bitrate} kbps" : "";
-                color: Theme.text-secondary;
-                font-size: Theme.font-sm;
-                horizontal-alignment: right;
-                accessible-role: none;
+                // Codec badge, sized to its text
+                VerticalLayout {
+                    alignment: center;
+                    width: 64px;
+
+                    if root.codec != "": HorizontalLayout {
+                        alignment: end;
+
+                        Rectangle {
+                            width: min(64px, codec-text.preferred-width + 12px);
+                            height: 18px;
+                            border-radius: Theme.radius-sm;
+                            background: Theme.elevated;
+                            border-width: 1px;
+                            border-color: Theme.hairline;
+
+                            codec-text := Text {
+                                x: 6px;
+                                width: parent.width - 12px;
+                                text: root.codec;
+                                color: Theme.text-secondary;
+                                font-size: Theme.font-xs;
+                                font-weight: Theme.weight-semibold;
+                                horizontal-alignment: center;
+                                overflow: elide;
+                                accessible-role: none;
+                            }
+                        }
+                    }
+                }
+
+                // Bitrate
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+
+                    Text {
+                        text: root.bitrate > 0 ? "\{root.bitrate} kbps" : "";
+                        color: Theme.text-secondary;
+                        font-size: Theme.font-sm;
+                        horizontal-alignment: right;
+                        accessible-role: none;
+                    }
+                }
+
+                // More streams to pick from
+                VerticalLayout {
+                    alignment: center;
+                    width: Theme.icon-sm;
+
+                    if root.has-streams: Icon {
+                        width: Theme.icon-sm;
+                        height: Theme.icon-sm;
+                        source: @image-url("../icons/chevron-down.svg");
+                        colorize: streams-touch.has-hover || root.streams-open
+                            ? Theme.text-primary : Theme.text-secondary;
+                    }
+                }
             }
         }
 
@@ -425,6 +491,35 @@ export component StationBrowserDialog inherits Rectangle {
         if !self.recording {
             self.armed = "";
         }
+        // Another stream would end the recording like another station
+        self.streams-row = -1;
+    }
+    // The row whose list of streams is open (-1: none), and the list's
+    // row under the arrow keys
+    property <int> streams-row: -1;
+    property <int> streams-active: -1;
+
+    function open-streams(row: int) {
+        if root.recording || row < 0 || root.search-results[row].streams.length < 2 {
+            return;
+        }
+        root.active-row = row;
+        root.streams-active = -1;
+        root.streams-row = row;
+    }
+
+    function close-streams() {
+        root.streams-row = -1;
+        // The keys go back to the list
+        root.focus-list-request += 1;
+    }
+
+    // Play the row with another of its streams
+    function pick-stream(stream: int) {
+        let row = root.streams-row;
+        root.close-streams();
+        root.stream-picked(row, stream);
+        root.pick(root.search-results[row]);
     }
     // Row picked last (provider ID or URL); the played URL may differ
     // after resolving a playlist or matching a favorite
@@ -437,6 +532,7 @@ export component StationBrowserDialog inherits Rectangle {
     property <int> focus-search-request;
     changed show-dialog => {
         if !self.show-dialog {
+            root.streams-row = -1;
             root.picked = "";
             root.armed = "";
             root.undo-focused = false;
@@ -474,6 +570,9 @@ export component StationBrowserDialog inherits Rectangle {
     callback retry();
     callback station-selected(BrowseStation);
     callback favorite-toggled(BrowseStation);
+    // Another stream was picked for the result at this row (row, index in
+    // its streams): the row plays that one from now on. It is played next.
+    callback stream-picked(int, int);
 
     // Ask for the next page, unless it is on its way or has failed (then
     // the countdown or Try Again fetches it)
@@ -563,12 +662,15 @@ export component StationBrowserDialog inherits Rectangle {
             || detail == "filter-country" || detail == "filter-genre" || detail == "filter-keys"
             || detail == "filter-loading" || detail == "filter-error" || detail == "filter-no-match";
         root.show-dialog = true;
+        if detail == "streams" {
+            root.open-streams(0);
+        }
     }
 
     // A result in one sentence for screen readers: its status or country,
     // the genres, the codec, the bitrate, and whether it is a favorite
     pure function describe(station: BrowseStation, state: StationState) -> string {
-        return root.join(root.join(root.join(root.join(root.join(
+        return root.join(root.join(root.join(root.join(root.join(root.join(
             root.armed != "" && root.armed == root.key-of(station) ? RecordingGuard.spoken : "",
             (state == StationState.loading || state == StationState.failed) && root.play-status != ""
                 ? root.play-status
@@ -576,6 +678,7 @@ export component StationBrowserDialog inherits Rectangle {
             station.genres),
             station.codec),
             station.bitrate > 0 ? "\{station.bitrate} kbps" : ""),
+            station.streams.length > 1 ? "\{station.streams.length} streams" : ""),
             station.is-favorite ? "in favorites" : "");
     }
 
@@ -935,7 +1038,10 @@ export component StationBrowserDialog inherits Rectangle {
                             description: root.describe(station, self.state);
                             row-index: self.idx;
                             row-count: root.search-results.length;
+                            has-streams: station.streams.length > 1 && !root.recording;
+                            streams-open: root.streams-row == self.idx;
                             favorite-clicked => { root.favorite-toggled(station); }
+                            streams-clicked => { root.open-streams(self.idx); }
                             clicked => {
                                 root.active-row = self.idx;
                                 root.pick(station);
@@ -1008,6 +1114,12 @@ export component StationBrowserDialog inherits Rectangle {
                                     }
                                     return accept;
                                 }
+                                // The Menu key lists the active row's streams
+                                if self.active >= 0 && self.station.streams.length > 1 && !root.recording
+                                    && (event.text == Key.Menu || (event.text == Key.F10 && event.modifiers.shift)) {
+                                    root.open-streams(self.active);
+                                    return accept;
+                                }
                                 return reject;
                             }
                         }
@@ -1021,6 +1133,82 @@ export component StationBrowserDialog inherits Rectangle {
                     viewport-height: results-flick.height;
                     content-height: results-flick.content-height;
                     content-y <=> results-flick.content-y;
+                }
+            }
+
+            // The streams of a result, to play another than the one its
+            // row shows. Over the list, under the row's codec and bitrate
+            // (above them when there is no room below). It takes the keys
+            // while open: the arrows, Home and End move, Enter or Space
+            // plays, Esc or a click elsewhere closes.
+            if root.streams-row >= 0 && root.streams-row < root.search-results.length: Rectangle {
+                TouchArea {
+                    clicked => { root.close-streams(); }
+                    scroll-event(event) => { return accept; }
+                }
+
+                PopupCard {
+                    property <BrowseStation> station: root.search-results[root.streams-row];
+                    property <int> count: self.station.streams.length;
+                    // The row's top and bottom edge in the list's view
+                    property <length> row-top: Theme.space-4 + root.streams-row * Theme.row-media + root.list-scroll;
+                    property <length> below: self.row-top + Theme.row-media - Theme.space-8;
+                    x: max(Theme.space-4, parent.width - self.width - 58px);
+                    y: clamp(self.below + self.height <= parent.height - Theme.space-4
+                            ? self.below : self.row-top + Theme.space-8 - self.height,
+                        Theme.space-4, max(Theme.space-4, parent.height - self.height - Theme.space-4));
+                    width: min(300px, parent.width - 2 * Theme.space-4);
+                    height: min(self.count * Theme.row-menu + 2 * Theme.space-4, parent.height - 2 * Theme.space-4);
+                    clip: true;
+                    accessible-role: none;
+
+                    FocusScope {
+                        focus-on-tab-navigation: false;
+                        focus-on-click: false;
+                        init => { self.focus(); }
+
+                        key-pressed(event) => {
+                            if event.text == Key.Escape {
+                                root.close-streams();
+                                return accept;
+                            }
+                            if event.text == Key.DownArrow {
+                                root.streams-active = min(count - 1, root.streams-active + 1);
+                                return accept;
+                            }
+                            if event.text == Key.UpArrow {
+                                root.streams-active = max(0, root.streams-active - 1);
+                                return accept;
+                            }
+                            if event.text == Key.Home || event.text == Key.End {
+                                root.streams-active = event.text == Key.Home ? 0 : count - 1;
+                                return accept;
+                            }
+                            if event.text == Key.Return || event.text == Key.Space {
+                                if !event.repeat && root.streams-active >= 0 {
+                                    root.pick-stream(root.streams-active);
+                                }
+                                return accept;
+                            }
+                            // Nothing behind the menu takes a key meanwhile
+                            return accept;
+                        }
+
+                        VerticalLayout {
+                            padding: Theme.space-4;
+                            alignment: start;
+
+                            for stream[index] in station.streams: ChoiceRow {
+                                // "AAC · 128 kbps", and the server it comes from
+                                label: stream.label != "" ? stream.label : stream.host;
+                                trailing-text: stream.label != "" ? stream.host : "";
+                                selected: stream.url == station.url;
+                                highlighted: root.streams-active == index;
+                                tab-stop: false;
+                                clicked => { root.pick-stream(index); }
+                            }
+                        }
+                    }
                 }
             }
 

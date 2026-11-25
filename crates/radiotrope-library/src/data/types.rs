@@ -67,18 +67,85 @@ pub(crate) fn fnv1a(bytes: &[u8]) -> u64 {
 // Station - Base type for radio station info
 // =============================================================================
 
+/// One of a station's streams: the same programme at another address,
+/// codec or bitrate
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Stream {
+    pub url: String,
+    /// Audio codec (e.g., "MP3", "AAC", "OGG"), when known
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
+    /// Bitrate in kbps, when known
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bitrate: Option<u32>,
+    /// An HLS stream (a playlist of segments)
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hls: bool,
+    /// How the directory last found it: "online", "suspect", "down" or
+    /// "offline"; none for a stream the user added
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+impl Stream {
+    /// A stream nothing is known about but its address
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            ..Self::default()
+        }
+    }
+
+    /// With its codec and bitrate
+    pub fn with_audio_info(mut self, codec: Option<String>, bitrate: Option<u32>) -> Self {
+        self.codec = codec;
+        self.bitrate = bitrate;
+        self
+    }
+
+    /// What it sounds like, for a list of streams: "AAC · 128 kbps", "MP3",
+    /// "HLS · 96 kbps", or empty when nothing is known
+    pub fn label(&self) -> String {
+        let codec = self
+            .codec
+            .as_deref()
+            .map(str::trim)
+            .filter(|c| !c.is_empty() && !c.eq_ignore_ascii_case("unknown"))
+            .map(str::to_string)
+            .or_else(|| self.hls.then(|| "HLS".to_string()));
+        let bitrate = self.bitrate.filter(|b| *b > 0).map(|b| format!("{b} kbps"));
+        [codec, bitrate]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(crate::text::SEPARATOR)
+    }
+}
+
 /// A radio station with its metadata
 ///
 /// This is the base type used throughout the application for representing
 /// a station. It can be used for search results, last played station,
 /// and as the core data in Favorite.
+///
+/// A station has one or more [`streams`](Self::streams), in order, and one
+/// of them is its default: the one played, whose address is `url` (which
+/// also gives the station its id) and whose `codec` and `bitrate` the
+/// station shows. The others are tried in order when the default doesn't
+/// connect. Change them with [`set_streams`](Self::set_streams) and
+/// [`set_default`](Self::set_default), which keep these in step.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(remote = "Self")]
 pub struct Station {
     // === Basic Info ===
     /// Display name
     pub name: String,
-    /// Stream URL
+    /// The default stream's URL
     pub url: String,
+    /// Every stream of the station, in order, the default among them.
+    /// Never empty: a station read without a list gets its `url` as one.
+    #[serde(default)]
+    pub streams: Vec<Stream>,
     /// Logo/favicon URL
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub logo_url: Option<String>,
@@ -116,12 +183,30 @@ fn default_provider() -> String {
     "manual".to_string()
 }
 
+impl Serialize for Station {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        Station::serialize(self, serializer)
+    }
+}
+
+/// A station is read with its streams in step (see [`Station::normalize`]):
+/// one saved before stations had several gets its URL as its only stream
+impl<'de> Deserialize<'de> for Station {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut station = Station::deserialize(deserializer)?;
+        station.normalize();
+        Ok(station)
+    }
+}
+
 impl Station {
     /// Create a new station with minimal info
     pub fn new(name: impl Into<String>, url: impl Into<String>) -> Self {
+        let url = url.into();
         Self {
             name: name.into(),
-            url: url.into(),
+            streams: vec![Stream::new(url.clone())],
+            url,
             logo_url: None,
             country: None,
             language: None,
@@ -169,11 +254,128 @@ impl Station {
         self
     }
 
-    /// Set audio info
+    /// Set the default stream's audio info
     pub fn with_audio_info(mut self, codec: Option<String>, bitrate: Option<u32>) -> Self {
         self.codec = codec;
         self.bitrate = bitrate;
+        self.sync_default();
         self
+    }
+
+    /// The default stream gets the station's codec and bitrate
+    fn sync_default(&mut self) {
+        let at = self.default_index();
+        if let Some(stream) = self.streams.get_mut(at) {
+            stream.codec = self.codec.clone();
+            stream.bitrate = self.bitrate;
+        }
+    }
+
+    /// Give the station these streams, the first as its default; with
+    /// none it keeps what it has
+    pub fn with_streams(mut self, streams: Vec<Stream>) -> Self {
+        if let Some(first) = streams.first().map(|s| s.url.clone()) {
+            self.set_streams(streams, &first);
+        }
+        self
+    }
+
+    /// Where the default stream is in [`streams`](Self::streams)
+    pub fn default_index(&self) -> usize {
+        self.streams
+            .iter()
+            .position(|s| s.url == self.url)
+            .unwrap_or(0)
+    }
+
+    /// The default stream
+    pub fn default_stream(&self) -> Stream {
+        self.streams
+            .get(self.default_index())
+            .cloned()
+            .unwrap_or_else(|| Stream::new(self.url.clone()))
+    }
+
+    /// The streams tried, in order, when the default doesn't connect:
+    /// the others, as they are listed
+    pub fn backups(&self) -> Vec<String> {
+        self.streams
+            .iter()
+            .filter(|s| s.url != self.url)
+            .map(|s| s.url.clone())
+            .collect()
+    }
+
+    /// Replace the streams, with the one at `default_url` as the default
+    /// (the first when none has that address). Addresses are trimmed, and
+    /// empty ones and repeats are left out. Returns false, changing
+    /// nothing, when no stream is left.
+    ///
+    /// The station's id follows its default stream: see
+    /// [`FavoritesManager::update`](crate::data::favorites::FavoritesManager::update)
+    /// for changing a favorite's.
+    pub fn set_streams(&mut self, streams: Vec<Stream>, default_url: &str) -> bool {
+        let mut kept: Vec<Stream> = Vec::with_capacity(streams.len());
+        for mut stream in streams {
+            stream.url = stream.url.trim().to_string();
+            if !stream.url.is_empty() && !kept.iter().any(|s| s.url == stream.url) {
+                kept.push(stream);
+            }
+        }
+        let default_url = default_url.trim();
+        let Some(default) = kept
+            .iter()
+            .find(|s| s.url == default_url)
+            .or(kept.first())
+            .cloned()
+        else {
+            return false;
+        };
+        self.url = default.url;
+        self.codec = default.codec;
+        self.bitrate = default.bitrate;
+        self.streams = kept;
+        true
+    }
+
+    /// Make the stream at `url` the default. False when the station has
+    /// no such stream.
+    pub fn set_default(&mut self, url: &str) -> bool {
+        if !self.streams.iter().any(|s| s.url == url) {
+            return false;
+        }
+        let streams = std::mem::take(&mut self.streams);
+        self.set_streams(streams, url)
+    }
+
+    /// Bring `streams` in step with `url`, `codec` and `bitrate` after the
+    /// fields were set one by one (reading a file does this): a station
+    /// without a list gets its URL as its only stream, a default missing
+    /// from the list goes first in it, and the default's codec and bitrate
+    /// are the station's.
+    pub fn normalize(&mut self) {
+        if !self.streams.iter().any(|s| s.url == self.url) {
+            let default =
+                Stream::new(self.url.clone()).with_audio_info(self.codec.clone(), self.bitrate);
+            self.streams.insert(0, default);
+        }
+        let mut seen = HashSet::new();
+        self.streams
+            .retain(|s| s.url == self.url || !s.url.trim().is_empty());
+        self.streams.retain(|s| seen.insert(s.url.clone()));
+        let at = self.default_index();
+        let default = &mut self.streams[at];
+        // What the station says wins: an old file has it only there
+        if self.codec.is_some() {
+            default.codec = self.codec.clone();
+        } else {
+            self.codec = default.codec.clone();
+        }
+        if self.bitrate.is_some() {
+            default.bitrate = self.bitrate;
+        } else {
+            self.bitrate = default.bitrate;
+        }
     }
 
     /// Set homepage
@@ -360,7 +562,11 @@ impl HasLogo for Favorite {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct FavoriteUpdate {
     pub name: Option<String>,
+    /// A new address for the default stream, in its place in the list
     pub url: Option<String>,
+    /// The whole list of streams and the address of its default; `url`
+    /// is ignored with it
+    pub streams: Option<(Vec<Stream>, String)>,
     pub logo_url: Option<Option<String>>, // Option<Option> to allow clearing
     pub country: Option<Option<String>>,
     pub language: Option<Option<String>>,
@@ -391,6 +597,27 @@ impl FavoriteUpdate {
         self
     }
 
+    /// Replace the streams; `default_url` is the one to play
+    pub fn streams(mut self, streams: Vec<Stream>, default_url: impl Into<String>) -> Self {
+        self.streams = Some((streams, default_url.into()));
+        self
+    }
+
+    /// The default stream's address once this is applied to `station`;
+    /// `None` when the update leaves it alone
+    pub fn new_url(&self, station: &Station) -> Option<String> {
+        match (&self.streams, &self.url) {
+            (Some((streams, default)), _) => {
+                let mut after = station.clone();
+                after
+                    .set_streams(streams.clone(), default)
+                    .then_some(after.url)
+            }
+            (None, Some(url)) => Some(url.clone()),
+            (None, None) => None,
+        }
+    }
+
     pub fn sort_order(mut self, order: i32) -> Self {
         self.sort_order = Some(order);
         self
@@ -401,8 +628,22 @@ impl FavoriteUpdate {
         if let Some(name) = self.name {
             favorite.station.name = name;
         }
-        if let Some(url) = self.url {
-            favorite.station.url = url;
+        if let Some((streams, default)) = self.streams {
+            favorite.station.set_streams(streams, &default);
+        } else if let Some(url) = self.url {
+            // The default stream moves to the new address, where it is
+            // in the list
+            let station = &mut favorite.station;
+            let at = station.default_index();
+            let mut streams = std::mem::take(&mut station.streams);
+            if let Some(stream) = streams.get_mut(at) {
+                if stream.url != url {
+                    *stream = Stream::new(url.clone());
+                }
+            }
+            if !station.set_streams(streams, &url) {
+                station.streams = vec![Stream::new(station.url.clone())];
+            }
         }
         if let Some(logo_url) = self.logo_url {
             favorite.station.logo_url = logo_url;
@@ -422,6 +663,7 @@ impl FavoriteUpdate {
         if let Some(bitrate) = self.bitrate {
             favorite.station.bitrate = bitrate;
         }
+        favorite.station.sync_default();
         if let Some(homepage) = self.homepage {
             favorite.station.homepage = homepage;
         }
@@ -547,6 +789,216 @@ mod tests {
         assert_eq!(station.url, "http://example.com/stream");
         assert_eq!(station.provider, "manual");
         assert!(!station.id().is_empty());
+    }
+
+    fn stream(url: &str, codec: &str, bitrate: u32) -> Stream {
+        Stream::new(url).with_audio_info(Some(codec.into()), Some(bitrate))
+    }
+
+    fn three_streams() -> Station {
+        Station::new("Jazz FM", "http://a.test").with_streams(vec![
+            stream("http://a.test", "AAC", 128),
+            stream("http://b.test", "MP3", 64),
+            stream("http://c.test", "MP3", 32),
+        ])
+    }
+
+    #[test]
+    fn a_new_station_has_its_url_as_its_only_stream() {
+        let station = Station::new("Test Radio", "http://example.com/stream");
+        assert_eq!(
+            station.streams,
+            vec![Stream::new("http://example.com/stream")]
+        );
+        assert!(station.backups().is_empty());
+
+        let station = station.with_audio_info(Some("MP3".into()), Some(128));
+        assert_eq!(station.streams[0].codec.as_deref(), Some("MP3"));
+        assert_eq!(station.streams[0].bitrate, Some(128));
+    }
+
+    #[test]
+    fn the_first_of_the_streams_given_is_the_default() {
+        let station = three_streams();
+        assert_eq!(station.url, "http://a.test");
+        assert_eq!(station.codec.as_deref(), Some("AAC"));
+        assert_eq!(station.bitrate, Some(128));
+        assert_eq!(station.default_index(), 0);
+        assert_eq!(station.backups(), ["http://b.test", "http://c.test"]);
+        // No streams given: it keeps the one it has
+        let alone = Station::new("Alone", "http://alone.test").with_streams(Vec::new());
+        assert_eq!(alone.streams, vec![Stream::new("http://alone.test")]);
+    }
+
+    #[test]
+    fn picking_another_default_keeps_the_order_and_tries_the_others_in_it() {
+        let mut station = three_streams();
+        let id = station.id();
+        assert!(station.set_default("http://b.test"));
+        assert_eq!(station.url, "http://b.test");
+        assert_eq!(station.codec.as_deref(), Some("MP3"));
+        assert_eq!(station.bitrate, Some(64));
+        assert_eq!(station.default_index(), 1);
+        let urls: Vec<&str> = station.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["http://a.test", "http://b.test", "http://c.test"]);
+        assert_eq!(station.backups(), ["http://a.test", "http://c.test"]);
+        // The id goes by the default stream
+        assert_ne!(station.id(), id);
+
+        // Not one of its streams: nothing changes
+        assert!(!station.set_default("http://nowhere.test"));
+        assert_eq!(station.url, "http://b.test");
+    }
+
+    #[test]
+    fn streams_are_set_without_empty_or_repeated_addresses() {
+        let mut station = three_streams();
+        assert!(station.set_streams(
+            vec![
+                Stream::new("  http://x.test  "),
+                Stream::new(""),
+                stream("http://y.test", "OGG", 96),
+                Stream::new("http://x.test"),
+            ],
+            "http://y.test",
+        ));
+        let urls: Vec<&str> = station.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["http://x.test", "http://y.test"]);
+        assert_eq!(station.url, "http://y.test");
+        assert_eq!(station.codec.as_deref(), Some("OGG"));
+
+        // A default that isn't there: the first; its codec isn't known
+        assert!(station.set_streams(vec![Stream::new("http://z.test")], "http://gone.test"));
+        assert_eq!(station.url, "http://z.test");
+        assert_eq!((station.codec.clone(), station.bitrate), (None, None));
+
+        // No stream left: refused, nothing changes
+        assert!(!station.set_streams(vec![Stream::new("  ")], ""));
+        assert_eq!(station.url, "http://z.test");
+        assert_eq!(station.streams.len(), 1);
+    }
+
+    #[test]
+    fn a_station_saved_with_one_url_reads_as_a_one_stream_list() {
+        let old: Station = serde_json::from_str(
+            r#"{"name":"Old FM","url":"http://old.test/live","codec":"MP3","bitrate":128}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            old.streams,
+            vec![stream("http://old.test/live", "MP3", 128)]
+        );
+
+        // And a favorite, which holds its station's fields beside its own
+        let fav: Favorite = serde_json::from_str(
+            r#"{"name":"Old FM","url":"http://old.test/live","added_at":5,"sort_order":2}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            fav.station.streams,
+            vec![Stream::new("http://old.test/live")]
+        );
+        assert_eq!(fav.sort_order, 2);
+    }
+
+    #[test]
+    fn a_station_is_saved_with_all_its_streams_and_read_back_the_same() {
+        let mut station = three_streams();
+        station.set_default("http://c.test");
+        let fav = Favorite::from_station(station);
+        let text = serde_json::to_string(&fav).unwrap();
+        assert!(text.contains(r#""url":"http://c.test""#), "{text}");
+        assert!(text.contains("http://a.test") && text.contains("http://b.test"));
+        let back: Favorite = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, fav);
+        assert_eq!(back.station.default_index(), 2);
+    }
+
+    #[test]
+    fn a_list_that_lacks_the_default_or_repeats_a_stream_is_put_right_when_read() {
+        let station: Station = serde_json::from_str(
+            r#"{"name":"Odd","url":"http://main.test","bitrate":96,"streams":[
+                {"url":"http://b.test"},{"url":"http://b.test"},{"url":""}]}"#,
+        )
+        .unwrap();
+        let urls: Vec<&str> = station.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(urls, ["http://main.test", "http://b.test"]);
+        assert_eq!(station.streams[0].bitrate, Some(96));
+    }
+
+    #[test]
+    fn a_stream_is_labelled_by_what_is_known_of_it() {
+        assert_eq!(stream("u", "AAC", 128).label(), "AAC \u{b7} 128 kbps");
+        assert_eq!(
+            Stream::new("u")
+                .with_audio_info(Some("MP3".into()), None)
+                .label(),
+            "MP3"
+        );
+        assert_eq!(
+            Stream::new("u").with_audio_info(None, Some(64)).label(),
+            "64 kbps"
+        );
+        let hls = Stream {
+            hls: true,
+            bitrate: Some(96),
+            ..Stream::new("u")
+        };
+        assert_eq!(hls.label(), "HLS \u{b7} 96 kbps");
+        assert_eq!(Stream::new("u").label(), "");
+        assert_eq!(
+            Stream::new("u")
+                .with_audio_info(Some("unknown".into()), Some(0))
+                .label(),
+            ""
+        );
+    }
+
+    #[test]
+    fn an_update_replaces_the_streams_or_moves_the_default_one() {
+        let mut fav = Favorite::from_station(three_streams());
+        // Another default, one stream removed and one added
+        let update = FavoriteUpdate::new().streams(
+            vec![
+                stream("http://a.test", "AAC", 128),
+                stream("http://c.test", "MP3", 32),
+                Stream::new("http://new.test"),
+            ],
+            "http://c.test",
+        );
+        assert_eq!(
+            update.new_url(&fav.station).as_deref(),
+            Some("http://c.test")
+        );
+        update.apply_to(&mut fav);
+        assert_eq!(fav.url(), "http://c.test");
+        assert_eq!(fav.station.bitrate, Some(32));
+        assert_eq!(fav.station.backups(), ["http://a.test", "http://new.test"]);
+
+        // A new address for the default stream keeps its place in the list
+        FavoriteUpdate::new()
+            .url("http://moved.test")
+            .apply_to(&mut fav);
+        let urls: Vec<&str> = fav.station.streams.iter().map(|s| s.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            ["http://a.test", "http://moved.test", "http://new.test"]
+        );
+        assert_eq!(fav.url(), "http://moved.test");
+        // What was known of the old address isn't true of the new one
+        assert_eq!(
+            (fav.station.codec.clone(), fav.station.bitrate),
+            (None, None)
+        );
+
+        // The same address changes nothing
+        let before = fav.clone();
+        FavoriteUpdate::new()
+            .url("http://moved.test")
+            .apply_to(&mut fav);
+        assert_eq!(fav, before);
+        // And nor does a name alone
+        assert_eq!(FavoriteUpdate::new().name("N").new_url(&fav.station), None);
     }
 
     #[test]

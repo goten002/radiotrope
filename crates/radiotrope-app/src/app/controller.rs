@@ -24,6 +24,7 @@ use radiotrope_app::text::{self, status};
 use super::state::{AppCommand, AppSnapshot, NoticeKind, RecordingNotice, RecordingProgress};
 
 mod alarm_tone;
+mod fallback;
 pub mod play_report;
 mod resume;
 mod scheduling;
@@ -128,6 +129,12 @@ pub struct AppController {
     /// The station started last, until it first plays: its play is
     /// counted then, once, and not again for a reconnect or retry
     unreported: Option<String>,
+    /// The current station's streams: the one tried or playing, and the
+    /// ones to fall back to (see [`fallback`])
+    streams: fallback::StreamList,
+    /// The backups that came with a Play or Step, until its station is
+    /// made the current one
+    new_backups: Option<Vec<String>>,
 }
 
 impl AppController {
@@ -172,6 +179,8 @@ impl AppController {
             level_url: None,
             play_reporter: None,
             unreported: None,
+            streams: fallback::StreamList::default(),
+            new_backups: None,
         }
     }
 
@@ -309,6 +318,7 @@ impl AppController {
 
             AppCommand::Play {
                 url,
+                backups,
                 name,
                 logo_url,
                 country,
@@ -316,6 +326,7 @@ impl AppController {
             } => {
                 // The schedule's entry is over: the user picked a station
                 self.release_schedule();
+                self.new_backups = Some(backups);
                 let seq = self.start_new(&url, name, logo_url, country);
                 if let Some(taken) = taken {
                     // An agent that stopped waiting has dropped its end
@@ -325,12 +336,14 @@ impl AppController {
 
             AppCommand::Step {
                 url,
+                backups,
                 name,
                 logo_url,
                 country,
             } => {
                 // The schedule's entry is over: the user picked a station
                 self.release_schedule();
+                self.new_backups = Some(backups);
                 self.count_start(&url);
                 self.step_to(&url, name, logo_url, country);
             }
@@ -645,8 +658,8 @@ impl AppController {
         if !self.step_due().is_some_and(|due| now >= due) {
             return;
         }
-        if let Some((_, url)) = self.settling.take() {
-            self.connect(&url);
+        if self.settling.take().is_some() {
+            self.connect_current();
         }
     }
 
@@ -661,7 +674,7 @@ impl AppController {
         country: Option<String>,
     ) -> u64 {
         let seq = self.show_stream(url, name, logo_url, country);
-        self.connect(url);
+        self.connect_current();
         seq
     }
 
@@ -688,10 +701,20 @@ impl AppController {
 
         self.stream_failed = false;
 
+        // A station picked comes with its streams, and starts with its
+        // default. One started again (a reconnect, a retry) keeps the
+        // streams it has and starts with the one that last played.
+        match self.new_backups.take() {
+            Some(backups) => self.streams = fallback::StreamList::new(url, backups),
+            None if self.streams.is_station(url) => self.streams.restart(),
+            None => self.streams = fallback::StreamList::new(url, Vec::new()),
+        }
+
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.play_seq += 1;
             state.station_url = Some(url.to_string());
+            self.streams.show(&mut state);
             state.station_name = name;
             state.station_logo_url = logo_url.filter(|logo| !logo.is_empty());
             state.station_country = country.filter(|country| !country.is_empty());
@@ -715,7 +738,56 @@ impl AppController {
         }
     }
 
-    /// Resolve the current station's stream on a worker thread, which
+    /// Connect to the current station's stream: its default, or the
+    /// backup whose turn it is
+    fn connect_current(&mut self) {
+        let url = self.streams.current().to_string();
+        self.connect(&url);
+    }
+
+    /// The stream being tried didn't connect: try the station's next one.
+    /// False when there is none (or the stream had played already), and
+    /// the failure is the station's.
+    fn try_next_stream(&mut self, error: &str) -> bool {
+        let failed = self.streams.current().to_string();
+        let Some(next) = self.streams.next().map(str::to_string) else {
+            return false;
+        };
+        eprintln!("Stream {failed} didn't connect ({error}); trying {next}");
+        // The failed stream's last words (its Stopped) change nothing
+        let handed_over = self.stream_id.is_some();
+        let settling = self.settling.take();
+        self.cancel_stream();
+        self.settling = settling;
+        // The engine lets go of a stream it was given
+        if let Some(engine) = self.engine.as_ref().filter(|_| handed_over) {
+            engine.stop();
+        }
+        self.metadata_rx = None;
+        self.stream_failed = false;
+        {
+            let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            self.streams.show(&mut state);
+            state.is_resolving = true;
+            state.is_connecting = false;
+            state.codec_name.clear();
+            state.stream_type.clear();
+            state.sample_rate = 0;
+            state.channels = 0;
+            state.bitrate = None;
+            // Started again after an outage, it is still reconnecting
+            state.status_text = if self.outage.is_some() {
+                resume::RECONNECTING.into()
+            } else {
+                status::CONNECTING.into()
+            };
+            state.is_error = false;
+        }
+        self.connect(&next);
+        true
+    }
+
+    /// Resolve a stream of the current station on a worker thread, which
     /// sends the result back
     fn connect(&mut self, url: &str) {
         let generation = self.resolve_generation;
@@ -837,6 +909,10 @@ impl AppController {
             }
             Err(e) => {
                 eprintln!("Stream resolution failed: {e}");
+                // The station's next stream may still connect
+                if self.try_next_stream(&e) {
+                    return;
+                }
                 {
                     let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
                     state.playback = PlaybackState::Stopped;
@@ -863,7 +939,16 @@ impl AppController {
         if event.stream.is_some() && event.stream != self.stream_id {
             return;
         }
+        let about_station = event.stream.is_some();
         let event = event.event;
+
+        // A stream that fails before it plays gives way to the station's
+        // next one; the failure counts only when the last has failed too
+        match &event {
+            AudioEvent::Error(e) if about_station && self.try_next_stream(e) => return,
+            AudioEvent::NoAudioTimeout if about_station && self.try_next_stream(NO_AUDIO) => return,
+            _ => {}
+        }
 
         // The stream ended or failed: a recording waits for the station to
         // be started again, or keeps what was recorded
@@ -920,6 +1005,8 @@ impl AppController {
                 state.status_text = status::PLAYING.into();
                 state.is_error = false;
                 self.stream_failed = false;
+                // This is the stream a reconnect starts with
+                self.streams.played();
                 let url = state.station_url.clone();
                 drop(state);
                 self.report_play(url);
@@ -1507,6 +1594,7 @@ mod tests {
             // The window starts one first: it asks for nothing back
             controller.handle_command(AppCommand::Play {
                 url: silent_station(),
+                backups: Vec::new(),
                 name: None,
                 logo_url: None,
                 country: None,
@@ -1515,6 +1603,7 @@ mod tests {
             let (taken, mut seq) = tokio::sync::oneshot::channel();
             controller.handle_command(AppCommand::Play {
                 url: silent_station(),
+                backups: Vec::new(),
                 name: Some("Agent FM".into()),
                 logo_url: None,
                 country: None,
@@ -1531,6 +1620,7 @@ mod tests {
             let (mut controller, state) = controller();
             controller.handle_command(AppCommand::Play {
                 url: silent_station(),
+                backups: Vec::new(),
                 name: Some("Silent FM".into()),
                 logo_url: Some("http://silent.test/logo.png".into()),
                 country: Some("Greece".into()),
@@ -1547,6 +1637,7 @@ mod tests {
             // The next station without one doesn't keep it
             controller.handle_command(AppCommand::Play {
                 url: silent_station(),
+                backups: Vec::new(),
                 name: None,
                 logo_url: None,
                 country: Some(String::new()),
@@ -1629,6 +1720,7 @@ mod tests {
         fn step(controller: &mut AppController, url: &str, name: &str) {
             controller.handle_command(AppCommand::Step {
                 url: url.into(),
+                backups: Vec::new(),
                 name: Some(name.into()),
                 logo_url: None,
                 country: None,
@@ -1920,6 +2012,212 @@ mod tests {
         state.is_resolving = false;
         state.is_connecting = true;
         state.status_text = status::CONNECTING.into();
+    }
+
+    mod stream_fallback {
+        use super::*;
+
+        // Nothing listens at these, so a resolve fails at once
+        const DEFAULT: &str = "http://127.0.0.1:1/default.mp3";
+        const SECOND: &str = "http://127.0.0.1:1/second.mp3";
+        const THIRD: &str = "http://127.0.0.1:1/third.mp3";
+
+        /// Play a station with three streams
+        fn play(controller: &mut AppController) {
+            controller.handle_command(AppCommand::Play {
+                url: DEFAULT.into(),
+                backups: vec![SECOND.into(), THIRD.into()],
+                name: Some("Three Streams FM".into()),
+                logo_url: None,
+                country: None,
+                taken: None,
+            });
+        }
+
+        /// Take up the result of the resolve under way, which fails
+        fn resolve_fails(controller: &mut AppController) {
+            let resolved = controller
+                .cmd_rx
+                .recv_timeout(Duration::from_secs(20))
+                .expect("the resolve must fail");
+            assert!(matches!(
+                resolved,
+                AppCommand::InternalStreamResolved { result: Err(_), .. }
+            ));
+            controller.handle_command(resolved);
+        }
+
+        /// (the stream tried, its place, how many, resolving, failed)
+        fn tried(state: &Arc<Mutex<AppSnapshot>>) -> (String, usize, usize, bool, bool) {
+            let state = state.lock().unwrap();
+            assert_eq!(
+                state.station_url.as_deref(),
+                Some(DEFAULT),
+                "the station is known by its default stream, whichever is tried"
+            );
+            (
+                state.stream_url.clone().unwrap_or_default(),
+                state.stream_index,
+                state.stream_count,
+                state.is_resolving,
+                state.is_error,
+            )
+        }
+
+        #[test]
+        fn streams_that_dont_resolve_are_tried_in_order_before_the_error_shows() {
+            let (mut controller, state) = controller();
+            play(&mut controller);
+            let seq = state.lock().unwrap().play_seq;
+            assert_eq!(tried(&state), (DEFAULT.into(), 0, 3, true, false));
+
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (SECOND.into(), 1, 3, true, false));
+            assert_eq!(state.lock().unwrap().status_text, status::CONNECTING);
+            assert_eq!(state.lock().unwrap().last_error, None);
+
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (THIRD.into(), 2, 3, true, false));
+
+            // The last one fails too: now the station has failed
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (THIRD.into(), 2, 3, false, true));
+            let state = state.lock().unwrap();
+            assert!(state.last_error.is_some());
+            assert_eq!(state.playback, PlaybackState::Stopped);
+            assert_eq!(state.play_seq, seq, "one station, started once");
+            assert_eq!(state.station_name.as_deref(), Some("Three Streams FM"));
+        }
+
+        #[test]
+        fn a_stream_the_engine_cant_play_gives_way_to_the_next() {
+            let (mut controller, state) = controller();
+            play(&mut controller);
+            // The default resolved and was handed to the engine, which
+            // finds nothing it can play
+            connecting(&mut controller, &state, 1);
+            controller.handle_engine_event(on(1, AudioEvent::Error("Probe failed".into())));
+            assert_eq!(tried(&state), (SECOND.into(), 1, 3, true, false));
+            // Its Stopped is an earlier stream's last word
+            controller.handle_engine_event(on(1, AudioEvent::Stopped));
+            assert_eq!(tried(&state), (SECOND.into(), 1, 3, true, false));
+            assert_eq!(state.lock().unwrap().status_text, status::CONNECTING);
+
+            // The second sends no audio
+            connecting(&mut controller, &state, 2);
+            controller.handle_engine_event(on(2, AudioEvent::NoAudioTimeout));
+            assert_eq!(tried(&state), (THIRD.into(), 2, 3, true, false));
+
+            // The third plays
+            connecting(&mut controller, &state, 3);
+            controller.handle_engine_event(on(3, playing()));
+            let state = state.lock().unwrap();
+            assert_eq!(state.playback, PlaybackState::Playing);
+            assert_eq!(state.stream_url.as_deref(), Some(THIRD));
+            assert_eq!((state.stream_index, state.stream_count), (2, 3));
+            assert!(!state.is_error);
+        }
+
+        #[test]
+        fn a_stream_that_played_fails_as_the_station_not_to_the_next_stream() {
+            let (mut controller, state) = controller();
+            play(&mut controller);
+            connecting(&mut controller, &state, 1);
+            controller.handle_engine_event(on(1, playing()));
+
+            controller.handle_engine_event(on(
+                1,
+                AudioEvent::Error("Stream error: HTTP 404 Not Found".into()),
+            ));
+            controller.handle_engine_event(on(1, AudioEvent::Stopped));
+            assert_eq!(tried(&state), (DEFAULT.into(), 0, 3, false, true));
+        }
+
+        #[test]
+        fn a_device_error_isnt_the_streams_failure() {
+            let (mut controller, state) = controller();
+            play(&mut controller);
+            connecting(&mut controller, &state, 1);
+            controller.handle_engine_event(device(AudioEvent::Error("No device".into())));
+            assert_eq!(state.lock().unwrap().stream_url.as_deref(), Some(DEFAULT));
+        }
+
+        #[test]
+        fn a_station_started_again_begins_with_the_stream_that_last_played() {
+            let (mut controller, state) = controller();
+            play(&mut controller);
+            resolve_fails(&mut controller);
+            // The second stream plays (its resolve here fails; the test
+            // stands in for the engine)
+            let _ = controller.cmd_rx.recv_timeout(Duration::from_secs(20));
+            connecting(&mut controller, &state, 1);
+            controller.handle_engine_event(on(1, playing()));
+            assert_eq!(state.lock().unwrap().stream_url.as_deref(), Some(SECOND));
+
+            // A reconnect (an outage's retry, a recording that waits)
+            controller.start_stream(DEFAULT, None, None, None);
+            assert_eq!(tried(&state), (SECOND.into(), 1, 3, true, false));
+            // And from there the others get their turn again
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (THIRD.into(), 2, 3, true, false));
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (DEFAULT.into(), 0, 3, true, false));
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (DEFAULT.into(), 0, 3, false, true));
+
+            // Picked again by the user: from its default
+            play(&mut controller);
+            assert_eq!(tried(&state), (DEFAULT.into(), 0, 3, true, false));
+            controller.handle_command(AppCommand::Stop);
+        }
+
+        #[test]
+        fn another_station_started_without_streams_has_only_its_own() {
+            let (mut controller, state) = controller();
+            play(&mut controller);
+            // The schedule starts a station: just its address
+            let other = "http://127.0.0.1:1/other.mp3";
+            controller.start_new(other, None, None, None);
+            {
+                let state = state.lock().unwrap();
+                assert_eq!(state.stream_url.as_deref(), Some(other));
+                assert_eq!((state.stream_index, state.stream_count), (0, 1));
+            }
+            // The first station's resolve is stale; the other's fails
+            loop {
+                let resolved = controller
+                    .cmd_rx
+                    .recv_timeout(Duration::from_secs(20))
+                    .expect("the resolve must fail");
+                controller.handle_command(resolved);
+                if !state.lock().unwrap().is_resolving {
+                    break;
+                }
+            }
+            let state = state.lock().unwrap();
+            assert!(state.is_error);
+            assert_eq!(state.stream_url.as_deref(), Some(other));
+        }
+
+        #[test]
+        fn a_step_connects_to_the_default_and_falls_back_like_a_play() {
+            let (mut controller, state) = controller();
+            controller.fake_now = Some(std::time::Instant::now());
+            controller.handle_command(AppCommand::Step {
+                url: DEFAULT.into(),
+                backups: vec![SECOND.into()],
+                name: None,
+                logo_url: None,
+                country: None,
+            });
+            assert_eq!(tried(&state), (DEFAULT.into(), 0, 2, true, false));
+            controller.fake_now = controller.fake_now.map(|now| now + STEP_SETTLE);
+            controller.connect_settled();
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (SECOND.into(), 1, 2, true, false));
+            resolve_fails(&mut controller);
+            assert_eq!(tried(&state), (SECOND.into(), 1, 2, false, true));
+        }
     }
 
     #[test]

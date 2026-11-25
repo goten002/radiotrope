@@ -221,11 +221,13 @@ pub(crate) fn forget_undo_of(ui: &App, starred_again: impl Fn(&Favorite) -> bool
     }
 }
 
-/// What to play for a favorite's row
+/// What to play for a favorite's row (the player adds the favorite's
+/// other streams as backups when it starts it)
 fn play_of(station: &FavoriteStation) -> PlayMetadata {
     let filled = |text: &slint::SharedString| (!text.is_empty()).then(|| text.to_string());
     PlayMetadata {
         url: station.url.to_string(),
+        backups: Vec::new(),
         name: Some(station.name.to_string()),
         logo_url: filled(&station.logo_url),
         country: filled(&station.country),
@@ -247,6 +249,7 @@ fn step_from(state: &AppSnapshot) -> Option<String> {
 /// star, edit, remove, move and reorder, and reset a row's figures
 pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     install_find(ui);
+    crate::stream_edit::install(ui);
     // A save that failed, for the header to show until one works
     {
         let ui_weak = ui.as_weak();
@@ -393,9 +396,26 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             let logo_url = station.logo_url.to_string();
             let country = station.country.to_string();
 
+            // The streams as the dialog lists them, and the default picked
+            let urls: Vec<String> = station
+                .streams
+                .iter()
+                .map(|stream| stream.url.to_string())
+                .collect();
+
+            // A failed update (another favorite has the new default) changes
+            // nothing; the dialog stays open and shows why
+            let mut f = lock(&ctx.favorites);
+            let old_fav = f.get(&id).cloned();
+            let Some(old) = &old_fav else {
+                return FAVORITE_GONE.into();
+            };
             let mut update = radiotrope_app::data::types::FavoriteUpdate::new()
                 .name(name.clone())
-                .url(url.clone());
+                .streams(
+                    crate::stream_edit::edited_streams(&old.station, &urls),
+                    url.clone(),
+                );
             update.logo_url = Some(if logo_url.is_empty() {
                 None
             } else {
@@ -406,17 +426,11 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
             } else {
                 Some(country.clone())
             });
-
-            // A failed update (another favorite has the new URL) changes
-            // nothing; the dialog stays open and shows why
-            let mut f = lock(&ctx.favorites);
-            let old_fav = f.get(&id).cloned();
             if f.update(&id, update).is_err() {
                 return if f.get_id_for_url(&url) != id && f.is_favorite(&url) {
                     "Another favorite already has this stream URL".into()
                 } else {
-                    // The only other failure: the favorite is gone
-                    "Can't save: this favorite was removed. Close and try again.".into()
+                    FAVORITE_GONE.into()
                 };
             }
             drop(f);
@@ -670,6 +684,9 @@ fn add_listening(
     saver.request();
     update_favorite_stats(ui, &favs);
 }
+
+/// Why Edit Favorite can't save a favorite that is no longer there
+const FAVORITE_GONE: &str = "Can't save: this favorite was removed. Close and try again.";
 
 /// A favorite just edited, in the window or from a phone
 pub(crate) struct EditedFavorite<'a> {

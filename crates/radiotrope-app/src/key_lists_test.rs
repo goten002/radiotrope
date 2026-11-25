@@ -60,6 +60,7 @@ fn results(range: std::ops::Range<usize>) -> Vec<BrowseStation> {
             genres: "Jazz".into(),
             logo_url: "".into(),
             provider_id: format!("directory-{}", index + 1).into(),
+            streams: Default::default(),
             codec: "MP3".into(),
             bitrate: 128,
             is_favorite: false,

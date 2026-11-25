@@ -29,6 +29,7 @@ mod row_logos;
 mod schedule_ui;
 mod shortcuts;
 mod stats_ui;
+mod stream_edit;
 #[cfg(feature = "desktop")]
 mod tray;
 mod view_options;

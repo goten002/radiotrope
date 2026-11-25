@@ -49,6 +49,8 @@ pub(crate) fn setup_header(ui: &App, ctx: &AppContext, last_station: Option<&Sta
     if let Some(station) = last_station {
         ui.set_station_name(station.name.as_str().into());
         ui.set_station_url(station.url.as_str().into());
+        // Play starts it with the streams it had
+        *lock(&LAST_BACKUPS) = (station.url.clone(), station.backups());
         let shown = show_station(&station.url);
         if let Some(ref logo_url) = station.logo_url {
             ui.set_station_logo_url(logo_url.as_str().into());
@@ -102,6 +104,12 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                     &ctx,
                     PlayMetadata {
                         url: url.to_string(),
+                        // And its other streams
+                        backups: if current {
+                            backups_of(&url)
+                        } else {
+                            Vec::new()
+                        },
                         name: keep(ui.get_station_name()),
                         logo_url: keep(ui.get_station_logo_url()),
                         country: keep(ui.get_station_country()),
@@ -127,6 +135,9 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
                 &ctx,
                 PlayMetadata {
                     url: url.to_string(),
+                    // One address, played at once: a stream opened by
+                    // hand has no others
+                    backups: Vec::new(),
                     name: opt(&name),
                     logo_url: opt(&logo_url),
                     country: opt(&country),
@@ -721,6 +732,7 @@ fn start_station(ui: &App, ctx: &AppContext, req: PlayMetadata, step: bool) {
     let (
         PlayMetadata {
             url,
+            backups,
             name,
             logo_url,
             country,
@@ -750,6 +762,7 @@ fn start_station(ui: &App, ctx: &AppContext, req: PlayMetadata, step: bool) {
         }
         *last = Some((url.clone(), now));
     }
+    *lock(&LAST_BACKUPS) = (url.clone(), backups.clone());
     let shown = show_station(&url);
 
     // Set UI metadata properties
@@ -780,6 +793,7 @@ fn start_station(ui: &App, ctx: &AppContext, req: PlayMetadata, step: bool) {
     ctx.tx.send(if step {
         app::state::AppCommand::Step {
             url: url.clone(),
+            backups,
             name: name.clone(),
             logo_url: logo_url.clone(),
             country: country.clone(),
@@ -787,6 +801,7 @@ fn start_station(ui: &App, ctx: &AppContext, req: PlayMetadata, step: bool) {
     } else {
         app::state::AppCommand::Play {
             url: url.clone(),
+            backups,
             name: name.clone(),
             logo_url: logo_url.clone(),
             country: country.clone(),
@@ -818,6 +833,22 @@ fn start_station(ui: &App, ctx: &AppContext, req: PlayMetadata, step: bool) {
     }
 }
 
+/// The station started last from the UI and its other streams, so
+/// playing it again from the Play button (which knows only its address)
+/// has them to fall back to
+static LAST_BACKUPS: Mutex<(String, Vec<String>)> = Mutex::new((String::new(), Vec::new()));
+
+/// The other streams of the station at `url`, when it is the one started
+/// last from the UI
+pub(crate) fn backups_of(url: &str) -> Vec<String> {
+    let last = lock(&LAST_BACKUPS);
+    if last.0 == url {
+        last.1.clone()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Stream URL and time of the last station started from the UI, so a
 /// double tap doesn't start it twice
 static LAST_PLAY_CLICK: Mutex<Option<(String, Instant)>> = Mutex::new(None);
@@ -831,9 +862,17 @@ const STARTING_STATUS: &str = status::CONNECTING;
 /// The codec line of a station not playing yet
 const AWAITING_STREAM: &str = "Waiting for stream";
 
+/// The technical line under the station: what plays, and which of the
+/// station's streams when it isn't its default (the default didn't
+/// connect, so a backup took over)
 fn format_codec_line(s: &AppSnapshot) -> String {
+    let backup = (s.stream_index > 0 && s.stream_count > 1)
+        .then(|| format!("stream {} of {}", s.stream_index + 1, s.stream_count));
     if s.codec_name.is_empty() {
-        return AWAITING_STREAM.to_string();
+        return match backup {
+            Some(backup) => format!("Trying backup {backup}"),
+            None => AWAITING_STREAM.to_string(),
+        };
     }
     let mut parts = Vec::new();
     if s.stream_type == "HLS" {
@@ -853,6 +892,9 @@ fn format_codec_line(s: &AppSnapshot) -> String {
             2 => "Stereo".to_string(),
             n => format!("{} ch", n),
         });
+    }
+    if let Some(backup) = backup {
+        parts.push(format!("Backup {backup}"));
     }
     parts.join(SEPARATOR)
 }
@@ -874,6 +916,25 @@ mod tests {
             format_codec_line(&s),
             "MP3 \u{b7} 128 kbps \u{b7} 44.1 kHz \u{b7} Stereo"
         );
+    }
+
+    #[test]
+    fn the_codec_line_says_when_a_backup_stream_plays() {
+        let mut s = AppSnapshot {
+            stream_index: 1,
+            stream_count: 3,
+            ..AppSnapshot::default()
+        };
+        assert_eq!(format_codec_line(&s), "Trying backup stream 2 of 3");
+        s.codec_name = "MP3".into();
+        s.bitrate = Some(64);
+        assert_eq!(
+            format_codec_line(&s),
+            "MP3 \u{b7} 64 kbps \u{b7} Backup stream 2 of 3"
+        );
+        // The default stream of several: nothing to add
+        s.stream_index = 0;
+        assert_eq!(format_codec_line(&s), "MP3 \u{b7} 64 kbps");
     }
     #[test]
     fn the_view_reads_the_snapshot() {

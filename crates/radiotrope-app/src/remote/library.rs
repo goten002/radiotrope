@@ -496,13 +496,12 @@ impl ImportStation {
             check_length("genre", genre, MAX_NAME_CHARS)?;
         }
         let [(_, country), (_, language), (_, codec), (_, provider), (_, provider_id)] = short;
-        let mut station = Station::new(name, self.url.trim());
+        let mut station = Station::new(name, self.url.trim())
+            .with_audio_info(codec, self.bitrate_kbps.filter(|b| *b > 0));
         station.logo_url = logo_url;
         station.homepage = homepage;
         station.country = country;
         station.language = language;
-        station.codec = codec;
-        station.bitrate = self.bitrate_kbps.filter(|b| *b > 0);
         station.genres = self
             .genres
             .into_iter()

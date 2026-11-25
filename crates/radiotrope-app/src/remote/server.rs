@@ -30,6 +30,7 @@ use radiotrope_app::config::remote::{
     API_VERSION, CODE_LIFETIME, EVENT_KEEP_ALIVE, EVENT_POLL, HEADER_READ_TIMEOUT, MAX_BODY,
     MAX_CONNECTIONS,
 };
+use radiotrope_app::data::favorites::PlayMetadata;
 use radiotrope_app::data::remote::RemoteStore;
 use radiotrope_app::data::remote_cert::PlayerCert;
 use radiotrope_app::data::types::{url_to_id, Station};
@@ -713,7 +714,7 @@ async fn play(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
         (None, Some(id), None) => control
             .station_to_play(id.to_string())
             .await
-            .map(|s| (s.url, s.name, s.logo_url, s.country)),
+            .map(|s| PlayMetadata::of(&s)),
         (None, None, Some(url)) => {
             if url.chars().count() > MAX_URL_CHARS
                 || !(url.starts_with("http://") || url.starts_with("https://"))
@@ -732,7 +733,12 @@ async fn play(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
                     let name = known
                         .name
                         .unwrap_or_else(|| radiotrope_app::data::types::name_from_url(url));
-                    (url.to_string(), name, known.logo_url, known.country)
+                    // The address asked for is the one played
+                    PlayMetadata {
+                        url: url.to_string(),
+                        name: Some(name),
+                        ..known
+                    }
                 })
         }
         _ => {
@@ -743,7 +749,7 @@ async fn play(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
             )
         }
     };
-    let (url, name, logo, country) = match target {
+    let play = match target {
         Ok(target) => target,
         Err(e) => return control_error(e),
     };
@@ -752,10 +758,7 @@ async fn play(shared: &Shared, request: Request<Incoming>) -> Response<Body> {
         .filter(|s| s.is_finite())
         .map(|s| Duration::from_secs_f64(s.clamp(0.0, MAX_PLAY_WAIT_SECS)))
         .unwrap_or(DEFAULT_PLAY_WAIT);
-    let result = match control
-        .play(url, Some(name), logo, country, wait, || {})
-        .await
-    {
+    let result = match control.play(play, wait, || {}).await {
         Ok(Played::Playing(_)) => "playing",
         Ok(Played::Starting) => "starting",
         Ok(Played::StillConnecting) => "connecting",
@@ -827,7 +830,12 @@ async fn logo(shared: &Shared, id: &str) -> Response<Body> {
             Some(Station::new(s.station_name.unwrap_or_default(), url).with_logo(logo))
         }
         _ => match shared.control.favorite_to_play(id.clone()).await {
-            Ok((url, name, Some(logo), _)) => Some(Station::new(name, url).with_logo(logo)),
+            Ok(PlayMetadata {
+                url,
+                name,
+                logo_url: Some(logo),
+                ..
+            }) => Some(Station::new(name.unwrap_or_default(), url).with_logo(logo)),
             _ => None,
         },
     };

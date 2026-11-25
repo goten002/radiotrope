@@ -11,7 +11,7 @@
 use crate::config::providers::{CATEGORY_CACHE_TTL, RADIOTROPE_API_URL, STATION_CACHE_TTL};
 use crate::data::countries::{code_for_country, country_name};
 use crate::data::languages::{language_code, language_name};
-use crate::data::types::Station;
+use crate::data::types::{Station, Stream};
 use crate::error::{AppError, Result};
 use crate::network::client::{body_of, fetch_json};
 use crate::network::{ApiCache, HttpClient};
@@ -65,6 +65,22 @@ struct ApiStream {
     codec: Option<String>,
     #[serde(default)]
     bitrate_kbps: Option<u32>,
+    #[serde(default)]
+    hls: bool,
+    #[serde(default)]
+    status: Option<String>,
+}
+
+impl ApiStream {
+    fn into_stream(self) -> Stream {
+        Stream {
+            url: self.url,
+            codec: self.codec.as_deref().and_then(codec_label),
+            bitrate: self.bitrate_kbps.filter(|b| *b > 0),
+            hls: self.hls,
+            status: self.status.filter(|s| !s.is_empty()),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,10 +134,17 @@ fn codec_label(codec: &str) -> Option<String> {
 }
 
 impl ApiStation {
-    /// The station as the player keeps it, playing its first (default)
-    /// stream. `None` for one without streams.
+    /// The station as the player keeps it, with the directory's streams
+    /// in its order: the first is the default, the rest are backups.
+    /// `None` for one without streams.
     fn into_station(self) -> Option<Station> {
-        let stream = self.streams.into_iter().next()?;
+        let streams: Vec<Stream> = self
+            .streams
+            .into_iter()
+            .filter(|s| !s.url.trim().is_empty())
+            .map(ApiStream::into_stream)
+            .collect();
+        let default = streams.first()?.url.clone();
         // "Greece, Attica", as the player shows a station's place
         let country = self
             .country
@@ -141,14 +164,11 @@ impl ApiStation {
         let language = Some(languages.join(", ")).filter(|l| !l.is_empty());
         let genres = self.genres.into_iter().map(|g| g.name).collect();
         Some(
-            Station::new(self.name, stream.url)
+            Station::new(self.name, default)
+                .with_streams(streams)
                 .with_provider(PROVIDER_ID, Some(self.id))
                 .with_logo_opt(self.logo.filter(|l| !l.is_empty()))
                 .with_metadata(country, language, genres)
-                .with_audio_info(
-                    stream.codec.as_deref().and_then(codec_label),
-                    stream.bitrate_kbps.filter(|b| *b > 0),
-                )
                 .with_homepage_opt(self.homepage.filter(|h| !h.is_empty())),
         )
     }
@@ -721,6 +741,27 @@ mod tests {
         assert!(s.genres.contains("Pop"));
         assert_eq!(s.codec.as_deref(), Some("AAC"));
         assert_eq!(s.bitrate, Some(128));
+        // Every stream, in the directory's order: the first is the default
+        assert_eq!(
+            s.streams,
+            vec![
+                Stream {
+                    url: "https://stream.example.gr/Kiss".into(),
+                    codec: Some("AAC".into()),
+                    bitrate: Some(128),
+                    hls: false,
+                    status: Some("online".into()),
+                },
+                Stream {
+                    url: "https://backup.example.gr/Kiss".into(),
+                    codec: Some("MP3".into()),
+                    bitrate: Some(64),
+                    hls: false,
+                    status: Some("online".into()),
+                },
+            ]
+        );
+        assert_eq!(s.backups(), ["https://backup.example.gr/Kiss"]);
         assert_eq!(s.homepage.as_deref(), Some("https://example.gr"));
         assert!(s.logo_url.unwrap().ends_with(".webp?v=1"));
 

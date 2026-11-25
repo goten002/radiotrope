@@ -26,6 +26,7 @@ fn favorite_to_slint(
         id: f.id().into(),
         name: f.name().into(),
         url: f.url().into(),
+        streams: crate::stream_edit::rows_of(&f.station),
         logo_url: f.station.logo_url.as_deref().unwrap_or("").into(),
         country: f.station.country.as_deref().unwrap_or("").into(),
         listen_time: format_listen_time(stats.total_listen_time_secs).into(),
