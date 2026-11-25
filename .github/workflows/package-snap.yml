@@ -156,7 +156,7 @@ jobs:
     steps:
       - name: No channel or no store login
         if: inputs.store-channel == '' || env.SNAPCRAFT_STORE_CREDENTIALS == ''
-        run: echo "Skipped: no channel given or no SNAPCRAFT_STORE_CREDENTIALS secret"
+        run: echo "Skipped, no channel given or no SNAPCRAFT_STORE_CREDENTIALS secret"
       - uses: actions/download-artifact@v4
         if: inputs.store-channel != '' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
         with:
