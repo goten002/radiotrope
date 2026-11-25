@@ -355,7 +355,7 @@ component CheckMenuItem inherits MenuRowBase {
     in property <string> hint;
     // What the option does, for screen readers only (the menu stays short)
     in property <string> description;
-    // One of a set where another is always ticked (the visualizer styles):
+    // One of a set where another is always ticked (the zoom percentages):
     // no faint tick while this one is off
     in property <bool> one-of-set;
     callback clicked();
@@ -848,8 +848,6 @@ export component MenuBar inherits Rectangle {
     in-out property <bool> show-station-stats: true;
     // The header visualizer tile (View > Visualizer)
     in-out property <bool> show-visualizer: true;
-    // Its style (View > Visualizer Style); a click on the tile changes it too
-    in-out property <string> viz-mode: "wave";
     callback open-wifi-settings();
     callback open-about();
     callback open-keyboard-shortcuts();
@@ -911,8 +909,8 @@ export component MenuBar inherits Rectangle {
     // the release that follows)
     callback show-system-menu(length, length, bool) -> bool;
 
-    // Open a menu, with one of its groups unfolded ("style", "zoom",
-    // "window" or "tray" in View; "recordings" or "connections" in Tools)
+    // Open a menu, with one of its groups unfolded ("zoom", "window" or
+    // "tray" in View; "recordings" or "connections" in Tools)
     public function open-menu(menu: string, group: string) {
         if menu == "open" { root.show-menu(0, false); }
         if menu == "stations" { root.show-menu(1, false); }
@@ -1002,12 +1000,11 @@ export component MenuBar inherits Rectangle {
     property <bool> confirm-power-off: false;
     property <bool> confirm-restart: false;
 
-    // The unfolded group of the View menu ("", "style", "zoom", "window"
-    // or "tray") and of the Tools menu ("", "recordings" or "connections"):
+    // The unfolded group of the View menu ("", "zoom", "window" or
+    // "tray") and of the Tools menu ("", "recordings" or "connections"):
     // one at a time, folded again when the menu is opened
     property <string> view-group;
     property <string> tools-group;
-    property <bool> style-open: root.view-group == "style";
     // The zoom is the window's scale: not on the Pi's full screen
     property <bool> zoom-open: Platform.has-window-frame && root.view-group == "zoom";
     property <bool> window-open: Platform.has-window-frame && root.view-group == "window";
@@ -1024,25 +1021,20 @@ export component MenuBar inherits Rectangle {
     property <[bool]> view-usable: [
         // 0 Theme, 1 Accent Color, 2 Visualizer, 3 Station Colors in Visualizer
         true, true, true, root.show-visualizer,
-        // 4 Visualizer Style, 5-10 its styles
+        // 4 Show Listening Stats
         true,
-        root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
-        root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
-        root.style-open && root.show-visualizer, root.style-open && root.show-visualizer,
-        // 11 Show Listening Stats
-        true,
-        // 12 Zoom, 13-17 its percentages (those too large for the screen greyed)
+        // 5 Zoom, 6-10 its percentages (those too large for the screen greyed)
         Platform.has-window-frame,
         root.zoom-open && ViewOptions.zoom-choices[0] <= ViewOptions.zoom-fits,
         root.zoom-open && ViewOptions.zoom-choices[1] <= ViewOptions.zoom-fits,
         root.zoom-open && ViewOptions.zoom-choices[2] <= ViewOptions.zoom-fits,
         root.zoom-open && ViewOptions.zoom-choices[3] <= ViewOptions.zoom-fits,
         root.zoom-open && ViewOptions.zoom-choices[4] <= ViewOptions.zoom-fits,
-        // 18 Window, 19 Use System Title Bar, 20 Rounded Corners
+        // 11 Window, 12 Use System Title Bar, 13 Rounded Corners
         Platform.has-window-frame, root.window-open,
         root.window-open && root.custom-frame && root.corners-available,
-        // 21 System Tray, 22 Show Tray Icon, 23-25 the three tray choices,
-        // 26 Start at Login
+        // 14 System Tray, 15 Show Tray Icon, 16-18 the three tray choices,
+        // 19 Start at Login
         Platform.has-tray, root.tray-open, root.tray-usable, root.tray-usable, root.tray-usable,
         root.tray-open,
     ];
@@ -1473,10 +1465,9 @@ export component MenuBar inherits Rectangle {
             title-width: root.title-width;
             usable: root.view-usable;
             // Left on a row of an open group folds it
-            fold-to: root.style-open && MenuNav.active >= 5 && MenuNav.active <= 10 ? 4
-                : root.zoom-open && MenuNav.active >= 13 && MenuNav.active <= 17 ? 12
-                : root.window-open && MenuNav.active >= 19 && MenuNav.active <= 20 ? 18
-                : root.tray-open && MenuNav.active >= 22 && MenuNav.active <= 26 ? 21 : -1;
+            fold-to: root.zoom-open && MenuNav.active >= 6 && MenuNav.active <= 10 ? 5
+                : root.window-open && MenuNav.active >= 12 && MenuNav.active <= 13 ? 11
+                : root.tray-open && MenuNav.active >= 15 && MenuNav.active <= 19 ? 14 : -1;
             fold => { root.view-group = ""; }
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { view-popup.close(); }
@@ -1516,36 +1507,9 @@ export component MenuBar inherits Rectangle {
                     VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
                 }
             }
-            // The six styles a click on the tile goes through, in the same
-            // order; the choice is kept while the visualizer is off
-            GroupMenuItem {
-                slot: 4;
-                label: "Visualizer Style";
-                icon: @image-url("icons/wave-square.svg");
-                open: root.style-open;
-                toggled => { root.view-group = root.style-open ? "" : "style"; }
-            }
-            if root.style-open: VerticalLayout {
-                for style[i] in [
-                    { id: "wave", label: "Wave" },
-                    { id: "spectrum", label: "Spectrum" },
-                    { id: "mirror", label: "Mirror" },
-                    { id: "dots", label: "Dot Matrix" },
-                    { id: "vu", label: "VU" },
-                    { id: "hbars", label: "Horizontal VU" },
-                ]: CheckMenuItem {
-                    slot: 5 + i;
-                    label: style.label;
-                    indent: Theme.space-16;
-                    enabled: root.show-visualizer;
-                    one-of-set: true;
-                    checked: root.viz-mode == style.id;
-                    clicked => { root.viz-mode = style.id; }
-                }
-            }
             MenuSeparator {}
             CheckMenuItem {
-                slot: 11;
+                slot: 4;
                 label: "Show Listening Stats";
                 icon: @image-url("icons/clock.svg");
                 checked: root.show-station-stats;
@@ -1556,7 +1520,7 @@ export component MenuBar inherits Rectangle {
             // The whole window larger or smaller. Slint takes the scale
             // when the window is made, so a choice waits for the next start.
             if Platform.has-window-frame: GroupMenuItem {
-                slot: 12;
+                slot: 5;
                 label: "Zoom";
                 icon: @image-url("icons/magnifying-glass.svg");
                 open: root.zoom-open;
@@ -1564,7 +1528,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.zoom-open: VerticalLayout {
                 for percent[i] in ViewOptions.zoom-choices: CheckMenuItem {
-                    slot: 13 + i;
+                    slot: 6 + i;
                     label: percent + "%";
                     indent: Theme.space-16;
                     one-of-set: true;
@@ -1584,7 +1548,7 @@ export component MenuBar inherits Rectangle {
             // The set-once options, folded into groups (desktop only)
             if Platform.has-window-frame || Platform.has-tray: MenuSeparator {}
             if Platform.has-window-frame: GroupMenuItem {
-                slot: 18;
+                slot: 11;
                 label: "Window";
                 icon: @image-url("icons/window-maximize.svg");
                 open: root.window-open;
@@ -1592,7 +1556,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.window-open: VerticalLayout {
                 CheckMenuItem {
-                    slot: 19;
+                    slot: 12;
                     // Chrome's wording: ticked means the system frame
                     label: "Use System Title Bar";
                     icon: @image-url("icons/window-maximize.svg");
@@ -1604,7 +1568,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 20;
+                    slot: 13;
                     // The system title bar has its own corners
                     label: "Rounded Corners";
                     icon: @image-url("icons/rounded-corner.svg");
@@ -1619,7 +1583,7 @@ export component MenuBar inherits Rectangle {
                 }
             }
             if Platform.has-tray: GroupMenuItem {
-                slot: 21;
+                slot: 14;
                 label: "System Tray";
                 icon: @image-url("icons/window-restore.svg");
                 open: root.tray-open;
@@ -1627,7 +1591,7 @@ export component MenuBar inherits Rectangle {
             }
             if root.tray-open: VerticalLayout {
                 CheckMenuItem {
-                    slot: 22;
+                    slot: 15;
                     label: "Show Tray Icon";
                     icon: @image-url("icons/window-restore.svg");
                     indent: Theme.space-16;
@@ -1638,7 +1602,7 @@ export component MenuBar inherits Rectangle {
                 }
                 // Greyed with no tray to hide in; they keep their ticks
                 CheckMenuItem {
-                    slot: 23;
+                    slot: 16;
                     label: "Close to Tray";
                     icon: @image-url("icons/rectangle-xmark.svg");
                     indent: Theme.space-16;
@@ -1649,7 +1613,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 24;
+                    slot: 17;
                     label: "Minimize to Tray";
                     icon: @image-url("icons/square-minus.svg");
                     indent: Theme.space-16;
@@ -1660,7 +1624,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 CheckMenuItem {
-                    slot: 25;
+                    slot: 18;
                     label: "Start Hidden in Tray";
                     icon: @image-url("icons/eye-slash.svg");
                     indent: Theme.space-16;
@@ -1672,7 +1636,7 @@ export component MenuBar inherits Rectangle {
                 }
                 // Saved in the autostart file or the Run key, not the settings
                 CheckMenuItem {
-                    slot: 26;
+                    slot: 19;
                     label: "Start at Login";
                     icon: @image-url("icons/desktop.svg");
                     indent: Theme.space-16;

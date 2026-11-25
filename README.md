@@ -268,8 +268,8 @@ opening another player.
 | Record the station playing | **Tools > Start Recording**; **Tools > Recordings > Settings** for format, bitrate and folder |
 | Start, record or stop at set times | **Tools > Scheduler** (once or weekly, with fade-in and an alarm fallback) |
 | Stop after a while | **Tools > Sleep Timer** |
-| See stream and decoder details | **Tools > Statistics**, or **View > Show Station Stats** on the favorites |
-| Change the look | **View**: Dark, Light or System theme, accent color, visualizer (spectrum, mirror, bars, VU, wave, dot matrix) |
+| See stream and decoder details | **Tools > Statistics**, or **View > Show Listening Stats** on the favorites |
+| Change the look | **View**: Dark, Light or System theme, accent color, visualizer on or off; click the visualizer to change its style (wave, spectrum, mirror, dot matrix, VU, horizontal VU) |
 | Keep it in the system tray | **View > System Tray** (show icon, close or minimize to tray, start hidden) |
 
 Scheduled entries and the sleep timer only work while the app is running; they
