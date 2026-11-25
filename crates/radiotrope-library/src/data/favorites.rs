@@ -39,12 +39,31 @@ const ORPHAN_STATS_SECS: u64 = 90 * 24 * 60 * 60;
 /// Metadata describing a station to play (see [`FavoritesManager::resolve_play`])
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PlayMetadata {
+    /// The stream to play: the station's default
     pub url: String,
+    /// The station's other streams, tried in this order when `url`
+    /// doesn't connect
+    pub backups: Vec<String>,
     pub name: Option<String>,
     pub logo_url: Option<String>,
     pub country: Option<String>,
     /// Provider-specific station ID (e.g. the Radiotrope directory's `st_…` ID)
     pub provider_id: Option<String>,
+}
+
+impl PlayMetadata {
+    /// What playing `station` takes: its default stream, the others as
+    /// backups, and what it shows
+    pub fn of(station: &crate::data::types::Station) -> Self {
+        Self {
+            url: station.url.clone(),
+            backups: station.backups(),
+            name: Some(station.name.clone()),
+            logo_url: station.logo_url.clone(),
+            country: station.country.clone(),
+            provider_id: station.provider_id.clone(),
+        }
+    }
 }
 
 /// The favorites as they were before the last list taken in, in the
@@ -706,14 +725,16 @@ impl FavoritesManager {
     /// Resolve the metadata for playing a station, favorites taking priority
     ///
     /// When the station is a favorite (see [`find_match`](Self::find_match)),
-    /// its URL, name, logo and country are used, and the given values only
-    /// fill in what the favorite lacks.
+    /// its streams (the default the user chose, and the others as backups),
+    /// name, logo and country are used, and the given values only fill in
+    /// what the favorite lacks.
     pub fn resolve_play(&self, request: PlayMetadata) -> PlayMetadata {
         let Some(fav) = self.find_match(&request.url, request.provider_id.as_deref()) else {
             return request;
         };
         PlayMetadata {
             url: fav.url().to_string(),
+            backups: fav.station.backups(),
             name: Some(fav.name().to_string()),
             logo_url: fav.station.logo_url.clone().or(request.logo_url),
             country: fav.station.country.clone().or(request.country),
@@ -734,46 +755,37 @@ impl FavoritesManager {
 
     /// Update a favorite
     ///
-    /// Note: Changing the URL will change the ID, effectively creating
-    /// a new favorite. Use with caution.
+    /// A favorite's id follows its default stream, so an update that
+    /// changes that (a new address, or another stream picked as the
+    /// default) moves the favorite, with its stats, to a new id. It fails,
+    /// changing nothing, when another favorite has that address or the
+    /// update leaves the favorite no stream.
     pub fn update(&mut self, id: &str, update: FavoriteUpdate) -> Result<()> {
         self.reload_if_changed();
-        // If URL is changing, we need to re-key the favorite
-        if let Some(ref new_url) = update.url {
-            let new_id = url_to_id(new_url);
+        let not_found = || AppError::Config(format!("Favorite with ID '{}' not found", id));
+        let current = self.favorites.get(id).ok_or_else(not_found)?;
+        if update.streams.is_some() && update.new_url(&current.station).is_none() {
+            return Err(AppError::Config("A station needs a stream URL".into()));
+        }
+        let new_id = update
+            .new_url(&current.station)
+            .map_or_else(|| id.to_string(), |url| url_to_id(&url));
+        if new_id != id && self.favorites.contains_key(&new_id) {
+            return Err(AppError::Config(format!(
+                "A favorite with URL '{}' already exists",
+                update.new_url(&current.station).unwrap_or_default()
+            )));
+        }
 
-            // Check new URL doesn't conflict (unless it's the same)
-            if new_id != id && self.favorites.contains_key(&new_id) {
-                return Err(AppError::Config(format!(
-                    "A favorite with URL '{}' already exists",
-                    new_url
-                )));
+        let mut favorite = self.favorites.remove(id).ok_or_else(not_found)?;
+        update.apply_to(&mut favorite);
+        self.favorites.insert(favorite.id(), favorite);
+        // The stats follow the favorite to its new id
+        if new_id != id {
+            if let Some(stats) = self.stats.remove(id) {
+                self.stats.insert(new_id, stats);
+                self.stats_dirty = true;
             }
-
-            // Remove old, update, insert with new key
-            let mut favorite = self
-                .favorites
-                .remove(id)
-                .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
-
-            update.apply_to(&mut favorite);
-            // ID is computed from URL, so after applying update with new URL,
-            // favorite.id() will return the new_id
-            self.favorites.insert(favorite.id(), favorite);
-            // The stats follow the favorite to its new id
-            if new_id != id {
-                if let Some(stats) = self.stats.remove(id) {
-                    self.stats.insert(new_id, stats);
-                    self.stats_dirty = true;
-                }
-            }
-        } else {
-            // No URL change, just update in place
-            let favorite = self
-                .favorites
-                .get_mut(id)
-                .ok_or_else(|| AppError::Config(format!("Favorite with ID '{}' not found", id)))?;
-            update.apply_to(favorite);
         }
 
         self.dirty = true;
@@ -1390,6 +1402,7 @@ fn read_entries(file: StoredFavoritesFile, path: &Path) -> HashMap<String, Favor
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::types::Station;
     use std::collections::HashSet;
     use std::env::temp_dir;
     use std::fs;
@@ -1980,10 +1993,127 @@ mod tests {
             .is_none());
     }
 
+    fn stream_urls(fav: &Favorite) -> Vec<&str> {
+        fav.station.streams.iter().map(|s| s.url.as_str()).collect()
+    }
+
+    fn manager_with_three_streams() -> (FavoritesManager, String) {
+        use crate::data::types::Stream;
+        let mut manager = empty_manager();
+        let station = Station::new("Jazz FM", "http://a.test").with_streams(vec![
+            Stream::new("http://a.test").with_audio_info(Some("AAC".into()), Some(128)),
+            Stream::new("http://b.test").with_audio_info(Some("MP3".into()), Some(64)),
+            Stream::new("http://c.test"),
+        ]);
+        let fav = Favorite::from_station(station);
+        let id = fav.id();
+        manager.add(fav).unwrap();
+        (manager, id)
+    }
+
+    #[test]
+    fn picking_another_default_moves_the_favorite_and_its_stats_to_the_new_id() {
+        let (mut manager, id) = manager_with_three_streams();
+        manager.record_play(&id, 60).unwrap();
+        let streams = manager.get(&id).unwrap().station.streams.clone();
+
+        manager
+            .update(&id, FavoriteUpdate::new().streams(streams, "http://b.test"))
+            .unwrap();
+        assert!(manager.get(&id).is_none());
+        let new_id = url_to_id("http://b.test");
+        let fav = manager.get(&new_id).unwrap();
+        assert_eq!(fav.url(), "http://b.test");
+        assert_eq!(
+            stream_urls(fav),
+            ["http://a.test", "http://b.test", "http://c.test"]
+        );
+        assert_eq!(manager.stats(&new_id).play_count, 1);
+        assert!(manager.stats(&id).is_empty());
+        assert_eq!(manager.count(), 1);
+    }
+
+    #[test]
+    fn an_update_that_leaves_no_stream_or_takes_another_favorites_is_refused() {
+        let (mut manager, id) = manager_with_three_streams();
+        manager
+            .add(Favorite::new("Other", "http://other.test"))
+            .unwrap();
+        let before = manager.get(&id).cloned();
+
+        assert!(manager
+            .update(&id, FavoriteUpdate::new().streams(Vec::new(), ""))
+            .is_err());
+        // Its default would be another favorite's
+        let taken = vec![crate::data::types::Stream::new("http://other.test")];
+        assert!(manager
+            .update(
+                &id,
+                FavoriteUpdate::new().streams(taken, "http://other.test")
+            )
+            .is_err());
+        assert_eq!(manager.get(&id).cloned(), before);
+        assert_eq!(manager.count(), 2);
+    }
+
+    #[test]
+    fn a_favorite_plays_its_default_with_the_other_streams_as_backups() {
+        let (mut manager, id) = manager_with_three_streams();
+        let streams = manager.get(&id).unwrap().station.streams.clone();
+        manager
+            .update(&id, FavoriteUpdate::new().streams(streams, "http://c.test"))
+            .unwrap();
+        // Asked for by any of its addresses that is a favorite's default
+        let play = manager.resolve_play(PlayMetadata {
+            url: "http://c.test".into(),
+            ..Default::default()
+        });
+        assert_eq!(play.url, "http://c.test");
+        assert_eq!(play.backups, ["http://a.test", "http://b.test"]);
+
+        // Not a favorite: the request's own backups stay
+        let play = manager.resolve_play(PlayMetadata {
+            url: "http://elsewhere.test".into(),
+            backups: vec!["http://elsewhere2.test".into()],
+            ..Default::default()
+        });
+        assert_eq!(play.backups, ["http://elsewhere2.test"]);
+    }
+
+    #[test]
+    fn the_streams_survive_a_save_an_export_and_an_import() {
+        let (mut manager, id) = manager_with_three_streams();
+        let path = temp_path();
+        manager.save_to(&path).unwrap();
+        let loaded = FavoritesManager::load_from(&path).unwrap();
+        assert_eq!(loaded.get(&id), manager.get(&id));
+
+        let export = path.with_extension("export.json");
+        manager.export_to(&export).unwrap();
+        let list = read_list(&export).unwrap();
+        assert_eq!(
+            stream_urls(&list[0]),
+            ["http://a.test", "http://b.test", "http://c.test"]
+        );
+        let mut other = empty_manager();
+        other
+            .import_list(ImportMode::Add, &list, 100, false)
+            .unwrap();
+        assert_eq!(
+            other.get(&id).unwrap().station,
+            manager.get(&id).unwrap().station
+        );
+
+        let _ = fs::remove_file(&export);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(storage::backup_path(&path));
+    }
+
     #[test]
     fn test_resolve_play_favorite_wins() {
         let manager = manager_with_favorite();
         let resolved = manager.resolve_play(PlayMetadata {
+            backups: Vec::new(),
             url: "http://resolved.example/other".to_string(),
             name: Some("Search Name".to_string()),
             logo_url: Some("http://search.example/favicon.ico".to_string()),
