@@ -904,6 +904,37 @@ mod tests {
     }
 
     #[test]
+    fn the_sleep_timers_fade_goes_down_evenly_over_the_last_minute() {
+        // The fade follows the clock it is given, not the wall clock: every
+        // point of its curve is checked at an exact time
+        let (mut controller, state) = controller();
+        state.lock().unwrap().volume = 0.8;
+        playing(&state);
+        controller.handle_command(AppCommand::SetSleepTimer {
+            minutes: Some(10),
+            fade: true,
+        });
+        let until = state.lock().unwrap().sleep.clone().unwrap().until;
+
+        let mut last = f32::MAX;
+        for left in (1..=FADE_OUT_SECS + 5).rev() {
+            controller.apply_volume(&(until - TimeDelta::seconds(left)));
+            let volume = controller.engine_volume.unwrap();
+            let gain = state.lock().unwrap().fade_gain;
+            let expected = (left as f32 / FADE_OUT_SECS as f32).min(1.0);
+            assert!((gain - expected).abs() < 1e-4, "{left} s left: {gain}");
+            assert!((volume - 0.8 * expected).abs() < 1e-4, "{left} s left");
+            assert!(volume <= last, "louder at {left} s left");
+            last = volume;
+        }
+        // Still playing until the end, and stopped there
+        assert_eq!(state.lock().unwrap().playback, PlaybackState::Playing);
+        controller.run_schedule(until);
+        assert_eq!(state.lock().unwrap().playback, PlaybackState::Stopped);
+        assert_eq!(controller.engine_volume, Some(0.8));
+    }
+
+    #[test]
     fn moving_the_volume_ends_the_fade_but_not_the_timer() {
         let (mut controller, state) = controller();
         playing(&state);
@@ -1311,7 +1342,15 @@ mod tests {
     }
 
     /// A controller at volume 0.8 whose engine plays the tone into an
-    /// output with no device, 20 times as fast as it would be heard
+    /// output with no device, 20 times as fast as it would be heard.
+    ///
+    /// Volume matching is off: it starts a new station turned down and
+    /// raises it slowly as it learns its loudness, so with it the tone would
+    /// keep getting louder. How much louder by a given moment depends on how
+    /// much audio a busy machine has played by then, and a reading taken
+    /// before the stop could then be beaten by the audio played just before
+    /// it, with no blip. Without it the tone plays at one level for each
+    /// volume, and any sample louder than the fade's is a real blip.
     fn heard() -> (AppController, Arc<Mutex<AppSnapshot>>) {
         let (mut controller, state) = controller();
         controller.engine = Some(
@@ -1321,6 +1360,7 @@ mod tests {
             })
             .expect("the engine starts"),
         );
+        controller.handle_command(AppCommand::SetMatchVolume(false));
         state.lock().unwrap().volume = 0.8;
         controller.apply_volume(&Local::now());
         play_tone(&controller, &state);
@@ -1336,8 +1376,10 @@ mod tests {
     }
 
     /// How loud the output is once its volume has settled: read until two
-    /// readings in a row agree, as a busy machine may still be ramping the
-    /// volume, or catching up on its output, at the first one
+    /// readings in a row agree, as a busy machine may still be fading the
+    /// station in, ramping the volume, or catching up on its output, at the
+    /// first one. The tone's level only changes with those, so two readings
+    /// that agree are its level.
     fn steady(controller: &AppController) -> f32 {
         let deadline = Instant::now() + std::time::Duration::from_secs(10);
         let mut last = loudest(controller, 100);
@@ -1359,7 +1401,8 @@ mod tests {
         state: &Arc<Mutex<AppSnapshot>>,
         stop_at: DateTime<Local>,
     ) {
-        let full = loudest(&controller, 100);
+        // Past the station's own fade in, however long a busy machine takes
+        let full = steady(&controller);
         assert!(full > 0.05, "the station isn't heard: {full}");
 
         // Six seconds before the end: a tenth as loud
@@ -1382,14 +1425,25 @@ mod tests {
             assert_eq!(s.fade_gain, 1.0);
         }
         // Whatever was still to play (the engine's own short fade-out,
-        // what its player had queued) has played by then
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let after = controller.engine.as_ref().unwrap().take_output_peak();
+        // what its player had queued) plays out: wait until a reading hears
+        // nothing, keeping the loudest sample on the way. A busy machine may
+        // take far longer than the fade's 400 ms (20 ms here) to play it.
+        let deadline = Instant::now() + std::time::Duration::from_secs(10);
+        let mut after = 0.0f32;
+        loop {
+            // Not `loudest`: that would drop what played since the stop
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let peak = controller.engine.as_ref().unwrap().take_output_peak();
+            if peak == 0.0 {
+                break;
+            }
+            after = after.max(peak);
+            assert!(Instant::now() < deadline, "still heard: {peak}");
+        }
         assert!(
             after <= faded * 1.01,
             "louder after the stop ({after}) than the fade ended at ({faded})"
         );
-        assert_eq!(loudest(&controller, 100), 0.0, "still heard");
 
         // The next station plays at the user's volume, not the fade's: a
         // hundred times louder than the fade ended at, once it has
