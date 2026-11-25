@@ -61,6 +61,8 @@ mod tests {
         );
     }
 
+    // Snaps are Linux only; "/home/radio" isn't an absolute path on Windows
+    #[cfg(unix)]
     #[test]
     fn the_command_is_in_snap_bin() {
         let snap = from_env(env(&[
