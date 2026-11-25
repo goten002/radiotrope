@@ -8,7 +8,8 @@
 # Installing and running the .snap needs snapd: do that on a desktop, or see
 # .github/workflows/package-snap.yml for the CI check.
 #
-#   SNAP_DOCKER_LIMITS="--cpus=3 --memory=8g"   resources for the container
+#   SNAP_DOCKER_LIMITS="--cpus=2 --memory=4g"   resources for the container
+#   SNAP_CARGO_JOBS=2                           cargo's compile jobs
 #   SNAP_CACHE_VOLUME=radiotrope-snap-cache     keeps rustup, cargo's
 #                                               downloads and the compiled
 #                                               crates between builds
@@ -18,7 +19,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 OUT=$(realpath -m "${1:-target/dist}")
 IMAGE=ghcr.io/canonical/snapcraft:8_core24
-LIMITS=${SNAP_DOCKER_LIMITS---cpus=3 --memory=8g}
+LIMITS=${SNAP_DOCKER_LIMITS---cpus=2 --memory=4g}
+JOBS=${SNAP_CARGO_JOBS:-2}
 VOLUME=${SNAP_CACHE_VOLUME-radiotrope-snap-cache}
 mkdir -p "$OUT"
 
@@ -33,7 +35,7 @@ fi
 git ls-files -z --cached --others --exclude-standard \
     | tar --null -T - -cf - \
     | docker run --rm -i $LIMITS "${volume_args[@]}" \
-        -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
+        -e "CARGO_BUILD_JOBS=$JOBS" -e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)" \
         -v "$OUT:/out" --entrypoint bash "$IMAGE" -c '
 set -eu
 mkdir -p /src && tar -xf - -C /src

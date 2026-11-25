@@ -113,9 +113,6 @@ parts:
       - libxkbcommon-x11-0
     build-environment:
       - RADIOTROPE_UPDATES: "off"
-      # Three compile jobs: the release link of the player needs several GB
-      # per job
-      - CARGO_BUILD_JOBS: "3"
     override-pull: |
       craftctl default
       # The version from Cargo.toml (the metainfo's releases may lag)
@@ -128,6 +125,9 @@ parts:
       # keeps them in a volume)
       export RUSTUP_HOME="${RUSTUP_HOME:-$CRAFT_PART_BUILD/.rustup}"
       export CARGO_HOME="${CARGO_HOME:-$CRAFT_PART_BUILD/.cargo}"
+      # Three compile jobs unless told otherwise (build-docker.sh uses two):
+      # the release link of the player needs several GB per job
+      export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
       if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
           | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
