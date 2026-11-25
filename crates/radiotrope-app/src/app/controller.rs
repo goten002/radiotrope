@@ -755,10 +755,12 @@ impl AppController {
         };
         eprintln!("Stream {failed} didn't connect ({error}); trying {next}");
         // The failed stream's last words (its Stopped) change nothing
+        let handed_over = self.stream_id.is_some();
         let settling = self.settling.take();
         self.cancel_stream();
         self.settling = settling;
-        if let Some(engine) = &self.engine {
+        // The engine lets go of a stream it was given
+        if let Some(engine) = self.engine.as_ref().filter(|_| handed_over) {
             engine.stop();
         }
         self.metadata_rx = None;
