@@ -24,9 +24,6 @@ jobs:
   macos:
     name: macOS (${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
-    # Not green yet (the macOS review lists why), and macOS is not a release
-    # target: a failure here is shown on the run but doesn't fail the PR
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
@@ -59,14 +56,20 @@ jobs:
             sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
             exit 1
           fi
-      # No libfdk-aac here: the AAC+ tests skip, as in ci.yml's Test job
+      # No libfdk-aac here: the AAC+ tests skip, as in ci.yml's Test job.
+      # Not green yet: a few tests that sleep for tens of milliseconds and
+      # then look at a timeout fail on these runners, a different few each
+      # run (the macOS review has the list). Until they have a clock of
+      # their own, a failure is an annotation on the run and not a failed
+      # job; the build and clippy above do fail it.
       - name: cargo test
         if: success() || failure()
+        continue-on-error: true
         shell: bash
         run: |
           set -o pipefail
           if ! cargo test --workspace --no-fail-fast 2>&1 | tee test.log; then
-            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::error::/'
+            sed 's/\x1b\[[0-9;]*[mK]//g' test.log | grep -E "^test .* FAILED$|panicked at|^error" | head -20 | sed 's/^/::warning::/'
             exit 1
           fi
       - name: Programs start
