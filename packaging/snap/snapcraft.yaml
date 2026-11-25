@@ -1,5 +1,5 @@
-# Snap of Radiotrope: the player, the terminal player and the station checker,
-# strictly confined, on core24.
+# Snap of Radiotrope: the player and the terminal player, strictly confined,
+# on core24. The station checker is not in it: it is a separate download.
 #
 # snapcraft takes the project from the folder it runs in, and only finds this
 # file as snap/snapcraft.yaml there, so it is built from the repository's
@@ -82,12 +82,6 @@ apps:
     command: usr/bin/radiotrope-cli
     extensions: [gnome]
     plugs: [network, audio-playback, home, removable-media]
-
-  # `radiotrope.probe`
-  probe:
-    command: usr/bin/radiotrope-probe
-    extensions: [gnome]
-    plugs: [network, home]
 
 parts:
   radiotrope:

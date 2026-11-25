@@ -73,11 +73,12 @@ packaging/linux/dist.sh            # files in target/dist
 (It writes `target/` as root; use a copy of the checkout.)
 
 The smoke jobs install each file in clean containers and check that
-`radiotrope`, `radiotrope-cli` and `radiotrope-probe` print their version:
+`radiotrope` and `radiotrope-cli` print their version and that
+`radiotrope-probe` is not there (it is a download of its own):
 
 | File | Tried on |
 |------|----------|
-| .deb, tarball | Debian 12, 13, Ubuntu 22.04, 24.04 (x86_64); Debian 12, Ubuntu 24.04 (aarch64) |
+| .deb, tarball, probe tarball | Debian 12, 13, Ubuntu 22.04, 24.04 (x86_64); Debian 12, Ubuntu 24.04 (aarch64) |
 | .rpm | Fedora (both), openSUSE Tumbleweed (x86_64) |
 | AppImage | Ubuntu 22.04 (both), Fedora, Arch, openSUSE Tumbleweed (x86_64), unpacked (`--appimage-extract-and-run`: no FUSE in containers) |
 | AUR | `PKGBUILD` built from the commit with makepkg, `PKGBUILD-bin` from the tarball, both through `namcap`, installed (Arch, x86_64) |
@@ -89,14 +90,21 @@ None of them opens a window or plays sound: that is for "Testing by hand".
 
 | File | What it is |
 |------|------------|
-| `radiotrope-<ver>-linux-<arch>.tar.gz` | `bin/` (three programs), `share/` (launcher, icons, metainfo, man pages, bash/zsh/fish completions), README, licences. Copy into `~/.local` or `/usr/local`. Also the source of `radiotrope-bin` |
+| `radiotrope-<ver>-linux-<arch>.tar.gz` | `bin/` (`radiotrope`, `radiotrope-cli`), `share/` (launcher, icons, metainfo, man pages, bash/zsh/fish completions), README, licences. Copy into `~/.local` or `/usr/local`. Also the source of `radiotrope-bin` |
 | `radiotrope_<ver>-1_<amd64\|arm64>.deb` | Debian/Ubuntu package `radiotrope` (cargo-deb). Depends found by `dpkg-shlibdeps` plus `libxkbcommon0`, `ca-certificates`; Recommends the display libraries and `libfdk-aac2` |
 | `radiotrope-<ver>-1.<x86_64\|aarch64>.rpm` | Fedora/openSUSE package (cargo-generate-rpm). Requires by soname; Recommends `fdk-aac` or `libfdk-aac2` |
 | `Radiotrope-<ver>-<arch>.AppImage` | linuxdeploy + appimagetool, static runtime (no libfuse2). Carries libxkbcommon; ALSA, fontconfig, GL and the display libraries come from the system |
 | `Radiotrope-<ver>-<arch>.AppImage.zsync` | Delta updates. The AppImage's update information is `gh-releases-zsync\|goten002\|radiotrope\|latest\|Radiotrope-*-<arch>.AppImage.zsync`: updaters look at the latest **published** release |
 | `Radiotrope-<ver>-<arch>.flatpak` | Single-file Flatpak bundle (freedesktop 26.08), manifest in `packaging/flatpak/`. Not on Flathub |
 | Windows files | portable zips and the installer: see `packaging/windows/README.md` |
+| `radiotrope-probe-<ver>-linux-<arch>.tar.gz` | The station checker alone (`make install-probe` layout: `bin/radiotrope-probe`, `share/` with its man page and completions), `README.txt` from `packaging/probe/`, licences. Made by `dist.sh` (format `probe`) in the same container; artefact `dist-probe-linux-<arch>` |
+| `radiotrope-probe-<ver>-windows-<x64\|arm64>.zip` | The same for Windows: `radiotrope-probe.exe`, `README.txt`, licences (`stage.ps1 -Probe`, from the Windows build job); artefact `dist-probe-windows-<arch>` |
 | `SHA256SUMS` | SHA-256 of every file above |
+
+The probe is in none of the packages or installers (deb, rpm, tarball,
+AppImage, Flatpak, Snap, AUR, Windows zip and installer, WinGet): it ships
+only as the standalone archives above. `release.yml` stops if one of the
+four is missing.
 
 A pre-release (`0.2.0-rc.1`) has not been through the workflow yet: check
 how cargo-deb and cargo-generate-rpm write its version (it must sort before
@@ -249,8 +257,8 @@ yet):
 
 Built from `packaging/snap/snapcraft.yaml` by `package-snap.yml` (amd64 and
 arm64, with `snapcore/action-build`), which also installs it with snapd on
-the runner, runs the three programs confined and checks two public streams
-with the probe. To build one locally without LXD or Multipass:
+the runner, runs the two programs confined and checks that the snap has no
+probe. To build one locally without LXD or Multipass:
 `packaging/snap/build-docker.sh` (Docker; the .snap lands in `target/dist`,
 and the volume `radiotrope-snap-cache` keeps rustup and the crates; remove it
 with `docker volume rm radiotrope-snap-cache`).
@@ -296,8 +304,8 @@ Nothing publishes it yet. To put it in the Snap Store (once):
    beta`, then to **stable**. Stable needs `grade: stable` in
    `snapcraft.yaml`: change it for the first stable release.
 6. Optional: ask on <https://forum.snapcraft.io> (category store-requests)
-   for the auto-aliases `radiotrope-cli` and `radiotrope-probe`, so the
-   tools keep their usual names.
+   for the auto-alias `radiotrope-cli`, so the terminal player keeps its
+   usual name.
 
 ## Testing by hand
 

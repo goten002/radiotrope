@@ -61,7 +61,10 @@ jobs:
             echo "::error::The snap contains an FDK file"; exit 1
           fi
           unsquashfs -d prime "$SNAP_FILE" usr/bin
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          if [ -e prime/usr/bin/radiotrope-probe ]; then
+            echo "::error::The snap has the probe in it (a separate download)"; exit 1
+          fi
+          for p in radiotrope radiotrope-cli; do
             if grep -q "libfdk-aac" "prime/usr/bin/$p"; then
               echo "::error::$p was built with the system-fdk loader"; exit 1
             fi
@@ -126,19 +129,12 @@ jobs:
           }
           check /snap/bin/radiotrope radiotrope
           check /snap/bin/radiotrope.cli radiotrope-cli
-          check /snap/bin/radiotrope.probe radiotrope-probe
           /snap/bin/radiotrope --help >/dev/null
           /snap/bin/radiotrope.cli --help >/dev/null
-          /snap/bin/radiotrope.probe --help
-      - name: The probe checks public streams from inside the snap
-        run: |
-          set -eu
-          # An MP3 stream, and an AAC+ (HE-AAC) one, which the snap's
-          # built-in decoder plays as AAC-LC
-          /snap/bin/radiotrope.probe --json --listen 5 \
-            https://ice1.somafm.com/groovesalad-128-mp3 \
-            https://ice1.somafm.com/groovesalad-64-aac | tee probe.json
-          jq -e 'length == 2' probe.json
+          # The probe is a separate download, not an app of the snap
+          if [ -e /snap/bin/radiotrope.probe ]; then
+            echo "::error::The snap has a probe app"; exit 1
+          fi
       - name: Denials (AppArmor), if any
         if: always()
         run: sudo journalctl -k --no-pager | grep -i 'apparmor="DENIED"' | grep -i radiotrope || echo "none"

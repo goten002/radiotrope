@@ -16,7 +16,7 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 - **Wakes you, sends you to sleep**: Scheduler for plays, recordings and stops, plus a sleep timer
 - **AI agents**: 19 MCP tools, shared by every agent on your computer or your network
 - **Phone remote**: pair the Radiotrope Remote app with a QR code
-- **Also**: a terminal player, a station checker for monitoring, and an experimental Raspberry Pi kiosk image
+- **Also**: a terminal player, a station checker for monitoring (a separate download), and an experimental Raspberry Pi kiosk image
 
 ## Contents
 
@@ -25,7 +25,7 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 - [AI agents (MCP)](#ai-agents-mcp)
 - [Phone remote](#phone-remote)
 - [Terminal player](#terminal-player)
-- [Station checker](#station-checker)
+- [Station checker (radiotrope-probe)](#station-checker-radiotrope-probe)
 - [Raspberry Pi appliance (experimental)](#raspberry-pi-appliance-experimental)
 - [Supported streams and formats](#supported-streams-and-formats)
 - [Project layout](#project-layout)
@@ -49,8 +49,10 @@ Windows. Or build from source with Rust 1.95 or newer
 ### Linux packages
 
 Every release has these files for `x86_64` and `aarch64` (64-bit ARM, such
-as a Raspberry Pi 4 or 5 on a 64-bit system). Each one holds all three
-programs (see [the table below](#linux-build-from-source)). They are built on
+as a Raspberry Pi 4 or 5 on a 64-bit system). Each one holds the desktop app
+and the terminal player (see [the table below](#linux-build-from-source)); the
+[station checker](#station-checker-radiotrope-probe) is a download of its
+own. They are built on
 Ubuntu 22.04, so they need glibc 2.35 or newer: Debian 12, Ubuntu 22.04,
 Fedora 41, openSUSE Leap 15.6 / Tumbleweed or newer.
 
@@ -70,14 +72,14 @@ Notes on each:
   display libraries). The packages aren't signed and there is no apt or dnf
   repository yet, so updates are a new download.
 - **AppImage**: one file, nothing installed. It runs the desktop app; the
-  terminal tools are inside it too: `./Radiotrope-*.AppImage radiotrope-cli`
+  terminal player is inside it too: `./Radiotrope-*.AppImage radiotrope-cli`
   (or a link named `radiotrope-cli` pointing at the AppImage). For a menu
   entry, use an integration tool such as Gear Lever or AppImageLauncher. The
   system tray works as with any other install (GNOME needs the AppIndicator
   extension). Without FUSE, add `--appimage-extract-and-run`.
 - **Flatpak bundle**: not on Flathub. It needs the freedesktop runtime from
   Flathub (`flatpak remote-add --if-not-exists --user flathub
-  https://dl.flathub.org/repo/flathub.flatpakrepo`). Run the tools with
+  https://dl.flathub.org/repo/flathub.flatpakrepo`). Run the terminal player with
   `flatpak run --command=radiotrope-cli app.radiotrope.Radiotrope`. In the
   sandbox it keeps its own settings and favorites (under
   `~/.var/app/app.radiotrope.Radiotrope/`), records only into
@@ -85,9 +87,8 @@ Notes on each:
   AAC (the runtime has no FDK AAC). A second launch opens a second window, and
   agents can't use it over `--mcp` yet: use another format if you use agents.
 - **Snap**: strictly confined, on the core24 base with the GNOME platform
-  snap (installed with it). The terminal tools are `radiotrope.cli` and
-  `radiotrope.probe` (`sudo snap alias radiotrope.cli radiotrope-cli` for the
-  usual name). Settings, favorites and the cache are the snap's own, under
+  snap (installed with it). The terminal player is `radiotrope.cli`
+  (`sudo snap alias radiotrope.cli radiotrope-cli` for the usual name). Settings, favorites and the cache are the snap's own, under
   `~/snap/radiotrope/`; recordings go to `~/Music/Radiotrope` as usual. All
   it needs connects by itself (network, the agents' and phone servers,
   sound through PulseAudio or PipeWire, your home folder, the desktop and
@@ -140,7 +141,7 @@ Then build and install:
 ```bash
 git clone https://github.com/goten002/radiotrope.git
 cd radiotrope
-make                                  # the programs, man pages and completions
+make                                  # the two programs, man pages and completions
 sudo make install                     # into /usr/local
 ```
 
@@ -148,20 +149,23 @@ To install for your user only, with no root, use
 `make install PREFIX="$HOME/.local"` instead (make sure `~/.local/bin` is on
 your `PATH`). `make uninstall`, with the same `PREFIX`, removes it all again.
 
-This installs three programs:
+This installs two programs:
 
 | Program | What it is |
 |---------|------------|
 | `radiotrope` | The desktop app, and the MCP server for agents |
 | `radiotrope-cli` | The terminal player |
-| `radiotrope-probe` | The station checker |
 
 along with the app's launcher and icons (so the dock and taskbar show the
 right icon), its AppStream entry for software centres, man pages, and bash,
 zsh and fish completions. Packagers can stage the same files with
 `make install DESTDIR=<dir> PREFIX=/usr`.
 
-The two terminal tools also install on their own with cargo:
+The station checker is not installed by `make install`: build it with
+`make probe generated` and install it with `make install-probe` (same
+`PREFIX`; `make uninstall-probe` removes it).
+
+The terminal tools also install on their own with cargo:
 `cargo install --locked --git https://github.com/goten002/radiotrope radiotrope-cli`
 (or `radiotrope-probe`). For the desktop app use `make install`, which adds
 the launcher and icons.
@@ -492,11 +496,21 @@ Radiotrope app. It reads the app's settings.
 
 ![Radiotrope terminal player](assets/radiotrope_cli.png)
 
-## Station checker
+## Station checker (radiotrope-probe)
 
 `radiotrope-probe` connects to a station the way the player does, listens for
 a few seconds (no sound card needed) and reports whether it is on air, its
 format, its sound level and what is playing.
+
+It is a separate download from the
+[releases page](https://github.com/goten002/radiotrope/releases), not part of
+any package or installer: `radiotrope-probe-<version>-linux-x86_64.tar.gz`
+(`aarch64`) and `radiotrope-probe-<version>-windows-x64.zip` (`arm64`). Each
+holds the program, a short README and the licences; the Linux ones also have
+its man page and shell completions, under `bin/` and `share/` like the player's
+tarball (copy them into `~/.local`). Check it against the release's
+`SHA256SUMS` like any other download. To build it from source, see
+[Linux: build from source](#linux-build-from-source).
 
 ```bash
 radiotrope-probe http://example.com/radio.pls       # readable report

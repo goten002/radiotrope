@@ -27,7 +27,7 @@
       <li>Wakes you, sends you to sleep: Scheduler for plays, recordings and stops, plus a sleep timer</li>
       <li>AI agents: 19 MCP tools, shared by every agent on your computer or your network</li>
       <li>Phone remote: pair the Radiotrope Remote app with a QR code</li>
-      <li>Also: a terminal player and a station checker for monitoring</li>
+      <li>Also: a terminal player</li>
     </ul>
   </description>
 
@@ -61,7 +61,6 @@
   <provides>
     <binary>radiotrope</binary>
     <binary>radiotrope-cli</binary>
-    <binary>radiotrope-probe</binary>
   </provides>
 
   <requires>

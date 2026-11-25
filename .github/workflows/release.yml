@@ -14,6 +14,11 @@
 #
 # Platforms are reusable workflows with a `version` input, each uploading
 # artefacts named dist-<os>-...: package-linux.yml and package-windows.yml.
+# They also upload the station checker's standalone archives as
+# dist-probe-<os>-<arch> (the probe is in none of the packages):
+#   radiotrope-probe-<ver>-linux-x86_64.tar.gz   radiotrope-probe-<ver>-windows-x64.zip
+#   radiotrope-probe-<ver>-linux-aarch64.tar.gz  radiotrope-probe-<ver>-windows-arm64.zip
+# They go on the draft and into SHA256SUMS with everything else.
 name: Release
 
 on:
@@ -118,6 +123,16 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: release-notes
+      - name: The probe's standalone archives are there
+        working-directory: files
+        run: |
+          set -eu
+          for f in "radiotrope-probe-$VERSION-linux-x86_64.tar.gz" "radiotrope-probe-$VERSION-linux-aarch64.tar.gz" \
+                   "radiotrope-probe-$VERSION-windows-x64.zip" "radiotrope-probe-$VERSION-windows-arm64.zip"; do
+            if [ ! -s "$f" ]; then
+              echo "::error::$f is missing"; ls -l; exit 1
+            fi
+          done
       - name: SHA256SUMS
         working-directory: files
         run: |

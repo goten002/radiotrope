@@ -5,19 +5,25 @@ must never change.
 
 | File | What it is | Made by |
 |------|------------|---------|
-| `radiotrope-<ver>-windows-x64.zip` | Portable zip: the three programs, `README.txt`, `LICENSE.txt`, `THIRD-PARTY-LICENSES.txt` in a `Radiotrope\` folder | `stage.ps1` |
+| `radiotrope-<ver>-windows-x64.zip` | Portable zip: the player and the terminal player, `README.txt`, `LICENSE.txt`, `THIRD-PARTY-LICENSES.txt` in a `Radiotrope\` folder | `stage.ps1` |
 | `radiotrope-<ver>-windows-arm64.zip` | The same for Windows on ARM | `stage.ps1` |
 | `radiotrope-<ver>-setup.exe` | One Inno Setup installer for x64 and ARM64 | `radiotrope.iss` |
+| `radiotrope-probe-<ver>-windows-x64.zip` | The station checker alone: `radiotrope-probe.exe`, `README.txt` (from `packaging/probe`), `LICENSE.txt`, `THIRD-PARTY-LICENSES.txt` in a `radiotrope-probe-<ver>-windows-x64\` folder | `stage.ps1 -Probe` |
+| `radiotrope-probe-<ver>-windows-arm64.zip` | The same for Windows on ARM | `stage.ps1 -Probe` |
 
-All three are built by `.github/workflows/package-windows.yml`, which
+The probe is in neither the player's zip nor the installer (nor WinGet): it
+is a download of its own for whoever wants it.
+
+All of them are built by `.github/workflows/package-windows.yml`, which
 `release.yml` calls with the release version. It uploads them as the
-artefacts `dist-windows-x64`, `dist-windows-arm64` and
-`dist-windows-installer`. Nothing here publishes anything.
+artefacts `dist-windows-x64`, `dist-windows-arm64`,
+`dist-windows-installer`, `dist-probe-windows-x64` and
+`dist-probe-windows-arm64`. Nothing here publishes anything.
 
 Nothing is code-signed yet, so SmartScreen warns on the installer and on the
 programs from the zip. The README tells users how to check the SHA-256
 against the release's `SHA256SUMS`. Signing comes later. When it does, sign
-the three exes before `stage.ps1` zips them, then sign the setup program.
+the exes before `stage.ps1` zips them, then sign the setup program.
 
 The installed player updates itself (README, "Updates"): it downloads the
 next `radiotrope-<ver>-setup.exe`, checks its Minisign signature, and runs it
@@ -73,6 +79,7 @@ or newer):
 $env:RUSTFLAGS = '-C target-feature=+crt-static'
 cargo build --release --locked --target x86_64-pc-windows-msvc -p radiotrope-app -p radiotrope-cli -p radiotrope-probe
 packaging\windows\stage.ps1 -Target x86_64-pc-windows-msvc -Arch x64 -Version 0.1.0
+packaging\windows\stage.ps1 -Target x86_64-pc-windows-msvc -Arch x64 -Version 0.1.0 -Probe   # the probe's zip
 # the same for aarch64-pc-windows-msvc / arm64, on an ARM64 PC or with the ARM64 tools
 iscc /DAppVersion=0.1.0 packaging\windows\radiotrope.iss    # writes dist\radiotrope-0.1.0-setup.exe
 ```

@@ -8,7 +8,7 @@
 pkgname=radiotrope
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Internet radio player, with a terminal player and a station checker'
+pkgdesc='Internet radio player, with a terminal player'
 arch=('x86_64' 'aarch64')
 url='https://github.com/goten002/radiotrope'
 license=('GPL-3.0-or-later')
@@ -48,7 +48,7 @@ build() {
   # pacman (the AUR helper) brings the updates: the player never looks for
   # them itself, and has no update rows in its Help menu
   export RADIOTROPE_UPDATES=off
-  # The three programs, man pages and completions
+  # The two programs, man pages and completions
   make all CARGO_FLAGS=--frozen
 }
 
