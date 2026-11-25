@@ -100,7 +100,9 @@ for p in $PROGRAMS; do
         [ "$minos" = "$MIN_MACOS" ] || die "$p ($a) asks for macOS '$minos', not $MIN_MACOS"
     done
 
-    libs=$(otool -L "$LIPO/$p" | tail -n +2 | awk '{ print $1 }' | sort -u)
+    # A universal file lists its libraries once per architecture, each list
+    # under a "<file> (architecture ...):" line: keep the indented ones
+    libs=$(otool -L "$LIPO/$p" | awk '/^[[:space:]]/ { print $1 }' | sort -u)
     if grep -i fdk <<<"$libs"; then
         die "$p links FDK AAC; it must only load it at run time"
     fi
