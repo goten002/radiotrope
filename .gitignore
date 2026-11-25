@@ -32,3 +32,11 @@ build/
 
 # A public key for SSH on the Pi image (see yocto/README.md)
 .config-seed/authorized_keys
+
+# The snap's project file is copied here to build it (packaging/snap), and
+# snapcraft's folders and output in destructive mode
+/snap/
+/parts/
+/stage/
+/prime/
+/radiotrope_*.snap

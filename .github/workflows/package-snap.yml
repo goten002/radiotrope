@@ -1,0 +1,174 @@
+# The snap (packaging/snap/snapcraft.yaml), for amd64 and arm64, and a check
+# that it installs and runs under strict confinement.
+#
+# Runs on pull requests that change the snap or this workflow, and by hand
+# (Actions > Package Snap > Run workflow). Artefacts: snap-amd64, snap-arm64.
+#
+# It uploads to the Snap Store only when another workflow calls it with a
+# channel (release.yml, once the owner adds that call; see RELEASING.md,
+# "Snap") and the SNAPCRAFT_STORE_CREDENTIALS secret exists. Without the
+# secret the upload is skipped; pull requests never upload.
+name: Package Snap
+
+on:
+  pull_request:
+    paths:
+      - "packaging/snap/**"
+      - ".github/workflows/package-snap.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      store-channel:
+        description: "Upload to this Snap Store channel (edge, beta, candidate, stable); empty: no upload"
+        type: string
+        required: false
+        default: ""
+    secrets:
+      SNAPCRAFT_STORE_CREDENTIALS:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      # snapcraft only finds snap/snapcraft.yaml in the project's folder
+      - name: The project file where snapcraft looks
+        run: mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
+      - uses: snapcore/action-build@v1
+        id: snap
+      - name: The snap holds no FDK code and no libfdk-aac
+        env:
+          SNAP_FILE: ${{ steps.snap.outputs.snap }}
+        run: |
+          set -eu
+          command -v unsquashfs >/dev/null || sudo apt-get install -y squashfs-tools
+          ls -l "$SNAP_FILE"
+          unsquashfs -lls "$SNAP_FILE" > files.txt
+          if grep -i fdk files.txt; then
+            echo "::error::The snap contains an FDK file"; exit 1
+          fi
+          unsquashfs -d prime "$SNAP_FILE" usr/bin
+          for p in radiotrope radiotrope-cli radiotrope-probe; do
+            if grep -q "libfdk-aac" "prime/usr/bin/$p"; then
+              echo "::error::$p was built with the system-fdk loader"; exit 1
+            fi
+          done
+          echo "--- meta/snap.yaml"
+          unsquashfs -cat "$SNAP_FILE" meta/snap.yaml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: snap-${{ matrix.arch }}
+          path: ${{ steps.snap.outputs.snap }}
+          if-no-files-found: error
+
+  # Install the snap with snapd on the runner and run its programs confined
+  smoke:
+    name: Smoke (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: Cargo.toml
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: snap-${{ matrix.arch }}
+          path: dist
+      - name: Install the snap and the GNOME platform it uses
+        run: |
+          set -eux
+          # The content snaps of the gnome extension (installed from the
+          # store like any user's would be)
+          sudo snap install core24
+          sudo snap install gnome-46-2404 mesa-2404 gtk-common-themes
+          sudo snap install --dangerous dist/radiotrope_*.snap
+          snap list
+      - name: Interfaces
+        run: |
+          snap connections radiotrope
+          # The ones that must connect by themselves
+          for plug in network network-bind audio-playback home desktop wayland x11 unity7 opengl; do
+            if ! snap connections radiotrope | awk '{print $2, $3}' | grep -q "^radiotrope:$plug :"; then
+              echo "::error::radiotrope:$plug is not connected"; exit 1
+            fi
+          done
+      - name: Programs start, confined
+        run: |
+          set -eu
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+          snap info --verbose dist/radiotrope_*.snap | sed -n '1,12p'
+          check() {
+            out=$("$1" --version)
+            echo "$1 --version: $out"
+            test "$out" = "$2 $version"
+          }
+          check /snap/bin/radiotrope radiotrope
+          check /snap/bin/radiotrope.cli radiotrope-cli
+          check /snap/bin/radiotrope.probe radiotrope-probe
+          /snap/bin/radiotrope --help >/dev/null
+          /snap/bin/radiotrope.cli --help >/dev/null
+          /snap/bin/radiotrope.probe --help
+      - name: The probe checks public streams from inside the snap
+        run: |
+          set -eu
+          # An MP3 stream, and an AAC+ (HE-AAC) one, which the snap's
+          # built-in decoder plays as AAC-LC
+          /snap/bin/radiotrope.probe --json --listen 5 \
+            https://ice1.somafm.com/groovesalad-128-mp3 \
+            https://ice1.somafm.com/groovesalad-64-aac | tee probe.json
+          jq -e 'length == 2' probe.json
+      - name: Denials (AppArmor), if any
+        if: always()
+        run: sudo journalctl -k --no-pager | grep -i 'apparmor="DENIED"' | grep -i radiotrope || echo "none"
+
+  store:
+    name: Upload to the Snap Store
+    needs: smoke
+    # Only when called with a channel (pull requests and manual runs have none)
+    if: inputs.store-channel != '' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    env:
+      SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - name: No channel or no store login
+        if: inputs.store-channel == '' || env.SNAPCRAFT_STORE_CREDENTIALS == ''
+        run: echo "Skipped, no channel given or no SNAPCRAFT_STORE_CREDENTIALS secret"
+      - uses: actions/download-artifact@v4
+        if: inputs.store-channel != '' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        with:
+          name: snap-${{ matrix.arch }}
+          path: dist
+      - name: Find the snap
+        if: inputs.store-channel != '' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        id: file
+        run: echo "snap=$(ls dist/*.snap)" >> "$GITHUB_OUTPUT"
+      - uses: snapcore/action-publish@v1
+        if: inputs.store-channel != '' && env.SNAPCRAFT_STORE_CREDENTIALS != ''
+        with:
+          snap: ${{ steps.file.outputs.snap }}
+          release: ${{ inputs.store-channel }}

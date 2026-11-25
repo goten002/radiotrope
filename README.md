@@ -62,6 +62,7 @@ Fedora 41, openSUSE Leap 15.6 / Tumbleweed or newer.
 | Any distribution | `Radiotrope-<version>-x86_64.AppImage` (`aarch64`) | `chmod +x Radiotrope-*.AppImage` and run it | AppImageUpdate, Gear Lever or AppImageLauncher |
 | Any distribution with Flatpak | `Radiotrope-<version>-x86_64.flatpak` (`aarch64`) | `flatpak install --user ./Radiotrope-*.flatpak` | download the new one |
 | Any distribution, by hand | `radiotrope-<version>-linux-x86_64.tar.gz` (`aarch64`) | see below | download the new one |
+| Any distribution with snapd (Snap) | not in the Snap Store yet; `radiotrope_<version>_amd64.snap` (`arm64`) from a [Package Snap](../../actions/workflows/package-snap.yml) run | `sudo snap install --dangerous ./radiotrope_*.snap` | through the store, once it is there |
 
 Notes on each:
 
@@ -83,6 +84,20 @@ Notes on each:
   `~/Music/Radiotrope` unless you pick another folder, and plays AAC+ as plain
   AAC (the runtime has no FDK AAC). A second launch opens a second window, and
   agents can't use it over `--mcp` yet: use another format if you use agents.
+- **Snap**: strictly confined, on the core24 base with the GNOME platform
+  snap (installed with it). The terminal tools are `radiotrope.cli` and
+  `radiotrope.probe` (`sudo snap alias radiotrope.cli radiotrope-cli` for the
+  usual name). Settings, favorites and the cache are the snap's own, under
+  `~/snap/radiotrope/`; recordings go to `~/Music/Radiotrope` as usual. All
+  it needs connects by itself (network, the agents' and phone servers,
+  sound through PulseAudio or PipeWire, your home folder, the desktop and
+  the tray icon), except recording to a USB disk or anything under `/media`
+  or `/mnt`: `sudo snap connect radiotrope:removable-media`. Agents use
+  `/snap/bin/radiotrope --mcp` (the Agents dialog shows it). The snap never
+  checks for updates itself: the store updates it. **AAC+ plays as plain
+  AAC**: the snap can't use the system's FDK AAC library and doesn't contain
+  one, so AAC+ (HE-AAC) stations play their AAC-LC core (half the
+  bandwidth, mono for HE-AAC v2). Use another format for full-quality AAC+.
 - **Tarball**: unpack it and copy `bin/` and `share/` into `~/.local` (or,
   with `sudo`, `/usr/local`):
 
@@ -93,7 +108,7 @@ Notes on each:
 
   It needs `libasound2` and `fontconfig`, which desktops have.
 
-For full-quality AAC+ in any of them except the Flatpak, also install the
+For full-quality AAC+ in any of them except the Flatpak and the Snap, also install the
 system's FDK AAC library (`libfdk-aac`): see
 [AAC+ stations](#aac-stations-he-aac). The .deb recommends `libfdk-aac2` and
 the .rpm `fdk-aac` (RPM Fusion) or `libfdk-aac2` (Packman), so they come

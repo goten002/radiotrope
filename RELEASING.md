@@ -181,6 +181,7 @@ step can be tried before a tag exists. To try the update itself, see
 | Secret | For | Notes |
 |--------|-----|-------|
 | `AUR_SSH_KEY` | the `aur` task | Private half of an SSH key added to the AUR account (My Account > SSH Public Key). Use a key made for this only: `ssh-keygen -t ed25519 -f aur -C radiotrope-ci`. Settings > Secrets and variables > Actions > New repository secret |
+| `SNAPCRAFT_STORE_CREDENTIALS` | uploading the snap | `snapcraft export-login` output (see "Snap"). Without it the upload is skipped |
 | `UPDATE_SIGNING_KEY` | signing the update files | The whole Minisign secret key file, made without a password (see "Signing the updates"). Without it the release is unsigned and players only tell about it |
 | `WINGET_TOKEN` | `winget.yml` | A classic token with `public_repo`, from the account whose winget-pkgs fork the PR comes from. Also set the variable `WINGET_ENABLED=true` |
 
@@ -244,12 +245,69 @@ yet):
 5. **Autostart** through the Background portal, when "Start at Login" exists.
 6. **AAC+**: the runtime has no libfdk-aac, so AAC+ plays as AAC-LC.
 
+## Snap
+
+Built from `packaging/snap/snapcraft.yaml` by `package-snap.yml` (amd64 and
+arm64, with `snapcore/action-build`), which also installs it with snapd on
+the runner, runs the three programs confined and checks two public streams
+with the probe. To build one locally without LXD or Multipass:
+`packaging/snap/build-docker.sh` (Docker; the .snap lands in `target/dist`,
+and the volume `radiotrope-snap-cache` keeps rustup and the crates; remove it
+with `docker volume rm radiotrope-snap-cache`).
+
+The snap is strictly confined, built without `system-fdk` (AAC+ plays as
+AAC-LC; nothing of FDK is in it) and with `RADIOTROPE_UPDATES=off`.
+Interfaces: `network`, `network-bind`, `audio-playback`, `home`,
+`removable-media` (connected by hand), `unity7` (tray), and the gnome
+extension's `desktop`, `desktop-legacy`, `wayland`, `x11`, `opengl`,
+`gsettings` and `gpu-2404`. None of them needs the store's manual review.
+
+Nothing publishes it yet. To put it in the Snap Store (once):
+
+1. Make a Snap Store account at <https://snapcraft.io/account> (an Ubuntu
+   One login), and set the publisher name to "Radiotrope" there.
+2. Install snapcraft (`sudo snap install snapcraft --classic`), then
+   `snapcraft login` and `snapcraft register radiotrope`. A name that is
+   taken or a trademark goes to a review on the forum.
+3. Make a login for CI, limited to this snap and the early channels, and
+   store it as the repository secret `SNAPCRAFT_STORE_CREDENTIALS`:
+
+   ```bash
+   snapcraft export-login --snaps=radiotrope \
+       --acls package_access,package_push,package_update,package_release \
+       --channels edge,beta exported.txt
+   gh secret set SNAPCRAFT_STORE_CREDENTIALS < exported.txt && rm exported.txt
+   ```
+
+4. In `release.yml`, call the workflow with a channel (it already has the
+   upload job; without the secret it skips it):
+
+   ```yaml
+   snap:
+     uses: ./.github/workflows/package-snap.yml
+     with:
+       store-channel: edge
+     secrets: inherit
+   ```
+
+5. Channels: each release goes to **edge**; after a check on a desktop
+   (`sudo snap install radiotrope --edge`), promote it to **beta** on
+   snapcraft.io (Releases) or with `snapcraft release radiotrope <revision>
+   beta`, then to **stable**. Stable needs `grade: stable` in
+   `snapcraft.yaml`: change it for the first stable release.
+6. Optional: ask on <https://forum.snapcraft.io> (category store-requests)
+   for the auto-aliases `radiotrope-cli` and `radiotrope-probe`, so the
+   tools keep their usual names.
+
 ## Testing by hand
 
 On GNOME and KDE (Wayland), and one X11 session, with each format you
 changed: sound; tray icon and its menu; a second launch raises the window;
 record to the default folder; play an AAC+ station with and without
 libfdk-aac installed (`RUST_LOG=radiotrope=info` logs the decoder); an agent over `--mcp` with the player running and not running.
+Snap: sound, the tray icon, Start at Login (log out and in), the recordings
+folder and Open Folder, a file dialog (Import), an agent with
+`/snap/bin/radiotrope --mcp`, and `snap connections radiotrope`.
 AppImage: update from the previous release with AppImageUpdate or Gear Lever
 once this one is published.
 
