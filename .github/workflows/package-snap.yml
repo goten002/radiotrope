@@ -144,7 +144,7 @@ jobs:
         run: sudo journalctl -k --no-pager | grep -i 'apparmor="DENIED"' | grep -i radiotrope || echo "none"
 
   store:
-    name: Upload to the Snap Store (${{ inputs.store-channel }})
+    name: Upload to the Snap Store
     needs: smoke
     # Only when called with a channel (pull requests and manual runs have none)
     if: inputs.store-channel != '' && github.event_name != 'pull_request'
