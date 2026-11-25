@@ -22,11 +22,19 @@ pub fn set_enabled(on: bool) -> io::Result<()> {
 }
 
 /// The program to start: the AppImage itself when run from one (the
-/// program inside lives on a mount that is gone after logout), else this
-/// program
+/// program inside lives on a mount that is gone after logout), the snap's
+/// command in a snap, else this program.
+///
+/// In a snap the file lands in the snap's own `~/.config/autostart`
+/// (`$SNAP_USER_DATA/.config`), which snapd's session helper reads because
+/// the app declares `autostart: radiotrope.desktop`; it starts the app
+/// itself and keeps only the arguments of `Exec`.
 #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 fn program() -> io::Result<std::path::PathBuf> {
     if cfg!(target_os = "linux") {
+        if let Some(snap) = radiotrope_app::snap::current() {
+            return Ok(snap.command);
+        }
         if let Some(appimage) = std::env::var_os("APPIMAGE").filter(|p| !p.is_empty()) {
             return Ok(appimage.into());
         }
