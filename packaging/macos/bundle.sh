@@ -33,7 +33,6 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
-ROOT=$PWD
 mkdir -p "${1:-target/dist}"
 OUT=$(cd "${1:-target/dist}" && pwd)
 ARCHS=${ARCHS:-aarch64 x86_64}
