@@ -387,7 +387,8 @@ impl<B: GraphicsBackend> RendererSealed for FemtoVGRenderer<B> {
 
     fn set_window_adapter(&self, window_adapter: &Rc<dyn WindowAdapter>) {
         *self.maybe_window_adapter.borrow_mut() = Some(Rc::downgrade(window_adapter));
-        self.text_layout_cache.clear_all();
+        // Radiotrope: the text layout cache is kept, as in `clear_graphics_context`. A
+        // component that goes away takes its entries with it (`free_graphics_resources`).
         self.graphics_backend
             .with_graphics_api(|_| {
                 self.graphics_cache.clear_all();
@@ -508,7 +509,11 @@ impl<B: GraphicsBackend> FemtoVGRendererExt for FemtoVGRenderer<B> {
             self.box_shadow_cache.clear();
         })?;
 
-        self.text_layout_cache.clear_all();
+        // Radiotrope: the text layout cache is kept. Upstream clears it here, which drops its
+        // entries together with the trackers that tell a binding its text has changed: a
+        // `preferred-width` computed before the window was hidden is then never computed
+        // again, and the text is laid out at the width of an earlier one. The entries hold
+        // no graphics resources, and a new scale factor still clears them.
 
         if let Some(canvas) = self.canvas.borrow_mut().take()
             && Rc::strong_count(&canvas) != 1

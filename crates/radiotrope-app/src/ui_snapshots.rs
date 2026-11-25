@@ -1199,21 +1199,43 @@ pub fn run(out_dir: &Path, options: &Options) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// A window with no screen that a shot is staged in
+trait Canvas {
+    fn resize(&self, size: LogicalSize);
+    fn pixel_size(&self) -> slint::PhysicalSize;
+    /// Draw the window as it is now into `pixels`
+    fn paint_into(&self, pixels: &mut SharedPixelBuffer<Rgb8Pixel>);
+}
+
+impl Canvas for MinimalSoftwareWindow {
+    fn resize(&self, size: LogicalSize) {
+        self.set_size(size);
+    }
+
+    fn pixel_size(&self) -> slint::PhysicalSize {
+        self.size()
+    }
+
+    fn paint_into(&self, pixels: &mut SharedPixelBuffer<Rgb8Pixel>) {
+        paint(self, pixels);
+    }
+}
+
 /// One shot's window with its screen open, drawn once
-struct Staged {
+struct Staged<W = MinimalSoftwareWindow> {
     ui: App,
-    window: Rc<MinimalSoftwareWindow>,
+    window: Rc<W>,
     pixels: SharedPixelBuffer<Rgb8Pixel>,
 }
 
 /// Make the window for `shot`, fill it with the fixtures and open its
 /// screen, as a user would see it; the clock has not moved on yet
-fn stage(
-    made: &Cell<Option<Rc<MinimalSoftwareWindow>>>,
+fn stage<W: Canvas>(
+    made: &Cell<Option<Rc<W>>>,
     shot: &Shot,
     theme: &str,
     options: &Options,
-) -> Result<Staged, Box<dyn Error>> {
+) -> Result<Staged<W>, Box<dyn Error>> {
     let ui = App::new()?;
     // The shortcut list and the menu hints, as in the live app
     crate::shortcuts::install(&ui);
@@ -1224,7 +1246,7 @@ fn stage(
     ui.window().dispatch_event(WindowEvent::ScaleFactorChanged {
         scale_factor: options.scale.unwrap_or(1.0),
     });
-    window.set_size(match options.size {
+    window.resize(match options.size {
         Size::Default => {
             LogicalSize::new(defaults.get_window_width(), defaults.get_window_height())
         }
@@ -1246,12 +1268,12 @@ fn stage(
         open_screen(&ui, shot);
     }
     ui.show()?;
-    let size = window.size();
+    let size = window.pixel_size();
     let mut pixels = SharedPixelBuffer::<Rgb8Pixel>::new(size.width, size.height);
 
     // Lay out the window before opening popups, whose origins depend on
     // the geometry of the items that open them.
-    paint(&window, &mut pixels);
+    window.paint_into(&mut pixels);
     if needs_layout {
         open_screen(&ui, shot);
     }
@@ -1259,7 +1281,7 @@ fn stage(
     // Let Slint evaluate change handlers and finish its short UI
     // transitions on a fixed clock, without a GUI event loop.
     slint::platform::update_timers_and_animations();
-    paint(&window, &mut pixels);
+    window.paint_into(&mut pixels);
     Ok(Staged { ui, window, pixels })
 }
 
@@ -2319,3 +2341,7 @@ mod zoom_stats_tests;
 #[cfg(test)]
 #[path = "status_chip_test.rs"]
 mod status_chip_tests;
+
+#[cfg(all(test, target_os = "linux", feature = "desktop"))]
+#[path = "labels_femtovg_test.rs"]
+mod labels_femtovg_tests;

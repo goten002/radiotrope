@@ -16,6 +16,9 @@ mod favorites_list;
 mod favorites_ui;
 #[cfg(any(test, feature = "ui-snapshots"))]
 mod headless;
+// The desktop app's renderer with no screen, for the label tests
+#[cfg(all(test, target_os = "linux", feature = "desktop"))]
+mod headless_femtovg;
 mod import_ui;
 mod instance;
 mod log_file;

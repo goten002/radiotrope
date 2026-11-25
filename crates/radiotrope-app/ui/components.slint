@@ -312,6 +312,9 @@ export enum ChipVariant { neutral, accent, danger, success, warning }
 // can't come from how the label was last drawn or from a text it showed
 // before (FB12). `floor` is room kept beyond that (wider digits); `whole`
 // never shortens the text.
+// A width that still came from an earlier text was the renderer's doing: it
+// forgot its text layouts when the window was hidden (FB17, vendor/README.md).
+// labels_femtovg_test.rs checks the chips as FemtoVG draws them.
 component ChipText {
     in property <string> text;
     in property <color> color;

@@ -83,14 +83,20 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libinput-dev libudev-dev libseat-dev libxkbcommon-dev libdrm-dev libgbm-dev
       - run: cargo check -p radiotrope-app --no-default-features --features embedded
 
+  # The label tests draw the app with FemtoVG, the desktop renderer, on
+  # Mesa's software OpenGL (EGL with no display): without it they would
+  # skip, and RADIOTROPE_REQUIRE_FEMTOVG makes a skip a failure.
   test:
     name: Test
     runs-on: ubuntu-latest
+    env:
+      LIBGL_ALWAYS_SOFTWARE: 1
+      RADIOTROPE_REQUIRE_FEMTOVG: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri
       - name: cargo test
         shell: bash
         run: |

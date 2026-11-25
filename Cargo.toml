@@ -85,9 +85,11 @@ lto = true
 codegen-units = 1
 panic = "abort"
 
-# Slint 1.19.0's FemtoVG renderer draws parts of some letters one pixel off
-# (slint-ui/slint#15000). The copy in vendor/ is 1.19.0 with the fix from
-# slint-ui/slint#15003. Remove this table and vendor/i-slint-renderer-femtovg
-# when Slint >= 1.19.1 or 1.20 is used.
+# The copy in vendor/ is Slint 1.19.0's FemtoVG renderer with two fixes
+# (vendor/README.md): glyphs drawn on whole pixels (slint-ui/slint#15003,
+# upstream from 1.19.1), and the text layouts kept when a window is hidden,
+# without which labels keep the width of an earlier text after a hide to the
+# tray on Wayland (not upstream yet). Remove this table and
+# vendor/i-slint-renderer-femtovg when the Slint in use has both.
 [patch.crates-io]
 i-slint-renderer-femtovg = { path = "vendor/i-slint-renderer-femtovg" }
