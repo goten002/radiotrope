@@ -163,3 +163,36 @@ stop, the record dot and the filled star.
 `StatusPanel` picks the error and success icons from its `variant`. Don't use
 the older twins (`circle-exclamation`, `pencil`, `trash-can`, `rotate-left`,
 `robot`, `calendar-days`); they are being removed.
+
+## Checking labels as the desktop app draws them
+
+The snapshot tool and most UI tests draw with the software renderer. The
+desktop app draws with FemtoVG, and the winit backend treats a FemtoVG
+window differently (on Wayland a hide to the tray destroys the window and
+suspends the renderer). `src/labels_femtovg_test.rs` opens the real `App`
+in a window that FemtoVG draws with no screen (`src/headless_femtovg.rs`:
+OpenGL on EGL with no surface, Mesa on a GPU or in software) and checks the
+header's chips: the status in every state, REC, the Sleep Timer, the
+Scheduler's label, the notices and the save error.
+
+- What is drawn: the status text's ink in its chip is as wide as the same
+  text drawn alone, so a text cut short or ending in "…" fails.
+- What is laid out: the chips of a window that was hidden and shown again
+  before its texts changed sit where they do in a window that never was.
+- At display scales 1, 1.1, 1.25, 1.5, 1.75 and 2, the scales the zooms
+  give, both themes, 640 x 480 and 1200 x 800, short and long station
+  names, through state sequences, hides, and a scale change in the window.
+
+```sh
+# The quick set (part of `cargo test --workspace` on Linux)
+cargo test -p radiotrope-app --bin radiotrope labels
+# Everything, with a picture of every state to look at (minutes)
+RADIOTROPE_LABEL_SHOTS=/path/to/pictures \
+  cargo test -p radiotrope-app --bin radiotrope labels -- --include-ignored
+```
+
+Without EGL the tests print `skipped: no FemtoVG without a display` and
+pass; CI sets `RADIOTROPE_REQUIRE_FEMTOVG=1`, which makes that a failure.
+Run the whole set before merging a change to `Chip`, `ChipText`, the
+header's chip row, or `vendor/i-slint-renderer-femtovg`, and add a chip
+shot to `CHIP_SHOTS` there when the header gets a new kind of label.

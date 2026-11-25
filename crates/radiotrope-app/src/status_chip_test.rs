@@ -183,8 +183,10 @@ fn the_status_chip_is_as_wide_as_its_own_text() {
     );
 
     // Hidden to the tray while it reconnects, shown again later. On Wayland
-    // a hide destroys the window and its renderer drops the text layouts;
-    // here the renderer is handed the window again, which drops them too.
+    // a hide destroys the window and FemtoVG dropped its text layouts
+    // (FB17). The software renderer here keeps them whatever it is told, so
+    // this only walks the states: labels_femtovg_test.rs hides and shows a
+    // window that FemtoVG draws.
     set(&ui, Reconnecting);
     settle(&time);
     ui.hide().expect("the window hides");

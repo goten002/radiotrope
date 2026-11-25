@@ -105,6 +105,15 @@ ui-snapshots = ["slint/renderer-software"]
 # Signs the update tests' files with a key made for the run
 minisign = "0.10"
 
+# The headless FemtoVG window of the label tests: an OpenGL context on EGL
+# with no surface (glutin is already in the tree through winit)
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+glutin = { version = "0.32", default-features = false, features = ["egl"] }
+# The renderer's own crate (the one Slint uses), for the calls the winit
+# backend makes when a window is hidden and shown again. Slint pins it to
+# its own version, so this follows `slint`.
+i-slint-renderer-femtovg = { version = "1", default-features = false }
+
 [build-dependencies]
 slint-build = "1.18"
 # The Windows exe's icon and version details (Explorer, Task Manager)
