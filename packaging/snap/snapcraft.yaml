@@ -1,12 +1,15 @@
 # Snap of Radiotrope: the player, the terminal player and the station checker,
 # strictly confined, on core24.
 #
-# Built by .github/workflows/package-snap.yml (snapcore/action-build, with
-# `path: packaging/snap`), or by hand from the repository's root:
+# snapcraft takes the project from the folder it runs in, and only finds this
+# file as snap/snapcraft.yaml there, so it is built from the repository's
+# root with a copy of this file (snap/ is ignored by git):
 #
-#   cd packaging/snap && snapcraft pack                 (LXD or Multipass)
-#   cd packaging/snap && snapcraft pack --destructive-mode   (in an Ubuntu 24.04
-#                                                     container, as root)
+#   mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
+#   snapcraft pack                          (LXD or Multipass)
+#
+# or, with Docker only, packaging/snap/build-docker.sh. CI does the same in
+# .github/workflows/package-snap.yml (snapcore/action-build).
 #
 # Install a local build with `sudo snap install --dangerous radiotrope_*.snap`.
 # Nothing here publishes to the Snap Store; RELEASING.md has the steps.
@@ -89,8 +92,7 @@ apps:
 parts:
   radiotrope:
     plugin: nil
-    source: ../..
-    source-type: local
+    source: .
     build-packages:
       - build-essential
       - cmake

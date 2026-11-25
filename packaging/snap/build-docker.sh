@@ -37,7 +37,8 @@ git ls-files -z --cached --others --exclude-standard \
         -v "$OUT:/out" --entrypoint bash "$IMAGE" -c '
 set -eu
 mkdir -p /src && tar -xf - -C /src
-cd /src/packaging/snap
+cd /src
+mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
 # The gnome extension takes its launcher from snapcraft'"'"'s own files, which
 # this image keeps elsewhere than the snapcraft snap does
 if [ ! -d /usr/share/snapcraft/extensions/desktop ]; then

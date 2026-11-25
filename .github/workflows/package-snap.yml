@@ -44,10 +44,11 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      # snapcraft only finds snap/snapcraft.yaml in the project's folder
+      - name: The project file where snapcraft looks
+        run: mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
       - uses: snapcore/action-build@v1
         id: snap
-        with:
-          path: packaging/snap
       - name: The snap holds no FDK code and no libfdk-aac
         env:
           SNAP_FILE: ${{ steps.snap.outputs.snap }}
