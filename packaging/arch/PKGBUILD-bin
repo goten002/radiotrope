@@ -39,6 +39,10 @@ package() {
   cd "$_pkgname-$pkgver-linux-$CARCH"
   install -d "$pkgdir/usr"
   cp -dr --no-preserve=ownership bin share "$pkgdir/usr/"
+  # The release tarball's player looks for updates; under pacman it must
+  # not. This file turns that off (see "Updates" in the README).
+  install -d "$pkgdir/usr/share/$_pkgname"
+  echo off > "$pkgdir/usr/share/$_pkgname/update-mode"
   install -Dm644 LICENSE THIRD-PARTY-LICENSES -t "$pkgdir/usr/share/licenses/$pkgname/"
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
 }

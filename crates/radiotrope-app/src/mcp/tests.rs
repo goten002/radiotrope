@@ -318,6 +318,31 @@ async fn a_modern_client_discovers_and_calls_without_a_handshake() {
     assert!(matches!(s.commands.try_recv(), Ok(AppCommand::Stop)));
 }
 
+/// Updates are the user's to start, in the window (Help, About): no tool
+/// looks for one, downloads one or restarts the player into one
+#[tokio::test]
+async fn no_tool_checks_for_or_installs_updates() {
+    let mut s = Session::start(Duration::ZERO).await;
+    s.legacy_handshake("2025-11-25").await;
+    let list = s.request("tools/list", json!({})).await;
+    for tool in list["result"]["tools"].as_array().unwrap() {
+        let name = tool["name"].as_str().unwrap();
+        let text = tool.to_string().to_lowercase();
+        for word in [
+            "install",
+            "upgrade",
+            "self_update",
+            "self-update",
+            "check_for_update",
+            "new version",
+            "newer version",
+            "restart to update",
+        ] {
+            assert!(!text.contains(word), "{name} mentions {word:?}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn every_tool_has_a_title_and_behaviour_hints() {
     let mut s = Session::start(Duration::ZERO).await;

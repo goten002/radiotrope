@@ -1,5 +1,6 @@
-# Release: build every platform's files, write SHA256SUMS, attest them, and
-# put them on a DRAFT GitHub release. Nothing here publishes a release or
+# Release: build every platform's files, write SHA256SUMS, sign the files
+# the player updates itself from, attest them, and put them on a DRAFT
+# GitHub release. Nothing here publishes a release or
 # creates a tag: the owner reviews the draft and publishes it (RELEASING.md).
 #
 # - Pushing a tag v<version> runs it and makes or updates that tag's draft.
@@ -105,6 +106,9 @@ jobs:
       VERSION: ${{ needs.prepare.outputs.version }}
       TAG: ${{ needs.prepare.outputs.tag }}
       MAKE_RELEASE: ${{ github.event_name == 'push' || inputs.task == 'draft' }}
+      # The Minisign secret key the player's updates are signed with (see
+      # RELEASING.md, "Signing the updates"). Empty until the owner adds it.
+      UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -121,6 +125,35 @@ jobs:
           sha256sum -- * > ../SHA256SUMS
           mv ../SHA256SUMS .
           cat SHA256SUMS
+      # A .minisig beside each file the player installs by itself (the
+      # Windows setup program, the AppImages) and beside SHA256SUMS. The
+      # player checks them against the public key compiled into it
+      # (crates/radiotrope-app/src/update/verify.rs) and installs nothing
+      # without one. The trusted comment names the file, so a signed older
+      # release can't be passed off as a newer one. Skipped without the
+      # secret: the release is then one the player only tells about.
+      - name: Sign the update files
+        if: env.UPDATE_SIGNING_KEY != ''
+        working-directory: files
+        run: |
+          set -eu
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq minisign
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$UPDATE_SIGNING_KEY" > "$key"
+          signed=0
+          for f in radiotrope-*-setup.exe Radiotrope-*.AppImage SHA256SUMS; do
+            [ -f "$f" ] || continue
+            # -W: the key has no password (the secret store guards it)
+            minisign -S -W -s "$key" -m "$f" -t "file:$f" -x "$f.minisig"
+            signed=$((signed + 1))
+          done
+          echo "Signed $signed files"
+          ls -l -- *.minisig
+      - name: No signing key
+        if: env.UPDATE_SIGNING_KEY == ''
+        run: echo "::warning::UPDATE_SIGNING_KEY is not set, so the update files are not signed and the player will not install this release by itself (RELEASING.md, Signing the updates)"
       - name: Keep the files (dry run)
         if: env.MAKE_RELEASE != 'true'
         uses: actions/upload-artifact@v4

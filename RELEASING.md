@@ -120,13 +120,68 @@ gh attestation verify Radiotrope-0.1.0-x86_64.AppImage --repo goten002/radiotrop
 gh release verify-asset v0.1.0 Radiotrope-0.1.0-x86_64.AppImage --repo goten002/radiotrope
 ```
 
+The files the player installs by itself (the Windows setup program and the
+AppImages) and `SHA256SUMS` also have a Minisign signature beside them, once
+the signing key is set up (next section):
+
+```bash
+minisign -Vm Radiotrope-0.1.0-x86_64.AppImage -P <the public key>
+```
+
 Nothing is GPG-signed yet; that comes with an apt/dnf repository.
+
+## Signing the updates
+
+The player's own update (Help > Check for Updates, then Download Update in
+About) installs a download only when it is signed with the project's
+Minisign key. Until the steps below are done, every build only *tells* about
+a newer version: the public key in the source is empty, and the workflow's
+signing step is skipped.
+
+One time, on your own computer (minisign 0.11 or newer):
+
+```bash
+# 1. Make the key pair. -W: no password, so the workflow can use it.
+minisign -G -W -p radiotrope-minisign.pub -s radiotrope-minisign.key
+
+# 2. The secret key goes into the repository's secrets, and nowhere else
+gh secret set UPDATE_SIGNING_KEY --repo goten002/radiotrope < radiotrope-minisign.key
+
+# 3. Keep a copy of radiotrope-minisign.key offline (a password manager, a
+#    USB stick in a drawer), then delete it from the disk. Whoever has it
+#    can sign updates that every installed player accepts.
+
+# 4. The public key is the second line of the .pub file (56 characters,
+#    starting with RW)
+tail -n1 radiotrope-minisign.pub
+```
+
+Then paste that line into `PUBLIC_KEY` in
+`crates/radiotrope-app/src/update/verify.rs`, commit it, and release. From
+that release on:
+
+- the workflow's "Sign the update files" step writes
+  `radiotrope-<ver>-setup.exe.minisig`, `Radiotrope-<ver>-<arch>.AppImage.minisig`
+  and `SHA256SUMS.minisig`, each with the trusted comment `file:<name>`;
+- players built with the key offer **Download Update** for a newer release,
+  and install it only if its `.minisig` matches. A release without
+  signatures (the secret was missing) is only told about.
+
+The key can't be changed quietly: players in the field trust the key they
+were built with. To replace a lost or leaked key, put the new public key in
+a release signed with the old one (so players update to it), then switch the
+secret. If the old key is gone, users have to install that release by hand.
+
+A dry run of the Release workflow signs too when the secret is there, so the
+step can be tried before a tag exists. To try the update itself, see
+"Testing by hand".
 
 ## Secrets
 
 | Secret | For | Notes |
 |--------|-----|-------|
 | `AUR_SSH_KEY` | the `aur` task | Private half of an SSH key added to the AUR account (My Account > SSH Public Key). Use a key made for this only: `ssh-keygen -t ed25519 -f aur -C radiotrope-ci`. Settings > Secrets and variables > Actions > New repository secret |
+| `UPDATE_SIGNING_KEY` | signing the update files | The whole Minisign secret key file, made without a password (see "Signing the updates"). Without it the release is unsigned and players only tell about it |
 | `WINGET_TOKEN` | `winget.yml` | A classic token with `public_repo`, from the account whose winget-pkgs fork the PR comes from. Also set the variable `WINGET_ENABLED=true` |
 
 `GITHUB_TOKEN` covers the release itself and the attestations; nothing else
@@ -197,3 +252,20 @@ record to the default folder; play an AAC+ station with and without
 libfdk-aac installed (`RUST_LOG=radiotrope=info` logs the decoder); an agent over `--mcp` with the player running and not running.
 AppImage: update from the previous release with AppImageUpdate or Gear Lever
 once this one is published.
+
+The player's own update (from the second signed release on): with the
+previous release installed, Help > Check for Updates, Download Update, then
+Restart to Update.
+- Windows, installed for the current user: the setup program's progress
+  window shows, the player closes and comes back as the new version. Repeat
+  with an install for all users (it asks for administrator rights, and the
+  player must come back *not* elevated) and through WinGet (`winget list
+  Radiotrope` shows the new version afterwards).
+- AppImage, x86_64 and aarch64: the file keeps its name and place, and the
+  player comes back as the new version. Try it once from a folder you can't
+  write to: the player must only tell about the update.
+- A `.deb` or tarball install, and the portable zip: About shows the newer
+  version and What's New, with no button.
+- `RADIOTROPE_UPDATES=off radiotrope`: Help has no update rows.
+- Start Restart to Update while recording: the player asks to stop the
+  recording first.

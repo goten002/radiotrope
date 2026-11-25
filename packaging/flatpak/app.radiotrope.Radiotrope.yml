@@ -67,6 +67,11 @@ modules:
         CARGO_NET_OFFLINE: 'true'
         # .cargo/config.toml names a cross linker for aarch64; build natively
         CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: cc
+        # A Flatpak never replaces itself. The bundle comes from the
+        # releases page and has no remote for `flatpak update`, so the
+        # player may say that a newer one is out (Help > Check for Updates).
+        # For a build that goes into a Flatpak repository, use `off`.
+        RADIOTROPE_UPDATES: notify
     build-commands:
       # The programs, man pages and completions (see the Makefile)
       - make all CARGO_FLAGS="--offline --locked"

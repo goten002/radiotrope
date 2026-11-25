@@ -8,6 +8,7 @@ pub mod data;
 pub mod hex_color;
 pub mod network;
 pub mod text;
+pub mod update;
 pub mod visual;
 
 pub use radiotrope_library::{error, providers};

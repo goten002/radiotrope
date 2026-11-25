@@ -1,5 +1,6 @@
 import { Theme, Defaults } from "../defaults.slint";
-import { SecondaryButton } from "../buttons.slint";
+import { AccentButton, SecondaryButton } from "../buttons.slint";
+import { Updates } from "../updates.slint";
 import { DialogShell, InfoRow, LinkRow, SectionHeader, ButtonKeys, FocusRing } from "../components.slint";
 
 // Build and environment details, filled in from Rust at startup
@@ -94,6 +95,71 @@ export component AboutDialog inherits Rectangle {
                             offset: 1px;
                             radius: parent.border-radius;
                         }
+                    }
+                }
+
+                // A newer version, or the answer to Help > Check for Updates.
+                // Nothing while there is nothing to say.
+                if Updates.enabled && Updates.message != "": VerticalLayout {
+                    spacing: Theme.space-6;
+                    padding-bottom: Theme.space-8;
+
+                    Text {
+                        text: Updates.message;
+                        color: Updates.failed ? Theme.danger-text
+                            : Updates.available != "" ? Theme.text-primary : Theme.text-secondary;
+                        font-size: Theme.font-sm;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                        // Read out when it changes (a check's answer, a download's end)
+                        accessible-role: text;
+                        accessible-label: self.text;
+                    }
+
+                    if Updates.notes-url != "": HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: notes-link.preferred-width;
+                            height: notes-link.preferred-height;
+
+                            accessible-role: button;
+                            accessible-label: "What's New";
+                            accessible-description: Updates.notes-url;
+                            accessible-action-default => { root.open-url(Updates.notes-url); }
+
+                            notes-link := Text {
+                                text: "What's New";
+                                color: Theme.accent-text;
+                                font-size: Theme.font-sm;
+                                accessible-role: none;
+                            }
+                            // Underline (Text can't underline)
+                            Rectangle {
+                                y: parent.height - 1px;
+                                height: 1px;
+                                background: notes-link.color;
+                                visible: notes-touch.has-hover || notes-keys.has-focus;
+                            }
+                            notes-touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.open-url(Updates.notes-url); }
+                            }
+                            notes-keys := ButtonKeys {
+                                activated => { root.open-url(Updates.notes-url); }
+                            }
+                            if notes-keys.has-focus: FocusRing {
+                                offset: 1px;
+                                radius: Theme.radius-sm;
+                            }
+                        }
+                    }
+
+                    // Download Update, then Restart to Update: each on a click
+                    if Updates.action != "": AccentButton {
+                        width: 200px;
+                        label: Updates.action-label;
+                        enabled: Updates.action-enabled;
+                        clicked => { Updates.run-action(); }
                     }
                 }
 
