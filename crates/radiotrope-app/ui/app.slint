@@ -28,7 +28,7 @@ import { Updates } from "updates.slint";
 import { QuitDialog } from "dialogs/quit.slint";
 import { ReportPlaysDialog } from "dialogs/report-plays.slint";
 import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
-import { VizData, VizStyle } from "visualization.slint";
+import { VizData, VizStyle, VizHint } from "visualization.slint";
 export { FavoritesFind, StreamEdit }
 export { HexColor } from "dialogs/accent-color.slint";
 export { AboutInfo, Updates, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, StationStream, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice, ConnectedPhone }
@@ -1009,6 +1009,13 @@ export component App inherits Window {
             interval: Defaults.motion-step;
             running: !root.snapshot-mode && (root.is-playing || root.is-loading || root.is-recording);
             triggered => { Motion.tick += self.interval; }
+        }
+
+        // The visualizer tile's hint, under the tile and over the list
+        if playback.viz-hint-open: VizHint {
+            x: playback.viz-hint-right - self.width;
+            y: playback.viz-hint-top;
+            viz-mode: root.viz-mode;
         }
 
         // The menu bar's phones bubble, over the header below it

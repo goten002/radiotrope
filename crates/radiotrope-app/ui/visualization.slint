@@ -428,21 +428,47 @@ export component VizContent inherits Rectangle {
     }
 }
 
+// The tile's hint: the style's name and that a click changes it. Drawn by
+// the window (app.slint) in the strip between the tile and the list's first
+// row, one small line so that it covers nothing that takes a click; the
+// tile says it already to screen readers.
+export component VizHint inherits PopupCard {
+    in property <string> viz-mode;
+
+    width: hint-layout.preferred-width;
+    height: hint-layout.preferred-height;
+
+    hint-layout := VerticalLayout {
+        padding-left: Theme.space-8;
+        padding-right: Theme.space-8;
+        padding-top: Theme.space-4;
+        padding-bottom: Theme.space-4;
+
+        Text {
+            text: "Visualizer: " + VizStyle.mode-name(root.viz-mode) + ". Click for the next style";
+            font-size: Theme.font-sm;
+            color: Theme.text-primary;
+            accessible-role: none;
+        }
+    }
+}
+
 // 70px tile in the header: a button that cycles the style (click, Space or
 // Enter), the only way to change it. Hovering outlines it, and after a rest
-// a hint to its left names the style and says a click changes it; the name
-// is never drawn over the picture.
+// (or when Tab reaches it) it asks for its hint (VizHint); the name is
+// never drawn over the picture.
 export component Visualization inherits Rectangle {
     in property <bool> is-loading;
     in-out property <string> viz-mode: "wave";
     // Off while a dialog is open: the tile leaves the Tab order
     in property <bool> enabled: true;
-    // Headless capture: the outline and the hint as on hover
+    // Headless capture: the outline as on hover
     in property <bool> snapshot-name;
-    property <string> hint: "Visualizer: " + VizStyle.mode-name(root.viz-mode) + ". Click for the next style";
-    // The pointer has rested on the tile, or Tab reached it
+    // The hint is wanted (the pointer rested on the tile, or Tab reached
+    // it) or no longer
+    callback hint-wanted(bool);
     property <bool> hint-ready: false;
-    property <bool> hint-shown: (root.hint-ready && (touch.has-hover || keys.has-focus)) || root.snapshot-name;
+    property <bool> hint-shown: root.hint-ready && (touch.has-hover || keys.has-focus);
 
     width: 70px;
     height: 70px;
@@ -495,28 +521,6 @@ export component Visualization inherits Rectangle {
     }
     changed hint-shown => {
         if !touch.has-hover && !keys.has-focus { root.hint-ready = false; }
-    }
-
-    // The hint, to the left of the tile (the header's right end), like a
-    // chip's bubble; the tile says it already to screen readers
-    if root.hint-shown: PopupCard {
-        width: hint-layout.preferred-width;
-        height: hint-layout.preferred-height;
-        x: -self.width - Theme.space-6;
-        y: (root.height - self.height) / 2;
-
-        hint-layout := VerticalLayout {
-            padding-left: Theme.space-12;
-            padding-right: Theme.space-12;
-            padding-top: Theme.space-8;
-            padding-bottom: Theme.space-8;
-
-            Text {
-                text: root.hint;
-                font-size: Theme.font-md;
-                color: Theme.text-primary;
-                accessible-role: none;
-            }
-        }
+        root.hint-wanted(root.hint-shown);
     }
 }
