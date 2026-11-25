@@ -17,6 +17,17 @@ export global Platform {
     out property <bool> has-clipboard: true;
     // Power Off and Restart in the Open menu (the Pi); the desktop has Quit
     out property <bool> has-power-off: false;
+    // macOS, set by Rust when the player starts. There the system draws
+    // the title bar (traffic lights, its own corners), so the View menu
+    // offers no choice of frame; minimizing goes to the Dock, not the
+    // tray; and Start at Login waits for its LaunchAgent.
+    in property <bool> macos: false;
+    // View > Window: our title bar or the system's, and the corners
+    out property <bool> has-frame-choice: root.has-window-frame && !root.macos;
+    // View > System Tray > Minimize to Tray
+    out property <bool> has-minimize-to-tray: root.has-tray && !root.macos;
+    // View > System Tray > Start at Login
+    out property <bool> has-start-at-login: root.has-tray && !root.macos;
 }
 
 export struct WifiNetworkEntry {

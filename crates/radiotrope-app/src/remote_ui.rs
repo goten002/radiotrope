@@ -353,13 +353,22 @@ fn now() -> i64 {
 /// The address bubble: what to do when a phone doesn't find the player,
 /// and the ports it needs (control, then listening on the phone)
 pub(crate) fn address_note() -> String {
-    let windows = if cfg!(windows) {
-        " If Windows asks, allow private networks."
-    } else {
-        ""
+    address_note_on(std::env::consts::OS)
+}
+
+/// [`address_note`] for the system `os` (as `std::env::consts::OS` names
+/// it): Windows asks about the firewall, macOS about the local network
+fn address_note_on(os: &str) -> String {
+    let system = match os {
+        "windows" => " If Windows asks, allow private networks.",
+        "macos" => {
+            " If macOS asks, allow Local Network (later: System Settings > \
+             Privacy & Security > Local Network)."
+        }
+        _ => "",
     };
     format!(
-        "If a phone doesn't find the player, type this address in the app.{windows} {}",
+        "If a phone doesn't find the player, type this address in the app.{system} {}",
         firewall_hint()
     )
 }
@@ -442,6 +451,22 @@ mod tests {
         let note = address_note();
         assert!(note.contains("TCP 8766"), "{note}");
         assert!(note.contains("UDP 8767\u{2013}8770"), "{note}");
+    }
+
+    #[test]
+    fn address_note_names_what_the_system_asks() {
+        let linux = address_note_on("linux");
+        assert!(!linux.contains("asks"), "{linux}");
+        assert!(address_note_on("windows").contains("allow private networks"));
+        let mac = address_note_on("macos");
+        assert!(
+            mac.contains("If macOS asks, allow Local Network (later: System Settings > Privacy & Security > Local Network)."),
+            "{mac}"
+        );
+        // The ports are named on every system
+        for os in ["linux", "windows", "macos"] {
+            assert!(address_note_on(os).contains("TCP 8766"), "{os}");
+        }
     }
 
     #[test]

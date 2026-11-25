@@ -1007,7 +1007,7 @@ export component MenuBar inherits Rectangle {
     property <string> tools-group;
     // The zoom is the window's scale: not on the Pi's full screen
     property <bool> zoom-open: Platform.has-window-frame && root.view-group == "zoom";
-    property <bool> window-open: Platform.has-window-frame && root.view-group == "window";
+    property <bool> window-open: Platform.has-frame-choice && root.view-group == "window";
     property <bool> tray-open: Platform.has-tray && root.view-group == "tray";
     property <bool> tray-usable: root.tray-open && root.tray-icon && root.tray-available;
 
@@ -1030,13 +1030,15 @@ export component MenuBar inherits Rectangle {
         root.zoom-open && ViewOptions.zoom-choices[2] <= ViewOptions.zoom-fits,
         root.zoom-open && ViewOptions.zoom-choices[3] <= ViewOptions.zoom-fits,
         root.zoom-open && ViewOptions.zoom-choices[4] <= ViewOptions.zoom-fits,
-        // 11 Window, 12 Use System Title Bar, 13 Rounded Corners
-        Platform.has-window-frame, root.window-open,
+        // 11 Window, 12 Use System Title Bar, 13 Rounded Corners (not on
+        // macOS, where the system's title bar is the only one)
+        Platform.has-frame-choice, root.window-open,
         root.window-open && root.custom-frame && root.corners-available,
-        // 14 System Tray, 15 Show Tray Icon, 16-18 the three tray choices,
-        // 19 Start at Login
-        Platform.has-tray, root.tray-open, root.tray-usable, root.tray-usable, root.tray-usable,
-        root.tray-open,
+        // 14 System Tray, 15 Show Tray Icon, 16-18 the three tray choices
+        // (17 Minimize to Tray not on macOS), 19 Start at Login (nor that)
+        Platform.has-tray, root.tray-open, root.tray-usable,
+        root.tray-usable && Platform.has-minimize-to-tray, root.tray-usable,
+        root.tray-open && Platform.has-start-at-login,
     ];
     property <[bool]> tools-usable: [
         // 0 Start Recording, 1 Recordings, 2 Settings, 3 Open Folder
@@ -1547,7 +1549,7 @@ export component MenuBar inherits Rectangle {
             }
             // The set-once options, folded into groups (desktop only)
             if Platform.has-window-frame || Platform.has-tray: MenuSeparator {}
-            if Platform.has-window-frame: GroupMenuItem {
+            if Platform.has-frame-choice: GroupMenuItem {
                 slot: 11;
                 label: "Window";
                 icon: @image-url("icons/window-maximize.svg");
@@ -1612,7 +1614,7 @@ export component MenuBar inherits Rectangle {
                         root.close-to-tray = !root.close-to-tray;
                     }
                 }
-                CheckMenuItem {
+                if Platform.has-minimize-to-tray: CheckMenuItem {
                     slot: 17;
                     label: "Minimize to Tray";
                     icon: @image-url("icons/square-minus.svg");
@@ -1635,7 +1637,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 // Saved in the autostart file or the Run key, not the settings
-                CheckMenuItem {
+                if Platform.has-start-at-login: CheckMenuItem {
                     slot: 19;
                     label: "Start at Login";
                     icon: @image-url("icons/desktop.svg");

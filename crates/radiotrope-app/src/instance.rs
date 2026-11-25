@@ -12,6 +12,11 @@
 //!   `/run/user/<uid>`, which is where it points anyway; failing that, a 0700
 //!   folder in the temp directory. Abstract socket names are avoided: they
 //!   have no permissions.
+//! - macOS: `~/Library/Application Support/radiotrope/mcp.sock`, the same
+//!   folder for every program of the user (the temp folder is not: it comes
+//!   from `TMPDIR`, which an agent may start `--mcp` without). A socket's
+//!   path holds 103 bytes there: with a longer home folder, the 0700 folder
+//!   in the temp directory.
 //! - Windows: the named pipe `\\.\pipe\radiotrope-<user SID>`, which
 //!   refuses remote clients and is open to that user only. Anyone can make a
 //!   pipe of any name, so a client talks only to a pipe whose server runs as
@@ -574,13 +579,31 @@ fn runtime_dir() -> io::Result<PathBuf> {
 
     // SAFETY: getuid has no preconditions and cannot fail
     let uid = unsafe { libc::getuid() };
-    let dir = match session_runtime_dir() {
-        Some(base) => base.join("radiotrope"),
-        None => std::env::temp_dir().join(format!("radiotrope-{uid}")),
+    let temp = || std::env::temp_dir().join(format!("radiotrope-{uid}"));
+    let dir = if cfg!(target_os = "macos") {
+        let local = radiotrope_app::data::storage::local_dir().ok();
+        mac_runtime_dir(local, temp)
+    } else {
+        match session_runtime_dir() {
+            Some(base) => base.join("radiotrope"),
+            None => temp(),
+        }
     };
-    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+    // Its parent is there already, except for the settings folder of a
+    // first run on macOS
+    match std::fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(cfg!(target_os = "macos"))
+        .create(&dir)
+    {
         Err(e) if e.kind() != io::ErrorKind::AlreadyExists => return Err(e),
         _ => {}
+    }
+    // The settings folder on macOS is the user's own, inside a home folder
+    // nobody else can make things in: it is used as it is (it may be a link
+    // to where the user keeps it)
+    if cfg!(target_os = "macos") && dir != temp() {
+        return Ok(dir);
     }
     // In a shared temp folder someone else could have made it first
     let meta = std::fs::symlink_metadata(&dir)?;
@@ -594,6 +617,21 @@ fn runtime_dir() -> io::Result<PathBuf> {
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
     }
     Ok(dir)
+}
+
+/// The longest path of a Unix socket on macOS: `sun_path` has 104 bytes,
+/// the last for the closing NUL
+#[cfg(unix)]
+const MAC_SOCKET_PATH_MAX: usize = 103;
+
+/// macOS: the settings folder (`local`), where every program of the user
+/// looks, whatever its environment; the temp folder when `mcp.sock` in it
+/// would have too long a path, or the folder is unknown (no `HOME`)
+#[cfg(unix)]
+fn mac_runtime_dir(local: Option<PathBuf>, temp: impl Fn() -> PathBuf) -> PathBuf {
+    local
+        .filter(|dir| dir.join("mcp.sock").as_os_str().len() <= MAC_SOCKET_PATH_MAX)
+        .unwrap_or_else(temp)
 }
 
 /// `$XDG_RUNTIME_DIR`, or systemd's `/run/user/<uid>` when an agent started
@@ -664,6 +702,31 @@ mod tests {
         );
         // Nothing to add when nothing is known
         assert!(missing_session_vars(|_| None, &[]).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_mac_socket_is_beside_the_settings_unless_its_path_is_too_long() {
+        let temp = || PathBuf::from("/tmp/radiotrope-501");
+        let local = PathBuf::from("/Users/anna/Library/Application Support/radiotrope");
+        assert_eq!(mac_runtime_dir(Some(local.clone()), temp), local);
+        // No home folder known
+        assert_eq!(mac_runtime_dir(None, temp), temp());
+        // 103 bytes fit, 104 don't (a network home, a long user name)
+        let with_path_of = |len: usize| {
+            let fixed = "/Users//Library/Application Support/radiotrope/mcp.sock".len();
+            let dir = PathBuf::from(format!(
+                "/Users/{}/Library/Application Support/radiotrope",
+                "a".repeat(len - fixed)
+            ));
+            assert_eq!(dir.join("mcp.sock").as_os_str().len(), len);
+            dir
+        };
+        assert_eq!(
+            mac_runtime_dir(Some(with_path_of(103)), temp),
+            with_path_of(103)
+        );
+        assert_eq!(mac_runtime_dir(Some(with_path_of(104)), temp), temp());
     }
 
     #[test]
