@@ -1,0 +1,406 @@
+// The app's window on macOS: the menus are in the system's menu bar at the
+// top of the screen (Slint's MenuBar, a native menu there), not in the
+// window. build.rs maps `@platform` to this folder for a macOS build.
+//
+// The items are those of the menu bar in the window (../../menu-bar.slint),
+// with the same names, in the same order: src/native_menu_test.rs compares
+// the two files. What differs is what macOS does differently:
+//
+// - Quit and About are in the application menu (the first one, with the
+//   app's name), with Services, Hide, Hide Others and Show All, which the
+//   system provides;
+// - a Window menu: Minimize, Zoom, Bring All to Front;
+// - a group that unfolds in place in the window is a submenu here, and the
+//   Theme row's three choices are a submenu too;
+// - the chips at the end of the bar in the window (agents, phones) are
+//   lines at the end of Tools > Connections;
+// - only shortcuts pressed with Command, and F1, are given to the menu: it
+//   takes its keys before the window does, so a plain key (R, /) would be
+//   taken from the text fields. Those keys still work as everywhere else.
+//
+// An item sends its command to the menu bar in the window, which runs it
+// (MenuBar.run): nothing is done here.
+import { MenuCommand, MenuState } from "../../menu-model.slint";
+import { Theme, ViewOptions } from "../../defaults.slint";
+import { VizStyle } from "../../visualization.slint";
+import { Updates } from "../../updates.slint";
+import { DesktopShortcuts } from "../../shortcuts.slint";
+import { Platform } from "../desktop/wifi.slint";
+
+export global NativeMenu {
+    // The menus are in the system's menu bar and not in the window. Set
+    // when the player starts in a window of the system's; not for the
+    // headless renderers (tests, UI snapshots), which have no menu bar of
+    // the system's and keep the one in the window.
+    in property <bool> active: false;
+}
+
+export component PlatformWindow inherits Window {
+    in property <MenuState> menu-state;
+    callback menu-command(MenuCommand);
+    // Window > Bring All to Front
+    callback bring-all-to-front();
+
+    // The items greyed out while a dialog is open
+    property <bool> on: root.menu-state.enabled;
+
+    // The check marks. Choosing an item with a check mark flips the mark
+    // by itself, in Slint (which ends the item's `checked` binding) and in
+    // the native menu, also when the choice changes nothing: the theme or
+    // zoom already in use, or Report Play Count, which asks first. So a
+    // moment after any item was chosen the items with a mark are made
+    // again (each is under a `for` over this number): their marks are
+    // bound to the state again, and the native menu is brought in line.
+    property <int> marks;
+    remark := Timer {
+        interval: 50ms;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.marks += 1;
+        }
+    }
+    function choose(command: MenuCommand) {
+        root.menu-command(command);
+        remark.running = true;
+    }
+    function set-theme(mode: string) {
+        Theme.theme-mode = mode;
+        remark.running = true;
+    }
+    function set-zoom(percent: int) {
+        ViewOptions.zoom = percent;
+        remark.running = true;
+    }
+
+    if NativeMenu.active: MenuBar {
+        // The application menu takes the items with a role from here; the
+        // system's own items get the app's name, also when the program
+        // isn't run from its bundle
+        Menu {
+            title: "Radiotrope";
+
+            MenuItem {
+                title: "About Radiotrope";
+                role: about;
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.about); }
+            }
+            MenuItem {
+                title: "Services";
+                role: services;
+            }
+            MenuItem {
+                title: "Hide Radiotrope";
+                role: hide;
+            }
+            MenuItem {
+                title: "Hide Others";
+                role: hide-others;
+            }
+            MenuItem {
+                title: "Show All";
+                role: show-all;
+            }
+            // Command+Q by default. Never greyed out: with a dialog open
+            // too, and it asks before a recording would stop
+            MenuItem {
+                title: "Quit Radiotrope";
+                role: quit;
+                activated => { root.menu-command(MenuCommand.quit); }
+            }
+        }
+
+        Menu {
+            title: "Open";
+
+            MenuItem {
+                title: "Network Stream";
+                shortcut: @keys(Control + O);
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.network-stream); }
+            }
+        }
+
+        Menu {
+            title: "Stations";
+
+            MenuItem {
+                title: "Search Stations";
+                shortcut: @keys(Control + F);
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.search-stations); }
+            }
+            MenuItem {
+                title: "Find in Favorites";
+                enabled: root.on && root.menu-state.has-favorites;
+                activated => { root.menu-command(MenuCommand.find-favorites); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Export Favorites";
+                enabled: root.on && Platform.has-file-manager;
+                activated => { root.menu-command(MenuCommand.export-favorites); }
+            }
+            MenuItem {
+                title: "Import Favorites";
+                enabled: root.on && Platform.has-file-manager;
+                activated => { root.menu-command(MenuCommand.import-favorites); }
+            }
+            MenuSeparator {}
+            // Off: choosing it asks first, so it has no mark to flip
+            for mark in [root.marks]: MenuItem {
+                title: "Report Play Count";
+                enabled: root.on;
+                checkable: ViewOptions.report-plays;
+                checked: ViewOptions.report-plays;
+                activated => { root.choose(MenuCommand.report-plays); }
+            }
+        }
+
+        Menu {
+            title: "View";
+
+            for mark in [root.marks]: Menu {
+                title: "Theme";
+                enabled: root.on;
+
+                // System follows the OS; greyed where the OS can't say
+                MenuItem {
+                    title: "System";
+                    enabled: Platform.has-system-theme;
+                    checkable: true;
+                    checked: Theme.theme-mode == "system";
+                    activated => { root.set-theme("system"); }
+                }
+                MenuItem {
+                    title: "Dark";
+                    checkable: true;
+                    checked: Theme.theme-mode == "dark";
+                    activated => { root.set-theme("dark"); }
+                }
+                MenuItem {
+                    title: "Light";
+                    checkable: true;
+                    checked: Theme.theme-mode == "light";
+                    activated => { root.set-theme("light"); }
+                }
+            }
+            MenuItem {
+                title: "Accent Color";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.accent-color); }
+            }
+            MenuSeparator {}
+            for mark in [root.marks]: MenuItem {
+                title: "Visualizer";
+                enabled: root.on;
+                checkable: true;
+                checked: root.menu-state.visualizer;
+                activated => { root.choose(MenuCommand.visualizer); }
+            }
+            // Keeps its choice while the visualizer is off
+            for mark in [root.marks]: MenuItem {
+                title: "Station Colors in Visualizer";
+                enabled: root.on && root.menu-state.visualizer;
+                checkable: true;
+                checked: VizStyle.palette == "logo";
+                activated => { root.choose(MenuCommand.station-colors); }
+            }
+            MenuSeparator {}
+            for mark in [root.marks]: MenuItem {
+                title: "Show Listening Stats";
+                enabled: root.on;
+                checkable: true;
+                checked: root.menu-state.station-stats;
+                activated => { root.choose(MenuCommand.station-stats); }
+            }
+            // The whole window larger or smaller, from the next start
+            for mark in [root.marks]: Menu {
+                title: "Zoom";
+                enabled: root.on;
+
+                for percent in ViewOptions.zoom-choices: MenuItem {
+                    // Greyed when its smallest window is larger than the screen
+                    title: percent > ViewOptions.zoom-fits ? "\{percent}% (Too large for this screen)" : "\{percent}%";
+                    enabled: percent <= ViewOptions.zoom-fits;
+                    checkable: true;
+                    checked: ViewOptions.zoom == percent;
+                    activated => { root.set-zoom(percent); }
+                }
+                // Only while a zoom other than the window's is picked
+                if ViewOptions.zoom-note != "": MenuSeparator {}
+                if ViewOptions.zoom-note != "": MenuItem {
+                    title: ViewOptions.zoom-note;
+                    enabled: false;
+                }
+            }
+            // No Window group: the system's title bar is the only one
+            MenuSeparator {}
+            for mark in [root.marks]: Menu {
+                title: "System Tray";
+                enabled: root.on;
+
+                MenuItem {
+                    title: "Show Tray Icon";
+                    checkable: true;
+                    checked: root.menu-state.tray-icon;
+                    activated => { root.choose(MenuCommand.tray-icon); }
+                }
+                // Greyed with no tray to hide in; they keep their ticks.
+                // No Minimize to Tray (it goes to the Dock) and no Start
+                // at Login on macOS.
+                MenuItem {
+                    title: "Close to Tray";
+                    enabled: root.menu-state.tray-icon && root.menu-state.tray-available;
+                    checkable: true;
+                    checked: root.menu-state.close-to-tray;
+                    activated => { root.choose(MenuCommand.close-to-tray); }
+                }
+                MenuItem {
+                    title: "Start Hidden in Tray";
+                    enabled: root.menu-state.tray-icon && root.menu-state.tray-available;
+                    checkable: true;
+                    checked: root.menu-state.start-in-tray;
+                    activated => { root.choose(MenuCommand.start-in-tray); }
+                }
+            }
+        }
+
+        Menu {
+            title: "Tools";
+
+            MenuItem {
+                title: root.menu-state.recording ? "Stop Recording" : "Start Recording";
+                // Greyed out until a station plays
+                enabled: root.on && root.menu-state.can-record;
+                activated => { root.menu-command(MenuCommand.recording); }
+            }
+            Menu {
+                title: "Recordings";
+                enabled: root.on;
+
+                MenuItem {
+                    title: "Settings";
+                    activated => { root.menu-command(MenuCommand.recording-settings); }
+                }
+                if Platform.has-file-manager: MenuItem {
+                    title: "Open Folder";
+                    activated => { root.menu-command(MenuCommand.recordings-folder); }
+                }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Sleep Timer";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.sleep-timer); }
+            }
+            MenuItem {
+                title: "Scheduler";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.scheduler); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Filters";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.filters); }
+            }
+            MenuItem {
+                title: "Equalizer";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.equalizer); }
+            }
+            MenuItem {
+                title: "Statistics";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.statistics); }
+            }
+            MenuSeparator {}
+            Menu {
+                title: "Connections";
+                enabled: root.on;
+
+                MenuItem {
+                    title: "Agents (MCP)";
+                    activated => { root.menu-command(MenuCommand.agents); }
+                }
+                MenuItem {
+                    title: "Remote Control";
+                    activated => { root.menu-command(MenuCommand.remote-control); }
+                }
+                // Who is connected now, where the window's bar has chips:
+                // lines to read, only while there is somebody
+                if root.menu-state.agents-label != "" || root.menu-state.phones-label != "": MenuSeparator {}
+                if root.menu-state.agents-label != "": MenuItem {
+                    title: root.menu-state.agents-label;
+                    enabled: false;
+                }
+                if root.menu-state.phones-label != "": MenuItem {
+                    title: root.menu-state.phones-label;
+                    enabled: false;
+                }
+                for phone in root.menu-state.phones: MenuItem {
+                    title: phone.listening ? "\{phone.name} (listening)" : phone.name;
+                    enabled: false;
+                }
+            }
+        }
+
+        // Minimize, Zoom and Bring All to Front work with a dialog open,
+        // as the title bar's buttons do
+        Menu {
+            title: "Window";
+
+            MenuItem {
+                title: "Minimize";
+                shortcut: @keys(Control + M);
+                activated => { root.menu-command(MenuCommand.minimize); }
+            }
+            MenuItem {
+                title: "Zoom";
+                activated => { root.menu-command(MenuCommand.maximize); }
+            }
+            MenuSeparator {}
+            MenuItem {
+                title: "Bring All to Front";
+                activated => { root.bring-all-to-front(); }
+            }
+        }
+
+        // Last, where macOS has it (and adds its search field)
+        Menu {
+            title: "Help";
+
+            // Only while a newer version is out: About says more, and
+            // installs it where the build can
+            if Updates.enabled && Updates.available != "": MenuItem {
+                title: "Update Available: \{Updates.available}";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.about); }
+            }
+            if Updates.enabled && Updates.available != "": MenuSeparator {}
+            if DesktopShortcuts.enabled: MenuItem {
+                title: "Keyboard Shortcuts";
+                shortcut: @keys(F1);
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.keyboard-shortcuts); }
+            }
+            // Not in builds a package manager updates
+            if Updates.enabled: MenuSeparator {}
+            // The answer shows in About
+            if Updates.enabled: MenuItem {
+                title: "Check for Updates";
+                enabled: root.on;
+                activated => { root.menu-command(MenuCommand.check-for-updates); }
+            }
+            for mark in Updates.enabled ? [root.marks] : []: MenuItem {
+                title: "Check for Updates Automatically";
+                enabled: root.on;
+                checkable: true;
+                checked: Updates.auto-check;
+                activated => { root.choose(MenuCommand.auto-check-updates); }
+            }
+        }
+    }
+}

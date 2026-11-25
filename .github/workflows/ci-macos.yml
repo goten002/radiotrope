@@ -181,6 +181,12 @@ jobs:
           echo "--- stdout and stderr"; cat smoke/quit-stdout.log
           ls -la "$support" "$HOME/Library/Logs/radiotrope" || true
           exit $failed
+      # The menus are in the system's menu bar (ui/platform/macos): read
+      # and used there through the Accessibility API, and Quit in the
+      # application menu must save the settings
+      - name: The menu bar is the app's own
+        if: success() || failure()
+        run: scripts/macos-menu-check.sh
       # A tar keeps the programs executable (the artifact's zip would not).
       # Not a release: debug builds, unsigned, kept for two weeks.
       - name: Pack the programs
@@ -200,6 +206,10 @@ jobs:
           name: macos-evidence-${{ matrix.arch }}
           path: |
             smoke/screen.png
+            smoke/menu.txt
+            smoke/menu-bar.png
+            smoke/menu-open.png
+            smoke/menu-app.log
             smoke/app.log
             smoke/radiotrope.log
             smoke/audio-devices.txt

@@ -1,0 +1,51 @@
+// What the menus do and show, apart from how they are drawn. The menu bar
+// in the window (menu-bar.slint) runs every command and says what state
+// the items are in; the macOS menu bar at the top of the screen
+// (platform/macos/window.slint) sends the same commands and shows the same
+// state, so an item does one thing wherever it is chosen.
+
+// A phone with the Radiotrope Remote app connected, for the menu bar chip
+export struct ConnectedPhone {
+    name: string,
+    // The station's sound is sent to it
+    listening: bool,
+}
+
+// A menu item's action (MenuBar.run in menu-bar.slint)
+export enum MenuCommand {
+    // Open
+    network-stream, quit,
+    // Stations
+    search-stations, find-favorites, export-favorites, import-favorites, report-plays,
+    // View
+    accent-color, visualizer, station-colors, station-stats,
+    tray-icon, close-to-tray, start-in-tray,
+    // Tools
+    recording, recording-settings, recordings-folder, sleep-timer, scheduler,
+    filters, equalizer, statistics, agents, remote-control,
+    // Help
+    keyboard-shortcuts, check-for-updates, auto-check-updates, about,
+    // The window (macOS: the Window menu)
+    minimize, maximize,
+}
+
+// What the items show that the window knows (the rest is in globals:
+// Theme, ViewOptions, VizStyle, Updates, Platform)
+export struct MenuState {
+    // false while a dialog is open: the items are greyed out
+    enabled: bool,
+    has-favorites: bool,
+    recording: bool,
+    can-record: bool,
+    visualizer: bool,
+    station-stats: bool,
+    tray-icon: bool,
+    close-to-tray: bool,
+    start-in-tray: bool,
+    tray-available: bool,
+    // The chips at the end of the bar in the window: "2 agents using the
+    // player", "1 phone connected, 1 listening"; "" for none
+    agents-label: string,
+    phones-label: string,
+    phones: [ConnectedPhone],
+}

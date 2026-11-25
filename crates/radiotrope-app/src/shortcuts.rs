@@ -93,6 +93,31 @@ const BINDINGS: &[Binding] = &[
     ),
 ];
 
+/// The keys the macOS menu bar takes for an action (`network-stream`), as
+/// its item's `@keys(...)` says them: "Control + O" (Command there), "F1".
+/// Empty for a key pressed alone: the menu bar takes its keys before the
+/// window does, so it would take the letter from the text fields.
+#[cfg(test)]
+pub(crate) fn native_menu_keys(action: &str) -> String {
+    let name: String = action
+        .split('-')
+        .map(|word| {
+            let mut chars = word.chars();
+            let first = chars.next().map(|c| c.to_ascii_uppercase());
+            first.into_iter().chain(chars).collect::<String>()
+        })
+        .collect();
+    let binding = BINDINGS
+        .iter()
+        .find(|binding| format!("{:?}", binding.action) == name)
+        .unwrap_or_else(|| panic!("no key for {action}"));
+    match &binding.keys {
+        Keys::Text(key) if binding.control => format!("Control + {}", key.to_uppercase()),
+        Keys::Text(_) => String::new(),
+        Keys::Named(_) => binding.label.to_string(),
+    }
+}
+
 // Keys for the highlighted favorite: the key, its label and its keycaps
 const FAVORITE_KEYS: &[(ShortcutAction, Key, &str, Caps)] = &[
     (FavoriteUp, Key::UpArrow, "↑ / ↓", &[&["↑"]]),
@@ -193,7 +218,7 @@ const GROUPS: &[(&str, &[Row])] = &[
     (
         "Window",
         &[
-            keys("Go to the menu bar", &[&["F10"]]),
+            keys(MENU_BAR_ROW, &[&["F10"]]),
             row("Hide the window", &[HideWindow]),
             row("Quit Radiotrope", &[Quit]),
             row("Show keyboard shortcuts", &[Help]),
@@ -379,10 +404,24 @@ impl DialogRow {
     }
 }
 
+/// F10 goes to the menu bar in the window. On macOS the menus are in the
+/// system's menu bar, which has a key of its own (Control+F2), so the
+/// dialog doesn't list F10 there.
+const MENU_BAR_ROW: &str = "Go to the menu bar";
+
 fn dialog_groups() -> impl Iterator<Item = (&'static str, Vec<DialogRow>)> {
-    GROUPS
-        .iter()
-        .map(|&(title, rows)| (title, rows.iter().map(DialogRow::new).collect()))
+    dialog_groups_for(MAC)
+}
+
+fn dialog_groups_for(mac: bool) -> impl Iterator<Item = (&'static str, Vec<DialogRow>)> {
+    GROUPS.iter().map(move |&(title, rows)| {
+        let rows = rows
+            .iter()
+            .filter(|row| !(mac && row.description == MENU_BAR_ROW))
+            .map(DialogRow::new)
+            .collect();
+        (title, rows)
+    })
 }
 
 fn model<T: Clone + 'static>(items: impl IntoIterator<Item = T>) -> ModelRc<T> {
@@ -855,9 +894,25 @@ mod tests {
                 "Undo removing a favorite: Control Z"
             }
         );
+    }
+
+    #[test]
+    fn f10_is_listed_where_the_menu_bar_is_in_the_window() {
+        let rows = |mac| -> Vec<DialogRow> {
+            dialog_groups_for(mac)
+                .flat_map(|(_, rows)| rows)
+                .filter(|row| row.description == MENU_BAR_ROW)
+                .collect()
+        };
+        let listed = rows(false);
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].spoken, "Go to the menu bar: F10");
+        // macOS: the menus are in the system's menu bar
+        assert!(rows(true).is_empty());
+        // The other rows are the same on both
         assert_eq!(
-            dialog_row("Go to the menu bar").spoken,
-            "Go to the menu bar: F10"
+            dialog_groups_for(true).flat_map(|(_, rows)| rows).count() + 1,
+            dialog_groups_for(false).flat_map(|(_, rows)| rows).count()
         );
     }
 

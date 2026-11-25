@@ -5,13 +5,9 @@ import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Pick
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
 import { Updates } from "updates.slint";
-
-// A phone with the Radiotrope Remote app connected, for the menu bar chip
-export struct ConnectedPhone {
-    name: string,
-    // The station's sound is sent to it
-    listening: bool,
-}
+import { ConnectedPhone, MenuCommand, MenuState } from "menu-model.slint";
+import { NativeMenu } from "@platform/window.slint";
+export { ConnectedPhone }
 
 // A connected phone as screen readers hear it in the chip's description
 global PhoneNames {
@@ -829,9 +825,86 @@ component MenuPane inherits Rectangle {
 }
 
 export component MenuBar inherits Rectangle {
-    height: 32px;
+    // Not in the window where the menus are in the system's menu bar
+    // (macOS): the bar still runs the commands and knows the items' state
+    height: NativeMenu.active ? 0px : 32px;
+    visible: !NativeMenu.active;
     // Transparent: drawn on the header background shared with the playback
     // panel (app.slint)
+
+    // What a menu item does, for the items here and for those of the
+    // system's menu bar (platform/macos/window.slint)
+    public function run(command: MenuCommand) {
+        if command == MenuCommand.network-stream { root.open-network-stream(); }
+        if command == MenuCommand.quit { root.quit-app(); }
+        if command == MenuCommand.search-stations { root.open-station-search(); }
+        if command == MenuCommand.find-favorites { root.find-favorites(); }
+        if command == MenuCommand.export-favorites { root.export-favorites(); }
+        if command == MenuCommand.import-favorites { root.import-favorites(); }
+        // On asks first (the dialog sets it); off is at once
+        if command == MenuCommand.report-plays {
+            if ViewOptions.report-plays {
+                ViewOptions.report-plays = false;
+                ViewOptions.report-plays-changed(false);
+            } else {
+                ViewOptions.report-plays-asking = true;
+            }
+        }
+        if command == MenuCommand.accent-color { root.open-accent-color(); }
+        if command == MenuCommand.visualizer { root.show-visualizer = !root.show-visualizer; }
+        if command == MenuCommand.station-colors {
+            VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
+        }
+        if command == MenuCommand.station-stats { root.show-station-stats = !root.show-station-stats; }
+        if command == MenuCommand.tray-icon { root.tray-icon = !root.tray-icon; }
+        if command == MenuCommand.close-to-tray { root.close-to-tray = !root.close-to-tray; }
+        if command == MenuCommand.start-in-tray { root.start-in-tray = !root.start-in-tray; }
+        if command == MenuCommand.recording { root.toggle-recording(); }
+        if command == MenuCommand.recording-settings { root.open-recording-settings(); }
+        if command == MenuCommand.recordings-folder { root.open-recordings-folder(); }
+        if command == MenuCommand.sleep-timer { root.open-sleep-timer(); }
+        if command == MenuCommand.scheduler { root.open-schedule(); }
+        if command == MenuCommand.filters { root.open-filters(); }
+        if command == MenuCommand.equalizer { root.open-equalizer(); }
+        if command == MenuCommand.statistics { root.open-statistics(); }
+        if command == MenuCommand.agents { root.open-agents(); }
+        if command == MenuCommand.remote-control { root.open-remote-control(); }
+        if command == MenuCommand.keyboard-shortcuts { root.open-keyboard-shortcuts(); }
+        // The answer shows in About
+        if command == MenuCommand.check-for-updates {
+            Updates.check-now();
+            root.open-about();
+        }
+        if command == MenuCommand.auto-check-updates {
+            Updates.auto-check = !Updates.auto-check;
+            Updates.auto-check-changed(Updates.auto-check);
+        }
+        if command == MenuCommand.about { root.open-about(); }
+        if command == MenuCommand.minimize { root.minimize(); }
+        if command == MenuCommand.maximize { root.maximized = !root.maximized; }
+    }
+    // What the items show, for the system's menu bar
+    out property <MenuState> state: {
+        enabled: root.menus-enabled,
+        has-favorites: root.has-favorites,
+        recording: root.is-recording,
+        can-record: root.can-toggle-recording,
+        visualizer: root.show-visualizer,
+        station-stats: root.show-station-stats,
+        tray-icon: root.tray-icon,
+        close-to-tray: root.close-to-tray,
+        start-in-tray: root.start-in-tray,
+        tray-available: root.tray-available,
+        agents-label: root.agents-label,
+        phones-label: root.phones-label,
+        phones: root.phones,
+    };
+    // The chips' labels: "2 phones connected, 1 listening"; "" for none
+    property <string> phones-label: root.phones.length == 0 ? ""
+        : (root.phones.length == 1 ? "1 phone connected" : root.phones.length + " phones connected")
+            + (root.phones-listening > 0 ? ", " + root.phones-listening + " listening" : "");
+    property <string> agents-label: root.agent-count == 0 ? ""
+        : root.agent-count == 1 ? "1 agent using the player" : root.agent-count + " agents using the player";
 
     callback open-network-stream();
     callback open-station-search();
@@ -933,7 +1006,7 @@ export component MenuBar inherits Rectangle {
 
     // F10: the keyboard goes to the first menu title
     public function focus-menus() {
-        if root.menus-enabled {
+        if root.menus-enabled && !NativeMenu.active {
             open-menu.focus();
         }
     }
@@ -1139,9 +1212,7 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.phones.length;
-                // "2 phones connected, 1 listening"
-                label: (root.phones.length == 1 ? "1 phone connected" : root.phones.length + " phones connected")
-                    + (root.phones-listening > 0 ? ", " + root.phones-listening + " listening" : "");
+                label: root.phones-label;
                 // The names in the bubble (the first three)
                 description: PhoneNames.name(root.phones[0])
                     + (root.phones.length > 1 ? ", " + PhoneNames.name(root.phones[1]) : "")
@@ -1163,7 +1234,7 @@ export component MenuBar inherits Rectangle {
             padding-right: 6px;
             AgentsChip {
                 count: root.agent-count;
-                label: root.agent-count == 1 ? "1 agent using the player" : root.agent-count + " agents using the player";
+                label: root.agents-label;
                 description: "Tools > Connections > Agents (MCP) has the details";
                 snapshot-bubble: root.snapshot-bubble == "agents";
                 show-bubble(right, top) => {
@@ -1273,7 +1344,7 @@ export component MenuBar inherits Rectangle {
                 shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.network-stream) : "";
                 icon: @image-url("icons/link.svg");
                 clicked => {
-                    root.open-network-stream();
+                    root.run(MenuCommand.network-stream);
                     open-popup.close();
                 }
             }
@@ -1284,7 +1355,7 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/power-off.svg");
                 shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.quit) : "";
                 clicked => {
-                    root.quit-app();
+                    root.run(MenuCommand.quit);
                     open-popup.close();
                 }
             }
@@ -1347,7 +1418,7 @@ export component MenuBar inherits Rectangle {
                 shortcut: DesktopShortcuts.enabled ? DesktopShortcuts.label(ShortcutAction.search) : "";
                 icon: @image-url("icons/magnifying-glass.svg");
                 clicked => {
-                    root.open-station-search();
+                    root.run(MenuCommand.search-stations);
                     stations-popup.close();
                 }
             }
@@ -1359,7 +1430,7 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/star-regular.svg");
                 clicked => {
                     stations-popup.close();
-                    root.find-favorites();
+                    root.run(MenuCommand.find-favorites);
                 }
             }
             MenuSeparator {}
@@ -1370,7 +1441,7 @@ export component MenuBar inherits Rectangle {
                 enabled: Platform.has-file-manager;
                 icon: @image-url("icons/file-export.svg");
                 clicked => {
-                    root.export-favorites();
+                    root.run(MenuCommand.export-favorites);
                     stations-popup.close();
                 }
             }
@@ -1380,7 +1451,7 @@ export component MenuBar inherits Rectangle {
                 enabled: Platform.has-file-manager;
                 icon: @image-url("icons/file-import.svg");
                 clicked => {
-                    root.import-favorites();
+                    root.run(MenuCommand.import-favorites);
                     stations-popup.close();
                 }
             }
@@ -1394,13 +1465,10 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/chart-column.svg");
                 description: "Tells the station directory which station you play, to rank popular stations.";
                 checked: ViewOptions.report-plays;
-                // On asks first (the dialog sets it); off is at once
+                // On asks first, in a dialog; off is at once
                 clicked => {
-                    if ViewOptions.report-plays {
-                        ViewOptions.report-plays = false;
-                        ViewOptions.report-plays-changed(false);
-                    } else {
-                        ViewOptions.report-plays-asking = true;
+                    root.run(MenuCommand.report-plays);
+                    if ViewOptions.report-plays-asking {
                         stations-popup.close();
                     }
                 }
@@ -1484,7 +1552,7 @@ export component MenuBar inherits Rectangle {
                 has-swatch: true;
                 swatch: Theme.accent;
                 clicked => {
-                    root.open-accent-color();
+                    root.run(MenuCommand.accent-color);
                     view-popup.close();
                 }
             }
@@ -1495,7 +1563,7 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/visualizer.svg");
                 checked: root.show-visualizer;
                 clicked => {
-                    root.show-visualizer = !root.show-visualizer;
+                    root.run(MenuCommand.visualizer);
                 }
             }
             // Keeps its choice while the visualizer is off
@@ -1506,7 +1574,7 @@ export component MenuBar inherits Rectangle {
                 enabled: root.show-visualizer;
                 checked: VizStyle.palette == "logo";
                 clicked => {
-                    VizStyle.palette = VizStyle.palette == "logo" ? "accent" : "logo";
+                    root.run(MenuCommand.station-colors);
                 }
             }
             MenuSeparator {}
@@ -1516,7 +1584,7 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/clock.svg");
                 checked: root.show-station-stats;
                 clicked => {
-                    root.show-station-stats = !root.show-station-stats;
+                    root.run(MenuCommand.station-stats);
                 }
             }
             // The whole window larger or smaller. Slint takes the scale
@@ -1599,7 +1667,7 @@ export component MenuBar inherits Rectangle {
                     indent: Theme.space-16;
                     checked: root.tray-icon;
                     clicked => {
-                        root.tray-icon = !root.tray-icon;
+                        root.run(MenuCommand.tray-icon);
                     }
                 }
                 // Greyed with no tray to hide in; they keep their ticks
@@ -1611,7 +1679,7 @@ export component MenuBar inherits Rectangle {
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.close-to-tray;
                     clicked => {
-                        root.close-to-tray = !root.close-to-tray;
+                        root.run(MenuCommand.close-to-tray);
                     }
                 }
                 if Platform.has-minimize-to-tray: CheckMenuItem {
@@ -1633,7 +1701,7 @@ export component MenuBar inherits Rectangle {
                     enabled: root.tray-icon && root.tray-available;
                     checked: root.start-in-tray;
                     clicked => {
-                        root.start-in-tray = !root.start-in-tray;
+                        root.run(MenuCommand.start-in-tray);
                     }
                 }
                 // Saved in the autostart file or the Run key, not the settings
@@ -1680,7 +1748,7 @@ export component MenuBar inherits Rectangle {
                 label: "Update Available: \{Updates.available}";
                 icon: @image-url("icons/bell.svg");
                 clicked => {
-                    root.open-about();
+                    root.run(MenuCommand.about);
                     help-popup.close();
                 }
             }
@@ -1692,7 +1760,7 @@ export component MenuBar inherits Rectangle {
                 shortcut: DesktopShortcuts.label(ShortcutAction.help);
                 // Open first: closing the popup takes this item with it
                 clicked => {
-                    root.open-keyboard-shortcuts();
+                    root.run(MenuCommand.keyboard-shortcuts);
                     help-popup.close();
                 }
             }
@@ -1704,8 +1772,7 @@ export component MenuBar inherits Rectangle {
                 label: "Check for Updates";
                 icon: @image-url("icons/rotate-right.svg");
                 clicked => {
-                    Updates.check-now();
-                    root.open-about();
+                    root.run(MenuCommand.check-for-updates);
                     help-popup.close();
                 }
             }
@@ -1715,8 +1782,7 @@ export component MenuBar inherits Rectangle {
                 icon: @image-url("icons/clock.svg");
                 checked: Updates.auto-check;
                 clicked => {
-                    Updates.auto-check = !Updates.auto-check;
-                    Updates.auto-check-changed(Updates.auto-check);
+                    root.run(MenuCommand.auto-check-updates);
                 }
             }
             if Updates.enabled: MenuSeparator {}
@@ -1725,7 +1791,7 @@ export component MenuBar inherits Rectangle {
                 label: "About Radiotrope";
                 icon: @image-url("icons/circle-info.svg");
                 clicked => {
-                    root.open-about();
+                    root.run(MenuCommand.about);
                     help-popup.close();
                 }
             }
@@ -1760,7 +1826,7 @@ export component MenuBar inherits Rectangle {
                 enabled: root.can-toggle-recording;
                 icon: @image-url("icons/record.svg");
                 clicked => {
-                    root.toggle-recording();
+                    root.run(MenuCommand.recording);
                     tools-popup.close();
                 }
             }
@@ -1778,7 +1844,7 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/gear.svg");
                     indent: Theme.space-16;
                     clicked => {
-                        root.open-recording-settings();
+                        root.run(MenuCommand.recording-settings);
                         tools-popup.close();
                     }
                 }
@@ -1788,7 +1854,7 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/folder-open.svg");
                     indent: Theme.space-16;
                     clicked => {
-                        root.open-recordings-folder();
+                        root.run(MenuCommand.recordings-folder);
                         tools-popup.close();
                     }
                 }
@@ -1799,7 +1865,7 @@ export component MenuBar inherits Rectangle {
                 label: "Sleep Timer";
                 icon: @image-url("icons/moon.svg");
                 clicked => {
-                    root.open-sleep-timer();
+                    root.run(MenuCommand.sleep-timer);
                     tools-popup.close();
                 }
             }
@@ -1808,7 +1874,7 @@ export component MenuBar inherits Rectangle {
                 label: "Scheduler";
                 icon: @image-url("icons/calendar.svg");
                 clicked => {
-                    root.open-schedule();
+                    root.run(MenuCommand.scheduler);
                     tools-popup.close();
                 }
             }
@@ -1818,7 +1884,7 @@ export component MenuBar inherits Rectangle {
                 label: "Filters";
                 icon: @image-url("icons/wave-square.svg");
                 clicked => {
-                    root.open-filters();
+                    root.run(MenuCommand.filters);
                     tools-popup.close();
                 }
             }
@@ -1827,7 +1893,7 @@ export component MenuBar inherits Rectangle {
                 label: "Equalizer";
                 icon: @image-url("icons/sliders.svg");
                 clicked => {
-                    root.open-equalizer();
+                    root.run(MenuCommand.equalizer);
                     tools-popup.close();
                 }
             }
@@ -1836,7 +1902,7 @@ export component MenuBar inherits Rectangle {
                 label: "Statistics";
                 icon: @image-url("icons/chart-column.svg");
                 clicked => {
-                    root.open-statistics();
+                    root.run(MenuCommand.statistics);
                     tools-popup.close();
                 }
             }
@@ -1855,7 +1921,7 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/bot.svg");
                     indent: Theme.space-16;
                     clicked => {
-                        root.open-agents();
+                        root.run(MenuCommand.agents);
                         tools-popup.close();
                     }
                 }
@@ -1865,7 +1931,7 @@ export component MenuBar inherits Rectangle {
                     icon: @image-url("icons/mobile-screen-button.svg");
                     indent: Theme.space-16;
                     clicked => {
-                        root.open-remote-control();
+                        root.run(MenuCommand.remote-control);
                         tools-popup.close();
                     }
                 }

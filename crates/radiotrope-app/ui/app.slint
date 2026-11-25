@@ -23,6 +23,7 @@ import { EqualizerDialog, EqPresetGroup } from "dialogs/equalizer.slint";
 import { FiltersDialog } from "dialogs/filters.slint";
 import { AccentColorDialog } from "dialogs/accent-color.slint";
 import { WifiSettingsDialog, WifiNetworkEntry, Platform } from "@platform/wifi.slint";
+import { PlatformWindow, NativeMenu } from "@platform/window.slint";
 import { AboutDialog, AboutInfo } from "dialogs/about.slint";
 import { Updates } from "updates.slint";
 import { QuitDialog } from "dialogs/quit.slint";
@@ -31,7 +32,7 @@ import { TextUtil, AgentsBubble, AgentRow, Motion } from "components.slint";
 import { VizData, VizStyle, VizHint } from "visualization.slint";
 export { FavoritesFind, StreamEdit }
 export { HexColor } from "dialogs/accent-color.slint";
-export { Platform }
+export { Platform, NativeMenu }
 export { AboutInfo, Updates, StatsData, StreamHealth, Defaults, ViewOptions, TextUtil, VizData, VizStyle, BrowseStation, FilterEntry, FavoriteStation, StationStream, WifiNetworkEntry, AgentRow, EqPresetGroup, ScheduleRow, ScheduleDraft, RemoteDevice, ConnectedPhone }
 
 // Hands the window's corner shape to Theme.round-surfaces: a global
@@ -42,7 +43,13 @@ component SurfaceCorners {
     in property <bool> round <=> Theme.round-surfaces;
 }
 
-export component App inherits Window {
+// A PlatformWindow is a Window; on macOS it has the system's menu bar
+export component App inherits PlatformWindow {
+    // The system's menu bar, where the menus are there (macOS): its items
+    // show the state of the bar in the window and run its commands
+    menu-state: menu-bar.state;
+    menu-command(command) => { menu-bar.run(command); }
+
     // The station in the taskbar and window lists while one is loaded
     title: root.station-url != "" && root.station-name != ""
         ? root.station-name + " · Radiotrope" : "Radiotrope";

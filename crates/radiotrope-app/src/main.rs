@@ -54,6 +54,9 @@ mod windows_console;
 
 slint::include_modules!();
 
+#[cfg(test)]
+mod native_menu_test;
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -265,6 +268,14 @@ fn main() {
     shortcuts::install(&ui);
     // What the menus leave out on macOS (ui/platform/desktop)
     ui.global::<Platform>().set_macos(cfg!(target_os = "macos"));
+    // macOS: the menus are in the system's menu bar, not in the window
+    // (ui/platform/macos/window.slint). Set before the window is shown,
+    // which is when the menu bar is made.
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    {
+        ui.global::<NativeMenu>().set_active(true);
+        ui.on_bring_all_to_front(macos_app::bring_all_to_front);
+    }
     ui.on_locate_favorite(|model, highlighted, playing, action, page| {
         shortcuts::favorite_highlight(
             model.iter().map(|station| station.url),
