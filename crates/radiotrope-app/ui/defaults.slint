@@ -237,9 +237,14 @@ export global Theme {
     out property <length> radius-sm: 4px;
     out property <length> radius-md: 6px;
     out property <length> radius-lg: 8px;
-    // View > Rounded Corners: dialogs follow the window, square when it's off
+    // View > Window > Rounded Corners (the saved choice)
     in-out property <bool> rounded-corners: true;
-    out property <length> dialog-radius: rounded-corners ? radius-lg : 0px;
+    // The window's corners are round (set by the window from the choice,
+    // the title bar and the platform): menus, popups and dialogs follow
+    // it, square when the window is square
+    in-out property <bool> round-surfaces: true;
+    out property <length> popup-radius: round-surfaces ? radius-md : 0px;
+    out property <length> dialog-radius: round-surfaces ? radius-lg : 0px;
 
     // ── Motion ──
     out property <duration> fast: 120ms;

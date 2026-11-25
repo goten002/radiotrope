@@ -19,7 +19,8 @@ export global Motion {
 // edge and a soft shadow. Put the content inside.
 export component PopupCard inherits Rectangle {
     background: Theme.popup-surface;
-    border-radius: Theme.radius-md;
+    // Square when the window is (View > Window > Rounded Corners)
+    border-radius: Theme.popup-radius;
     border-width: 1px;
     border-color: Theme.popup-border;
     drop-shadow-blur: Theme.popup-shadow-blur;
