@@ -156,6 +156,18 @@ const SHOTS: &[Shot] = &[
         "Selected station failed to connect.",
     ),
     Shot::new(
+        "main-reconnecting",
+        "main",
+        "reconnecting",
+        "The stream dropped: the status chip while it reconnects.",
+    ),
+    Shot::new(
+        "main-waiting",
+        "main",
+        "waiting",
+        "Connected, no audio yet: the status chip's longest busy text.",
+    ),
+    Shot::new(
         "main-recording",
         "main",
         "recording",
@@ -1570,7 +1582,8 @@ fn configure(ui: &App, shot: &Shot) {
     }
     match shot.screen {
         "main" => match shot.state {
-            "stopped" | "loading" | "error" | "error-long" | "empty" => {
+            "stopped" | "loading" | "reconnecting" | "waiting" | "error" | "error-long"
+            | "empty" => {
                 ui.set_is_playing(false);
                 let viz = ui.global::<VizData>();
                 viz.set_active(false);
@@ -1583,6 +1596,14 @@ fn configure(ui: &App, shot: &Shot) {
                     "loading" => {
                         ui.set_is_loading(true);
                         ui.set_status_text(status::CONNECTING.into());
+                    }
+                    "reconnecting" => {
+                        ui.set_is_loading(true);
+                        ui.set_status_text(status::RECONNECTING.into());
+                    }
+                    "waiting" => {
+                        ui.set_is_loading(true);
+                        ui.set_status_text(status::WAITING_FOR_DATA.into());
                     }
                     "error" => {
                         ui.set_is_error(true);
@@ -2103,3 +2124,7 @@ mod report_plays_tests;
 #[cfg(test)]
 #[path = "zoom_stats_test.rs"]
 mod zoom_stats_tests;
+
+#[cfg(test)]
+#[path = "status_chip_test.rs"]
+mod status_chip_tests;

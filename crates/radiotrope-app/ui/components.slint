@@ -306,32 +306,43 @@ export global TextUtil {
 
 export enum ChipVariant { neutral, accent, danger, success, warning }
 
-// A text of a chip. Its width comes from the text itself, so what is drawn
-// is what was measured. `floor` is room kept beyond that (wider digits);
-// `whole` never shortens the text.
-component ChipText inherits VerticalLayout {
+// A text of a chip. Its width comes from its own text, measured by a Text
+// that is never drawn: the drawn label shares nothing with it, so the width
+// can't come from how the label was last drawn or from a text it showed
+// before (FB12). `floor` is room kept beyond that (wider digits); `whole`
+// never shortens the text.
+component ChipText {
     in property <string> text;
     in property <color> color;
     in property <bool> whole: false;
     in property <length> floor: 0px;
-    out property <length> text-width: label.preferred-width;
+    out property <length> text-width: sizer.preferred-width;
+    property <length> room: max(sizer.preferred-width, root.floor);
+
+    preferred-width: root.room;
+    // A whole text can't be given less than its width, so it never ends
+    // in "…"
+    min-width: root.whole ? root.room : 0px;
+    preferred-height: sizer.preferred-height;
 
     label := Text {
+        width: 100%;
+        height: 100%;
         text: root.text;
         accessible-role: none;
         color: root.color;
         font-size: Theme.font-sm;
         font-weight: Theme.weight-semibold;
         vertical-alignment: center;
-        // A whole text can't be given less than its width, so it never
-        // ends in "…"
         overflow: root.whole ? TextOverflow.clip : TextOverflow.elide;
     }
 
-    Rectangle {
-        height: 0px;
-        preferred-width: root.floor;
-        min-width: root.whole ? root.floor : 0px;
+    sizer := Text {
+        visible: false;
+        text: root.text;
+        accessible-role: none;
+        font-size: Theme.font-sm;
+        font-weight: Theme.weight-semibold;
     }
 }
 
@@ -492,6 +503,7 @@ export component Chip inherits Rectangle {
             }
 
             if root.detail != "": ChipText {
+                horizontal-stretch: 0;
                 text: root.detail;
                 color: root.foreground;
                 whole: root.keep;
