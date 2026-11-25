@@ -1122,6 +1122,7 @@ mod tests {
         assert!(controller.active.is_some());
         controller.handle_command(AppCommand::Play {
             url: "http://127.0.0.1:1/other.mp3".into(),
+            backups: Vec::new(),
             name: Some("Other".into()),
             logo_url: None,
             country: None,

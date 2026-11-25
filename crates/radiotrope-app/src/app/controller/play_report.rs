@@ -190,6 +190,7 @@ mod tests {
     fn play(url: &str) -> crate::app::state::AppCommand {
         crate::app::state::AppCommand::Play {
             url: url.into(),
+            backups: Vec::new(),
             name: None,
             logo_url: None,
             country: None,
@@ -223,6 +224,7 @@ mod tests {
         let (mut controller, state, reports) = controller();
         let step = |url: &str| crate::app::state::AppCommand::Step {
             url: url.into(),
+            backups: Vec::new(),
             name: None,
             logo_url: None,
             country: None,

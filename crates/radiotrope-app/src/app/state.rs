@@ -23,7 +23,11 @@ pub type ScheduleReply<T> = Option<tokio::sync::oneshot::Sender<Result<T, String
 pub enum AppCommand {
     // Playback
     Play {
+        /// The station's default stream
         url: String,
+        /// The station's other streams, tried in order when `url`
+        /// doesn't connect
+        backups: Vec<String>,
         name: Option<String>,
         /// The station's logo, for the header while it plays
         logo_url: Option<String>,
@@ -39,6 +43,7 @@ pub enum AppCommand {
     /// stations starts only the last
     Step {
         url: String,
+        backups: Vec<String>,
         name: Option<String>,
         logo_url: Option<String>,
         country: Option<String>,
@@ -160,7 +165,15 @@ impl AppCommand {
 pub struct AppSnapshot {
     pub playback: PlaybackState,
     pub station_name: Option<String>,
+    /// The station's address: its default stream's, whichever plays
     pub station_url: Option<String>,
+    /// The stream tried or playing: `station_url`, or one of the
+    /// station's backups after the default didn't connect
+    pub stream_url: Option<String>,
+    /// Which of the station's streams that is, in the order they are
+    /// tried (0: the default), and how many the station has
+    pub stream_index: usize,
+    pub stream_count: usize,
     /// Logo of the station being played, as given with its Play: the GUI
     /// shows it whoever started the station (the UI or an agent)
     pub station_logo_url: Option<String>,
@@ -499,6 +512,9 @@ impl Default for AppSnapshot {
             playback: PlaybackState::default(),
             station_name: None,
             station_url: None,
+            stream_url: None,
+            stream_index: 0,
+            stream_count: 0,
             station_logo_url: None,
             station_country: None,
             title: String::new(),

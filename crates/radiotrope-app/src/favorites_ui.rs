@@ -221,11 +221,13 @@ pub(crate) fn forget_undo_of(ui: &App, starred_again: impl Fn(&Favorite) -> bool
     }
 }
 
-/// What to play for a favorite's row
+/// What to play for a favorite's row (the player adds the favorite's
+/// other streams as backups when it starts it)
 fn play_of(station: &FavoriteStation) -> PlayMetadata {
     let filled = |text: &slint::SharedString| (!text.is_empty()).then(|| text.to_string());
     PlayMetadata {
         url: station.url.to_string(),
+        backups: Vec::new(),
         name: Some(station.name.to_string()),
         logo_url: filled(&station.logo_url),
         country: filled(&station.country),

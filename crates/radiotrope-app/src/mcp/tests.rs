@@ -966,6 +966,7 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 logo_url,
                 country,
                 taken,
+                ..
             } = cmd
             else {
                 continue;
@@ -1040,6 +1041,7 @@ async fn play_reports_its_own_station_not_one_started_just_before() {
     s.window
         .send(AppCommand::Play {
             url: "http://broken.test/stream".into(),
+            backups: Vec::new(),
             name: None,
             logo_url: None,
             country: None,

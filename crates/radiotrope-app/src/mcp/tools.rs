@@ -18,7 +18,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 
 use radiotrope::audio::PlaybackState;
 use radiotrope_app::config::ui::SEARCH_PAGE_SIZE;
-use radiotrope_app::data::favorites::FavoritesManager;
+use radiotrope_app::data::favorites::{FavoritesManager, PlayMetadata};
 use radiotrope_app::data::flags::code_for_country;
 use radiotrope_app::data::schedule::{self, Action, Entry};
 use radiotrope_app::data::types::{url_to_id, Favorite};
@@ -825,15 +825,10 @@ impl RadioTools {
             .resolve_play(url.clone(), args.name.clone())
             .await
             .map_err(agent_text)?;
-        self.play(
-            &ctx,
-            url,
-            known.name,
-            known.logo_url,
-            known.country,
-            play_wait(args.wait_seconds),
-        )
-        .await
+        // The address asked for is the one played; a favorite's other
+        // streams stand by
+        let play = PlayMetadata { url, ..known };
+        self.play(&ctx, play, play_wait(args.wait_seconds)).await
     }
 
     #[tool(
@@ -859,10 +854,7 @@ impl RadioTools {
         let station = self.control.station_to_play(id).await.map_err(agent_text)?;
         self.play(
             &ctx,
-            station.url,
-            Some(station.name),
-            station.logo_url,
-            station.country,
+            PlayMetadata::of(&station),
             play_wait(args.wait_seconds),
         )
         .await
@@ -884,20 +876,12 @@ impl RadioTools {
         ctx: RequestContext<RoleServer>,
     ) -> Result<String, String> {
         let id = args.id.trim().to_string();
-        let (url, name, logo, country) = self
+        let play = self
             .control
             .favorite_to_play(id)
             .await
             .map_err(agent_text)?;
-        self.play(
-            &ctx,
-            url,
-            Some(name),
-            logo,
-            country,
-            play_wait(args.wait_seconds),
-        )
-        .await
+        self.play(&ctx, play, play_wait(args.wait_seconds)).await
     }
 
     #[tool(
@@ -1666,16 +1650,13 @@ impl RadioTools {
     async fn play(
         &self,
         ctx: &RequestContext<RoleServer>,
-        url: String,
-        name: Option<String>,
-        logo_url: Option<String>,
-        country: Option<String>,
+        play: PlayMetadata,
         wait: Duration,
     ) -> Result<String, String> {
-        let label = name.clone().unwrap_or_else(|| url.clone());
+        let label = play.name.clone().unwrap_or_else(|| play.url.clone());
         let played = self
             .control
-            .play(url, name, logo_url, country, wait, || {
+            .play(play, wait, || {
                 self.note_change(ctx, format!("play {label}"))
             })
             .await;

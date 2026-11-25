@@ -266,6 +266,7 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext, browse_logos: Arc<BrowseLogos>) 
                     &ctx,
                     PlayMetadata {
                         url: station.url.to_string(),
+                        backups: Vec::new(),
                         name: Some(station.name.to_string()),
                         logo_url: if logo_url.is_empty() {
                             None
