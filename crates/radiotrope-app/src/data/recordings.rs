@@ -34,6 +34,17 @@ const WINDOWS_RESERVED: &[&str] = &[
 /// none configured (minimal Linux images such as the Pi), then the app's
 /// data folder.
 pub fn default_dir() -> PathBuf {
+    // A snap's HOME is its own folder (~/snap/radiotrope/<revision>):
+    // recordings go to the real Music folder, which the `home` interface
+    // reaches, unless the desktop's Music folder is known and outside it
+    if let Some(home) = crate::snap::current().and_then(|snap| snap.real_home) {
+        let snap_home = dirs::home_dir();
+        return match dirs::audio_dir() {
+            Some(music) if snap_home.is_none_or(|h| !music.starts_with(h)) => music,
+            _ => home.join("Music"),
+        }
+        .join(FOLDER_NAME);
+    }
     if let Some(music) = dirs::audio_dir() {
         return music.join(FOLDER_NAME);
     }

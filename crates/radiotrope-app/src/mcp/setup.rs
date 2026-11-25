@@ -111,9 +111,11 @@ const SHELL: Shell = if cfg!(windows) {
 
 /// This program's path, which local agents run with `--mcp`
 pub fn this_program() -> String {
-    // An AppImage runs from a temporary mount; the file itself stays put
-    std::env::var_os("APPIMAGE")
-        .map(std::path::PathBuf::from)
+    // A snap's program is inside one revision; /snap/bin/radiotrope stays.
+    // An AppImage runs from a temporary mount; the file itself stays put.
+    radiotrope_app::snap::current()
+        .map(|snap| snap.command)
+        .or_else(|| std::env::var_os("APPIMAGE").map(std::path::PathBuf::from))
         .or_else(|| std::env::current_exe().ok())
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "radiotrope".into())

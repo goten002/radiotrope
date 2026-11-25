@@ -1,0 +1,166 @@
+# Snap of Radiotrope: the player, the terminal player and the station checker,
+# strictly confined, on core24.
+#
+# snapcraft takes the project from the folder it runs in, and only finds this
+# file as snap/snapcraft.yaml there, so it is built from the repository's
+# root with a copy of this file (snap/ is ignored by git):
+#
+#   mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
+#   snapcraft pack                          (LXD or Multipass)
+#
+# or, with Docker only, packaging/snap/build-docker.sh. CI does the same in
+# .github/workflows/package-snap.yml (snapcore/action-build).
+#
+# Install a local build with `sudo snap install --dangerous radiotrope_*.snap`.
+# Nothing here publishes to the Snap Store; RELEASING.md has the steps.
+#
+# What differs from the other Linux packages:
+# - No AAC+ (HE-AAC) decoder: the snap can't see the system's libfdk-aac and
+#   must not carry it (licence), so it is built without the `system-fdk`
+#   feature. AAC+ stations play their AAC-LC core (half the bandwidth, mono
+#   for HE-AAC v2), as on a system without libfdk-aac.
+# - No update checks (RADIOTROPE_UPDATES=off): the store updates snaps.
+# - Sound: the programs use ALSA; in the snap ALSA's default device is the
+#   PulseAudio plugin, which reaches PulseAudio or PipeWire's pulse server
+#   through the `audio-playback` interface.
+name: radiotrope
+title: Radiotrope
+base: core24
+adopt-info: radiotrope
+license: GPL-3.0-or-later
+# devel until the first release to the stable channel (RELEASING.md)
+grade: devel
+confinement: strict
+compression: lzo
+contact: https://github.com/goten002/radiotrope/issues
+issues: https://github.com/goten002/radiotrope/issues
+source-code: https://github.com/goten002/radiotrope
+website: https://github.com/goten002/radiotrope
+
+platforms:
+  amd64:
+  arm64:
+
+# ALSA looks for its configuration and plugins at the paths it was built
+# with; these put the snap's copies there
+layout:
+  /usr/share/alsa:
+    bind: $SNAP/usr/share/alsa
+  /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib:
+    bind: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib
+  # libpulse finds its private library through a RUNPATH under /usr/lib
+  /usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio:
+    bind: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio
+
+apps:
+  radiotrope:
+    command: usr/bin/radiotrope
+    desktop: usr/share/applications/app.radiotrope.Radiotrope.desktop
+    common-id: app.radiotrope.Radiotrope
+    # View > System Tray > Start at Login writes this file into the snap's
+    # $SNAP_USER_DATA/.config/autostart; snapd starts the app from it
+    autostart: radiotrope.desktop
+    # The window (Wayland or X11, GPU drawing via the GNOME platform's Mesa),
+    # the file chooser and "open folder" through the desktop portals
+    extensions: [gnome]
+    plugs:
+      # Streams and the station directory
+      - network
+      # The agents' (MCP) and phone remote servers, and mDNS
+      - network-bind
+      # Sound, through PulseAudio or PipeWire
+      - audio-playback
+      # Recordings in ~/Music/Radiotrope; imports and exports
+      - home
+      # Recordings on a USB disk or under /media, /mnt (connect by hand)
+      - removable-media
+      # The tray icon: a StatusNotifierItem on the session bus
+      - unity7
+
+  # `radiotrope.cli` (alias it to radiotrope-cli with `snap alias`)
+  cli:
+    command: usr/bin/radiotrope-cli
+    extensions: [gnome]
+    plugs: [network, audio-playback, home, removable-media]
+
+  # `radiotrope.probe`
+  probe:
+    command: usr/bin/radiotrope-probe
+    extensions: [gnome]
+    plugs: [network, home]
+
+parts:
+  radiotrope:
+    plugin: nil
+    source: .
+    build-packages:
+      - build-essential
+      - cmake
+      - curl
+      - git
+      - pkg-config
+      - libasound2-dev
+      - libfontconfig1-dev
+    stage-packages:
+      # ALSA and libpulse; the PulseAudio plugin is taken out of
+      # libasound2-plugins in override-build (the whole package pulls in
+      # FFmpeg, ~60 MB, for plugins we don't use)
+      - libasound2t64
+      - libasound2-data
+      - libpulse0
+      # Loaded at run time by winit (not linked)
+      - libxkbcommon0
+      - libxkbcommon-x11-0
+    build-environment:
+      - RADIOTROPE_UPDATES: "off"
+    override-pull: |
+      craftctl default
+      # The version from Cargo.toml (the metainfo's releases may lag)
+      version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n1)
+      craftctl set version="$version"
+    override-build: |
+      set -eu
+      # Rust from rustup: Ubuntu 24.04's is older than the workspace needs
+      # (RUSTUP_HOME and CARGO_HOME from outside are kept: build-docker.sh
+      # keeps them in a volume)
+      export RUSTUP_HOME="${RUSTUP_HOME:-$CRAFT_PART_BUILD/.rustup}"
+      export CARGO_HOME="${CARGO_HOME:-$CRAFT_PART_BUILD/.cargo}"
+      # Three compile jobs unless told otherwise (build-docker.sh uses two):
+      # the release link of the player needs several GB per job
+      export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-3}"
+      if [ ! -x "$CARGO_HOME/bin/cargo" ]; then
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+          | sh -s -- -y --no-modify-path --profile minimal --default-toolchain stable
+      fi
+      export PATH="$CARGO_HOME/bin:$PATH"
+      # Without system-fdk: no FDK code at all, AAC-LC by the built-in decoder
+      make build CARGO_FLAGS="--locked --no-default-features --features radiotrope-app/desktop"
+      # Man pages and completions (xtask)
+      make generated
+      make install DESTDIR="$CRAFT_PART_INSTALL" PREFIX=/usr
+      install -Dm644 LICENSE THIRD-PARTY-LICENSES -t "$CRAFT_PART_INSTALL/usr/share/doc/radiotrope/"
+      # snapd starts the app through /snap/bin, which may not be on the
+      # session's PATH: a TryExec would hide the launcher
+      sed -i '/^TryExec=/d' "$CRAFT_PART_INSTALL/usr/share/applications/app.radiotrope.Radiotrope.desktop"
+      # ALSA's PulseAudio plugin (pcm and ctl), alone
+      plugins="$CRAFT_PART_BUILD/alsa-plugins"
+      rm -rf "$plugins" && mkdir -p "$plugins"
+      (cd "$plugins" && apt-get download libasound2-plugins)
+      dpkg-deb -x "$plugins"/libasound2-plugins_*.deb "$plugins/root"
+      alsa_lib="usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/alsa-lib"
+      install -Dm644 -t "$CRAFT_PART_INSTALL/$alsa_lib" \
+        "$plugins/root/$alsa_lib/libasound_module_pcm_pulse.so" \
+        "$plugins/root/$alsa_lib/libasound_module_ctl_pulse.so"
+      install -Dm644 -t "$CRAFT_PART_INSTALL/usr/share/alsa/alsa.conf.d" \
+        "$plugins/root/usr/share/alsa/alsa.conf.d/50-pulseaudio.conf"
+      # ALSA's default device: PulseAudio (or PipeWire's pulse server)
+      install -Dm644 packaging/snap/alsa-pulse.conf \
+        "$CRAFT_PART_INSTALL/usr/share/alsa/alsa.conf.d/99-snap-pulse.conf"
+    parse-info:
+      - usr/share/metainfo/app.radiotrope.Radiotrope.metainfo.xml
+    prime:
+      # Headers and static libraries of the staged packages
+      - -usr/include
+      - -usr/lib/*/pkgconfig
+      - -usr/share/man
+      - -usr/share/lintian
