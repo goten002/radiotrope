@@ -260,6 +260,23 @@ pub struct Settings {
     #[serde(default)]
     pub remote_share_recordings: bool,
 
+    // === Updates ===
+    /// Help > Check for Updates Automatically. `None` until the user has
+    /// chosen: the build's default then
+    /// ([`AUTO_CHECK_BY_DEFAULT`](crate::update::check::AUTO_CHECK_BY_DEFAULT)).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check_for_updates: Option<bool>,
+
+    /// When the releases were last asked for a newer version, in seconds
+    /// since 1970: the next automatic check is a day later
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_checked: Option<u64>,
+
+    /// The newer version the last check found, e.g. "0.2.0", shown until
+    /// this version or a newer one runs
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update_available: Option<String>,
+
     /// What the file holds that this build doesn't know (settings of a
     /// newer version): written back as it was
     #[serde(flatten)]
@@ -390,6 +407,9 @@ impl Default for Settings {
             remote_control: false,
             remote_name: None,
             remote_share_recordings: false,
+            check_for_updates: None,
+            update_checked: None,
+            update_available: None,
             extra: Map::new(),
         }
     }

@@ -4,6 +4,7 @@ import { ScrollBar } from "scroll-bar.slint";
 import { Icon, AgentsChip, ButtonKeys, FocusRing, PopupCard, MenuSeparator, Picker, Chip, ChipVariant } from "components.slint";
 import { VizStyle } from "visualization.slint";
 import { Platform } from "@platform/wifi.slint";
+import { Updates } from "updates.slint";
 
 // A phone with the Radiotrope Remote app connected, for the menu bar chip
 export struct ConnectedPhone {
@@ -594,6 +595,10 @@ component MenuTitle inherits Rectangle {
     // Greyed out and not clickable when false
     in property <bool> enabled: true;
     in property <bool> open;
+    // A small accent dot beside the name: something new in the menu
+    in property <bool> dot;
+    // What the dot means, for screen readers
+    in property <string> dot-label;
     // true: with the keyboard
     callback opened(bool);
     // Left (-1) or Right (1) on the title
@@ -609,6 +614,7 @@ component MenuTitle inherits Rectangle {
 
     accessible-role: button;
     accessible-label: root.label;
+    accessible-description: root.dot ? root.dot-label : "";
     accessible-enabled: root.enabled;
     accessible-expandable: true;
     accessible-expanded: root.open;
@@ -631,6 +637,15 @@ component MenuTitle inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
         accessible-role: none;
+    }
+
+    if root.dot: Rectangle {
+        x: parent.width - self.width - 3px;
+        y: 8px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.accent;
     }
 
     keys := FocusScope {
@@ -1044,7 +1059,12 @@ export component MenuBar inherits Rectangle {
         // 12 Wi-Fi Settings
         Platform.has-wifi,
     ];
-    property <[bool]> help-usable: [DesktopShortcuts.enabled, true];
+    // 0 Update Available, 1 Keyboard Shortcuts, 2 Check for Updates,
+    // 3 Check for Updates Automatically, 4 About Radiotrope
+    property <[bool]> help-usable: [
+        Updates.enabled && Updates.available != "", DesktopShortcuts.enabled,
+        Updates.enabled, Updates.enabled, true,
+    ];
 
     HorizontalLayout {
         padding-left: 4px;
@@ -1087,6 +1107,9 @@ export component MenuBar inherits Rectangle {
             label: "Help";
             enabled: root.menus-enabled;
             open: help-popup.is-open;
+            // Quiet: a newer version is out (the menu's first row says which)
+            dot: Updates.enabled && Updates.available != "";
+            dot-label: "Update available";
             opened(keyboard) => { root.show-menu(4, keyboard); }
             step(by) => { root.focus-title(by < 0 ? 3 : 0); }
         }
@@ -1684,8 +1707,20 @@ export component MenuBar inherits Rectangle {
             switch(menu, keyboard) => { root.show-menu(menu, keyboard); }
             close => { help-popup.close(); }
 
-            if DesktopShortcuts.enabled: MenuItem {
+            // Only while a newer version is out: About says more, and
+            // installs it where the build can
+            if Updates.enabled && Updates.available != "": MenuItem {
                 slot: 0;
+                label: "Update Available: \{Updates.available}";
+                icon: @image-url("icons/bell.svg");
+                clicked => {
+                    root.open-about();
+                    help-popup.close();
+                }
+            }
+            if Updates.enabled && Updates.available != "": MenuSeparator {}
+            if DesktopShortcuts.enabled: MenuItem {
+                slot: 1;
                 label: "Keyboard Shortcuts";
                 icon: @image-url("icons/keyboard.svg");
                 shortcut: DesktopShortcuts.label(ShortcutAction.help);
@@ -1695,8 +1730,32 @@ export component MenuBar inherits Rectangle {
                     help-popup.close();
                 }
             }
+            // Not in builds a package manager updates
+            if Updates.enabled && DesktopShortcuts.enabled: MenuSeparator {}
+            // The answer shows in About
+            if Updates.enabled: MenuItem {
+                slot: 2;
+                label: "Check for Updates";
+                icon: @image-url("icons/rotate-right.svg");
+                clicked => {
+                    Updates.check-now();
+                    root.open-about();
+                    help-popup.close();
+                }
+            }
+            if Updates.enabled: CheckMenuItem {
+                slot: 3;
+                label: "Check for Updates Automatically";
+                icon: @image-url("icons/clock.svg");
+                checked: Updates.auto-check;
+                clicked => {
+                    Updates.auto-check = !Updates.auto-check;
+                    Updates.auto-check-changed(Updates.auto-check);
+                }
+            }
+            if Updates.enabled: MenuSeparator {}
             MenuItem {
-                slot: 1;
+                slot: 4;
                 label: "About Radiotrope";
                 icon: @image-url("icons/circle-info.svg");
                 clicked => {

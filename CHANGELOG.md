@@ -8,8 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 ## [Unreleased]
 
 ### Added
+- Updates: Help > Check for Updates, and an optional daily check, tell you when a newer version is out (a dot on Help, a row in the menu and a line in About with a link to what's new; never a pop-up). The Windows install and the AppImage can download the update, check its signature and restart into it, each on your click. Packages from a package manager (AUR) and the Raspberry Pi image never check; `RADIOTROPE_UPDATES=off|notify` turns it down anywhere. A check sends nothing but the request itself.
 - `make install` for Linux (with `PREFIX` and `DESTDIR`): the programs, the launcher, icons up to 512 px, an AppStream entry for software centres, man pages, and bash, zsh and fish completions.
-- Windows downloads: a portable zip for x64 and for ARM64, and one installer for both (per-user by default, optional all-users, Start Menu entry, optional desktop icon, an uninstaller that offers to delete your data), listed in WinGet as `Radiotrope.Radiotrope`. Updates come through `winget upgrade`; the app never checks for updates itself.
+- Windows downloads: a portable zip for x64 and for ARM64, and one installer for both (per-user by default, optional all-users, Start Menu entry, optional desktop icon, an uninstaller that offers to delete your data), listed in WinGet as `Radiotrope.Radiotrope`. Updates come through `winget upgrade` or the player's own update.
 - Windows portable mode: an empty file named `portable` next to `radiotrope.exe` keeps all settings, favorites, cache and the log in a `data` folder beside it.
 - `radiotrope --quit` closes the running player, including one in the tray, and waits for it to exit. The installer uses it before an update.
 - Windows: `radiotrope-cli.exe` and `radiotrope-probe.exe` get the icon and version details too, and all three name "Radiotrope" as the publisher.

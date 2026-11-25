@@ -24,10 +24,30 @@ fn main() {
 
     generate_flags();
     emit_git_info();
+    emit_update_mode();
     radiotrope_build::windows_resources(&radiotrope_build::WindowsExe {
         binary: "radiotrope",
         description: "Radiotrope internet radio player",
     });
+}
+
+/// Set `RADIOTROPE_UPDATES_BUILD` from `RADIOTROPE_UPDATES=off|notify|self`:
+/// what this build may do about new versions at most (src/update). Packages
+/// that a package manager updates set it to `off` or `notify`. Without it,
+/// the desktop build may update itself and the embedded build does nothing.
+fn emit_update_mode() {
+    println!("cargo:rerun-if-env-changed=RADIOTROPE_UPDATES");
+    let embedded_only = std::env::var_os("CARGO_FEATURE_EMBEDDED").is_some()
+        && std::env::var_os("CARGO_FEATURE_DESKTOP").is_none();
+    let default = if embedded_only { "off" } else { "self" };
+    let mode = match std::env::var("RADIOTROPE_UPDATES") {
+        Ok(value) if !value.trim().is_empty() => value.trim().to_ascii_lowercase(),
+        _ => default.to_string(),
+    };
+    if !["off", "notify", "self"].contains(&mode.as_str()) {
+        panic!("RADIOTROPE_UPDATES must be off, notify or self, not {mode:?}");
+    }
+    println!("cargo:rustc-env=RADIOTROPE_UPDATES_BUILD={mode}");
 }
 
 /// Set `RADIOTROPE_GIT_HASH` and `RADIOTROPE_GIT_DATE` for the About dialog.

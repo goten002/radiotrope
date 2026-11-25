@@ -19,6 +19,15 @@ programs from the zip. The README tells users how to check the SHA-256
 against the release's `SHA256SUMS`. Signing comes later. When it does, sign
 the three exes before `stage.ps1` zips them, then sign the setup program.
 
+The installed player updates itself (README, "Updates"): it downloads the
+next `radiotrope-<ver>-setup.exe`, checks its Minisign signature, and runs it
+with `/SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH`. `/RELAUNCH` is ours
+(`radiotrope.iss`): it starts the player again when the files are in place.
+The player counts as installed when `unins000.exe` is next to it, so the
+portable zip only tells about a newer version. WinGet installs the same
+setup program: after an update from inside the player, WinGet reads the new
+version from Installed apps, and `winget upgrade` keeps working.
+
 No FDK AAC DLL is shipped. A user can put `fdk-aac.dll` or `libfdk-aac-2.dll`
 next to `radiotrope.exe` for full HE-AAC (see the main README). `stage.ps1`
 fails if an exe links FDK.

@@ -45,6 +45,9 @@ build() {
   export CARGO_TARGET_DIR=target
   # .cargo/config.toml names a cross linker for aarch64; build natively
   export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=cc
+  # pacman (the AUR helper) brings the updates: the player never looks for
+  # them itself, and has no update rows in its Help menu
+  export RADIOTROPE_UPDATES=off
   # The three programs, man pages and completions
   make all CARGO_FLAGS=--frozen
 }

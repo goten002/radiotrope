@@ -444,6 +444,27 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
     });
 }
 
+/// Updates are the user's to start, in the window: a paired phone has no
+/// address that looks for one or installs one
+#[tokio::test]
+async fn a_phone_cannot_start_an_update() {
+    let player = Player::start();
+    let token = player.pair("phone-1").await;
+    for path in [
+        "/v1/update",
+        "/v1/updates",
+        "/v1/update/check",
+        "/v1/update/download",
+        "/v1/update/install",
+        "/v1/restart",
+    ] {
+        for method in ["GET", "POST"] {
+            let (status, _) = player.request(method, path, Some(&token), None).await;
+            assert_eq!(status, 404, "{method} {path}");
+        }
+    }
+}
+
 #[tokio::test]
 async fn anyone_on_the_network_sees_who_the_player_is() {
     let player = Player::start();

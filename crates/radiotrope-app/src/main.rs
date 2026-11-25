@@ -32,6 +32,7 @@ mod stats_ui;
 mod stream_edit;
 #[cfg(feature = "desktop")]
 mod tray;
+mod update_ui;
 mod view_options;
 mod viz_ui;
 mod window_settings;
@@ -357,6 +358,7 @@ fn main() {
     wifi_ui::setup_power(&ui);
 
     about_ui::setup(&ui);
+    update_ui::setup(&ui, &settings, &shared_state);
     setup_text_util(&ui);
     recording_ui::setup(&ui, &ctx, &settings, cover_source.clone());
     schedule_ui::setup(&ui, &settings, ui_tx.clone(), shared_state.clone());

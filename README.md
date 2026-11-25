@@ -303,6 +303,48 @@ for the full list, including keys for focused controls.
 | F1 | Show Keyboard Shortcuts |
 | Esc | Close the current dialog or popup, or clear the favorites highlight in the main window |
 
+### Updates
+
+Radiotrope can tell you when a newer version is out, and some downloads can
+install it themselves. Nothing is installed without your click.
+
+- **Help > Check for Updates** looks now and shows the answer in About.
+- **Help > Check for Updates Automatically** looks once a day, a little after
+  the player starts. A newer version shows as a dot on Help, a row in the
+  Help menu and a line in About with a link to what's new: never a pop-up.
+- A check is one HTTPS request to GitHub for the project's latest release.
+  It sends nothing about you or your computer: only the request itself, with
+  the `Radiotrope/<version>` User-Agent every request has. GitHub sees your
+  IP address, as any website does.
+
+What a newer version means depends on how you installed Radiotrope:
+
+| Install | What the player does |
+|---------|----------------------|
+| Windows setup program (also through WinGet) | Checks daily. About offers **Download Update**, then **Restart to Update**, which runs the new setup program. `winget upgrade` works as well |
+| AppImage | Checks daily. **Download Update**, then **Restart to Update**, which replaces the AppImage file in place. AppImageUpdate and Gear Lever work as well |
+| `.deb`, `.rpm`, tarball, Windows portable zip, built from source | Tells you when you ask, or daily if you turn that on; get the new file from the release page |
+| Flatpak bundle | The same: it tells you, and you install the new bundle |
+| AUR (`radiotrope`, `radiotrope-bin`) | Nothing: pacman brings the updates, and Help has no update rows |
+| Raspberry Pi appliance | Nothing: a new image brings the updates |
+
+A downloaded update is installed only if it carries the project's signature
+([Minisign](https://jedisct1.github.io/minisign/), checked against a public
+key inside the player). The first release may not be signed yet; the player
+then only tells you about it.
+
+To turn updates down or off:
+
+- For yourself: untick **Check for Updates Automatically**.
+- For a computer or a package: set `RADIOTROPE_UPDATES` to `off` (no checks,
+  no update rows) or `notify` (never installs) in the player's environment,
+  or write that word into a file named `update-mode`: in
+  `/etc/radiotrope/` or `<prefix>/share/radiotrope/` on Linux, next to
+  `radiotrope.exe` on Windows.
+- When building: `RADIOTROPE_UPDATES=off|notify|self make` (or `cargo build`)
+  sets the most the build will ever do. Nothing at run time can raise it.
+  Distribution packages should build with `off`.
+
 ### Where things are saved
 
 Favorites, listening stats, settings, schedules and pairings are JSON files in

@@ -9,6 +9,9 @@
 ; Per-user by default (no administrator prompt) into
 ; %LOCALAPPDATA%\Programs\Radiotrope; "Install for all users" goes to
 ; Program Files. Silent: /VERYSILENT /SUPPRESSMSGBOXES [/ALLUSERS | /CURRENTUSER].
+; /RELAUNCH starts the player again after a silent install: the player's own
+; update (Help > Check for Updates) runs the new setup program with
+; /SILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH (src/update/install.rs).
 ; The uninstaller takes /DELETEDATA to also remove settings, favorites and
 ; cache without asking.
 
@@ -98,6 +101,9 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; The player's own update: back to the player, as the user who started it
+; (not elevated after an install for all users)
+Filename: "{app}\{#AppExe}"; Flags: nowait runasoriginaluser; Check: WantsRelaunch
 
 [Code]
 // Close a running player (it may be hidden in the tray) and wait for it
@@ -137,6 +143,12 @@ begin
   for I := 1 to ParamCount do
     if CompareText(ParamStr(I), Name) = 0 then
       Result := True;
+end;
+
+// /RELAUNCH: start the player once the files are in place
+function WantsRelaunch(): Boolean;
+begin
+  Result := HasParam('/RELAUNCH');
 end;
 
 // After the programs are gone: offer to delete the user's own data too.

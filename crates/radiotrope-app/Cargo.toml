@@ -63,6 +63,8 @@ rustls = { version = "0.23", default-features = false, features = ["std", "tls12
 tokio-rustls = { version = "0.26", default-features = false, features = ["tls12", "aws_lc_rs"] }
 rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 sha2 = "0.11"
+# Updates: checks a download's Minisign (Ed25519) signature; no dependencies
+minisign-verify = "0.3"
 # Ids for recordings that stand for a file name only in this run
 hmac = "0.13"
 # The QR code a phone scans to pair
@@ -98,6 +100,10 @@ desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-so
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "zbus/tokio"]
 
 ui-snapshots = ["slint/renderer-software"]
+
+[dev-dependencies]
+# Signs the update tests' files with a key made for the run
+minisign = "0.10"
 
 [build-dependencies]
 slint-build = "1.18"

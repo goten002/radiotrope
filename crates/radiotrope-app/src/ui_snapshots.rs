@@ -479,7 +479,18 @@ const SHOTS: &[Shot] = &[
         "tools",
         "Tools menu with View > Window > Rounded Corners off: square like the window.",
     ),
-    Shot::new("menu-help", "menu", "help", "Help menu."),
+    Shot::new(
+        "menu-help",
+        "menu",
+        "help",
+        "Help menu, with the update rows of a build that looks for updates.",
+    ),
+    Shot::new(
+        "menu-help-update",
+        "menu",
+        "help",
+        "Help menu with a newer version out: a dot on Help and Update Available first.",
+    ),
     Shot::new(
         "menu-window",
         "menu",
@@ -990,6 +1001,42 @@ const SHOTS: &[Shot] = &[
         "about",
         "",
         "About Radiotrope with Rounded Corners off: a square dialog card.",
+    ),
+    Shot::new(
+        "about-update",
+        "about",
+        "update",
+        "About with a newer version out, in a build that installs it: Download Update.",
+    ),
+    Shot::new(
+        "about-update-downloading",
+        "about",
+        "downloading",
+        "About while the update downloads: the percent, and the button greyed.",
+    ),
+    Shot::new(
+        "about-update-ready",
+        "about",
+        "ready",
+        "About with the update downloaded and checked: Restart to Update.",
+    ),
+    Shot::new(
+        "about-update-notify",
+        "about",
+        "notify",
+        "About with a newer version out, in a build that only says so: What's New, no button.",
+    ),
+    Shot::new(
+        "about-up-to-date",
+        "about",
+        "up-to-date",
+        "About after Help > Check for Updates found nothing newer.",
+    ),
+    Shot::new(
+        "about-update-check-failed",
+        "about",
+        "check-failed",
+        "About after Help > Check for Updates got no answer.",
     ),
     Shot::new(
         "accent-color",
@@ -1638,6 +1685,7 @@ fn configure(ui: &App, shot: &Shot) {
     if shot.name.ends_with("-square") {
         ui.set_rounded_corners(false);
     }
+    configure_updates(ui, shot);
     match shot.screen {
         "main" => match shot.state {
             "stopped" | "loading" | "reconnecting" | "waiting" | "error" | "error-long"
@@ -2025,6 +2073,33 @@ fn configure(ui: &App, shot: &Shot) {
 
 fn open_screen(ui: &App, shot: &Shot) {
     ui.invoke_snapshot_open(shot.screen.into(), shot.state.into());
+}
+
+/// Help's update rows and About's update line, with the texts the app shows
+fn configure_updates(ui: &App, shot: &Shot) {
+    use crate::update_ui::{show_view, view, Phase};
+    use radiotrope_app::update::{Mode, Version};
+
+    // A build that looks for updates, with nothing new
+    let updates = ui.global::<crate::Updates>();
+    updates.set_enabled(true);
+    updates.set_auto_check(true);
+    let (phase, newer, mode) = match shot.name {
+        "menu-help-update" | "about-update" => (Phase::Quiet, true, Mode::SelfUpdate),
+        "about-update-downloading" => (Phase::Downloading(Some(42)), true, Mode::SelfUpdate),
+        "about-update-ready" => (Phase::Ready, true, Mode::SelfUpdate),
+        "about-update-notify" => (Phase::Quiet, true, Mode::Notify),
+        "about-up-to-date" => (Phase::UpToDate, false, Mode::SelfUpdate),
+        "about-update-check-failed" => (Phase::CheckFailed, false, Mode::SelfUpdate),
+        _ => return,
+    };
+    let version = Version {
+        major: 0,
+        minor: 2,
+        patch: 0,
+        pre: String::new(),
+    };
+    show_view(ui, &view(phase, newer.then_some(&version), mode));
 }
 
 /// Names longer than the header and the rows have room for
