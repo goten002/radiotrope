@@ -36,6 +36,16 @@ func expect(_ condition: Bool, _ message: String) {
     }
 }
 
+/// As `expect`, for what a choice leads to: the app changes its menu a
+/// moment later (it may be opening a dialog), so look until it is so, for
+/// a few seconds
+func expectSoon(_ condition: @autoclosure () -> Bool, _ message: @autoclosure () -> String) {
+    for _ in 0..<25 where !condition() {
+        RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+    }
+    expect(condition(), message())
+}
+
 func attribute<T>(_ element: AXUIElement, _ name: String) -> T? {
     var value: CFTypeRef?
     guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else {
@@ -235,11 +245,11 @@ expect(item("Help", "Keyboard Shortcuts").map(keys) == "F1", "Keyboard Shortcuts
 // A check mark follows its setting, both ways
 let visualizer = item("View", "Visualizer").map(marked) ?? false
 press(item("View", "Visualizer"), "View > Visualizer")
-expect(item("View", "Visualizer").map(marked) == !visualizer, "Visualizer's check mark flipped")
-expect(item("View", "Station Colors in Visualizer").map(enabled) == !visualizer,
+expectSoon(item("View", "Visualizer").map(marked) == !visualizer, "Visualizer's check mark flipped")
+expectSoon(item("View", "Station Colors in Visualizer").map(enabled) == !visualizer,
        "Station Colors in Visualizer is greyed while the visualizer is off")
 press(item("View", "Visualizer"), "View > Visualizer again")
-expect(item("View", "Visualizer").map(marked) == visualizer, "Visualizer's check mark is back")
+expectSoon(item("View", "Visualizer").map(marked) == visualizer, "Visualizer's check mark is back")
 
 // One of a set: choosing the one in use leaves its mark
 func markedNames(_ path: String...) -> [String] {
@@ -247,21 +257,21 @@ func markedNames(_ path: String...) -> [String] {
     return (group.map(items) ?? []).filter(marked).map(title)
 }
 let theme = markedNames("View", "Theme")
-expect(theme.count == 1, "one theme has the mark: \(theme)")
+expectSoon(theme.count == 1, "one theme has the mark: \(theme)")
 if let current = theme.first {
     press(item("View", "Theme", current), "View > Theme > \(current) (in use)")
-    expect(markedNames("View", "Theme") == [current], "the theme in use keeps its mark: \(markedNames("View", "Theme"))")
+    expectSoon(markedNames("View", "Theme") == [current], "the theme in use keeps its mark: \(markedNames("View", "Theme"))")
     let other = current == "Dark" ? "Light" : "Dark"
     press(item("View", "Theme", other), "View > Theme > \(other)")
-    expect(markedNames("View", "Theme") == [other], "\(other) has the mark now: \(markedNames("View", "Theme"))")
+    expectSoon(markedNames("View", "Theme") == [other], "\(other) has the mark now: \(markedNames("View", "Theme"))")
     press(item("View", "Theme", current), "View > Theme > \(current)")
-    expect(markedNames("View", "Theme") == [current], "\(current) has the mark again: \(markedNames("View", "Theme"))")
+    expectSoon(markedNames("View", "Theme") == [current], "\(current) has the mark again: \(markedNames("View", "Theme"))")
 }
 let zoom = markedNames("View", "Zoom")
-expect(zoom.count == 1, "one zoom has the mark: \(zoom)")
+expectSoon(zoom.count == 1, "one zoom has the mark: \(zoom)")
 if let current = zoom.first {
     press(item("View", "Zoom", current), "View > Zoom > \(current) (in use)")
-    expect(markedNames("View", "Zoom") == [current], "the zoom in use keeps its mark: \(markedNames("View", "Zoom"))")
+    expectSoon(markedNames("View", "Zoom") == [current], "the zoom in use keeps its mark: \(markedNames("View", "Zoom"))")
 }
 
 log += dump("after the check marks")
@@ -283,13 +293,13 @@ if let view = menu("View") {
 
 // Report Play Count asks first, in a dialog: no mark until the answer,
 // and the other items are greyed while the dialog is open. Quit is not.
-expect(item("Stations", "Report Play Count").map(marked) == false, "Report Play Count is off at first")
+expectSoon(item("Stations", "Report Play Count").map(marked) == false, "Report Play Count is off at first")
 press(item("Stations", "Report Play Count"), "Stations > Report Play Count")
-expect(item("Stations", "Report Play Count").map(marked) == false, "Report Play Count has no mark while it asks")
-expect(item("Open", "Network Stream").map(enabled) == false, "Network Stream is greyed while a dialog is open")
-expect(item("Radiotrope", "About Radiotrope").map(enabled) == false, "About is greyed while a dialog is open")
-expect(item("Window", "Minimize").map(enabled) == true, "Minimize is not greyed while a dialog is open")
-expect(item("Radiotrope", "Quit Radiotrope").map(enabled) == true, "Quit is not greyed while a dialog is open")
+expectSoon(item("Stations", "Report Play Count").map(marked) == false, "Report Play Count has no mark while it asks")
+expectSoon(item("Open", "Network Stream").map(enabled) == false, "Network Stream is greyed while a dialog is open")
+expectSoon(item("Radiotrope", "About Radiotrope").map(enabled) == false, "About is greyed while a dialog is open")
+expectSoon(item("Window", "Minimize").map(enabled) == true, "Minimize is not greyed while a dialog is open")
+expectSoon(item("Radiotrope", "Quit Radiotrope").map(enabled) == true, "Quit is not greyed while a dialog is open")
 
 log += dump("with a dialog open")
 try? log.write(toFile: "\(evidence)/menu.txt", atomically: true, encoding: .utf8)
