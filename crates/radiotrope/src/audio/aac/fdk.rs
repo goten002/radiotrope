@@ -37,8 +37,18 @@ use super::{lc_config, BuiltInAac};
 /// binding is for version 2 (fdk-aac 2.0 and later).
 #[cfg(all(unix, not(target_os = "macos")))]
 const LIBRARY_NAMES: &[&str] = &["libfdk-aac.so.2"];
+/// macOS: the bare name finds what dyld finds by itself (`/usr/local/lib`,
+/// `DYLD_LIBRARY_PATH`); then where Homebrew on Apple Silicon and on Intel
+/// and MacPorts install it, none of which dyld looks in for every program.
+/// A library built for the other architecture fails to load and the next
+/// name is tried.
 #[cfg(target_os = "macos")]
-const LIBRARY_NAMES: &[&str] = &["libfdk-aac.2.dylib"];
+const LIBRARY_NAMES: &[&str] = &[
+    "libfdk-aac.2.dylib",
+    "/opt/homebrew/lib/libfdk-aac.2.dylib",
+    "/usr/local/lib/libfdk-aac.2.dylib",
+    "/opt/local/lib/libfdk-aac.2.dylib",
+];
 /// MinGW and MSYS2 builds, then MSVC builds (CMake, vcpkg)
 #[cfg(windows)]
 const LIBRARY_NAMES: &[&str] = &["libfdk-aac-2.dll", "fdk-aac.dll", "libfdk-aac.dll"];

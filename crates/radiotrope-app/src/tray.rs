@@ -276,11 +276,16 @@ impl Tray {
             .with_id(TRAY_ID)
             .with_icon(app_icon()?)
             .with_tooltip("Radiotrope")
-            .with_title("Radiotrope")
             .with_menu(Box::new(menu))
-            .with_menu_on_left_click(false)
-            .build()
-            .map_err(|e| e.to_string())?;
+            .with_menu_on_left_click(MENU_ON_LEFT_CLICK);
+        // The name beside the icon where a tray shows one. Not in the
+        // macOS menu bar, where it would be text next to the icon for good.
+        let icon = if MENU_ON_LEFT_CLICK {
+            icon
+        } else {
+            icon.with_title("Radiotrope")
+        };
+        let icon = icon.build().map_err(|e| e.to_string())?;
         Ok(Tray {
             icon,
             items: Items {
@@ -397,6 +402,22 @@ fn app_icon() -> Result<tray_icon::Icon, String> {
     tray_icon::Icon::from_rgba(png.into_raw(), width, height).map_err(|e| e.to_string())
 }
 
+/// macOS: a click on a menu bar icon opens its menu, as every other icon
+/// there does ("Show Radiotrope" is its first choice). Elsewhere the left
+/// click shows or hides the window and the right click opens the menu.
+const MENU_ON_LEFT_CLICK: bool = cfg!(target_os = "macos");
+
+/// What a click on the icon does, besides the menu the system opens
+fn click_action(button: MouseButton, menu_on_left_click: bool) -> Option<Action> {
+    match button {
+        // The menu is opening: the window stays as it is
+        MouseButton::Left if menu_on_left_click => None,
+        MouseButton::Left => Some(Action::ToggleWindow),
+        MouseButton::Middle => Some(Action::PlayStop),
+        MouseButton::Right => None,
+    }
+}
+
 thread_local! {
     static TRAY: RefCell<Option<Tray>> = const { RefCell::new(None) };
     /// The last left click on the icon, to take a double click as one
@@ -418,10 +439,8 @@ pub fn start(ui: &App) {
         else {
             return;
         };
-        let action = match button {
-            MouseButton::Left => Action::ToggleWindow,
-            MouseButton::Middle => Action::PlayStop,
-            MouseButton::Right => return,
+        let Some(action) = click_action(button, MENU_ON_LEFT_CLICK) else {
+            return;
         };
         // On Windows this runs on the UI thread, on Linux on the tray's own
         let _ =
@@ -745,6 +764,26 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_click_toggles_the_window_unless_it_opens_the_menu() {
+        // Windows and Linux: left shows or hides, right is the menu's
+        assert_eq!(
+            click_action(MouseButton::Left, false),
+            Some(Action::ToggleWindow)
+        );
+        assert_eq!(click_action(MouseButton::Right, false), None);
+        // macOS: the left click opens the menu and does nothing else
+        assert_eq!(click_action(MouseButton::Left, true), None);
+        assert_eq!(click_action(MouseButton::Right, true), None);
+        for menu_on_left_click in [false, true] {
+            assert_eq!(
+                click_action(MouseButton::Middle, menu_on_left_click),
+                Some(Action::PlayStop)
+            );
+        }
+        assert_eq!(MENU_ON_LEFT_CLICK, cfg!(target_os = "macos"));
     }
 
     #[test]

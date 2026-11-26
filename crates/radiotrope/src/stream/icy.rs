@@ -472,9 +472,13 @@ impl Read for Connection {
 /// How often a wait for the station's data looks at the clocks
 const SLEEP_CHECK: Duration = Duration::from_secs(1);
 
-/// `body`, watched for the computer going to sleep (Linux only).
+/// Whether `Instant` stands still while the computer sleeps: Linux
+/// (`CLOCK_MONOTONIC`) and macOS (`CLOCK_UPTIME_RAW`), not Windows
+const SLEEP_STOPS_THE_CLOCK: bool = cfg!(any(target_os = "linux", target_os = "macos"));
+
+/// `body`, watched for the computer going to sleep (Linux and macOS).
 ///
-/// Linux's monotonic clock, which the read timeout runs on, stops while
+/// Their monotonic clock, which the read timeout runs on, stops while
 /// the computer sleeps. After waking, a stream would wait out the whole
 /// [`READ_TIMEOUT_SECS`] on a connection the server dropped long ago. So
 /// the body is read on a thread of its own, and a wait for its data looks
@@ -483,7 +487,7 @@ const SLEEP_CHECK: Duration = Duration::from_secs(1);
 /// once, so the stream reconnects. Elsewhere the read timeout already
 /// counts the sleep (Windows), and the body is read as it is.
 fn watch_for_sleep(body: Box<dyn Read + Send>) -> Box<dyn Read + Send> {
-    if !cfg!(target_os = "linux") {
+    if !SLEEP_STOPS_THE_CLOCK {
         return body;
     }
     let mut clocks = SleepWatch::new();

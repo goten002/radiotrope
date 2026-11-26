@@ -649,7 +649,20 @@ fn is_usable(name: &str, ip: IpAddr, point_to_point: bool) -> bool {
             .join("device")
             .exists();
     }
+    if cfg!(target_os = "macos") {
+        return !is_mac_virtual_name(name);
+    }
     !is_virtual_name(name)
+}
+
+/// macOS's names for the interfaces that virtual machines (`bridge100`,
+/// `vmenet0`, `vmnet1`), AirDrop and its kin (`awdl0`, `llw0`), the
+/// built-in hotspot (`ap1`) and Apple's own links (`anpi0`) add: a kind
+/// and a number. Ethernet and Wi-Fi are `en0`, `en1`...
+fn is_mac_virtual_name(name: &str) -> bool {
+    let kind = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    kind.len() < name.len()
+        && ["bridge", "vmenet", "vmnet", "anpi", "ap", "awdl", "llw"].contains(&kind)
 }
 
 fn is_vpn_name(name: &str) -> bool {
@@ -1188,6 +1201,25 @@ mod tests {
         if cfg!(target_os = "linux") {
             assert!(!is_usable("docker0", "172.17.0.1".parse().unwrap(), false));
             assert!(!is_usable("no-such-if0", lan, false));
+        }
+    }
+
+    #[test]
+    fn mac_interfaces_of_vms_and_airdrop_are_left_out() {
+        for name in [
+            "bridge0",
+            "bridge100",
+            "vmenet0",
+            "vmnet8",
+            "anpi1",
+            "ap1",
+            "awdl0",
+            "llw0",
+        ] {
+            assert!(is_mac_virtual_name(name), "{name}");
+        }
+        for name in ["en0", "en12", "apple0", "bridge", "utun3", "lo0"] {
+            assert!(!is_mac_virtual_name(name), "{name}");
         }
     }
 }

@@ -448,6 +448,18 @@ const SHOTS: &[Shot] = &[
         "tray",
         "System Tray options expanded in the View menu.",
     ),
+    Shot::new(
+        "menu-view-macos",
+        "menu",
+        "view",
+        "View menu on macOS: no Window group, the system's title bar is the only one.",
+    ),
+    Shot::new(
+        "menu-system-tray-macos",
+        "view-group",
+        "tray",
+        "System Tray options on macOS: no Minimize to Tray, no Start at Login.",
+    ),
     Shot::new("menu-tools", "menu", "tools", "Tools menu."),
     Shot::new(
         "menu-recordings",
@@ -1717,6 +1729,10 @@ fn seed_statistics(ui: &App) {
 fn configure(ui: &App, shot: &Shot) {
     if shot.name == "menu-zoom-pending" {
         ui.global::<ViewOptions>().set_zoom(130);
+    }
+    // What the View menu leaves out on macOS, on any system
+    if shot.name.ends_with("-macos") {
+        ui.global::<crate::Platform>().set_macos(true);
     }
     // View > Window > Rounded Corners off: the window, menus and dialogs
     // are square

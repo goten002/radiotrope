@@ -82,10 +82,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 [Files]
 Source: "{#SourceX64}\radiotrope.exe"; DestDir: "{app}"; Check: not IsArm64; Flags: ignoreversion
 Source: "{#SourceX64}\radiotrope-cli.exe"; DestDir: "{app}"; Check: not IsArm64; Flags: ignoreversion
-Source: "{#SourceX64}\radiotrope-probe.exe"; DestDir: "{app}"; Check: not IsArm64; Flags: ignoreversion
 Source: "{#SourceArm64}\radiotrope.exe"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion
 Source: "{#SourceArm64}\radiotrope-cli.exe"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion
-Source: "{#SourceArm64}\radiotrope-probe.exe"; DestDir: "{app}"; Check: IsArm64; Flags: ignoreversion
 Source: "{#SourceX64}\README.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceX64}\LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceX64}\THIRD-PARTY-LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion

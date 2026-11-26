@@ -41,7 +41,8 @@ jobs:
       - run: cargo check --workspace --locked
 
   # The Linux install: desktop file and AppStream metainfo valid, and
-  # `make install` puts every file where packages expect it
+  # `make install` puts every file where packages expect it (and leaves the
+  # probe out: it is a separate download, installed by `make install-probe`)
   packaging:
     name: Linux install
     runs-on: ubuntu-latest
@@ -60,14 +61,28 @@ jobs:
         run: find stage -type f | sort
       - name: Programs report their version
         run: |
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             out=$(stage/usr/bin/$p --version)
             echo "$out"
             test "$out" = "$p $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "radiotrope") | .version')"
           done
+      - name: The probe is not installed
+        run: |
+          if find stage | grep radiotrope-probe; then
+            echo "::error::make install put the probe in place"; exit 1
+          fi
       - run: make uninstall DESTDIR="$PWD/stage" PREFIX=/usr
       - name: Nothing left after uninstall
         run: test -z "$(find stage -type f)"
+      - name: The probe on its own (make probe, install-probe, uninstall-probe)
+        run: |
+          set -eu
+          make probe PROFILE=dev
+          make install-probe PROFILE=dev DESTDIR="$PWD/stage-probe" PREFIX=
+          find stage-probe -type f | sort
+          test "$(stage-probe/bin/radiotrope-probe --version)" = "radiotrope-probe $(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "radiotrope") | .version')"
+          make uninstall-probe DESTDIR="$PWD/stage-probe" PREFIX=
+          test -z "$(find stage-probe -type f)"
 
   # The Raspberry Pi build (linuxkms backend, no desktop crates): checked
   # here so a desktop change can't break it unnoticed until an image build
@@ -293,7 +308,17 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -x packaging/linux/*.sh packaging/appimage/build.sh packaging/appimage/AppRun \
-            packaging/arch/aur-publish.sh packaging/flatpak/*.sh
+            packaging/arch/aur-publish.sh packaging/flatpak/*.sh packaging/macos/*.sh
+      - name: macOS Info.plist and entitlements parse
+        run: |
+          python3 -c '
+          import plistlib
+          info = plistlib.load(open("packaging/macos/Info.plist", "rb"))
+          assert info["CFBundleIdentifier"] == "app.radiotrope.Radiotrope", info["CFBundleIdentifier"]
+          assert info["CFBundleExecutable"] == "radiotrope"
+          assert info["NSBonjourServices"] == ["_radiotrope._tcp"]
+          plistlib.load(open("packaging/macos/entitlements.plist", "rb"))
+          print("ok:", info["CFBundleIdentifier"], info["LSMinimumSystemVersion"])'
       - name: PKGBUILDs parse (makepkg --printsrcinfo)
         run: |
           docker run --rm -v "$PWD/packaging/arch:/arch:ro" archlinux:base-devel bash -c '

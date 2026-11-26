@@ -138,6 +138,48 @@ jobs:
           echo "--- app.log"; tail -100 smoke/app.log
           echo "--- files the app made"; find "$HOME" -type f | sed "s|$HOME|~|" | sort
           cat smoke/audio-devices.txt
+      # Quit as the Dock's menu and Cmd+Q do it: AppKit is asked to terminate
+      # the app, and the app must answer with its own exit, which saves the
+      # settings (removed here first, so a file afterwards is that exit's).
+      # While it runs: the log is in ~/Library/Logs (stderr is not a
+      # terminal here) and the socket beside the settings.
+      - name: Quit from the Dock goes through the app's exit
+        if: success() || failure()
+        shell: bash
+        run: |
+          export HOME="$PWD/smoke/home"
+          support="$HOME/Library/Application Support/radiotrope"
+          log="$HOME/Library/Logs/radiotrope/radiotrope.log"
+          cat > smoke/quit.swift <<'SWIFT'
+          import AppKit
+          let pid = pid_t(CommandLine.arguments[1])!
+          guard let app = NSRunningApplication(processIdentifier: pid) else {
+              print("no application with this pid")
+              exit(2)
+          }
+          print("asked to terminate:", app.terminate())
+          SWIFT
+          target/debug/radiotrope > smoke/quit-stdout.log 2>&1 &
+          pid=$!
+          sleep 15
+          failed=0
+          test -S "$support/mcp.sock" || { echo "::error::no mcp.sock in Application Support"; failed=1; }
+          test -f "$support/instance.lock" || { echo "::error::no instance.lock in Application Support"; failed=1; }
+          test -f "$log" || { echo "::error::no log file in ~/Library/Logs"; failed=1; }
+          rm -f "$support/settings.json"
+          swift smoke/quit.swift "$pid"
+          for _ in $(seq 20); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+          if kill -0 "$pid" 2>/dev/null; then
+            echo "::error::the app did not quit when asked to terminate"
+            kill -KILL "$pid"
+            failed=1
+          fi
+          test -f "$support/settings.json" || { echo "::error::Quit from the Dock did not save the settings"; failed=1; }
+          echo "--- the log file"; cat "$log" || true
+          cp "$log" smoke/radiotrope.log || true
+          echo "--- stdout and stderr"; cat smoke/quit-stdout.log
+          ls -la "$support" "$HOME/Library/Logs/radiotrope" || true
+          exit $failed
       # A tar keeps the programs executable (the artifact's zip would not).
       # Not a release: debug builds, unsigned, kept for two weeks.
       - name: Pack the programs
@@ -158,6 +200,7 @@ jobs:
           path: |
             smoke/screen.png
             smoke/app.log
+            smoke/radiotrope.log
             smoke/audio-devices.txt
             ui-snapshots/
             test.log

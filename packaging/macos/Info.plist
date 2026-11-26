@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Radiotrope.app/Contents/Info.plist. bundle.sh fills in @VERSION@ (the
+  workspace version without a pre-release suffix: macOS wants three numbers)
+  and @MIN_MACOS@ (the same value as MACOSX_DEPLOYMENT_TARGET).
+
+  Never change CFBundleIdentifier after the first release: macOS keys the
+  Local Network, firewall and Login Items permissions, the preferences and
+  Launch Services' file handlers on it.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleIdentifier</key>
+	<string>app.radiotrope.Radiotrope</string>
+	<key>CFBundleName</key>
+	<string>Radiotrope</string>
+	<key>CFBundleDisplayName</key>
+	<string>Radiotrope</string>
+	<key>CFBundleExecutable</key>
+	<string>radiotrope</string>
+	<key>CFBundleIconFile</key>
+	<string>Radiotrope</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleSignature</key>
+	<string>????</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>@MIN_MACOS@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.music</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© George Alexiou and contributors. GPL-3.0-or-later.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<!-- OpenGL (FemtoVG): stay on the integrated GPU of a dual-GPU Intel Mac -->
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<!-- Out of App Nap: a hidden, silent player still has to start a
+	     scheduled recording on time -->
+	<key>NSAppSleepDisabled</key>
+	<true/>
+
+	<!-- macOS 15 asks before an app talks to the local network: the phone
+	     remote (mDNS and WebRTC) and stations on the LAN -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Radiotrope uses the local network so the Radiotrope Remote app on your phone can find and control this player, and to play stations on your network.</string>
+	<!-- config.rs SERVICE_TYPE, without ".local." -->
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_radiotrope._tcp</string>
+	</array>
+
+	<!-- Playlists opened from Finder. Alternate: offered in Open With, never
+	     taken from Music or VLC. The handler that plays them comes in
+	     phase 2 (an Apple Event, not an argument). -->
+	<key>CFBundleDocumentTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>Playlist</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.m3u-playlist</string>
+				<string>public.pls-playlist</string>
+				<string>org.xspf.playlist</string>
+			</array>
+		</dict>
+	</array>
+	<!-- What those types are, for a Mac that doesn't know them already (a
+	     type the system declares itself wins over these) -->
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>public.m3u-playlist</string>
+			<key>UTTypeDescription</key>
+			<string>M3U Playlist</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.text</string>
+				<string>public.playlist</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>m3u</string>
+					<string>m3u8</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>audio/x-mpegurl</string>
+					<string>audio/mpegurl</string>
+					<string>application/vnd.apple.mpegurl</string>
+					<string>application/x-mpegurl</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>public.pls-playlist</string>
+			<key>UTTypeDescription</key>
+			<string>PLS Playlist</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.text</string>
+				<string>public.playlist</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>pls</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>audio/x-scpls</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.xspf.playlist</string>
+			<key>UTTypeDescription</key>
+			<string>XSPF Playlist</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.xml</string>
+				<string>public.playlist</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>xspf</string>
+				</array>
+				<key>public.mime-type</key>
+				<array>
+					<string>application/xspf+xml</string>
+				</array>
+			</dict>
+		</dict>
+	</array>
+</dict>
+</plist>

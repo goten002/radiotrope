@@ -5941,6 +5941,7 @@ dependencies = [
  "mdns-sd",
  "minisign",
  "minisign-verify",
+ "objc2 0.6.5",
  "qrcode",
  "radiotrope",
  "radiotrope-build",

@@ -5,6 +5,8 @@
 #   radiotrope_<ver>-1_<amd64|arm64>.deb       Debian, Ubuntu (cargo-deb)
 #   radiotrope-<ver>-1.<arch>.rpm              Fedora, openSUSE (cargo-generate-rpm)
 #   Radiotrope-<ver>-<arch>.AppImage (+.zsync) any distribution (packaging/appimage/build.sh)
+#   radiotrope-probe-<ver>-linux-<arch>.tar.gz the station checker alone: it is in
+#                                              none of the packages above
 #
 # Usage: packaging/linux/dist.sh [OUT_DIR]     (default: target/dist)
 #
@@ -13,13 +15,13 @@
 # Rust, cargo-deb and cargo-generate-rpm (versions in package-linux.yml).
 #
 #   SKIP_BUILD=1          reuse what is in target/release and target/generated
-#   FORMATS="tar deb"     build only some of: tar deb rpm appimage
+#   FORMATS="tar deb"     build only some of: tar deb rpm appimage probe
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 ROOT=$PWD
 OUT=$(realpath -m "${1:-target/dist}")
-FORMATS=${FORMATS:-tar deb rpm appimage}
+FORMATS=${FORMATS:-tar deb rpm appimage probe}
 VERSION=$(cargo pkgid -p radiotrope-app | sed 's/.*[#@]//')
 ARCH=$(uname -m)
 # Same timestamps in the archives for the same commit
@@ -31,9 +33,13 @@ wants() { [[ " $FORMATS " == *" $1 "* ]]; }
 echo "Radiotrope $VERSION for $ARCH: $FORMATS -> $OUT"
 mkdir -p "$OUT"
 
-# The three programs (release profile, --locked), man pages, completions
+# The two programs (release profile, --locked), man pages, completions;
+# the probe only for its own tarball
 if [ -z "${SKIP_BUILD:-}" ]; then
     make all
+    if wants probe; then
+        make probe
+    fi
 fi
 
 # The installed tree under /usr. The deb and rpm metadata in
@@ -68,6 +74,20 @@ fi
 
 if wants appimage; then
     packaging/appimage/build.sh "$OUT"
+fi
+
+if wants probe; then
+    name="radiotrope-probe-$VERSION-linux-$ARCH"
+    rm -rf target/dist-probe
+    # Laid out like the player's tarball: bin/ and share/ (man page and
+    # completions) at the top
+    make install-probe DESTDIR="$ROOT/target/dist-probe/$name" PREFIX=
+    gzip -9nf "target/dist-probe/$name"/share/man/man1/*.1
+    install -m644 LICENSE THIRD-PARTY-LICENSES "target/dist-probe/$name/"
+    sed -e "s/@VERSION@/$VERSION/g" -e "s/@PLATFORM@/Linux ($ARCH)/g" \
+        packaging/probe/README.txt > "target/dist-probe/$name/README.txt"
+    tar --sort=name --owner=0 --group=0 --numeric-owner --mtime="@$SOURCE_DATE_EPOCH" \
+        -C target/dist-probe -cf - "$name" | gzip -9n > "$OUT/$name.tar.gz"
 fi
 
 echo

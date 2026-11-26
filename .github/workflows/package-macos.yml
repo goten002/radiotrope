@@ -1,0 +1,234 @@
+name: Package (macOS)
+
+# Builds the macOS downloads: one universal (Apple Silicon + Intel)
+# Radiotrope.app, in a DMG and in a zip, then opens the DMG on both kinds of
+# Mac and starts the app from it. Nothing is published and nothing is signed
+# with a certificate (an ad-hoc signature only): macOS is experimental until
+# the Apple account exists (macOS review, phase 3).
+#
+#   dist-macos   radiotrope-<ver>-macos-universal.dmg
+#                radiotrope-<ver>-macos-universal.zip
+#
+# A pull request that changes the macOS packaging runs it, and so can a
+# manual run (Actions > Package (macOS) > Run workflow): artefacts only.
+# release.yml doesn't call it yet.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Release version (`0.1.0` or `v0.1.0`); must match the workspace version. Empty for the workspace version.
+        type: string
+        required: false
+        default: ""
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version; empty for the workspace version
+        type: string
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - packaging/macos/**
+      - .github/workflows/package-macos.yml
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: package-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (universal)
+    # Apple Silicon; the x86_64 half is cross-compiled (Apple's clang builds
+    # the C parts for either architecture)
+    runs-on: macos-15
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-universal
+
+      - name: Version
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          workspace=$(cargo pkgid -p radiotrope-app | sed 's/.*[#@]//')
+          wanted=${INPUT_VERSION#v}
+          if [ -n "$wanted" ] && [ "$wanted" != "$workspace" ]; then
+            echo "::error::Version $wanted does not match the workspace version $workspace (Cargo.toml)"
+            exit 1
+          fi
+          echo "Version $workspace"
+          echo "version=$workspace" >> "$GITHUB_OUTPUT"
+
+      - name: Build, bundle, DMG and zip
+        run: packaging/macos/bundle.sh dist
+
+      - name: What is in the bundle
+        run: |
+          app=dist/stage/Radiotrope.app
+          find "$app" -type f | sed "s|^$app/||" | sort
+          plutil -p "$app/Contents/Info.plist"
+          for p in radiotrope radiotrope-cli; do
+            lipo -info "$app/Contents/MacOS/$p"
+          done
+          codesign -dv --verbose=2 "$app" 2>&1
+          ls -l dist/*.dmg dist/*.zip
+          {
+            echo "### macOS downloads"
+            echo
+            echo "| File | Size |"
+            echo "|------|------|"
+            for f in dist/*.dmg dist/*.zip; do
+              echo "| $(basename "$f") | $(du -h "$f" | cut -f1) ($(stat -f %z "$f") bytes) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Phase 3, once the Apple Developer account exists: sign the programs
+      # and the bundle with the Developer ID certificate (hardened runtime,
+      # packaging/macos/entitlements.plist), notarize the DMG with notarytool,
+      # staple it. Needs secrets that don't exist yet, so it never runs.
+      - name: Sign and notarize (phase 3, not set up)
+        if: ${{ false }}
+        run: |
+          echo "Developer ID signing and notarization are not set up yet"
+          exit 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-macos
+          path: |
+            dist/radiotrope-*-macos-universal.dmg
+            dist/radiotrope-*-macos-universal.zip
+          if-no-files-found: error
+
+  # The DMG as a user gets it: mount it, check the bundle, start the app
+  smoke:
+    name: Smoke test (${{ matrix.arch }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { arch: arm64, runner: macos-15 }
+          - { arch: x86_64, runner: macos-15-intel }
+    runs-on: ${{ matrix.runner }}
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-macos
+          path: dist
+
+      - name: Mount the DMG
+        run: |
+          sw_vers
+          uname -m
+          mkdir -p mnt
+          hdiutil attach -nobrowse -readonly -mountpoint "$PWD/mnt" "dist/radiotrope-$VERSION-macos-universal.dmg"
+          ls -la mnt
+          test -d mnt/Radiotrope.app
+          test "$(readlink mnt/Applications)" = /Applications
+
+      - name: Signature, architectures, Info.plist
+        run: |
+          app=mnt/Radiotrope.app
+          # Ad hoc for now: valid, but not one Gatekeeper accepts
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign -dv "$app" 2>&1 | tee sig.txt
+          grep -q 'Signature=adhoc' sig.txt
+          spctl --assess --type execute --verbose "$app" || echo "Gatekeeper rejects it, as expected for an unsigned app"
+          for p in radiotrope radiotrope-cli; do
+            archs=$(lipo -archs "$app/Contents/MacOS/$p")
+            echo "$p: $archs"
+            for a in arm64 x86_64; do
+              [[ " $archs " == *" $a "* ]] || { echo "::error::$p has no $a code"; exit 1; }
+            done
+          done
+          test "$(plutil -extract CFBundleIdentifier raw "$app/Contents/Info.plist")" = app.radiotrope.Radiotrope
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Contents/Info.plist")" = "${VERSION%%-*}"
+          test "$(cat "$app/Contents/Resources/update-mode")" = notify
+          test -s "$app/Contents/Resources/Radiotrope.icns"
+          # The probe is a separate download, in no package
+          test ! -e "$app/Contents/MacOS/radiotrope-probe"
+
+      - name: Programs report their version
+        run: |
+          for p in radiotrope-cli; do
+            out=$(mnt/Radiotrope.app/Contents/MacOS/$p --version)
+            echo "$out"
+            test "$out" = "$p $VERSION"
+          done
+          mnt/Radiotrope.app/Contents/MacOS/radiotrope --version
+
+      # Copied to an Applications folder, as a user would, then started the
+      # two ways: its program directly (the log comes here), and through
+      # Launch Services with `open`, which reads Info.plist as Finder does.
+      # The runner has a display but may have no sound device.
+      - name: The app opens its window
+        shell: bash
+        run: |
+          mkdir -p smoke/Applications smoke/home
+          ditto mnt/Radiotrope.app smoke/Applications/Radiotrope.app
+          app="$PWD/smoke/Applications/Radiotrope.app"
+          export HOME="$PWD/smoke/home"
+
+          RUST_LOG=debug "$app/Contents/MacOS/radiotrope" > smoke/app.log 2>&1 &
+          pid=$!
+          sleep 15
+          screencapture -x smoke/screen.png || true
+          if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" && status=0 || status=$?
+            tail -50 smoke/app.log
+            echo "::error::the app exited by itself with status $status"
+            exit 1
+          fi
+          kill -TERM "$pid"
+          sleep 3
+          kill -0 "$pid" 2>/dev/null && { echo "::warning::the app did not quit on SIGTERM"; kill -KILL "$pid"; }
+          echo "--- app.log"; tail -60 smoke/app.log
+
+          open -n "$app"
+          for _ in $(seq 1 15); do
+            pgrep -f "$app/Contents/MacOS/radiotrope" > /dev/null && break
+            sleep 1
+          done
+          if ! pgrep -f "$app/Contents/MacOS/radiotrope"; then
+            echo "::error::'open Radiotrope.app' did not start the app"
+            exit 1
+          fi
+          sleep 5
+          screencapture -x smoke/screen-open.png || true
+          pkill -TERM -f "$app/Contents/MacOS/radiotrope" || true
+          sleep 3
+          pkill -KILL -f "$app/Contents/MacOS/radiotrope" || true
+
+      - name: Unmount
+        if: always()
+        run: hdiutil detach mnt || hdiutil detach -force mnt || true
+
+      - uses: actions/upload-artifact@v4
+        if: success() || failure()
+        with:
+          name: macos-package-smoke-${{ matrix.arch }}
+          path: |
+            smoke/screen.png
+            smoke/screen-open.png
+            smoke/app.log
+          if-no-files-found: warn
+          retention-days: 14

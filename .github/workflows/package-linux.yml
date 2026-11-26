@@ -1,12 +1,15 @@
 # The Linux release files, for x86_64 and aarch64, and the checks that they
 # install and start on the distributions they are for.
 #
-# Called by release.yml with the version it expects; run it by hand (Actions >
-# Package Linux > Run workflow) to get the files as workflow artefacts from
-# any branch. It never publishes anything.
+# Called by release.yml with the version it expects, and run by pull requests
+# that change the Linux packaging; run it by hand (Actions > Package Linux >
+# Run workflow) to get the files as workflow artefacts. It never publishes
+# anything.
 #
-# Artefacts: dist-linux-<arch> (tarball, .deb, .rpm, AppImage and its .zsync)
-# and dist-linux-flatpak-<arch> (the .flatpak bundle).
+# Artefacts: dist-linux-<arch> (tarball, .deb, .rpm, AppImage and its .zsync),
+# dist-linux-flatpak-<arch> (the .flatpak bundle) and dist-probe-linux-<arch>
+# (radiotrope-probe-<ver>-linux-<arch>.tar.gz: the station checker, which is
+# in none of the packages, as a download of its own).
 name: Package Linux
 
 on:
@@ -18,6 +21,17 @@ on:
         required: false
         default: ""
   workflow_dispatch:
+  # A pull request that changes the Linux packaging runs it too: artefacts only
+  pull_request:
+    paths:
+      - Makefile
+      - packaging/linux/**
+      - packaging/appimage/**
+      - packaging/flatpak/**
+      - packaging/arch/**
+      - packaging/probe/**
+      - crates/radiotrope-app/Cargo.toml
+      - .github/workflows/package-linux.yml
 
 permissions:
   contents: read
@@ -74,7 +88,11 @@ jobs:
       - name: cargo-deb and cargo-generate-rpm
         run: cargo install --locked cargo-deb@3.8.0 cargo-generate-rpm@0.21.1
       - name: Build the files
-        run: packaging/linux/dist.sh dist
+        run: |
+          packaging/linux/dist.sh dist
+          # The probe's tarball is an artefact of its own
+          mkdir probe
+          mv dist/radiotrope-probe-*.tar.gz probe/
       - name: Check them
         shell: bash
         env:
@@ -91,14 +109,31 @@ jobs:
               echo "::error::dist/$f is missing"; ls -l dist; exit 1
             fi
           done
-          echo "--- tarball"; tar -tzf dist/*.tar.gz
-          echo "--- deb"; dpkg-deb --info dist/*.deb; dpkg-deb --contents dist/*.deb
+          probe="probe/radiotrope-probe-$VERSION-linux-$ARCH.tar.gz"
+          if [ ! -s "$probe" ]; then
+            echo "::error::$probe is missing"; ls -l probe; exit 1
+          fi
+          echo "--- tarball"; tar -tzf dist/*.tar.gz | tee tarball.txt
+          echo "--- deb"; dpkg-deb --info dist/*.deb; dpkg-deb --contents dist/*.deb | tee deb.txt
+          echo "--- probe tarball"; tar -tzf "$probe"
+          # The probe is a separate download: in none of the packages
+          if grep radiotrope-probe tarball.txt deb.txt; then
+            echo "::error::The tarball or the .deb has the probe in it"; exit 1
+          fi
+          tar -xzOf "$probe" "radiotrope-probe-$VERSION-linux-$ARCH/bin/radiotrope-probe" > probe.bin
+          test -s probe.bin
+          rm probe.bin
           echo "--- AppImage update information"
           "dist/Radiotrope-$VERSION-$ARCH.AppImage" --appimage-updateinformation
       - uses: actions/upload-artifact@v4
         with:
           name: dist-linux-${{ matrix.arch }}
           path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-probe-linux-${{ matrix.arch }}
+          path: probe/*
           if-no-files-found: error
 
   flatpak:
@@ -128,11 +163,14 @@ jobs:
         run: |
           set -eu
           flatpak install --user --noninteractive --assumeyes "$BUNDLE"
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             out=$(flatpak run --command="$p" app.radiotrope.Radiotrope --version)
             echo "$out"
             test "$out" = "$p $VERSION"
           done
+          if flatpak run --command=radiotrope-probe app.radiotrope.Radiotrope --version; then
+            echo "::error::The Flatpak has the probe in it"; exit 1
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: dist-linux-flatpak-${{ matrix.arch }}
@@ -168,11 +206,12 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             out=$("$p" --version)
             echo "$out"
             test "$out" = "$p $VERSION"
           done
+          if command -v radiotrope-probe; then echo "::error::The package has the probe in it"; exit 1; fi
           man -w radiotrope-cli 2>/dev/null || test -f /usr/share/man/man1/radiotrope-cli.1.gz
           test -f /usr/share/applications/app.radiotrope.Radiotrope.desktop
       - name: The tarball's programs start
@@ -182,9 +221,27 @@ jobs:
           set -eu
           mkdir tarball
           tar -xzf dist/radiotrope-*.tar.gz -C tarball --strip-components=1
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             test "$(tarball/bin/$p --version)" = "$p $VERSION"
           done
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist-probe-linux-${{ matrix.arch }}
+          path: probe
+      - name: The probe's own tarball runs
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -eu
+          mkdir probe-tarball
+          tar -xzf "probe/radiotrope-probe-$VERSION-linux-$ARCH.tar.gz" -C probe-tarball --strip-components=1
+          ls -lR probe-tarball
+          test "$(probe-tarball/bin/radiotrope-probe --version)" = "radiotrope-probe $VERSION"
+          probe-tarball/bin/radiotrope-probe --help >/dev/null
+          test -f probe-tarball/share/man/man1/radiotrope-probe.1.gz
+          test -f probe-tarball/README.txt
+          test -f probe-tarball/LICENSE
 
   # The .rpm on Fedora and openSUSE
   smoke-rpm:
@@ -215,11 +272,12 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -eu
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             out=$("$p" --version)
             echo "$out"
             test "$out" = "$p $VERSION"
           done
+          if command -v radiotrope-probe; then echo "::error::The package has the probe in it"; exit 1; fi
           rpm -q --requires radiotrope
           rpm -q --recommends radiotrope
 
@@ -257,11 +315,9 @@ jobs:
           out=$("$app" --version)
           echo "$out"
           test "$out" = "radiotrope $VERSION"
-          for p in radiotrope-cli radiotrope-probe; do
-            out=$("$app" "$p" --version)
-            echo "$out"
-            test "$out" = "$p $VERSION"
-          done
+          out=$("$app" radiotrope-cli --version)
+          echo "$out"
+          test "$out" = "radiotrope-cli $VERSION"
 
   # The AUR packages: `radiotrope` built from this commit's source with
   # makepkg, `radiotrope-bin` from the tarball above; both checked with namcap
@@ -298,11 +354,12 @@ jobs:
         run: |
           set -eu
           pacman -U --noconfirm packaging/arch/radiotrope-"$VERSION"-*.pkg.tar.zst
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             out=$("$p" --version)
             echo "$out"
             test "$out" = "$p $VERSION"
           done
+          if command -v radiotrope-probe; then echo "::error::The package has the probe in it"; exit 1; fi
           pacman -R --noconfirm radiotrope
       - uses: actions/download-artifact@v4
         with:
@@ -320,8 +377,9 @@ jobs:
         run: |
           set -eu
           pacman -U --noconfirm packaging/arch/radiotrope-bin-"$VERSION"-*.pkg.tar.zst
-          for p in radiotrope radiotrope-cli radiotrope-probe; do
+          for p in radiotrope radiotrope-cli; do
             out=$("$p" --version)
             echo "$out"
             test "$out" = "$p $VERSION"
           done
+          if command -v radiotrope-probe; then echo "::error::The package has the probe in it"; exit 1; fi

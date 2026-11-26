@@ -16,7 +16,6 @@ AppsAndFeaturesEntries:
 Commands:
   - radiotrope
   - radiotrope-cli
-  - radiotrope-probe
 # One universal installer serves both architectures and both scopes
 Installers:
   - Architecture: x64

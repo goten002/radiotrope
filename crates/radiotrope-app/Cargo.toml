@@ -90,13 +90,19 @@ x11rb = { version = "0.14", default-features = false, optional = true }
 [target.'cfg(windows)'.dependencies]
 widestring = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# The Objective-C runtime, to answer AppKit's "should the application
+# terminate?" with our own Quit (already in the tree through Slint's and
+# the tray's AppKit code)
+objc2 = { version = "0.6", optional = true }
+
 [features]
 default = ["desktop", "system-fdk"]
 # AAC+ (HE-AAC) by the system's libfdk-aac, loaded at run time if it is
 # installed. Without it (`--no-default-features`) the build has no FDK code
 # at all and plays AAC with the built-in AAC-LC decoder.
 system-fdk = ["radiotrope/system-fdk"]
-desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:x11rb", "dep:zbus", "zbus/blocking-api", "zbus/async-io"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:x11rb", "dep:zbus", "dep:objc2", "zbus/blocking-api", "zbus/async-io"]
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "zbus/tokio"]
 
 ui-snapshots = ["slint/renderer-software"]
@@ -119,7 +125,9 @@ slint-build = "1.18"
 # The Windows exe's icon and version details (Explorer, Task Manager)
 radiotrope-build = { path = "../radiotrope-build" }
 
-# The Linux packages: one `radiotrope` package with all three programs.
+# The Linux packages: one `radiotrope` package with the player and the
+# terminal player. The station checker (radiotrope-probe) is not packaged: it
+# is a download of its own.
 # packaging/linux/dist.sh builds the programs, installs everything else into
 # target/dist-stage (`make install`, PREFIX=/usr) and then runs
 # `cargo deb --no-build` and `cargo generate-rpm`, which read these tables.
@@ -134,8 +142,7 @@ license-file = ["../../LICENSE", "0"]
 extended-description = """\
 An internet radio player for the desktop. Play it yourself, from your phone, \
 or let your AI assistant drive it over the Model Context Protocol (MCP). \
-Includes radiotrope-cli, a terminal player, and radiotrope-probe, a station \
-checker."""
+Includes radiotrope-cli, a terminal player."""
 # $auto: the libraries the programs link (from dpkg-shlibdeps). libxkbcommon,
 # the GL and display libraries are loaded at run time, so they are named here;
 # ca-certificates: HTTPS (rustls) checks servers against the system's roots.
@@ -146,20 +153,18 @@ recommends = "libegl1, libgl1, libwayland-client0, libwayland-cursor0, libwaylan
 assets = [
     ["target/release/radiotrope", "usr/bin/", "755"],
     ["target/release/radiotrope-cli", "usr/bin/", "755"],
-    ["target/release/radiotrope-probe", "usr/bin/", "755"],
     # Launcher, metainfo, icons, man pages, completions, README and licences
     ["../../target/dist-stage/usr/share/**/*", "usr/share/", "644"],
 ]
 
 [package.metadata.generate-rpm]
 name = "radiotrope"
-summary = "Internet radio player, with a terminal player and a station checker"
+summary = "Internet radio player, with a terminal player"
 license = "GPL-3.0-or-later"
 url = "https://github.com/goten002/radiotrope"
 assets = [
     { source = "target/release/radiotrope", dest = "/usr/bin/radiotrope", mode = "755" },
     { source = "target/release/radiotrope-cli", dest = "/usr/bin/radiotrope-cli", mode = "755" },
-    { source = "target/release/radiotrope-probe", dest = "/usr/bin/radiotrope-probe", mode = "755" },
     { source = "../../target/dist-stage/usr/share/applications/*", dest = "/usr/share/applications/", mode = "644" },
     { source = "../../target/dist-stage/usr/share/metainfo/*", dest = "/usr/share/metainfo/", mode = "644" },
     { source = "../../target/dist-stage/usr/share/icons/hicolor/*/apps/*", dest = "/usr/share/icons/hicolor/", mode = "644" },
