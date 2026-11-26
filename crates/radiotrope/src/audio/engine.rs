@@ -2044,6 +2044,20 @@ mod tests {
         engine.analysis().lock().unwrap().sample_count
     }
 
+    /// Wait until `done` holds, for as long as a busy machine may take
+    /// (30 s); false if it never did. For tests that only need something to
+    /// have happened by now: a set sleep fails them on a slow runner.
+    fn eventually(done: impl Fn() -> bool) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !done() {
+            if Instant::now() >= deadline {
+                return false;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
     /// Wait until `done` holds, collecting events meanwhile
     fn wait_until(
         engine: &AudioEngine,
@@ -3535,10 +3549,7 @@ mod tests {
 
         // Let some audio play to accumulate samples: as long as a busy
         // machine takes to play some
-        let deadline = Instant::now() + Duration::from_secs(30);
-        while sample_count(&engine) == 0 && Instant::now() < deadline {
-            thread::sleep(Duration::from_millis(10));
-        }
+        eventually(|| sample_count(&engine) > 0);
 
         let data = engine.analysis();
         let analysis = data.lock().unwrap();
@@ -4155,8 +4166,8 @@ mod tests {
             other => panic!("Expected Playing, got {:?}", other),
         }
 
-        // Wait for at least one 500ms tick to copy stats
-        thread::sleep(Duration::from_millis(700));
+        // Wait for a 500ms tick to copy stats
+        eventually(|| stats.lock().unwrap().frames_played > 0);
 
         let s = stats.lock().unwrap();
         assert!(
@@ -4180,7 +4191,7 @@ mod tests {
             other => panic!("Expected Playing, got {:?}", other),
         }
 
-        thread::sleep(Duration::from_millis(700));
+        eventually(|| stats.lock().unwrap().sample_count > 0);
 
         let s = stats.lock().unwrap();
         assert!(
@@ -4325,7 +4336,7 @@ mod tests {
             Some(AudioEvent::Playing(_)) => {}
             other => panic!("Expected Playing, got {:?}", other),
         }
-        thread::sleep(Duration::from_millis(700));
+        eventually(|| stats.lock().unwrap().frames_played > 0);
 
         // Snapshot old stats
         let old_frames = stats.lock().unwrap().frames_played;
@@ -4525,7 +4536,7 @@ mod tests {
             other => panic!("Expected Playing, got {:?}", other),
         }
 
-        thread::sleep(Duration::from_millis(300));
+        eventually(|| position.load(Ordering::Relaxed) > 0);
         let pos = position.load(Ordering::Relaxed);
         assert!(pos > 0 && pos <= len, "position {pos} of {len}");
 
@@ -5120,21 +5131,13 @@ mod tests {
         // waits for it and the audio stops.
         // Waits for conditions, not a set time: on a busy machine the
         // paced source and the output's rebuffering can take far longer
-        let samples = || engine.analysis().lock().unwrap().sample_count;
-        let wait = |done: &dyn Fn() -> bool| {
-            let deadline = Instant::now() + Duration::from_secs(30);
-            while !done() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(10));
-            }
-        };
         // The queue is full: from here the engine waits to send
         let events = engine.event_receiver().clone();
-        wait(&|| events.is_full());
-        assert!(events.is_full(), "the event queue didn't fill");
-        let before = samples();
+        assert!(eventually(|| events.is_full()), "the queue didn't fill");
+        let before = sample_count(&engine);
         // And the audio goes on meanwhile
-        wait(&|| samples() > before);
-        let after = samples();
+        eventually(|| sample_count(&engine) > before);
+        let after = sample_count(&engine);
         assert!(events.is_full(), "somebody read the events");
 
         // Let the engine finish sending, so it can shut down
@@ -5454,7 +5457,7 @@ mod tests {
             events.iter().any(|e| matches!(e, AudioEvent::Resumed))
         });
         assert!(resumed, "{events:?}");
-        thread::sleep(Duration::from_millis(300));
+        eventually(|| sample_count(&engine) > before);
         assert!(
             sample_count(&engine) > before,
             "it didn't play once resumed"
