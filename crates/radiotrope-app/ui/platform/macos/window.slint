@@ -245,22 +245,24 @@ export component PlatformWindow inherits Window {
                     checked: root.menu-state.tray-icon;
                     activated => { root.choose(MenuCommand.tray-icon); }
                 }
-                // Greyed with no tray to hide in; they keep their ticks.
-                // No Minimize to Tray (it goes to the Dock) and no Start
-                // at Login on macOS.
-                MenuItem {
-                    title: "Close to Tray";
-                    enabled: root.menu-state.tray-icon && root.menu-state.tray-available;
-                    checkable: true;
-                    checked: root.menu-state.close-to-tray;
-                    activated => { root.choose(MenuCommand.close-to-tray); }
-                }
+                // No Close to Tray (closing the window always hides it
+                // on macOS; the Dock icon brings it back) and no Minimize
+                // to Tray (it goes to the Dock).
+                // Greyed with no tray to hide in; it keeps its tick.
                 MenuItem {
                     title: "Start Hidden in Tray";
                     enabled: root.menu-state.tray-icon && root.menu-state.tray-available;
                     checkable: true;
                     checked: root.menu-state.start-in-tray;
                     activated => { root.choose(MenuCommand.start-in-tray); }
+                }
+                // The LaunchAgent file, which says whether it is on: the
+                // tick is put right after a change that failed
+                MenuItem {
+                    title: "Start at Login";
+                    checkable: true;
+                    checked: root.menu-state.start-at-login;
+                    activated => { root.choose(MenuCommand.start-at-login); }
                 }
             }
         }

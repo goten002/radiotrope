@@ -48,10 +48,12 @@ sudo ln -s /Applications/Radiotrope.app/Contents/MacOS/radiotrope-cli /usr/local
 - the Local Network prompt text and the Bonjour service `_radiotrope._tcp`
   (the phone remote), and `NSAppSleepDisabled` (no App Nap, so scheduled
   recordings start on time);
-- M3U, M3U8, PLS and XSPF playlists as `Viewer` with `LSHandlerRank`
-  `Alternate`: Radiotrope is in Finder's Open With, never the default. The
-  app doesn't handle an opened file yet (phase 2: it arrives as an Apple
-  Event, not as an argument).
+- M3U, M3U8 and PLS playlists as `Viewer` with `LSHandlerRank`
+  `Alternate`: Radiotrope is in Finder's Open With, never the default. An
+  opened file arrives as an Apple event, not as an argument
+  (`application:openURLs:`, `macos_app.rs`), and its first `http(s)`
+  address plays (`open_file.rs`). XSPF is not declared: the player doesn't
+  read it.
 
 `entitlements.plist` is for the Developer ID signature (phase 3). The ad-hoc
 signature made today doesn't use it.
@@ -111,8 +113,19 @@ from):
    program, the bundle id, version and `update-mode`; runs the CLI with
    `--version`; copies the app to an Applications folder, starts
    it for 15 seconds (screenshot, log), then again through `open` (Launch
-   Services, as Finder does). Screenshots and logs are kept as
-   `macos-package-smoke-<arch>`.
+   Services, as Finder does). Then `scripts/macos-integration-check.sh`
+   with the app from the DMG: a playlist opened with `open -a` starts the
+   app and plays, a second `open -a` and a second run of the program start
+   no second process and the running app is told to show its window, a
+   `.pls` and a playlist with no station in it are answered while it runs,
+   and `radiotrope --start-at-login on` writes the LaunchAgent file, which
+   launchd accepts and starts the app from. Screenshots and logs are kept
+   as `macos-package-smoke-<arch>` (`integration.txt` is that check's
+   result).
+
+`ci-macos.yml` runs the same script on every pull request, with a bundle
+made around the debug build. The script also runs by hand on a Mac (its
+header says what it changes in your profile).
 
 A step "Sign and notarize (phase 3, not set up)" is in the build job and
 never runs: it is where the Developer ID signature, `notarytool` and
@@ -131,3 +144,4 @@ bundle id; the Homebrew cask and users' Dock entries on the bundle name.
 | Main program (`CFBundleExecutable`) | `radiotrope` |
 | Bonjour service | `_radiotrope._tcp` |
 | Settings folder | `~/Library/Application Support/radiotrope/` |
+| Start at Login | `~/Library/LaunchAgents/app.radiotrope.Radiotrope.plist`, label `app.radiotrope.Radiotrope` |
