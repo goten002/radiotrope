@@ -564,7 +564,7 @@ fn main() {
     // Finder play, and the Mac stays awake while a recording runs
     #[cfg(all(target_os = "macos", feature = "desktop"))]
     let _awake_timer = {
-        show_and_open_as_macos_asks(&ui, &ctx);
+        show_and_open_as_macos_asks(&ui);
         stay_awake_while_recording(&ctx.state)
     };
 
@@ -582,6 +582,10 @@ fn main() {
     }
     let _ = ui.hide();
     run_exit_work(&finish);
+    // What AppKit's questions were answered with holds the window: let go
+    // of it here, not when the thread's own storage is taken down
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    macos_app::forget_handlers();
 }
 
 /// The work of the exit, until it has been run
@@ -615,6 +619,7 @@ fn quit_as_macos_asks(ui: &App, finish: &ExitWork) {
         }
         AskedBy::System => {
             run_exit_work(&finish);
+            macos_app::forget_handlers();
             Answer::TerminateNow
         }
     });
@@ -629,7 +634,7 @@ fn quit_as_macos_asks(ui: &App, finish: &ExitWork) {
 /// see [`macos_app`]. The window is shown, and a playlist's station plays.
 /// Both are done after AppKit's call has returned, from the event loop.
 #[cfg(all(target_os = "macos", feature = "desktop"))]
-fn show_and_open_as_macos_asks(ui: &App, ctx: &AppContext) {
+fn show_and_open_as_macos_asks(ui: &App) {
     let ui_weak = ui.as_weak();
     let reopen = macos_app::on_reopen(move || {
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
@@ -640,8 +645,8 @@ fn show_and_open_as_macos_asks(ui: &App, ctx: &AppContext) {
     if let Err(e) = reopen {
         eprintln!("The Dock icon won't bring the window back: {e}");
     }
-    open_file::listen(ctx);
-    let open = macos_app::on_open(open_file::open_later);
+    let ui_weak = ui.as_weak();
+    let open = macos_app::on_open(move |opened| open_file::open_later(&ui_weak, opened));
     if let Err(e) = open {
         eprintln!("Playlists opened in Finder won't play: {e}");
     }

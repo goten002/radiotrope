@@ -3,19 +3,15 @@
 //!
 //! A station's playlist (`.m3u`, `.m3u8`, `.pls`) is a short text file with
 //! the addresses of its streams, the kind a station's "Listen" link
-//! downloads. The addresses are read here; playing them is Open > Network
-//! Stream's job, with the first as the station and the rest as its other
-//! streams.
+//! downloads. The addresses are read here; playing the first is Open >
+//! Network Stream's job.
 
-use std::cell::RefCell;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use radiotrope::config::hls::MAX_PLAYLIST_BYTES;
 use radiotrope::stream::playlist::{m3u_entries, pls_entries, sniff_playlist, PlaylistCheck};
-use radiotrope_app::data::favorites::PlayMetadata;
 
-use crate::context::AppContext;
 use crate::App;
 
 /// Something opened with the app, from Finder or with `open`
@@ -37,46 +33,30 @@ impl Opened {
     }
 }
 
-thread_local! {
-    /// The window's handles, for what is opened while the app runs
-    static CONTEXT: RefCell<Option<AppContext>> = const { RefCell::new(None) };
-}
-
-/// From now on [`open_later`] plays in this window. Call on the window's
-/// thread.
+/// Play what was opened in `window`, from the event loop: the system's
+/// call that brought it returns first
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn listen(ctx: &AppContext) {
-    CONTEXT.with(|slot| *slot.borrow_mut() = Some(ctx.clone()));
-}
-
-/// Play what was opened, from the event loop: the system's call that
-/// brought it returns first. Call on the window's thread, after
-/// [`listen`].
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-pub fn open_later(opened: Vec<Opened>) {
-    let Some(window) = CONTEXT.with(|slot| slot.borrow().as_ref().map(|ctx| ctx.ui.clone())) else {
-        return;
-    };
-    let _ = window.upgrade_in_event_loop(move |ui| {
-        let ctx = CONTEXT.with(|slot| slot.borrow().clone());
-        if let Some(ctx) = ctx {
-            open(&ui, &ctx, &opened);
-        }
-    });
+pub fn open_later(window: &slint::Weak<App>, opened: Vec<Opened>) {
+    let _ = window.upgrade_in_event_loop(move |ui| open(&ui, &opened));
 }
 
 /// Show the window and play the first of `opened` that has a station (one
-/// plays at a time), as Open > Network Stream would; if none has, say why
-/// the first hasn't
+/// plays at a time), as Open > Network Stream does with an address typed
+/// in; if none has, say why the first hasn't
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn open(ui: &App, ctx: &AppContext, opened: &[Opened]) {
+fn open(ui: &App, opened: &[Opened]) {
     crate::tray::show_window(ui);
     let mut problem = None;
     for item in opened {
         match station_of(item) {
             Ok(station) => {
                 eprintln!("Opened {}: playing {}", item.shown(), station.url);
-                crate::player_ui::play_station_with_metadata(ui, ctx, station);
+                ui.invoke_play_stream(
+                    station.url.into(),
+                    station.name.into(),
+                    Default::default(),
+                    Default::default(),
+                );
                 return;
             }
             Err(e) => {
@@ -97,28 +77,27 @@ fn open(ui: &App, ctx: &AppContext, opened: &[Opened]) {
     }
 }
 
-/// The station an opened file or address stands for: the first stream to
-/// play, the file's others to fall back on
-fn station_of(opened: &Opened) -> Result<PlayMetadata, OpenError> {
-    let (name, mut urls) = match opened {
+/// What Open > Network Stream is given for an opened file or address
+#[derive(Debug, PartialEq, Eq)]
+struct Station {
+    /// The stream to play: the file's first
+    url: String,
+    /// The file's name; "" for an address
+    name: String,
+}
+
+/// The station an opened file or address stands for: a file's first
+/// stream (a station's playlist lists the same programme's mirrors)
+fn station_of(opened: &Opened) -> Result<Station, OpenError> {
+    let (name, urls) = match opened {
         Opened::File(path) => {
             let playlist = read(path)?;
-            (Some(playlist.name).filter(|n| !n.is_empty()), playlist.urls)
+            (playlist.name, playlist.urls)
         }
-        Opened::Url(url) => (None, web_addresses(vec![url.trim().to_string()])),
+        Opened::Url(url) => (String::new(), web_addresses(vec![url.trim().to_string()])),
     };
-    if urls.is_empty() {
-        return Err(OpenError::NotWeb);
-    }
-    let url = urls.remove(0);
-    Ok(PlayMetadata {
-        url,
-        backups: urls,
-        name,
-        logo_url: None,
-        country: None,
-        provider_id: None,
-    })
+    let url = urls.into_iter().next().ok_or(OpenError::NotWeb)?;
+    Ok(Station { url, name })
 }
 
 /// What an opened playlist file leads to
@@ -273,7 +252,7 @@ mod tests {
     }
 
     #[test]
-    fn an_opened_playlist_is_a_station_with_its_other_streams() {
+    fn an_opened_playlist_is_its_first_stream_named_after_the_file() {
         let dir = std::env::temp_dir().join(format!("rt-open-station-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -286,8 +265,7 @@ mod tests {
 
         let station = station_of(&Opened::File(path.clone())).unwrap();
         assert_eq!(station.url, "http://a.example/one");
-        assert_eq!(station.backups, ["http://b.example/two"]);
-        assert_eq!(station.name.as_deref(), Some("Jazz FM"));
+        assert_eq!(station.name, "Jazz FM");
         assert_eq!(
             Opened::File(path.clone()).shown(),
             path.display().to_string()
@@ -302,8 +280,7 @@ mod tests {
     fn an_opened_address_plays_if_it_is_a_web_address() {
         let station = station_of(&Opened::Url(" https://a.example/live ".into())).unwrap();
         assert_eq!(station.url, "https://a.example/live");
-        assert!(station.backups.is_empty());
-        assert_eq!(station.name, None);
+        assert_eq!(station.name, "");
 
         let other = station_of(&Opened::Url("rtsp://a.example/live".into())).unwrap_err();
         assert_eq!(other, OpenError::NotWeb);

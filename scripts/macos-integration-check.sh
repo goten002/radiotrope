@@ -17,7 +17,9 @@
 #   4. SIGTERM still quits it;
 #   5. `radiotrope --start-at-login on` writes the LaunchAgent file that
 #      View > System Tray > Start at Login writes, launchd accepts the file
-#      and starts the app from it, and `--start-at-login off` removes it.
+#      and starts the app from it, and `--start-at-login off` removes it;
+#   6. nothing crashed on the way: macOS wrote no crash report for the
+#      player (an exit that crashes looks like any other from outside).
 #
 # It reads the app's log (~/Library/Logs/radiotrope/radiotrope.log), which
 # says what the app did with each request. The addresses are of nothing
@@ -74,6 +76,17 @@ if [ "$(running)" != 0 ]; then
   echo "Radiotrope is running: quit it first"
   exit 2
 fi
+# macOS's crash reports for the player. One written before the check began
+# (by an earlier step) is shown, not counted: but a player that crashed
+# while exiting can hold its lock for a few more seconds, so wait a moment.
+reports() { find "$HOME/Library/Logs/DiagnosticReports" -maxdepth 1 -name 'radiotrope*' 2>/dev/null | sort; }
+show_report() { echo "--- $1"; grep -vE '^\s*$' "$1" | head -c 6000; echo; }
+reports_before=$(reports)
+if [ -n "$reports_before" ]; then
+  echo "::warning::a crash report for the player was there before this check began"
+  while IFS= read -r f; do show_report "$f"; done <<< "$reports_before"
+fi
+sleep 3
 agent_was_on=0
 [ -f "$agent" ] && agent_was_on=1
 
@@ -148,7 +161,7 @@ else
 fi
 [ "$(running)" = 1 ] && ok "after the opens: still one process" \
   || fail "after the opens: $(running) processes"
-sleep 2
+sleep 5
 screencapture -x "$evidence/integration.png" 2>/dev/null || true
 
 # 4. Quit
@@ -201,6 +214,20 @@ if [ "$agent_was_on" = 1 ]; then
 fi
 
 quit_app > /dev/null 2>&1
+
+# 6. No crash on the way (a report takes a few seconds to be written)
+sleep 10
+new_reports=$(comm -13 <(echo "$reports_before") <(reports))
+if [ -z "$new_reports" ]; then
+  ok "no crash report for the player"
+else
+  fail "the player crashed during the check: $(echo "$new_reports" | wc -l | xargs) crash report(s)"
+  while IFS= read -r f; do
+    show_report "$f"
+    cp "$f" "$evidence/integration-crash-$(basename "$f").txt" 2>/dev/null
+  done <<< "$new_reports"
+fi
+
 new_log > "$evidence/integration.log"
 echo "--- the app's log during the check"; cat "$evidence/integration.log"
 echo "--- the second launch's output"; cat "$evidence/integration-second.log" 2>/dev/null

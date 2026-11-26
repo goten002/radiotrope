@@ -132,6 +132,19 @@ fn listen_for_opened(handler: OpenHandler) {
     }
 }
 
+/// Let go of the handlers (and of what they hold: the window). Call when
+/// the app ends, on the main thread: left to the thread's own teardown,
+/// they would go after the storage of the libraries they use. AppKit is
+/// answered as with nobody to ask from then on.
+pub fn forget_handlers() {
+    let terminate = HANDLER.with(|slot| slot.borrow_mut().take());
+    let reopen = REOPEN.with(|slot| slot.borrow_mut().take());
+    let open = OPEN.with(|slot| slot.borrow_mut().take());
+    // Dropped here, outside the slots: a handler may be the one running
+    drop((terminate, reopen, open));
+    OPENED_EARLY.with(|early| early.borrow_mut().clear());
+}
+
 /// Give the application delegate's class our methods, once
 fn install() -> Result<(), &'static str> {
     if INSTALLED.get() {
@@ -605,6 +618,28 @@ mod tests {
                 let _: () = msg_send![delegate, release];
             }
         });
+    }
+
+    #[test]
+    fn forgotten_handlers_are_dropped_and_appkit_goes_on_as_before() {
+        let held = Rc::new(());
+        let (a, b, c) = (held.clone(), held.clone(), held.clone());
+        HANDLER.with(|slot| {
+            *slot.borrow_mut() = Some(Rc::new(move |_| {
+                let _ = &a;
+                Answer::Cancel
+            }))
+        });
+        REOPEN.with(|slot| *slot.borrow_mut() = Some(Rc::new(move || drop(b.clone()))));
+        listen_for_opened(Rc::new(move |_| drop(c.clone())));
+        assert_eq!(Rc::strong_count(&held), 4);
+
+        forget_handlers();
+        assert_eq!(Rc::strong_count(&held), 1);
+        let nobody: *mut AnyObject = std::ptr::null_mut();
+        let cmd = sel!(applicationShouldTerminate:);
+        assert_eq!(should_terminate(nobody, cmd, nobody), NS_TERMINATE_NOW);
+        assert!(should_handle_reopen(nobody, cmd, nobody, Bool::NO).as_bool());
     }
 
     #[test]

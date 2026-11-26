@@ -233,6 +233,7 @@ jobs:
             smoke/integration.log
             smoke/integration-second.log
             smoke/integration-launch-agent.plist
+            smoke/integration-crash-*
             smoke/app.log
             smoke/radiotrope.log
             smoke/audio-devices.txt

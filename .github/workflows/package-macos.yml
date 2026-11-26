@@ -259,5 +259,6 @@ jobs:
             smoke/integration.log
             smoke/integration-second.log
             smoke/integration-launch-agent.plist
+            smoke/integration-crash-*
           if-no-files-found: warn
           retention-days: 14

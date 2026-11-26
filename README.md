@@ -324,7 +324,7 @@ System Tray has no Close to Tray or Minimize to Tray on a Mac.
 with **Open With > Radiotrope** (Radiotrope never makes itself the default
 for them), by dropping it on the Dock icon, or with
 `open -a Radiotrope station.m3u`: the first `http://` or `https://` address
-in it plays, and the others are tried if it doesn't connect.
+in it plays.
 
 **Start at Login** (View > System Tray) writes
 `~/Library/LaunchAgents/app.radiotrope.Radiotrope.plist`, which starts the
