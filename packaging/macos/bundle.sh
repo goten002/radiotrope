@@ -150,19 +150,23 @@ else
     echo "warning: no $GENERATED/man: the bundle has no man pages or completions" >&2
 fi
 
-# The icon, from assets/icons. There is no 1024 px picture yet: 512@2x is the
-# 512 one scaled up until the owner draws a macOS-shaped icon.
+# The icon: every size of the .iconset scaled from the macOS picture (the
+# logo on a rounded tile, 1024 px), not the Linux icons, whose shape is not
+# a Mac's. 16 to 512 pt, each also at @2x: 512@2x is the picture itself.
+ICON_SRC=assets/icons/macos/radiotrope-macos-1024.png
+[ "$(sips -g pixelWidth -g pixelHeight "$ICON_SRC" | awk '/pixel/ { print $2 }' | xargs)" = "1024 1024" ] \
+    || die "$ICON_SRC is not 1024 x 1024"
 ICONSET=target/Radiotrope.iconset
 rm -rf "$ICONSET"
 mkdir -p "$ICONSET"
 for s in 16 32 128 256 512; do
-    cp "assets/icons/icon-$s.png" "$ICONSET/icon_${s}x${s}.png"
+    sips -z "$s" "$s" "$ICON_SRC" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+    sips -z $((s * 2)) $((s * 2)) "$ICON_SRC" --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
 done
-cp assets/icons/icon-32.png "$ICONSET/icon_16x16@2x.png"
-cp assets/icons/icon-64.png "$ICONSET/icon_32x32@2x.png"
-cp assets/icons/icon-256.png "$ICONSET/icon_128x128@2x.png"
-cp assets/icons/icon-512.png "$ICONSET/icon_256x256@2x.png"
-sips -z 1024 1024 assets/icons/icon-512.png --out "$ICONSET/icon_512x512@2x.png" >/dev/null
+for f in "$ICONSET"/*.png; do
+    echo "$(basename "$f"): $(sips -g pixelWidth -g pixelHeight "$f" | awk '/pixel/ { print $2 }' | xargs | tr ' ' x) px"
+done
+[ "$(find "$ICONSET" -name '*.png' | wc -l | xargs)" = 10 ] || die "the iconset has not its 10 pictures"
 iconutil -c icns -o "$APP/Contents/Resources/Radiotrope.icns" "$ICONSET"
 
 # 4. Ad-hoc signature of the programs and the bundle, which seals Info.plist
