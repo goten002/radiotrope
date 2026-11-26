@@ -56,7 +56,7 @@ jobs:
             sed 's/\x1b\[[0-9;]*[mK]//g' clippy.log | grep -E '(error|warning)(\[[^]]*\])?:' | head -20 | sed 's/^/::error::/'
             exit 1
           fi
-      # No libfdk-aac here: the AAC+ tests skip, as in ci.yml's Test job.
+      # AAC+ decodes with AudioToolbox here (no libfdk-aac is installed yet).
       # Not green yet: a few tests that sleep for tens of milliseconds and
       # then look at a timeout fail on these runners, a different few each
       # run (the macOS review has the list). Until they have a clock of
@@ -90,18 +90,35 @@ jobs:
             vtool -show-build target/debug/$p || otool -l target/debug/$p | grep -A5 -E 'LC_BUILD_VERSION|LC_VERSION_MIN'
             codesign -dv target/debug/$p 2>&1 || true
           done
-      # AAC+ plays through Homebrew's libfdk-aac, loaded at run time. A test
-      # that skips for want of the library is reported, not failed: the
-      # review says where the loader has to look on macOS.
-      - name: AAC+ with Homebrew's fdk-aac
+      # AAC+ plays through macOS's own decoders (AudioToolbox): no AAC+ test
+      # may skip here. The streams are HE-AAC v1 and v2 from FDK's encoder
+      # (a test dependency) and from Apple's own (afconvert).
+      - name: AAC decoders (AudioToolbox)
         if: success() || failure()
         shell: bash
         run: |
           set -o pipefail
-          brew install fdk-aac
-          ls -l "$(brew --prefix)/lib" | grep -i fdk
+          afconvert -hf 2>&1 | grep -i -A3 adts || true
           cargo test -p radiotrope aac -- --nocapture 2>&1 | tee aac.log
-          if grep -q "skipped: no libfdk-aac" aac.log; then
+          if grep -q -e "skipped: no AAC+ decoder" -e "skipped: AudioToolbox" -e "skipped: afconvert" aac.log; then
+            echo "::error::an AudioToolbox test did not run"
+            exit 1
+          fi
+      # The same tests with Homebrew's libfdk-aac in AudioToolbox's place
+      # (it stays the second choice on macOS), and the two compared. Homebrew
+      # has disabled the formula, so its absence is reported, not failed.
+      - name: AAC decoders (libfdk-aac, if Homebrew still has it)
+        if: success() || failure()
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! brew install fdk-aac; then
+            echo "::notice::Homebrew has no fdk-aac any more: the FDK comparison did not run"
+            exit 0
+          fi
+          ls -l "$(brew --prefix)/lib" | grep -i fdk
+          RADIOTROPE_AAC_DECODER=fdk cargo test -p radiotrope aac -- --nocapture 2>&1 | tee aac-fdk.log
+          if grep -q "skipped: no libfdk-aac" aac-fdk.log; then
             echo "::warning::libfdk-aac from Homebrew ($(brew --prefix)/lib) was not found by the loader"
           fi
       # Every screen drawn by the software renderer (headless, no audio or
@@ -216,5 +233,6 @@ jobs:
             test.log
             clippy.log
             aac.log
+            aac-fdk.log
           if-no-files-found: warn
           retention-days: 14

@@ -1,17 +1,29 @@
 //! Which AAC decoder plays a stream
 //!
 //! AAC-LC is decoded by Symphonia's own decoder, which is part of the
-//! program. AAC+ (HE-AAC v1 and v2: SBR and Parametric Stereo) needs the
-//! Fraunhofer FDK AAC library. Its licence doesn't go with the GPL, so the
-//! program doesn't contain it: with the `system-fdk` feature it looks for
-//! the system's `libfdk-aac` when it first plays AAC, and uses it if it is
-//! there and decodes HE-AAC. Otherwise the built-in decoder plays the
-//! AAC-LC core of the stream: an AAC+ station still plays, at half the
-//! bandwidth (and in mono for HE-AAC v2).
+//! program. AAC+ (HE-AAC v1 and v2: SBR and Parametric Stereo) needs more:
+//!
+//! - On macOS the system decodes it: AudioToolbox's AAC decoders are part
+//!   of every Mac, so AAC and AAC+ play through them with nothing to
+//!   install.
+//! - Elsewhere it takes the Fraunhofer FDK AAC library. Its licence
+//!   doesn't go with the GPL, so the program doesn't contain it: with the
+//!   `system-fdk` feature it looks for the system's `libfdk-aac` when it
+//!   first plays AAC, and uses it if it is there and decodes HE-AAC.
+//!
+//! Otherwise the built-in decoder plays the AAC-LC core of the stream: an
+//! AAC+ station still plays, at half the bandwidth (and in mono for HE-AAC
+//! v2).
+//!
+//! The order on macOS is AudioToolbox, then libfdk-aac if it loads (for a
+//! stream AudioToolbox turns down), then the built-in decoder.
+//! `RADIOTROPE_AAC_DECODER` (`audiotoolbox`, `fdk` or `built-in`) picks one
+//! of those that the system has, to compare them.
 //!
 //! Without the feature there is no FDK code in the program at all.
 
 use std::fmt;
+use std::sync::OnceLock;
 
 use symphonia::core::audio::GenericAudioBufferRef;
 use symphonia::core::codecs::audio::well_known::profiles::CODEC_PROFILE_AAC_LC;
@@ -31,12 +43,16 @@ use symphonia::core as symphonia_core;
 use symphonia::core::{codec_profile, support_audio_codec};
 use symphonia::default::codecs::AacDecoder as SymphoniaAac;
 
+#[cfg(target_os = "macos")]
+mod audiotoolbox;
 #[cfg(feature = "system-fdk")]
 mod fdk;
 
 /// The AAC decoder in use
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AacDecoderKind {
+    /// macOS's own decoders (AudioToolbox): AAC and AAC+
+    AudioToolbox,
     /// The system's libfdk-aac, loaded at run time: AAC and AAC+
     FdkSystem,
     /// The decoder in the program: AAC-LC only
@@ -44,9 +60,11 @@ pub enum AacDecoderKind {
 }
 
 impl AacDecoderKind {
-    /// The name to show: "FDK (system)" or "built-in AAC-LC"
+    /// The name to show: "AudioToolbox (macOS)", "FDK (system)" or
+    /// "built-in AAC-LC"
     pub fn label(self) -> &'static str {
         match self {
+            Self::AudioToolbox => "AudioToolbox (macOS)",
             Self::FdkSystem => "FDK (system)",
             Self::BuiltIn => "built-in AAC-LC",
         }
@@ -55,7 +73,47 @@ impl AacDecoderKind {
     /// Whether AAC+ (HE-AAC v1 and v2) plays in full. If not, only its
     /// AAC-LC core does.
     pub fn decodes_he_aac(self) -> bool {
-        self == Self::FdkSystem
+        self != Self::BuiltIn
+    }
+
+    /// The decoder `RADIOTROPE_AAC_DECODER` names
+    fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "audiotoolbox" => Some(Self::AudioToolbox),
+            "fdk" => Some(Self::FdkSystem),
+            "built-in" | "builtin" => Some(Self::BuiltIn),
+            _ => None,
+        }
+    }
+
+    /// Whether this system has the decoder. Asking about FDK loads it.
+    pub(super) fn available(self) -> bool {
+        match self {
+            Self::AudioToolbox => cfg!(target_os = "macos"),
+            Self::FdkSystem => {
+                #[cfg(feature = "system-fdk")]
+                return fdk::system().is_some();
+                #[cfg(not(feature = "system-fdk"))]
+                false
+            }
+            Self::BuiltIn => true,
+        }
+    }
+
+    /// The decoder to play with: `wanted` if the system has it, or else
+    /// the best one it has. On macOS that is AudioToolbox, and libfdk-aac
+    /// is not even looked for.
+    fn choose(wanted: Option<Self>) -> Self {
+        if let Some(wanted) = wanted {
+            if wanted.available() {
+                return wanted;
+            }
+            log::warn!("AAC decoder: no {wanted} on this system");
+        }
+        [Self::AudioToolbox, Self::FdkSystem]
+            .into_iter()
+            .find(|kind| kind.available())
+            .unwrap_or(Self::BuiltIn)
     }
 }
 
@@ -65,49 +123,72 @@ impl fmt::Display for AacDecoderKind {
     }
 }
 
+/// The variable that picks the decoder, to compare them
+const DECODER_VARIABLE: &str = "RADIOTROPE_AAC_DECODER";
+
 /// The AAC decoder this program plays AAC with.
 ///
-/// The first call looks for the system's libfdk-aac (with the `system-fdk`
-/// feature); the answer then stays the same for as long as the program
-/// runs.
+/// The first call finds it: AudioToolbox on macOS, or else the system's
+/// libfdk-aac if it loads (with the `system-fdk` feature), or else the
+/// built-in decoder. The answer then stays the same for as long as the
+/// program runs.
 pub fn aac_decoder() -> AacDecoderKind {
-    #[cfg(feature = "system-fdk")]
-    if fdk::system().is_some() {
-        return AacDecoderKind::FdkSystem;
-    }
-    AacDecoderKind::BuiltIn
+    static CHOSEN: OnceLock<AacDecoderKind> = OnceLock::new();
+    *CHOSEN.get_or_init(|| {
+        let wanted = std::env::var(DECODER_VARIABLE).ok().and_then(|name| {
+            let kind = AacDecoderKind::from_name(&name);
+            if kind.is_none() {
+                log::warn!("{DECODER_VARIABLE}={name}: not audiotoolbox, fdk or built-in");
+            }
+            kind
+        });
+        let kind = AacDecoderKind::choose(wanted);
+        // (FDK's loader says in the log what it found, and why not)
+        if kind == AacDecoderKind::AudioToolbox || wanted == Some(AacDecoderKind::BuiltIn) {
+            log::info!("AAC decoder: {kind}");
+        }
+        kind
+    })
 }
 
 /// The system library's version (FDK's AAC decoder module, such as
-/// "3.2.0"), if it is in use
+/// "3.2.0"), if it is the decoder in use
 pub fn fdk_version() -> Option<&'static str> {
     #[cfg(feature = "system-fdk")]
-    return fdk::system().map(|fdk| fdk.version());
-    #[cfg(not(feature = "system-fdk"))]
+    if aac_decoder() == AacDecoderKind::FdkSystem {
+        return fdk::system().map(|fdk| fdk.version());
+    }
     None
 }
 
 #[cfg(test)]
 thread_local! {
-    /// A test on this thread plays AAC as if libfdk-aac were missing
-    static BUILT_IN_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// A test on this thread plays AAC with this decoder
+    static FORCED: std::cell::Cell<Option<AacDecoderKind>> = const { std::cell::Cell::new(None) };
+}
+
+/// Run `f` with the decoder `kind`, which the system must have. It covers
+/// decoders made on this thread.
+#[cfg(test)]
+pub(super) fn with_decoder<T>(kind: AacDecoderKind, f: impl FnOnce() -> T) -> T {
+    let before = FORCED.replace(Some(kind));
+    let result = f();
+    FORCED.set(before);
+    result
 }
 
 /// Run `f` with the built-in decoder only, as on a system without
-/// libfdk-aac. It covers decoders made on this thread.
+/// libfdk-aac
 #[cfg(test)]
 pub(super) fn with_built_in_only<T>(f: impl FnOnce() -> T) -> T {
-    let before = BUILT_IN_ONLY.replace(true);
-    let result = f();
-    BUILT_IN_ONLY.set(before);
-    result
+    with_decoder(AacDecoderKind::BuiltIn, f)
 }
 
 /// The decoder that new AAC tracks get
 pub(super) fn active() -> AacDecoderKind {
     #[cfg(test)]
-    if BUILT_IN_ONLY.get() {
-        return AacDecoderKind::BuiltIn;
+    if let Some(kind) = FORCED.get() {
+        return kind;
     }
     aac_decoder()
 }
@@ -115,10 +196,29 @@ pub(super) fn active() -> AacDecoderKind {
 /// Put the AAC decoder in use into `registry`, in place of Symphonia's
 pub(super) fn register(registry: &mut CodecRegistry) {
     registry.register_audio_decoder::<BuiltInAac>();
-    #[cfg(feature = "system-fdk")]
-    if active() == AacDecoderKind::FdkSystem {
-        registry.register_audio_decoder::<fdk::FdkAac>();
+    match active() {
+        #[cfg(target_os = "macos")]
+        AacDecoderKind::AudioToolbox => {
+            registry.register_audio_decoder::<audiotoolbox::AppleAac>();
+        }
+        #[cfg(feature = "system-fdk")]
+        AacDecoderKind::FdkSystem => registry.register_audio_decoder::<fdk::FdkAac>(),
+        _ => {}
     }
+}
+
+/// The decoder for a stream that AudioToolbox turned down: libfdk-aac if
+/// it loads, or else the built-in one
+#[cfg(target_os = "macos")]
+fn open_without_audio_toolbox(
+    params: &AudioCodecParameters,
+    opts: &AudioDecoderOptions,
+) -> Result<Box<dyn AudioDecoder>> {
+    #[cfg(feature = "system-fdk")]
+    if fdk::system().is_some() {
+        return fdk::FdkAac::try_registry_new(params, opts);
+    }
+    BuiltInAac::try_registry_new(params, opts)
 }
 
 /// Sampling rates by `samplingFrequencyIndex` (ISO/IEC 14496-3, 1.6.3.3)
@@ -253,8 +353,13 @@ mod tests {
 
     #[test]
     fn the_labels_are_the_ones_the_ui_shows() {
+        assert_eq!(
+            AacDecoderKind::AudioToolbox.to_string(),
+            "AudioToolbox (macOS)"
+        );
         assert_eq!(AacDecoderKind::FdkSystem.to_string(), "FDK (system)");
         assert_eq!(AacDecoderKind::BuiltIn.to_string(), "built-in AAC-LC");
+        assert!(AacDecoderKind::AudioToolbox.decodes_he_aac());
         assert!(AacDecoderKind::FdkSystem.decodes_he_aac());
         assert!(!AacDecoderKind::BuiltIn.decodes_he_aac());
     }
@@ -268,9 +373,50 @@ mod tests {
         assert_eq!(active(), kind);
     }
 
+    #[test]
+    fn macos_plays_aac_with_audio_toolbox_and_nothing_else_does() {
+        let on_macos = cfg!(target_os = "macos");
+        assert_eq!(AacDecoderKind::AudioToolbox.available(), on_macos);
+        assert_eq!(
+            AacDecoderKind::choose(None) == AacDecoderKind::AudioToolbox,
+            on_macos
+        );
+        // Asked for by name: only where it exists
+        assert_eq!(
+            AacDecoderKind::choose(Some(AacDecoderKind::AudioToolbox))
+                == AacDecoderKind::AudioToolbox,
+            on_macos
+        );
+    }
+
+    #[test]
+    fn a_decoder_can_be_asked_for_by_name() {
+        let named = AacDecoderKind::from_name;
+        assert_eq!(named("audiotoolbox"), Some(AacDecoderKind::AudioToolbox));
+        assert_eq!(named("FDK"), Some(AacDecoderKind::FdkSystem));
+        assert_eq!(named(" built-in "), Some(AacDecoderKind::BuiltIn));
+        assert_eq!(named("builtin"), Some(AacDecoderKind::BuiltIn));
+        assert_eq!(named("ffmpeg"), None);
+        assert_eq!(named(""), None);
+        // The built-in decoder is always there; one the system lacks gives
+        // way to the usual choice
+        assert_eq!(
+            AacDecoderKind::choose(Some(AacDecoderKind::BuiltIn)),
+            AacDecoderKind::BuiltIn
+        );
+        let usual = AacDecoderKind::choose(None);
+        for kind in [AacDecoderKind::AudioToolbox, AacDecoderKind::FdkSystem] {
+            let chosen = AacDecoderKind::choose(Some(kind));
+            assert_eq!(chosen, if kind.available() { kind } else { usual });
+        }
+    }
+
     #[cfg(not(feature = "system-fdk"))]
     #[test]
-    fn without_the_feature_the_decoder_is_built_in() {
+    fn without_the_feature_there_is_no_fdk() {
+        assert!(!AacDecoderKind::FdkSystem.available());
+        assert_ne!(aac_decoder(), AacDecoderKind::FdkSystem);
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(aac_decoder(), AacDecoderKind::BuiltIn);
         assert_eq!(fdk_version(), None);
     }
