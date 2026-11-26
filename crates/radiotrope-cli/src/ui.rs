@@ -679,7 +679,13 @@ fn format_line(player: &Player) -> String {
         Some(codec) if hls => parts.push(format!("{} (HLS)", codec.codec_name)),
         Some(codec) => parts.push(codec.codec_name.clone()),
         None if hls => parts.push("HLS".to_string()),
-        None => {}
+        // The default didn't connect: say which backup is tried, as the
+        // app does
+        None => {
+            if let Some(backup) = player.backup() {
+                return format!("Trying backup {backup}");
+            }
+        }
     }
     if let Some(kbps) = player.bitrate.filter(|k| *k > 0) {
         parts.push(format!("{kbps} kbps"));
@@ -693,6 +699,9 @@ fn format_line(player: &Player) -> String {
             2 => "Stereo".to_string(),
             n => format!("{n} channels"),
         });
+    }
+    if let Some(backup) = player.backup() {
+        parts.push(format!("Backup {backup}"));
     }
     parts.join(text::SEPARATOR)
 }

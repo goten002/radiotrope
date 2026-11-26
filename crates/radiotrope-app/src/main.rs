@@ -415,12 +415,14 @@ fn main() {
     let ctrl_tx = cmd_tx.clone();
     let schedule_path = radiotrope_app::data::data_path(radiotrope_app::data::schedule::FILE_NAME);
     let play_reporter = app::controller::play_report::reporter(favorites.clone());
+    let backups_of = app::controller::fallback::favorite_backups(favorites.clone());
     let controller = std::thread::Builder::new()
         .name("controller".into())
         .spawn(move || {
             let mut ctrl = AppController::new(cmd_rx, ctrl_tx, ctrl_state, analysis_tx, stats_tx)
                 .with_cover_source(cover_source)
-                .with_play_reporter(play_reporter);
+                .with_play_reporter(play_reporter)
+                .with_backups_of(backups_of);
             match schedule_path {
                 Ok(path) => ctrl = ctrl.with_schedule(path),
                 Err(e) => eprintln!("Schedule unavailable: {e}"),
