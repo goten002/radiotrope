@@ -71,13 +71,10 @@ func keys(_ element: AXUIElement) -> String {
     let virtualKey: Int? = attribute(element, kAXMenuItemCmdVirtualKeyAttribute)
     let glyph: Int? = attribute(element, kAXMenuItemCmdGlyphAttribute)
     var key = character.uppercased()
-    if key.isEmpty, let virtualKey = virtualKey {
-        // kVK_F1
-        key = virtualKey == 0x7A ? "F1" : "key \(virtualKey)"
-    }
-    if key.isEmpty, let glyph = glyph, glyph != 0 {
-        // kMenuF1Glyph
-        key = glyph == 111 ? "F1" : "glyph \(glyph)"
+    // A function key: its character is one of AppKit's own (NSF1FunctionKey),
+    // which prints as nothing. kVK_F1, kMenuF1Glyph.
+    if virtualKey == 0x7A || glyph == 111 {
+        key = "F1"
     }
     if key.isEmpty {
         return ""
