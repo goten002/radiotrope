@@ -24,7 +24,7 @@ use radiotrope_app::text::{self, status};
 use super::state::{AppCommand, AppSnapshot, NoticeKind, RecordingNotice, RecordingProgress};
 
 mod alarm_tone;
-mod fallback;
+pub mod fallback;
 pub mod play_report;
 mod resume;
 mod scheduling;
@@ -135,6 +135,9 @@ pub struct AppController {
     /// The backups that came with a Play or Step, until its station is
     /// made the current one
     new_backups: Option<Vec<String>>,
+    /// The backups of a station started by its address alone (a scheduled
+    /// entry): see [`fallback::favorite_backups`]
+    backups_of: Option<fallback::BackupsOf>,
     /// Told the state after every change the controller makes (see
     /// [`AppController::with_observer`])
     observer: Option<StateObserver>,
@@ -188,6 +191,7 @@ impl AppController {
             unreported: None,
             streams: fallback::StreamList::default(),
             new_backups: None,
+            backups_of: None,
             observer: None,
         }
     }
@@ -595,6 +599,21 @@ impl AppController {
         }
     }
 
+    /// Find the backups of a station started by its address alone (see
+    /// [`fallback::favorite_backups`])
+    pub fn with_backups_of(mut self, backups_of: fallback::BackupsOf) -> Self {
+        self.backups_of = Some(backups_of);
+        self
+    }
+
+    /// The backups of the station at `url`, as far as is known
+    pub(super) fn backups_of(&self, url: &str) -> Vec<String> {
+        self.backups_of
+            .as_ref()
+            .map(|backups_of| backups_of(url))
+            .unwrap_or_default()
+    }
+
     /// Count a play in the directory with `reporter` (see [`play_report`])
     pub fn with_play_reporter(mut self, reporter: play_report::PlayReporter) -> Self {
         self.play_reporter = Some(reporter);
@@ -742,7 +761,7 @@ impl AppController {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
             state.play_seq += 1;
             state.station_url = Some(url.to_string());
-            self.streams.show(&mut state);
+            fallback::show(&self.streams, &mut state);
             state.station_name = name;
             state.station_logo_url = logo_url.filter(|logo| !logo.is_empty());
             state.station_country = country.filter(|country| !country.is_empty());
@@ -778,7 +797,7 @@ impl AppController {
     /// the failure is the station's.
     fn try_next_stream(&mut self, error: &str) -> bool {
         let failed = self.streams.current().to_string();
-        let Some(next) = self.streams.next().map(str::to_string) else {
+        let Some(next) = self.streams.next_stream().map(str::to_string) else {
             return false;
         };
         eprintln!("Stream {failed} didn't connect ({error}); trying {next}");
@@ -795,7 +814,7 @@ impl AppController {
         self.stream_failed = false;
         {
             let mut state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
-            self.streams.show(&mut state);
+            fallback::show(&self.streams, &mut state);
             state.is_resolving = true;
             state.is_connecting = false;
             state.codec_name.clear();

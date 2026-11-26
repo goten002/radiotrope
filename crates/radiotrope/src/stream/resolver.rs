@@ -593,6 +593,12 @@ mod tests {
                 .stall()
         }
 
+        /// How soon a cancelled resolve must end. Uncancelled, these waits
+        /// last until the 12 s first-data timeout (`RESOLVE_TIMEOUT_SECS`,
+        /// `FIRST_SEGMENT_TIMEOUT_SECS`), so ending within this means the
+        /// cancel woke them; it leaves room for a busy test machine.
+        const CANCELLED_PROMPTLY: Duration = Duration::from_secs(2);
+
         /// Resolve `url` on a thread and cancel it once `waiting` holds.
         /// Returns the result and how long the resolve ran after the cancel.
         fn resolve_then_cancel(
@@ -639,7 +645,7 @@ mod tests {
             let (result, took) =
                 resolve_then_cancel(server.url("/live"), || server.hits("/live") > 0);
             assert!(matches!(result, Err(RadioError::Cancelled)));
-            assert!(took < Duration::from_millis(200), "took {took:?}");
+            assert!(took < CANCELLED_PROMPTLY, "took {took:?}");
         }
 
         #[test]
@@ -656,7 +662,7 @@ mod tests {
             let (result, took) =
                 resolve_then_cancel(server.url("/live.m3u8"), || server.hits("/seg1.aac") > 0);
             assert!(matches!(result, Err(RadioError::Cancelled)));
-            assert!(took < Duration::from_millis(200), "took {took:?}");
+            assert!(took < CANCELLED_PROMPTLY, "took {took:?}");
         }
 
         #[test]

@@ -869,8 +869,7 @@ const AWAITING_STREAM: &str = "Waiting for stream";
 /// station's streams when it isn't its default (the default didn't
 /// connect, so a backup took over)
 fn format_codec_line(s: &AppSnapshot) -> String {
-    let backup = (s.stream_index > 0 && s.stream_count > 1)
-        .then(|| format!("stream {} of {}", s.stream_index + 1, s.stream_count));
+    let backup = text::backup_stream(s.stream_index, s.stream_count);
     if s.codec_name.is_empty() {
         return match backup {
             Some(backup) => format!("Trying backup {backup}"),

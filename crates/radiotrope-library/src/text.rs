@@ -76,6 +76,13 @@ pub fn sample_rate(hz: u32) -> String {
     }
 }
 
+/// Which of a station's streams plays when it isn't the default (the
+/// default didn't connect, so a backup took over): "stream 2 of 3", shown
+/// as "Backup stream 2 of 3". `index` counts from 0, the default.
+pub fn backup_stream(index: usize, count: usize) -> Option<String> {
+    (index > 0 && count > 1).then(|| format!("stream {} of {}", index + 1, count))
+}
+
 /// A gain to `decimals` places with a real minus sign: "\u{2212}6.5 dB",
 /// "+3.0 dB", and "0 dB" with no sign when it rounds to nothing
 pub fn signed_db(db: f32, decimals: usize) -> String {

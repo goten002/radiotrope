@@ -1,5 +1,6 @@
 //! A station's streams as the window lists them: in Edit Favorite, where
-//! the user picks the default, adds, removes and reorders them, and in the
+//! the user picks the default, adds, edits, removes and reorders them, and
+//! in the
 //! station browser's stream choice
 //!
 //! The dialog holds the list while it is edited; the changes to it are
@@ -85,6 +86,37 @@ fn added(mut rows: Vec<StationStream>, url: &str) -> Vec<StationStream> {
     rows
 }
 
+/// Why the row at `index` can't take the address typed; empty when it can
+/// (or nothing is typed, which leaves the row as it is)
+fn change_problem(rows: &[StationStream], index: i32, url: &str) -> String {
+    let url = url.trim();
+    let index = usize::try_from(index).ok();
+    let elsewhere = rows
+        .iter()
+        .enumerate()
+        .any(|(at, row)| Some(at) != index && row.url == url);
+    if elsewhere {
+        ALREADY_LISTED.into()
+    } else {
+        String::new()
+    }
+}
+
+/// `rows` with the one at `index` given the address typed: a new address
+/// is a new stream, so what was known of the old one goes. Unchanged when
+/// nothing is typed, the address is the row's own, or it can't be used
+/// (see [`change_problem`]).
+fn changed(mut rows: Vec<StationStream>, index: i32, url: &str) -> Vec<StationStream> {
+    let url = url.trim();
+    let Some(at) = usize::try_from(index).ok().filter(|at| *at < rows.len()) else {
+        return rows;
+    };
+    if !url.is_empty() && rows[at].url != url && change_problem(&rows, index, url).is_empty() {
+        rows[at] = row(&Stream::new(url));
+    }
+    rows
+}
+
 /// `rows` without the one at `index`; a station keeps its last stream
 fn removed(mut rows: Vec<StationStream>, index: i32) -> Vec<StationStream> {
     if let Ok(index) = usize::try_from(index) {
@@ -133,6 +165,10 @@ pub(crate) fn install(ui: &App) {
     edit.on_added(move |rows, url| model(added(list(rows), url.as_str())));
     edit.on_removed(move |rows, index| model(removed(list(rows), index)));
     edit.on_moved(move |rows, index, by| model(moved(list(rows), index, by)));
+    edit.on_change_problem(move |rows, index, url| {
+        change_problem(&list(rows), index, url.as_str()).into()
+    });
+    edit.on_changed(move |rows, index, url| model(changed(list(rows), index, url.as_str())));
 }
 
 #[cfg(test)]
@@ -209,6 +245,37 @@ mod tests {
         assert_eq!(problem(&list, " http://a.test "), ALREADY_LISTED);
         assert_eq!(problem(&list, "http://c.test"), "");
         assert_eq!(problem(&list, ""), "");
+    }
+
+    #[test]
+    fn an_address_is_changed_in_place() {
+        let list = rows(&["http://a.test", "http://b.test", "http://c.test"]);
+        let edited = changed(list.clone(), 1, "  http://new.test ");
+        assert_eq!(
+            urls(&edited),
+            ["http://a.test", "http://new.test", "http://c.test"]
+        );
+        // A new address is a new stream: what was known of the old goes
+        let known = vec![row(
+            &Stream::new("http://a.test").with_audio_info(Some("AAC".into()), Some(128))
+        )];
+        assert_eq!(changed(known.clone(), 0, "http://b.test")[0].label, "");
+        // Its own address again, nothing, another row's, or no such row:
+        // the list stays
+        assert_eq!(changed(known.clone(), 0, " http://a.test")[0], known[0]);
+        for (index, url) in [
+            (1, ""),
+            (1, "   "),
+            (1, "http://c.test"),
+            (3, "http://d.test"),
+            (-1, "http://d.test"),
+        ] {
+            assert_eq!(urls(&changed(list.clone(), index, url)), urls(&list));
+        }
+        assert_eq!(change_problem(&list, 1, " http://c.test "), ALREADY_LISTED);
+        assert_eq!(change_problem(&list, 1, "http://b.test"), "");
+        assert_eq!(change_problem(&list, 1, "http://d.test"), "");
+        assert_eq!(change_problem(&list, 1, ""), "");
     }
 
     #[test]

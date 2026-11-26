@@ -126,6 +126,8 @@ impl Shot {
         let nested = match self.screen {
             "remote" => matches!(self.state, "code" | "qr"),
             "schedule" => !matches!(self.state, "" | "empty" | "remove" | "last-result"),
+            // Esc first leaves an address edited in place
+            "edit-favorite" => matches!(self.state, "edit-stream" | "stream-taken"),
             _ => false,
         };
         1 + usize::from(dropdown) + usize::from(nested)
@@ -711,7 +713,19 @@ const SHOTS: &[Shot] = &[
         "edit-favorite-streams",
         "edit-favorite",
         "streams",
-        "A favorite with three streams: the default marked, each with Move Up, Move Down and Remove.",
+        "A favorite with three streams: the default marked, each with Edit Address, Move Up, Move Down and Remove.",
+    ),
+    Shot::new(
+        "edit-favorite-edit-stream",
+        "edit-favorite",
+        "edit-stream",
+        "The second stream's address edited in place: a field where its text was, with Done.",
+    ),
+    Shot::new(
+        "edit-favorite-stream-taken",
+        "edit-favorite",
+        "stream-taken",
+        "An address edited in place to another stream's: the reason under the list, Done off.",
     ),
     Shot::new(
         "edit-favorite-long",
