@@ -4425,26 +4425,22 @@ mod tests {
             other => panic!("Expected Playing, got {:?}", other),
         }
 
-        // Wait for a tick to copy the counter
-        thread::sleep(Duration::from_millis(700));
-
-        let s = stats.lock().unwrap();
-        assert_eq!(
-            s.bytes_received, 42000,
-            "bytes_received should reflect the atomic counter value"
+        // The stats tick copies the counter. How soon it runs depends on the
+        // machine, so wait for the copy rather than for a fixed time.
+        let received = || stats.lock().unwrap().bytes_received;
+        assert!(
+            eventually(|| received() == 42000),
+            "bytes_received should reflect the atomic counter value, got {}",
+            received()
         );
-        drop(s);
 
-        // Increment the counter and wait for next tick
+        // A later tick picks up the new value
         bytes_counter.store(99000, Ordering::Relaxed);
-        thread::sleep(Duration::from_millis(600));
-
-        let s = stats.lock().unwrap();
-        assert_eq!(
-            s.bytes_received, 99000,
-            "bytes_received should update on subsequent ticks"
+        assert!(
+            eventually(|| received() == 99000),
+            "bytes_received should update on subsequent ticks, got {}",
+            received()
         );
-        drop(s);
 
         engine.shutdown();
     }
