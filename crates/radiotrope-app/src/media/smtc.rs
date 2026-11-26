@@ -150,6 +150,7 @@ fn open_picture(file: &Path) -> windows::core::Result<RandomAccessStreamReferenc
 fn window_handle(ui: &App) -> Option<HWND> {
     use slint::winit_030::winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use slint::winit_030::WinitWindowAccessor;
+    use slint::ComponentHandle;
     ui.window()
         .with_winit_window(|w| match w.window_handle().ok()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(HWND(h.hwnd.get() as *mut _)),
