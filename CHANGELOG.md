@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - Song titles from ID3v1/ID3v2 tags in MP3, AAC and HLS streams when ICY gives none.
 - Equalizer presets in groups, with an automatic preamp and new 40 Hz and 12 kHz shelves.
 - "AAC+" label for HE-AAC stations.
+- macOS: AAC+ (HE-AAC v1 and v2) stations play in full quality with the system's own decoder (AudioToolbox), with nothing to install. A stream it turns down goes to libfdk-aac if one is installed, then to the built-in AAC-LC decoder; `RADIOTROPE_AAC_DECODER=audiotoolbox|fdk|built-in` picks a decoder to compare them.
 - Wave and Dot Matrix visualizer modes, visualizers coloured from the station logo, and a View menu switch to turn the visualizer off.
 - System Theme in the View menu: the app follows the light or dark setting of Windows or the Linux desktop (GNOME, KDE and others, X11 or Wayland) and switches live when it changes. New installs start on it; a saved Dark or Light choice is kept.
 - Station browser: logos in the list and clear errors with retry.

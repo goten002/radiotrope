@@ -416,6 +416,10 @@ impl SymphoniaSource {
                     }
 
                     match self.decoder.decode(&packet) {
+                        // A decoder that is still finding out what the
+                        // stream is (AudioToolbox, for a frame or two) has
+                        // nothing to play yet, and no format to go by
+                        Ok(decoded) if decoded.frames() == 0 => continue,
                         Ok(decoded) => {
                             let spec = decoded.spec();
                             let rate = spec.rate();
@@ -1547,12 +1551,13 @@ mod tests {
                 .codec_info()
         }
 
-        /// Whether AAC+ plays in full here: the system has a libfdk-aac
-        /// with HE-AAC. The tests that need it pass without it, saying so.
+        /// Whether AAC+ plays in full here: on macOS always (AudioToolbox),
+        /// elsewhere if the system has a libfdk-aac with HE-AAC. The tests
+        /// that need it pass without it, saying so.
         fn he_aac_plays() -> bool {
             let plays = aac::aac_decoder().decodes_he_aac();
             if !plays {
-                eprintln!("skipped: no libfdk-aac with HE-AAC on this system");
+                eprintln!("skipped: no AAC+ decoder (no libfdk-aac with HE-AAC on this system)");
             }
             plays
         }
@@ -1575,7 +1580,8 @@ mod tests {
             (secs, samples.iter().fold(0.0, |peak, s| peak.max(s.abs())))
         }
 
-        // --- with the system's libfdk-aac ---
+        // --- with a decoder for AAC+: the system's libfdk-aac, or
+        // AudioToolbox on macOS ---
 
         #[test]
         fn aac_and_aac_plus_play_whole_with_the_system_library() {
@@ -1646,6 +1652,206 @@ mod tests {
                         )
                     });
             (2.0 * (sin * sin + cos * cos).sqrt() / samples.len() as f64) as f32
+        }
+
+        // --- macOS: AudioToolbox ---
+
+        /// The test audio encoded by Apple's own encoder, as ADTS:
+        /// `afconvert`, which every Mac has. `format` is "aach" (HE-AAC)
+        /// or "aacp" (HE-AAC v2).
+        #[cfg(target_os = "macos")]
+        fn afconvert(format: &str, bit_rate: u32) -> Option<Vec<u8>> {
+            let dir = std::env::temp_dir()
+                .join(format!("radiotrope-test-{}-{format}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let (wav, aac) = (dir.join("in.wav"), dir.join("out.aac"));
+            std::fs::write(&wav, make_wav(44_100, 2, &music(44_100, 1.5))).unwrap();
+            let done = std::process::Command::new("afconvert")
+                .args(["-f", "adts", "-d", format, "-b", &bit_rate.to_string()])
+                .arg(&wav)
+                .arg(&aac)
+                .output();
+            let stream = match done {
+                Ok(output) if output.status.success() => std::fs::read(&aac).ok(),
+                Ok(output) => {
+                    eprintln!("afconvert: {}", String::from_utf8_lossy(&output.stderr));
+                    None
+                }
+                Err(error) => {
+                    eprintln!("afconvert: {error}");
+                    None
+                }
+            };
+            let _ = std::fs::remove_dir_all(&dir);
+            if stream.is_none() {
+                eprintln!("skipped: afconvert did not encode {format}");
+            }
+            stream
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn aac_plus_from_apples_encoder_plays_whole() {
+            // Another encoder than FDK's, and one that opens the stream
+            // with a silent frame that says nothing about SBR
+            for (format, bit_rate) in [("aach", 64_000), ("aacp", 32_000)] {
+                let Some(stream) = afconvert(format, bit_rate) else {
+                    continue;
+                };
+                let source =
+                    SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();
+                let slot = source.error_slot();
+                let stats = source.decoder_stats();
+                assert_eq!(source.codec_name(), "AAC+", "{format}");
+                assert_eq!(
+                    (source.sample_rate().get(), source.channels().get()),
+                    (44_100, 2),
+                    "{format}"
+                );
+                let samples: Vec<f32> = source.collect();
+                let secs = samples.len() as f32 / 2.0 / 44_100.0;
+                assert!((1.4..1.8).contains(&secs), "{format}: {secs} s");
+                let (left, right): (Vec<f32>, Vec<f32>) = samples
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[l, r]| (l, r))
+                    .unzip();
+                // The tones of the test audio, not silence or noise: 220 Hz
+                // on both sides, 330 Hz on the left and 660 Hz on the right
+                assert!(tone(&left, 44_100, 220.0) > 0.05, "{format}: 220 Hz");
+                assert!(tone(&right, 44_100, 220.0) > 0.05, "{format}: 220 Hz");
+                assert!(tone(&left, 44_100, 330.0) > 0.05, "{format}: 330 Hz");
+                assert!(tone(&right, 44_100, 660.0) > 0.05, "{format}: 660 Hz");
+                // Nothing where the test audio has nothing
+                assert!(tone(&left, 44_100, 3000.0) < 0.01, "{format}: 3 kHz");
+                let peak = samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+                assert!((0.2..1.0).contains(&peak), "{format}: peak {peak}");
+                assert_eq!(*slot.lock().unwrap(), None, "{format}");
+                assert_eq!(stats.snapshot().1, 0, "{format}");
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn audio_toolbox_plays_the_tones_of_each_profile() {
+            if aac::active() != aac::AacDecoderKind::AudioToolbox {
+                eprintln!("skipped: AudioToolbox is not the decoder in use");
+                return;
+            }
+            // (profile, bit rate, stereo in, channels out, stereo out)
+            for (object_type, bit_rate, stereo, channels, wide) in [
+                (AudioObjectType::Mpeg4LowComplexity, 128_000, true, 2, true),
+                (AudioObjectType::Mpeg4HeAac, 64_000, true, 2, true),
+                // A mono core with SBR plays on two channels, as with FDK:
+                // it could be HE-AAC v2
+                (AudioObjectType::Mpeg4HeAac, 32_000, false, 2, false),
+                (AudioObjectType::Mpeg4HeAacV2, 32_000, true, 2, true),
+            ] {
+                let stream = adts(object_type, bit_rate, 44_100, stereo);
+                let source =
+                    SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();
+                assert_eq!(
+                    (source.sample_rate().get(), source.channels().get()),
+                    (44_100, channels),
+                    "{object_type:?}"
+                );
+                let samples: Vec<f32> = source.collect();
+                let (left, right): (Vec<f32>, Vec<f32>) = samples
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&[l, r]| (l, r))
+                    .unzip();
+                for side in [&left, &right] {
+                    assert!(tone(side, 44_100, 220.0) > 0.05, "{object_type:?}");
+                    assert!(tone(side, 44_100, 1760.0) > 0.05, "{object_type:?}");
+                    assert!(tone(side, 44_100, 3000.0) < 0.01, "{object_type:?}");
+                }
+                // Parametric Stereo brings the two sides back: 660 Hz is
+                // on the right only
+                let apart = left
+                    .iter()
+                    .zip(&right)
+                    .fold(0.0f32, |most, (l, r)| most.max((l - r).abs()));
+                assert_eq!(apart > 0.05, wide, "{object_type:?}: {apart}");
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn audio_toolbox_follows_a_stream_that_turns_into_aac_plus() {
+            if aac::active() != aac::AacDecoderKind::AudioToolbox {
+                eprintln!("skipped: AudioToolbox is not the decoder in use");
+                return;
+            }
+            // Both declare 22.05 kHz stereo in their headers: plain AAC
+            // for a while, then HE-AAC that plays at 44.1 kHz (an HLS
+            // stream can do that on one track)
+            let plain = adts(AudioObjectType::Mpeg4LowComplexity, 64_000, 22_050, true);
+            let plus = adts(AudioObjectType::Mpeg4HeAac, 64_000, 44_100, true);
+            let stream = [plain.repeat(3), plus.repeat(12)].concat();
+            let mut source =
+                SymphoniaSource::new_with_hint(Cursor::new(stream), Some("aac")).unwrap();
+            assert_eq!(source.codec_name(), "AAC");
+            assert_eq!(source.sample_rate().get(), 22_050);
+            let slot = source.error_slot();
+            for _ in source.by_ref() {}
+            assert_eq!(*slot.lock().unwrap(), None);
+            assert_eq!(source.codec_name(), "AAC+");
+            assert_eq!(source.sample_rate().get(), 44_100);
+        }
+
+        #[cfg(all(target_os = "macos", feature = "system-fdk"))]
+        #[test]
+        fn audio_toolbox_and_fdk_play_the_same() {
+            use aac::AacDecoderKind::{AudioToolbox, FdkSystem};
+            if !FdkSystem.available() {
+                eprintln!("skipped: no libfdk-aac to compare AudioToolbox with");
+                return;
+            }
+            for (object_type, bit_rate, stereo) in [
+                (AudioObjectType::Mpeg4LowComplexity, 128_000, true),
+                (AudioObjectType::Mpeg4HeAac, 64_000, true),
+                (AudioObjectType::Mpeg4HeAac, 32_000, false),
+                (AudioObjectType::Mpeg4HeAacV2, 32_000, true),
+            ] {
+                let stream = adts(object_type, bit_rate, 44_100, stereo);
+                let play = |kind| {
+                    let source = aac::with_decoder(kind, || {
+                        SymphoniaSource::new_with_hint(Cursor::new(stream.clone()), Some("aac"))
+                    })
+                    .unwrap();
+                    let format = (source.sample_rate().get(), source.channels().get());
+                    let name = source.codec_name().to_string();
+                    (format, name, source.collect::<Vec<f32>>())
+                };
+                let (apple_format, apple_name, apple) = play(AudioToolbox);
+                let (fdk_format, fdk_name, fdk) = play(FdkSystem);
+                assert_eq!(apple_format, fdk_format, "{object_type:?}");
+                assert_eq!(apple_name, fdk_name, "{object_type:?}");
+                let step = apple_format.1 as usize;
+                let left = |samples: &[f32]| -> Vec<f32> {
+                    samples.iter().step_by(step).copied().collect()
+                };
+                for freq in [220.0, 1760.0, 5000.0] {
+                    let (a, f) = (
+                        tone(&left(&apple), 44_100, freq),
+                        tone(&left(&fdk), 44_100, freq),
+                    );
+                    assert!(
+                        (a - f).abs() < 0.02,
+                        "{object_type:?}: {freq} Hz is {a} with AudioToolbox, {f} with FDK"
+                    );
+                }
+                let secs = |samples: &[f32]| samples.len() as f32 / step as f32 / 44_100.0;
+                assert!(
+                    (secs(&apple) - secs(&fdk)).abs() < 0.1,
+                    "{object_type:?}: {} s and {} s",
+                    secs(&apple),
+                    secs(&fdk)
+                );
+            }
         }
 
         // --- without it: the built-in decoder ---

@@ -156,7 +156,7 @@ jobs:
           set -o pipefail
           cargo test -p radiotrope aac -- --nocapture 2>&1 | tee aac.log
           # The library must have been found: no AAC+ test may have skipped
-          if grep -q "skipped: no libfdk-aac" aac.log; then
+          if grep -q -e "skipped: no libfdk-aac" -e "skipped: no AAC+ decoder" aac.log; then
             echo "::error::libfdk-aac with HE-AAC was not loaded"
             exit 1
           fi
