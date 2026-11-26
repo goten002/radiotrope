@@ -308,7 +308,17 @@ jobs:
         run: |
           shellcheck --version
           shellcheck -x packaging/linux/*.sh packaging/appimage/build.sh packaging/appimage/AppRun \
-            packaging/arch/aur-publish.sh packaging/flatpak/*.sh
+            packaging/arch/aur-publish.sh packaging/flatpak/*.sh packaging/macos/*.sh
+      - name: macOS Info.plist and entitlements parse
+        run: |
+          python3 -c '
+          import plistlib
+          info = plistlib.load(open("packaging/macos/Info.plist", "rb"))
+          assert info["CFBundleIdentifier"] == "app.radiotrope.Radiotrope", info["CFBundleIdentifier"]
+          assert info["CFBundleExecutable"] == "radiotrope"
+          assert info["NSBonjourServices"] == ["_radiotrope._tcp"]
+          plistlib.load(open("packaging/macos/entitlements.plist", "rb"))
+          print("ok:", info["CFBundleIdentifier"], info["LSMinimumSystemVersion"])'
       - name: PKGBUILDs parse (makepkg --printsrcinfo)
         run: |
           docker run --rm -v "$PWD/packaging/arch:/arch:ro" archlinux:base-devel bash -c '

@@ -118,8 +118,9 @@ pub struct Settings {
     #[serde(default = "default_true")]
     pub panel_gradient: bool,
 
-    /// Draw our own title bar instead of the system frame (desktop)
-    #[serde(default = "default_true")]
+    /// Draw our own title bar instead of the system frame (desktop). Not
+    /// on macOS: see [`CUSTOM_TITLE_BAR_OFFERED`].
+    #[serde(default = "default_custom_title_bar")]
     pub custom_title_bar: bool,
 
     /// Round the window's corners with our title bar (desktop)
@@ -356,6 +357,15 @@ fn default_true() -> bool {
     true
 }
 
+/// Whether the player may draw its own title bar. Not on macOS, where the
+/// system's bar with its traffic lights is the only one: ours has the
+/// window buttons of Windows and Linux, on the other side.
+pub const CUSTOM_TITLE_BAR_OFFERED: bool = !cfg!(target_os = "macos");
+
+fn default_custom_title_bar() -> bool {
+    CUSTOM_TITLE_BAR_OFFERED
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -375,7 +385,7 @@ impl Default for Settings {
             show_visualizer: true,
             show_station_stats: true,
             panel_gradient: true,
-            custom_title_bar: true,
+            custom_title_bar: default_custom_title_bar(),
             rounded_corners: true,
             zoom: default_zoom(),
             display_scale: None,
@@ -1152,7 +1162,9 @@ mod tests {
         assert!(settings.show_visualizer);
         assert!(settings.show_station_stats);
         assert!(settings.panel_gradient);
-        assert!(settings.custom_title_bar);
+        // The system's title bar on macOS, ours elsewhere
+        assert_eq!(settings.custom_title_bar, !cfg!(target_os = "macos"));
+        assert_eq!(settings.custom_title_bar, CUSTOM_TITLE_BAR_OFFERED);
         assert!(settings.rounded_corners);
 
         let _ = fs::remove_file(&path);

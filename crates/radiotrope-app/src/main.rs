@@ -22,6 +22,8 @@ mod headless_femtovg;
 mod import_ui;
 mod instance;
 mod log_file;
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+mod macos_app;
 mod mcp;
 mod player_ui;
 mod quit_ui;
@@ -146,7 +148,7 @@ fn main() {
     // Started from the desktop, with no terminal to read it: the window's
     // messages go to the log file. Not with `--mcp`, whose client reads
     // what we print.
-    #[cfg(all(target_os = "linux", feature = "desktop"))]
+    #[cfg(all(any(target_os = "linux", target_os = "macos"), feature = "desktop"))]
     if !args.mcp {
         log_file::set_up();
     }
@@ -261,6 +263,8 @@ fn main() {
         logos: logo_service.clone(),
     };
     shortcuts::install(&ui);
+    // What the menus leave out on macOS (ui/platform/desktop)
+    ui.global::<Platform>().set_macos(cfg!(target_os = "macos"));
     ui.on_locate_favorite(|model, highlighted, playing, action, page| {
         shortcuts::favorite_highlight(
             model.iter().map(|station| station.url),
@@ -497,6 +501,41 @@ fn main() {
     #[cfg(not(feature = "desktop"))]
     let start_hidden = false;
 
+    // What the exit saves and waits for. Run once: after the event loop,
+    // or on macOS from inside it when the system ends the app (logout).
+    let finish: ExitWork = {
+        let ui = ui.clone_strong();
+        let work: Box<dyn FnOnce()> = Box::new(move || {
+            // Tell the controller first, so a recording starts finishing
+            // while the rest is saved. A controller stuck on its audio
+            // device doesn't take it, and isn't waited for.
+            let shutdown_sent = ui_tx.shutdown(SHUTDOWN_SEND_TIMEOUT);
+            let deadline = Instant::now() + SHUTDOWN_GRACE;
+
+            // Credit the session still playing at exit, and save what is
+            // waiting to be saved
+            if let Some(session) = listen_session.borrow_mut().take() {
+                credit_listening(&ui, &listen_favs, &favorites_saver, session);
+            }
+            favorites_ui::save_at_exit(&favorites, &favorites_saver);
+
+            // Final save before shutdown
+            save_settings_at_exit(&shared_state, &ui);
+
+            // Give the controller time to finish a recording in progress,
+            // so the end of the file is written before the process exits
+            while shutdown_sent && !controller.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        std::rc::Rc::new(std::cell::Cell::new(Some(work)))
+    };
+
+    // macOS: Quit in the menu bar and the Dock, Cmd+Q and logout go
+    // through this exit too
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    quit_as_macos_asks(&ui, &finish);
+
     // Run Slint event loop (blocks main thread) until Quit, or a close
     // that doesn't go to the tray; a hidden window keeps it going. An
     // error (the display went away, e.g. at logout) ends it like closing
@@ -510,27 +549,45 @@ fn main() {
         eprintln!("Event loop ended: {e}");
     }
     let _ = ui.hide();
+    run_exit_work(&finish);
+}
 
-    // Tell the controller first, so a recording starts finishing while the
-    // rest is saved. A controller stuck on its audio device doesn't take
-    // it, and isn't waited for.
-    let shutdown_sent = ui_tx.shutdown(SHUTDOWN_SEND_TIMEOUT);
-    let deadline = Instant::now() + SHUTDOWN_GRACE;
+/// The work of the exit, until it has been run
+type ExitWork = std::rc::Rc<std::cell::Cell<Option<Box<dyn FnOnce()>>>>;
 
-    // Credit the session still playing at exit, and save what is waiting
-    // to be saved
-    if let Some(session) = listen_session.borrow_mut().take() {
-        credit_listening(&ui, &listen_favs, &favorites_saver, session);
+/// Run the exit's work, unless it has run already
+fn run_exit_work(work: &ExitWork) {
+    if let Some(work) = work.take() {
+        work();
     }
-    favorites_ui::save_at_exit(&favorites, &favorites_saver);
+}
 
-    // Final save before shutdown
-    save_settings_at_exit(&shared_state, &ui);
+/// macOS ends an app by asking it to terminate (see [`macos_app`]). Asked
+/// by the user (Quit in the app's menu or the Dock's, Cmd+Q), the player
+/// quits as from its own menu, which may ask first. Asked by the system
+/// (logout, restart, shutdown), it saves and finishes a recording at once
+/// and lets the system go on.
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+fn quit_as_macos_asks(ui: &App, finish: &ExitWork) {
+    use macos_app::{Answer, AskedBy};
 
-    // Give the controller time to finish a recording in progress, so the
-    // end of the file is written before the process exits
-    while shutdown_sent && !controller.is_finished() && Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(20));
+    let ui_weak = ui.as_weak();
+    let finish = finish.clone();
+    let installed = macos_app::on_terminate(move |asked_by| match asked_by {
+        AskedBy::User => {
+            match ui_weak.upgrade() {
+                Some(ui) => ui.invoke_quit_app(),
+                None => quit_app(),
+            }
+            Answer::Cancel
+        }
+        AskedBy::System => {
+            run_exit_work(&finish);
+            Answer::TerminateNow
+        }
+    });
+    if let Err(e) = installed {
+        eprintln!("Quit from the menu bar and the Dock won't save first: {e}");
     }
 }
 

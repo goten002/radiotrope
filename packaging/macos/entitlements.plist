@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the Developer ID signature (phase 3, with the hardened
+  runtime: codesign -options runtime -entitlements this file). Not used by
+  the ad-hoc signature that bundle.sh makes today.
+
+  Radiotrope is not sandboxed (Developer ID, not the Mac App Store). Without
+  com.apple.security.app-sandbox the three keys below change nothing: the app
+  may already use the network and any file the user can. They are here so
+  the list is complete if a sandboxed build is ever made: stations and the
+  update check (client), the phone remote and MCP over the network
+  (server), recordings folder and playlists the user picks (files).
+
+  Not needed: audio output (no entitlement exists for it), audio input (we
+  never record from a microphone), JIT, unsigned executable memory.
+
+  If the AAC+ decoder keeps loading a third-party libfdk-aac (not signed by
+  us), the hardened runtime refuses it unless this is added:
+      <key>com.apple.security.cs.disable-library-validation</key><true/>
+  With the AudioToolbox decoder (phase 2) it is not needed.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.network.client</key>
+	<true/>
+	<key>com.apple.security.network.server</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>
