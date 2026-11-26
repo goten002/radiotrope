@@ -1,0 +1,16 @@
+// The window the app's window is made from. On Linux and Windows the menu
+// bar is drawn in the window (menu-bar.slint), so this adds nothing; on
+// macOS (../macos/window.slint) it adds the menu bar at the top of the
+// screen. build.rs maps `@platform` to one of the folders.
+import { MenuCommand, MenuState } from "../../menu-model.slint";
+
+export global NativeMenu {
+    // The menus are in the system's menu bar and not in the window
+    out property <bool> active: false;
+}
+
+export component PlatformWindow inherits Window {
+    // For the system's menu bar, where there is one
+    in property <MenuState> menu-state;
+    callback menu-command(MenuCommand);
+}

@@ -17,8 +17,10 @@
 //!   the logout, so the exit's work is done at once, inside the question,
 //!   and AppKit is told to go on.
 //!
-//! The menu in the menu bar is Slint's default one (About, Hide, Quit...)
-//! until the player has a native menu of its own.
+//! The menu bar is the player's own (ui/platform/macos/window.slint): its
+//! Quit runs the player's Quit directly, and so does Cmd+Q, which is that
+//! item's key. The answer here is still what the Dock's Quit and a logout
+//! get.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -85,6 +87,19 @@ pub fn on_terminate(handler: impl Fn(AskedBy) -> Answer + 'static) -> Result<(),
         let _: () = msg_send![app, setDelegate: delegate];
     }
     Ok(())
+}
+
+/// Window > Bring All to Front: the app's windows in front of the other
+/// apps' (`-[NSApplication arrangeInFront:]`, what the item does in every
+/// Mac app). Call on the main thread.
+pub fn bring_all_to_front() {
+    // SAFETY: a plain message to the shared application, with a nil
+    // sender, as from a menu item without one
+    unsafe {
+        let app: *mut AnyObject = msg_send![class!(NSApplication), sharedApplication];
+        let nobody: *mut AnyObject = std::ptr::null_mut();
+        let _: () = msg_send![app, arrangeInFront: nobody];
+    }
 }
 
 /// Give `class` our `applicationShouldTerminate:` (in place of one it has)

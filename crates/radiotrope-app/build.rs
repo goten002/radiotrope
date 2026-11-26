@@ -3,11 +3,21 @@ use std::path::Path;
 
 fn main() {
     // `@platform/...` imports resolve to the UI for this build: the WiFi
-    // settings only exist in the Raspberry Pi (`embedded`) build.
-    let platform = if std::env::var_os("CARGO_FEATURE_EMBEDDED").is_some() {
-        "ui/platform/embedded"
-    } else {
-        "ui/platform/desktop"
+    // settings only exist in the Raspberry Pi (`embedded`) build, and the
+    // menus are in the system's menu bar only on macOS.
+    // RADIOTROPE_UI_PLATFORM=macos compiles the macOS UI on another system,
+    // to check it there (its menu bar is then drawn by Slint).
+    println!("cargo:rerun-if-env-changed=RADIOTROPE_UI_PLATFORM");
+    let platform = match std::env::var("RADIOTROPE_UI_PLATFORM").ok().as_deref() {
+        Some("macos") => "ui/platform/macos",
+        Some("desktop") => "ui/platform/desktop",
+        Some("embedded") => "ui/platform/embedded",
+        Some(other) if !other.is_empty() => {
+            panic!("RADIOTROPE_UI_PLATFORM must be desktop, embedded or macos, not {other:?}")
+        }
+        _ if std::env::var_os("CARGO_FEATURE_EMBEDDED").is_some() => "ui/platform/embedded",
+        _ if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("macos") => "ui/platform/macos",
+        _ => "ui/platform/desktop",
     };
     let manifest_dir = std::path::PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
     let config = slint_build::CompilerConfiguration::new()

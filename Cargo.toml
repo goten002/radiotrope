@@ -93,3 +93,8 @@ panic = "abort"
 # vendor/i-slint-renderer-femtovg when the Slint in use has both.
 [patch.crates-io]
 i-slint-renderer-femtovg = { path = "vendor/i-slint-renderer-femtovg" }
+# muda 0.21.2 with one change (vendor/README.md): every handler set for menu
+# events is called, not only the first. The tray's menu (tray-icon) and the
+# macOS menu bar (Slint) both set one. Remove with vendor/muda when muda
+# does this itself, or when only one of the two uses it.
+muda = { path = "vendor/muda" }
