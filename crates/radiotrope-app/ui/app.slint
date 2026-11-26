@@ -162,6 +162,8 @@ export component App inherits PlatformWindow {
         round: root.window-rounded;
     }
     callback minimize-window();
+    // macOS: Window > Bring All to Front
+    callback bring-all-to-front();
     // Use our title bar (true) or the system one; Rust keeps the content size
     callback switch-title-bar(bool);
     // The OS window menu on right-click; false when there is none
@@ -640,6 +642,7 @@ export component App inherits PlatformWindow {
                         custom-frame: root.custom-frame;
                         maximized <=> root.maximized;
                         minimize => { root.minimize-window(); }
+                        bring-all-to-front => { root.bring-all-to-front(); }
                         show-system-menu(x, y, pressed) => { return root.show-system-menu(x, y, pressed); }
                         close-window => { root.close(); }
                         tray-icon <=> root.tray-icon;

@@ -690,7 +690,7 @@ fn the_application_and_window_menus_are_the_systems() {
             minimize,
             item("Zoom", "maximize"),
             Row::Separator,
-            item("Bring All to Front", ""),
+            item("Bring All to Front", "bring-all-to-front"),
         ]
     );
 }

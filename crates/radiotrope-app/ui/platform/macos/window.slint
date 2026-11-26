@@ -38,8 +38,6 @@ export global NativeMenu {
 export component PlatformWindow inherits Window {
     in property <MenuState> menu-state;
     callback menu-command(MenuCommand);
-    // Window > Bring All to Front
-    callback bring-all-to-front();
 
     // The items greyed out while a dialog is open
     property <bool> on: root.menu-state.enabled;
@@ -364,7 +362,7 @@ export component PlatformWindow inherits Window {
             MenuSeparator {}
             MenuItem {
                 title: "Bring All to Front";
-                activated => { root.bring-all-to-front(); }
+                activated => { root.menu-command(MenuCommand.bring-all-to-front); }
             }
         }
 

@@ -882,6 +882,7 @@ export component MenuBar inherits Rectangle {
         if command == MenuCommand.about { root.open-about(); }
         if command == MenuCommand.minimize { root.minimize(); }
         if command == MenuCommand.maximize { root.maximized = !root.maximized; }
+        if command == MenuCommand.bring-all-to-front { root.bring-all-to-front(); }
     }
     // What the items show, for the system's menu bar
     out property <MenuState> state: {
@@ -973,6 +974,8 @@ export component MenuBar inherits Rectangle {
     in property <bool> custom-frame;
     in-out property <bool> maximized;
     callback minimize();
+    // The app's windows in front of the other apps' (macOS's Window menu)
+    callback bring-all-to-front();
     callback toggle-custom-frame();
     in-out property <bool> rounded-corners;
     in property <bool> corners-available;
