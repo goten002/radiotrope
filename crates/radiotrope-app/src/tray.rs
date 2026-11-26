@@ -274,10 +274,17 @@ impl Tray {
         .map_err(|e| e.to_string())?;
         let icon = TrayIconBuilder::new()
             .with_id(TRAY_ID)
-            .with_icon(app_icon()?)
             .with_tooltip("Radiotrope")
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(MENU_ON_LEFT_CLICK);
+        // macOS draws the glyph itself, as a template image: black on a
+        // light menu bar, white on a dark or tinted one. Nothing sets the
+        // icon again later; a change there has to be `set_icon_templated`
+        // on macOS, or the glyph stays black on a dark bar.
+        #[cfg(target_os = "macos")]
+        let icon = icon.with_icon_templated(app_icon()?);
+        #[cfg(not(target_os = "macos"))]
+        let icon = icon.with_icon(app_icon()?);
         // The name beside the icon where a tray shows one. Not in the
         // macOS menu bar, where it would be text next to the icon for good.
         let icon = if MENU_ON_LEFT_CLICK {
@@ -388,19 +395,27 @@ fn same_favorites(a: &View, b: &View) -> bool {
             .all(|(a, b)| a.0 == b.0 && a.1 == b.1)
 }
 
-/// The app's icon: the exe's own on Windows (every size, so the display
-/// scale gets a sharp one), the 64 px picture elsewhere
+/// The tray's icon: the exe's own on Windows (every size, so the display
+/// scale gets a sharp one), the one-colour menu bar glyph on macOS, the
+/// 64 px picture elsewhere
 fn app_icon() -> Result<tray_icon::Icon, String> {
     #[cfg(windows)]
     if let Ok(icon) = tray_icon::Icon::from_resource(1, None) {
         return Ok(icon);
     }
-    let png = image::load_from_memory(include_bytes!("../../../assets/icons/icon-64.png"))
+    let png = image::load_from_memory(ICON_PNG)
         .map_err(|e| e.to_string())?
         .into_rgba8();
     let (width, height) = png.dimensions();
     tray_icon::Icon::from_rgba(png.into_raw(), width, height).map_err(|e| e.to_string())
 }
+
+/// macOS: a template image, black on transparent, of which the menu bar
+/// uses only the shape. Another glyph is another file at this path.
+#[cfg(target_os = "macos")]
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/macos/tray-template.png");
+#[cfg(not(target_os = "macos"))]
+const ICON_PNG: &[u8] = include_bytes!("../../../assets/icons/icon-64.png");
 
 /// macOS: a click on a menu bar icon opens its menu, as every other icon
 /// there does ("Show Radiotrope" is its first choice). Elsewhere the left
@@ -764,6 +779,27 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+
+    /// A swapped glyph must still be a template image: macOS takes the
+    /// shape from the alpha channel and ignores the colours, so a picture
+    /// with no transparent part would show as a filled square
+    #[test]
+    fn the_macos_tray_glyph_is_a_shape_on_transparent() {
+        let png = image::load_from_memory(include_bytes!(
+            "../../../assets/icons/macos/tray-template.png"
+        ))
+        .unwrap()
+        .into_rgba8();
+        let (width, height) = png.dimensions();
+        // Sharp at the menu bar's 18 pt on a Retina screen
+        assert!(height >= 36, "{width}x{height}");
+        let pixels = (width * height) as usize;
+        let clear = png.pixels().filter(|p| p[3] == 0).count();
+        // Any strength counts: a glyph may have lighter parts
+        let drawn = pixels - clear;
+        assert!(clear > pixels / 10, "{clear} of {pixels} transparent");
+        assert!(drawn > pixels / 10, "{drawn} of {pixels} drawn");
     }
 
     #[test]

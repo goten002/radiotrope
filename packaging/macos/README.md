@@ -24,7 +24,7 @@ Radiotrope.app/Contents/
   PkgInfo
   MacOS/radiotrope           the player (universal: lipo of arm64 + x86_64)
   MacOS/radiotrope-cli       the terminal player
-  Resources/Radiotrope.icns  from assets/icons
+  Resources/Radiotrope.icns  from assets/icons/macos (see "Icons")
   Resources/update-mode      "notify": About says when a newer version is out
   Resources/LICENSE, THIRD-PARTY-LICENSES
   Resources/man/man1/        man pages of the two programs
@@ -76,8 +76,28 @@ icon (`iconutil`), signs it ad hoc (`codesign --force --deep --sign -`; arm64
 code doesn't run unsigned), and makes the DMG (`hdiutil`, UDZO) and the zip
 (`ditto`).
 
-The icon's 1024 px picture (512@2x) is the 512 px one scaled up: a
-macOS-shaped icon (a rounded square on a 1024 canvas) is still to be drawn.
+## Icons
+
+Both pictures are in `assets/icons/macos/` (its README says where they come
+from):
+
+- **The app icon** (Dock, Finder, the DMG): `radiotrope-macos-1024.png`, the
+  logo on a white rounded tile, 824 px on a 1024 px canvas with the margin
+  and shadow of Apple's layout. `bundle.sh` scales it with `sips -z` into
+  the whole `.iconset` (16, 32, 128, 256 and 512 pt, each also @2x; 512@2x
+  is the picture itself), prints the ten sizes and makes
+  `Radiotrope.icns` with `iconutil`. To change the icon, replace the PNG
+  (1024 x 1024, or the script stops) and build again. The Linux and Windows
+  icons (`assets/icons/icon-*.png`, `radiotrope.ico`) are not used here.
+- **The menu bar glyph**: `tray-template.png`, 64 x 64, black on
+  transparent. It is compiled into the program (`tray.rs`) and shown as a
+  template image: macOS uses only its shape (the alpha channel) and draws it
+  black on a light menu bar, white on a dark one, and tinted where the bar
+  is. **To swap it, copy another PNG over that file** and build again: any
+  size works (it is scaled to the bar's 18 pt; 36 px or more stays sharp on
+  Retina), black on a transparent background, no text. Colours in the
+  file are ignored; how opaque each pixel is counts, so a glyph may have
+  lighter parts (partial alpha).
 
 ## What CI checks
 

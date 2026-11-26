@@ -87,6 +87,15 @@ jobs:
             lipo -info "$app/Contents/MacOS/$p"
           done
           codesign -dv --verbose=2 "$app" 2>&1
+          # The icon holds all ten pictures: 16 to 512 pt, each also @2x
+          iconutil -c iconset -o icon-check.iconset "$app/Contents/Resources/Radiotrope.icns"
+          for s in 16 32 128 256 512; do
+            for f in "icon_${s}x${s}.png:$s" "icon_${s}x${s}@2x.png:$((s * 2))"; do
+              px=$(sips -g pixelWidth "icon-check.iconset/${f%%:*}" | awk '/pixelWidth/ { print $2 }')
+              echo "Radiotrope.icns: ${f%%:*} is $px px"
+              [ "$px" = "${f##*:}" ] || { echo "::error::Radiotrope.icns: ${f%%:*} is '$px' px, not ${f##*:}"; exit 1; }
+            done
+          done
           ls -l dist/*.dmg dist/*.zip
           {
             echo "### macOS downloads"
