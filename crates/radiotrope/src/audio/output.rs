@@ -109,9 +109,7 @@ impl SilentOutput {
         let thread = thread::Builder::new()
             .name("silent-output".to_string())
             .spawn(move || {
-                // Each pull on a schedule of its own, so the time spent
-                // pulling doesn't add up into lag behind real time
-                let mut next = Instant::now();
+                let mut pace = Pace::new(Instant::now());
                 while !stopped.load(Ordering::Relaxed) {
                     // An empty mixer returns None until a player joins it
                     let mut loudest = 0.0f32;
@@ -123,14 +121,8 @@ impl SilentOutput {
                     if loudest > 0.0 {
                         peak.heard(loudest);
                     }
-                    next += SILENT_PULL_INTERVAL;
-                    let now = Instant::now();
-                    match next.checked_duration_since(now) {
-                        Some(wait) => thread::sleep(wait),
-                        // Far behind (the machine was busy, or asleep):
-                        // carry on from now rather than race to catch up
-                        None if now - next > SILENT_PULL_INTERVAL * 10 => next = now,
-                        None => {}
+                    if let Some(wait) = pace.pulled(Instant::now()) {
+                        thread::sleep(wait);
                     }
                 }
             })
@@ -142,6 +134,33 @@ impl SilentOutput {
             stop,
             thread: Some(thread),
         })
+    }
+}
+
+/// When a [`SilentOutput`] pulls: each pull on a schedule of its own, so
+/// the time spent pulling doesn't add up into lag behind real time
+struct Pace {
+    next: Instant,
+}
+
+impl Pace {
+    fn new(now: Instant) -> Self {
+        Self { next: now }
+    }
+
+    /// A pull is done at `now`: how long to wait before the next one
+    fn pulled(&mut self, now: Instant) -> Option<Duration> {
+        self.next += SILENT_PULL_INTERVAL;
+        match self.next.checked_duration_since(now) {
+            Some(wait) => Some(wait),
+            // Far behind (the machine was busy, or asleep): carry on from
+            // now rather than race to catch up
+            None if now - self.next > SILENT_PULL_INTERVAL * 10 => {
+                self.next = now;
+                None
+            }
+            None => None,
+        }
     }
 }
 
@@ -599,7 +618,12 @@ mod tests {
         }
 
         let output = SilentOutput::open(1.0, Arc::default()).unwrap();
-        // Count what it takes over half a second
+        // One pull's worth at a time, 100 times a second
+        assert_eq!(output.frames, 441);
+        // Count what it takes over half a second. How close to real time
+        // it stays depends on how busy the machine is: `the_silent_outputs
+        // _pace_*` check the schedule exactly. Here, only that it isn't
+        // ahead of real time by more than the pull under way, nor far behind.
         let pulled = Arc::new(AtomicU64::new(0));
         let rate = output.sample_rate;
         output.mixer.add(Counted(pulled.clone(), rate));
@@ -609,9 +633,42 @@ mod tests {
         let secs = frames / f64::from(rate.get());
         let elapsed = start.elapsed().as_secs_f64();
         assert!(
-            (secs - elapsed).abs() < 0.05,
+            secs <= elapsed + 2.0 * SILENT_PULL_INTERVAL.as_secs_f64() && secs > elapsed / 2.0,
             "took {secs:.3} s of audio in {elapsed:.3} s"
         );
+    }
+
+    #[test]
+    fn the_silent_outputs_pace_doesnt_drift_with_the_time_spent_pulling() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut pace = Pace::new(start);
+        // Each pull takes 3 ms: the waits make up the rest of the 10 ms
+        let mut now = start;
+        for pull in 1..=100u64 {
+            now += Duration::from_millis(3);
+            let wait = pace.pulled(now).expect("on time");
+            assert_eq!(wait, Duration::from_millis(7));
+            now += wait;
+            assert_eq!(now, at(pull * 10));
+        }
+        // A pull that ran 5 ms over is made up by the next waits, not lost
+        assert_eq!(pace.pulled(at(1015)), None);
+        assert_eq!(pace.pulled(at(1016)), Some(Duration::from_millis(4)));
+    }
+
+    #[test]
+    fn the_silent_outputs_pace_starts_again_after_a_long_pause() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut pace = Pace::new(start);
+        // 100 ms behind is caught up: no waits until back on schedule
+        assert_eq!(pace.pulled(at(105)), None);
+        assert_eq!(pace.pulled(at(106)), None);
+        // More than that (asleep): carries on from now, a pull every 10 ms
+        let mut pace = Pace::new(start);
+        assert_eq!(pace.pulled(at(500)), None);
+        assert_eq!(pace.pulled(at(501)), Some(Duration::from_millis(9)));
     }
 
     /// A watch on a default the test sets
