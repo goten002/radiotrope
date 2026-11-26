@@ -31,6 +31,7 @@ on:
   pull_request:
     paths:
       - packaging/macos/**
+      - scripts/macos-integration-check.sh
       - .github/workflows/package-macos.yml
 
 permissions:
@@ -139,6 +140,10 @@ jobs:
     env:
       VERSION: ${{ needs.build.outputs.version }}
     steps:
+      # Only the check scripts: the app is the one from the DMG
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts
       - uses: actions/download-artifact@v4
         with:
           name: dist-macos
@@ -227,6 +232,16 @@ jobs:
           sleep 3
           pkill -KILL -f "$app/Contents/MacOS/radiotrope" || true
 
+      # The release build in its bundle, as Finder, the Dock and launchd
+      # use it: a playlist opened with it starts it and plays, a second
+      # launch is the first one shown, and launchd starts it from the
+      # Start at Login file (the script's header has the list). It runs
+      # with the runner's own home folder: Launch Services doesn't pass
+      # ours on.
+      - name: Opened from Finder, the Dock icon, Start at Login
+        shell: bash
+        run: scripts/macos-integration-check.sh "$PWD/smoke/Applications/Radiotrope.app" smoke
+
       - name: Unmount
         if: always()
         run: hdiutil detach mnt || hdiutil detach -force mnt || true
@@ -239,5 +254,10 @@ jobs:
             smoke/screen.png
             smoke/screen-open.png
             smoke/app.log
+            smoke/integration.txt
+            smoke/integration.png
+            smoke/integration.log
+            smoke/integration-second.log
+            smoke/integration-launch-agent.plist
           if-no-files-found: warn
           retention-days: 14

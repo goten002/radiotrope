@@ -122,6 +122,14 @@ fn undo_done_text(count: usize) -> String {
     }
 }
 
+/// Show the favorites file dialog with only a message, about another file
+/// (a playlist opened with the app that can't be played)
+#[cfg(all(feature = "desktop", any(test, target_os = "macos")))]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) fn show_file_message(ui: &App, title: &str, message: &str, detail: &str, error: bool) {
+    show_favorites_file_message(ui, title, message, detail, error);
+}
+
 /// Show the favorites file dialog with only a message (an export done, or
 /// what went wrong)
 #[cfg(feature = "desktop")]

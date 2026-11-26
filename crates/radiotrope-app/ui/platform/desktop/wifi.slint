@@ -20,14 +20,17 @@ export global Platform {
     // macOS, set by Rust when the player starts. There the system draws
     // the title bar (traffic lights, its own corners), so the View menu
     // offers no choice of frame; minimizing goes to the Dock, not the
-    // tray; and Start at Login waits for its LaunchAgent.
+    // tray; and closing the window always hides it (the app runs on, the
+    // Dock icon brings the window back), so there is nothing to choose.
     in property <bool> macos: false;
     // View > Window: our title bar or the system's, and the corners
     out property <bool> has-frame-choice: root.has-window-frame && !root.macos;
+    // View > System Tray > Close to Tray
+    out property <bool> has-close-to-tray: root.has-tray && !root.macos;
     // View > System Tray > Minimize to Tray
     out property <bool> has-minimize-to-tray: root.has-tray && !root.macos;
     // View > System Tray > Start at Login
-    out property <bool> has-start-at-login: root.has-tray && !root.macos;
+    out property <bool> has-start-at-login: root.has-tray;
 }
 
 export struct WifiNetworkEntry {

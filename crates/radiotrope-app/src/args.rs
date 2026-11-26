@@ -22,6 +22,12 @@ pub struct Args {
     #[arg(long, conflicts_with = "mcp")]
     pub quit: bool,
 
+    /// macOS: turn Start at Login on or off (the LaunchAgent file) and
+    /// exit, as View > System Tray > Start at Login does
+    #[cfg(target_os = "macos")]
+    #[arg(long, hide = true, conflicts_with_all = ["mcp", "quit"], value_parser = ["on", "off"])]
+    pub start_at_login: Option<String>,
+
     #[cfg(feature = "ui-snapshots")]
     #[arg(long, hide = true, conflicts_with = "mcp", value_name = "OUT_DIR")]
     pub ui_snapshots: Option<std::path::PathBuf>,

@@ -216,7 +216,7 @@ expect(names(menu("View").map(items) ?? [])
            "Show Listening Stats", "Zoom", "-", "System Tray"], "the View menu")
 expect(names(item("View", "Theme").map(items) ?? []) == ["System", "Dark", "Light"], "View > Theme")
 expect(names(item("View", "System Tray").map(items) ?? [])
-       == ["Show Tray Icon", "Close to Tray", "Start Hidden in Tray"], "View > System Tray")
+       == ["Show Tray Icon", "Start Hidden in Tray", "Start at Login"], "View > System Tray")
 let tools = names(menu("Tools").map(items) ?? [])
 expect(tools == ["Start Recording", "Recordings", "-", "Sleep Timer", "Scheduler", "-", "Filters",
                  "Equalizer", "Statistics", "-", "Connections"], "the Tools menu: \(tools)")

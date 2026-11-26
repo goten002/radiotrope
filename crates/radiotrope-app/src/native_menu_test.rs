@@ -238,8 +238,8 @@ const NOT_ON_MACOS: &[&str] = &[
     "Platform.has-wifi",
     "Platform.has-power-off",
     "Platform.has-frame-choice",
+    "Platform.has-close-to-tray",
     "Platform.has-minimize-to-tray",
-    "Platform.has-start-at-login",
 ];
 
 /// The element is shown on macOS: its condition asks for nothing that
@@ -621,10 +621,11 @@ fn the_bar_in_the_window_is_read_whole() {
     };
     assert_eq!(group("Theme"), THEMES);
     assert_eq!(group("Zoom"), ["each of ViewOptions.zoom-choices"]);
-    // No Minimize to Tray and no Start at Login on macOS
+    // No Close to Tray on macOS (closing always hides the window there)
+    // and no Minimize to Tray (it goes to the Dock)
     assert_eq!(
         group("System Tray"),
-        ["Show Tray Icon", "Close to Tray", "Start Hidden in Tray"]
+        ["Show Tray Icon", "Start Hidden in Tray", "Start at Login"]
     );
     // The Theme row's choices are the picker's
     for theme in THEMES {
@@ -722,7 +723,8 @@ fn only_keys_with_command_and_f1_are_the_menus() {
     assert_eq!(crate::shortcuts::native_menu_keys("help"), "F1");
 }
 
-// Every command an item sends is one the bar in the window runs
+// Every command an item sends is one the bar in the window runs, and the
+// macOS bar sends every one that macOS has
 #[test]
 fn every_command_is_run() {
     let model = include_str!("../ui/menu-model.slint");
@@ -749,9 +751,11 @@ fn every_command_is_run() {
             run.contains(&format!("if command == MenuCommand.{command} {{")),
             "MenuBar.run doesn't run {command}"
         );
-        assert!(
+        // Close to Tray is not a choice on macOS (`Platform.has-close-to-tray`)
+        assert_eq!(
             MACOS_BAR.contains(&format!("MenuCommand.{command})")),
-            "the macOS bar never sends {command}"
+            *command != "close-to-tray",
+            "the macOS bar and {command}"
         );
     }
 }
