@@ -128,7 +128,9 @@ fn a_station_slower_than_real_time_stalls() {
         }
         .handler(),
     );
-    let report = check(&url, &options(6, 20));
+    // At 0.4 times real time the player has its 1 s buffer after 2.5 s and
+    // runs dry about 1.7 s later: 8 s leaves room for a slow start
+    let report = check(&url, &options(8, 20));
     assert_eq!(report.status, Status::Degraded, "{report:#?}");
     assert_eq!(problems(&report), [ProblemCode::Stalled, ProblemCode::Slow]);
     let audio = report.audio.unwrap();

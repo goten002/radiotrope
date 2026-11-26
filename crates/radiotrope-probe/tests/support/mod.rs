@@ -179,19 +179,22 @@ impl Live {
         }
         let start = Instant::now();
         let tick = Duration::from_millis(50);
-        let per_tick = (bytes_per_sec * self.speed * tick.as_secs_f64()) as usize;
+        let mut sent = 0;
         loop {
-            if self
-                .stop_after
-                .is_some_and(|after| start.elapsed().as_secs_f64() >= after)
-            {
+            let elapsed = start.elapsed().as_secs_f64();
+            if self.stop_after.is_some_and(|after| elapsed >= after) {
                 thread::sleep(Duration::from_secs(60));
                 return;
             }
-            thread::sleep(tick);
-            if !send(per_tick, stream) {
+            // Keep time by the clock, not by counting ticks: on a busy
+            // machine a 50 ms sleep can take far longer, and a station paced
+            // by ticks then falls behind the speed it is meant to have
+            let due = (bytes_per_sec * self.speed * elapsed) as usize;
+            if !send(due - sent, stream) {
                 return;
             }
+            sent = due;
+            thread::sleep(tick);
         }
     }
 }

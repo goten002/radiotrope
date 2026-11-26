@@ -479,9 +479,11 @@ mod tests {
     #[test]
     fn five_hundred_favorites_show_at_once_and_their_logos_load_off_the_ui_thread() {
         const FAVORITES: usize = 500;
-        /// Far above what the redraw takes (a few ms), far below reading
-        /// and decoding 500 logos here (seconds in a debug build)
-        const REDRAW_BOUND: Duration = Duration::from_millis(500);
+        /// Only a guard against a redraw gone badly wrong: what shows that
+        /// nothing is decoded on the UI thread is the count of logos in
+        /// its memory, not the time, which a busy CI runner can stretch
+        /// from a few ms to most of a second
+        const REDRAW_BOUND: Duration = Duration::from_secs(10);
 
         slint::platform::set_platform(Box::new(crate::headless::HeadlessPlatform::default()))
             .expect("no other Slint platform yet");
@@ -513,6 +515,10 @@ mod tests {
         assert_eq!(ui.get_favorites_list().row_count(), FAVORITES);
         assert_eq!(ui.get_favorite_logos().row_count(), FAVORITES);
         assert!(first < REDRAW_BOUND, "the first redraw took {first:?}");
+        // It decoded nothing itself: every logo went to the loaders, and
+        // only the UI thread's turns in `show_until` put them on the rows
+        assert_eq!(logos_in_memory(), 0, "the redraw decoded logos");
+        assert_eq!(logos_shown(&ui), 0, "the redraw showed logos");
 
         // The loaders decode them; the rows are set in place
         let started = Instant::now();

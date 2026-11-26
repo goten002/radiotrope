@@ -38,6 +38,8 @@ pub struct StreamHealthMonitor {
     state_entered: Instant,
     no_audio_timeout: Duration,
     stall_timeout: Duration,
+    /// Where "now" comes from: the system clock, or a clock a test moves
+    now: fn() -> Instant,
 }
 
 impl Default for StreamHealthMonitor {
@@ -55,23 +57,31 @@ impl StreamHealthMonitor {
             state_entered: Instant::now(),
             no_audio_timeout: Duration::from_secs(BUFFERING_TIMEOUT_SECS),
             stall_timeout: Duration::from_secs(STREAM_STALL_TIMEOUT_SECS),
+            now: Instant::now,
         }
     }
 
     /// Create a monitor with custom timeouts (for testing)
     pub fn with_timeouts(no_audio: Duration, stall: Duration) -> Self {
+        Self::with_clock(no_audio, stall, Instant::now)
+    }
+
+    /// [`with_timeouts`](Self::with_timeouts) reading the time from `now`,
+    /// so a test can move the clock instead of sleeping
+    fn with_clock(no_audio: Duration, stall: Duration, now: fn() -> Instant) -> Self {
         Self {
             state: HealthState::WaitingForAudio,
             last_sample_count: 0,
-            state_entered: Instant::now(),
+            state_entered: now(),
             no_audio_timeout: no_audio,
             stall_timeout: stall,
+            now,
         }
     }
 
     /// Update with the current sample count. Returns Some(reason) on failure.
     pub fn update(&mut self, sample_count: u64) -> Option<FailureReason> {
-        self.update_at(sample_count, Instant::now())
+        self.update_at(sample_count, (self.now)())
     }
 
     /// [`update`](Self::update) as if it were `now`
@@ -141,7 +151,7 @@ impl StreamHealthMonitor {
     /// Reset the stall timer (call while adaptive buffer is rebuffering
     /// to prevent false stall detection during intentional buffering).
     pub fn reset_stall_timer(&mut self) {
-        self.state_entered = Instant::now();
+        self.state_entered = (self.now)();
     }
 
     /// Reset to Healthy state with a fresh timer.
@@ -150,7 +160,7 @@ impl StreamHealthMonitor {
     pub fn reset_to_healthy(&mut self) {
         if !self.is_failed() {
             self.state = HealthState::Healthy;
-            self.state_entered = Instant::now();
+            self.state_entered = (self.now)();
         }
     }
 
@@ -163,10 +173,32 @@ impl StreamHealthMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::thread;
+    use std::cell::Cell;
+
+    // The tests move a clock of their own instead of sleeping, so a slow or
+    // busy machine can't push a 50 ms wait past a 100 ms timeout. Each test
+    // runs on its own thread, so each has its own clock.
+    thread_local! {
+        static START: Instant = Instant::now();
+        static ELAPSED: Cell<Duration> = const { Cell::new(Duration::ZERO) };
+    }
+
+    /// The test's clock: what the monitor reads as "now"
+    fn test_now() -> Instant {
+        START.with(|start| *start) + ELAPSED.with(Cell::get)
+    }
+
+    /// Moves the test's clock forward by `ms` (in place of a sleep)
+    fn advance(ms: u64) {
+        ELAPSED.with(|elapsed| elapsed.set(elapsed.get() + Duration::from_millis(ms)));
+    }
+
+    fn monitor_with(no_audio: Duration, stall: Duration) -> StreamHealthMonitor {
+        StreamHealthMonitor::with_clock(no_audio, stall, test_now)
+    }
 
     fn short_monitor() -> StreamHealthMonitor {
-        StreamHealthMonitor::with_timeouts(Duration::from_millis(100), Duration::from_millis(100))
+        monitor_with(Duration::from_millis(100), Duration::from_millis(100))
     }
 
     // --- Initial state ---
@@ -197,7 +229,7 @@ mod tests {
     #[test]
     fn waiting_to_failed_no_audio_on_timeout() {
         let mut monitor = short_monitor();
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         let result = monitor.update(0);
         assert_eq!(result, Some(FailureReason::NoAudioOutput));
         assert_eq!(
@@ -210,7 +242,7 @@ mod tests {
     #[test]
     fn waiting_to_healthy_just_before_timeout() {
         let mut monitor = short_monitor();
-        thread::sleep(Duration::from_millis(80));
+        advance(80);
         assert!(monitor.update(50).is_none());
         assert_eq!(*monitor.state(), HealthState::Healthy);
     }
@@ -229,7 +261,7 @@ mod tests {
     fn healthy_to_stalled_when_samples_stop() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         assert!(monitor.update(100).is_none()); // same count
         assert_eq!(*monitor.state(), HealthState::Stalled);
     }
@@ -238,7 +270,7 @@ mod tests {
     fn healthy_stays_if_samples_stop_briefly() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(50));
+        advance(50);
         assert!(monitor.update(100).is_none()); // same count but not timed out
         assert_eq!(*monitor.state(), HealthState::Healthy);
     }
@@ -249,7 +281,7 @@ mod tests {
     fn stalled_recovers_on_new_samples() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
@@ -261,11 +293,11 @@ mod tests {
     fn stalled_signals_but_stays_stalled() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         let result = monitor.update(100); // same count, second timeout
         assert_eq!(result, Some(FailureReason::StreamStall));
         // Stays Stalled (not Failed) — allows recovery
@@ -277,10 +309,10 @@ mod tests {
     fn stalled_stays_stalled_if_not_timed_out() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
 
-        thread::sleep(Duration::from_millis(50));
+        advance(50);
         assert!(monitor.update(100).is_none());
         assert_eq!(*monitor.state(), HealthState::Stalled);
     }
@@ -290,7 +322,7 @@ mod tests {
     #[test]
     fn failed_no_audio_is_terminal() {
         let mut monitor = short_monitor();
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(0); // → Failed(NoAudioOutput)
         assert!(monitor.is_failed());
 
@@ -306,9 +338,9 @@ mod tests {
     fn stalled_recovers_after_signal() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         let result = monitor.update(100); // emits StreamStall, stays Stalled
         assert_eq!(result, Some(FailureReason::StreamStall));
         assert_eq!(*monitor.state(), HealthState::Stalled);
@@ -355,7 +387,7 @@ mod tests {
         for i in 1..=3u64 {
             monitor.update(i * 100); // → Healthy
             assert_eq!(*monitor.state(), HealthState::Healthy);
-            thread::sleep(Duration::from_millis(150));
+            advance(150);
             monitor.update(i * 100); // → Stalled
             assert_eq!(*monitor.state(), HealthState::Stalled);
         }
@@ -423,7 +455,7 @@ mod tests {
     fn rapid_updates_after_stall_all_return_none() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
         assert_eq!(*monitor.state(), HealthState::Stalled);
         // Rapid updates with same count while stalled but before second timeout
@@ -491,7 +523,7 @@ mod tests {
     fn is_failed_false_in_stalled() {
         let mut monitor = short_monitor();
         monitor.update(100);
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100);
         assert_eq!(*monitor.state(), HealthState::Stalled);
         assert!(!monitor.is_failed());
@@ -500,7 +532,7 @@ mod tests {
     #[test]
     fn is_failed_true_for_no_audio() {
         let mut monitor = short_monitor();
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(0);
         assert!(monitor.is_failed());
     }
@@ -509,9 +541,9 @@ mod tests {
     fn stall_does_not_reach_failed() {
         let mut monitor = short_monitor();
         monitor.update(100);
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // signals StreamStall, stays Stalled
         assert!(!monitor.is_failed());
         assert_eq!(*monitor.state(), HealthState::Stalled);
@@ -540,13 +572,13 @@ mod tests {
         assert_eq!(*monitor.state(), HealthState::Healthy);
 
         // Phase 4: Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         assert!(monitor.update(300).is_none()); // stall timeout exceeded
         assert_eq!(*monitor.state(), HealthState::Stalled);
         assert!(!monitor.is_failed());
 
         // Phase 5: StreamStall signal emitted, stays Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         let result = monitor.update(300);
         assert_eq!(result, Some(FailureReason::StreamStall));
         assert_eq!(*monitor.state(), HealthState::Stalled);
@@ -567,7 +599,7 @@ mod tests {
         assert_eq!(*monitor.state(), HealthState::Healthy);
 
         // Healthy → Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100);
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
@@ -580,7 +612,7 @@ mod tests {
         assert_eq!(*monitor.state(), HealthState::Healthy);
 
         // Stall again
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(300);
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
@@ -596,7 +628,7 @@ mod tests {
     fn healthy_resets_stall_timer_on_sample_increase() {
         // Stall timeout 100 ms
         let mut monitor = short_monitor();
-        let start = Instant::now();
+        let start = test_now();
         let at = |ms| start + Duration::from_millis(ms);
         monitor.update_at(100, at(0)); // → Healthy
 
@@ -618,7 +650,7 @@ mod tests {
     #[test]
     fn failed_returns_none_on_many_repeated_calls() {
         let mut monitor = short_monitor();
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         let result = monitor.update(0);
         assert_eq!(result, Some(FailureReason::NoAudioOutput));
 
@@ -638,16 +670,16 @@ mod tests {
     fn no_audio_and_stall_are_distinct_failure_paths() {
         // Path 1: NoAudioOutput (never get samples) — terminal
         let mut m1 = short_monitor();
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         assert_eq!(m1.update(0), Some(FailureReason::NoAudioOutput));
         assert!(m1.is_failed());
 
         // Path 2: StreamStall (got samples then lost them) — recoverable
         let mut m2 = short_monitor();
         m2.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         m2.update(100); // → Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         assert_eq!(m2.update(100), Some(FailureReason::StreamStall));
         assert!(!m2.is_failed()); // stays Stalled, not Failed
 
@@ -663,7 +695,7 @@ mod tests {
         monitor.update(100); // → Healthy
 
         // Stall
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
 
         // Recover
@@ -671,7 +703,7 @@ mod tests {
         assert_eq!(*monitor.state(), HealthState::Healthy);
 
         // Wait 80ms — should still be Healthy (timer was reset on recovery)
-        thread::sleep(Duration::from_millis(80));
+        advance(80);
         monitor.update(200); // same count, but within timeout
         assert_eq!(*monitor.state(), HealthState::Healthy);
     }
@@ -731,12 +763,12 @@ mod tests {
         monitor.reset_stall_timer();
 
         // Wait for stall timeout to elapse
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // same count → should detect stall
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
         // Wait again → emits StreamStall signal, stays Stalled
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         let result = monitor.update(100);
         assert_eq!(result, Some(FailureReason::StreamStall));
         assert_eq!(*monitor.state(), HealthState::Stalled);
@@ -748,11 +780,11 @@ mod tests {
         // allowing the engine to track how long the stall persists.
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
 
         for _ in 0..3 {
-            thread::sleep(Duration::from_millis(150));
+            advance(150);
             let result = monitor.update(100);
             assert_eq!(result, Some(FailureReason::StreamStall));
             assert_eq!(*monitor.state(), HealthState::Stalled);
@@ -772,7 +804,7 @@ mod tests {
 
         // Simulate the old bug: reset every 50ms for 500ms (5x the stall timeout)
         for _ in 0..10 {
-            thread::sleep(Duration::from_millis(50));
+            advance(50);
             monitor.reset_stall_timer();
             monitor.update(100); // same count
         }
@@ -787,7 +819,7 @@ mod tests {
     fn reset_to_healthy_from_stalled() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
@@ -807,7 +839,7 @@ mod tests {
     #[test]
     fn reset_to_healthy_preserves_failed() {
         let mut monitor = short_monitor();
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(0); // → Failed(NoAudioOutput)
         assert!(monitor.is_failed());
 
@@ -824,7 +856,7 @@ mod tests {
     fn reset_to_healthy_resets_timer() {
         let mut monitor = short_monitor();
         monitor.update(100); // → Healthy
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100); // → Stalled
         assert_eq!(*monitor.state(), HealthState::Stalled);
 
@@ -833,12 +865,12 @@ mod tests {
         assert_eq!(*monitor.state(), HealthState::Healthy);
 
         // Wait 80ms — should still be Healthy (within fresh timer)
-        thread::sleep(Duration::from_millis(80));
+        advance(80);
         monitor.update(100); // same count, but within timeout
         assert_eq!(*monitor.state(), HealthState::Healthy);
 
         // Wait another 150ms — now stall timeout should fire
-        thread::sleep(Duration::from_millis(150));
+        advance(150);
         monitor.update(100);
         assert_eq!(*monitor.state(), HealthState::Stalled);
     }
@@ -848,15 +880,15 @@ mod tests {
         // After playing longer than the stall timeout, one poll without new
         // samples must not count as a stall
         let stall = Duration::from_millis(300);
-        let mut m = StreamHealthMonitor::with_timeouts(Duration::from_secs(10), stall);
+        let mut m = monitor_with(Duration::from_secs(10), stall);
         m.update(100);
         assert_eq!(*m.state(), HealthState::Healthy);
         for count in [200, 300, 400] {
-            std::thread::sleep(Duration::from_millis(150));
+            advance(150);
             assert_eq!(m.update(count), None);
         }
         // Played for 450 ms now; this poll has no new samples
-        std::thread::sleep(Duration::from_millis(30));
+        advance(30);
         m.update(400);
         assert_eq!(*m.state(), HealthState::Healthy);
     }
