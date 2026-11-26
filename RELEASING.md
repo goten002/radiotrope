@@ -54,6 +54,7 @@ release is never changed by the workflow: it fails instead.
 | `release.yml` | tag `v*`; by hand (`dry-run`, `draft`, `aur`) | runs the two below, writes `SHA256SUMS`, attests every file, makes or updates the draft |
 | `package-linux.yml` | called by `release.yml`; by hand on any branch | builds the Linux files (artefacts `dist-linux-<arch>`, `dist-linux-flatpak-<arch>`) and the smoke tests |
 | `package-windows.yml` | called by `release.yml`; by hand | the Windows files (artefacts `dist-windows-x64`, `dist-windows-arm64`, `dist-windows-installer`); see `packaging/windows/README.md` |
+| `package-macos.yml` | by hand; PRs that change `packaging/macos/` | the macOS files (artefact `dist-macos`), unsigned; **not called by `release.yml` yet** (see "macOS" below) |
 | `winget.yml` | a release is published (when enabled) | the WinGet submission |
 | `ci.yml` | pushes and PRs to `main` | build, tests, lint; the Linux install and packaging-script checks |
 
@@ -96,6 +97,7 @@ None of them opens a window or plays sound: that is for "Testing by hand".
 | `Radiotrope-<ver>-<arch>.AppImage.zsync` | Delta updates. The AppImage's update information is `gh-releases-zsync\|goten002\|radiotrope\|latest\|Radiotrope-*-<arch>.AppImage.zsync`: updaters look at the latest **published** release |
 | `Radiotrope-<ver>-<arch>.flatpak` | Single-file Flatpak bundle (freedesktop 26.08), manifest in `packaging/flatpak/`. Not on Flathub |
 | Windows files | portable zips and the installer: see `packaging/windows/README.md` |
+| macOS files | not in releases yet: see "macOS" below and `packaging/macos/README.md` |
 | `SHA256SUMS` | SHA-256 of every file above |
 
 A pre-release (`0.2.0-rc.1`) has not been through the workflow yet: check
@@ -244,6 +246,51 @@ yet):
 4. **Second launch raising the window on Wayland** (review P-07), after 1.
 5. **Autostart** through the Background portal, when "Start at Login" exists.
 6. **AAC+**: the runtime has no libfdk-aac, so AAC+ plays as AAC-LC.
+
+## macOS
+
+macOS is experimental: `package-macos.yml` builds the files, but
+`release.yml` doesn't call it, so a release has no macOS download yet. The
+files are unsigned (ad hoc only) until the Apple Developer account exists
+(macOS review, phase 3).
+
+To build them for a version:
+
+1. Actions > **Package (macOS)** > Run workflow, on `main` or the tag, with
+   the version (or empty for the workspace version; a version that doesn't
+   match `Cargo.toml` stops the run).
+2. The **Build (universal)** job runs `packaging/macos/bundle.sh dist` on
+   `macos-15`: release builds of the player and the CLI for `aarch64-apple-darwin`
+   and `x86_64-apple-darwin` (`MACOSX_DEPLOYMENT_TARGET=12.0`), `lipo` into
+   universal programs, the `Radiotrope.app` bundle (Info.plist from
+   `packaging/macos/`, icon, `update-mode` = `notify`, licences, man pages,
+   completions), an ad-hoc signature, then the DMG and the zip. It fails if a
+   program lacks an architecture, asks for another macOS, or links anything
+   outside the system (FDK, Homebrew). The run's summary has the sizes.
+3. The **Smoke test** jobs mount the DMG on Apple Silicon and on Intel,
+   verify the signature and the architectures, run the CLI,
+   and start the app (screenshots in `macos-package-smoke-<arch>`).
+4. Download the artefact `dist-macos`:
+   `radiotrope-<ver>-macos-universal.dmg` and `.zip`. To attach them to a
+   draft by hand, add them to the draft's files and their lines to
+   `SHA256SUMS` (`shasum -a 256 *.dmg *.zip`).
+
+The same on a Mac: `rustup target add aarch64-apple-darwin
+x86_64-apple-darwin`, `brew install cmake`, then
+`packaging/macos/bundle.sh` (files in `target/dist`).
+
+Still to do before macOS is a release platform (phase 3): Developer ID
+signing with `packaging/macos/entitlements.plist` and the hardened runtime,
+notarization (`notarytool`) and stapling in the placeholder step of
+`package-macos.yml`, the Apple secrets in "Secrets", `release.yml` calling
+the workflow, and the Homebrew tap's cask.
+
+Testing by hand on a Mac: open the DMG, drag the app to Applications, open
+it past Gatekeeper (README, "macOS (experimental)"); sound; the menu bar
+icon; Local Network prompt with the phone remote on; record; `open -a
+Radiotrope` a second time brings the window forward; the CLI from
+`Contents/MacOS` in Terminal; Help > About shows the version and that
+updates are notify-only.
 
 ## Snap
 

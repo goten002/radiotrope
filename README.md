@@ -38,7 +38,7 @@ Linux and Windows builds are on the
 [releases page](https://github.com/goten002/radiotrope/releases), with
 packages for Debian, Ubuntu, Fedora and openSUSE, an AppImage, a Flatpak
 bundle and the AUR on Linux (below), and WinGet (`Radiotrope.Radiotrope`) on
-Windows. Or build from source with Rust 1.95 or newer
+Windows. [macOS](#macos-experimental) is experimental. Or build from source with Rust 1.95 or newer
 ([rustup](https://rustup.rs)).
 
 > [!NOTE]
@@ -189,6 +189,7 @@ To get full AAC+, install the library:
 | Ubuntu up to 25.04 | `sudo apt install libfdk-aac2`, with `multiverse` enabled |
 | Ubuntu 25.10 and newer | The packaged `libfdk-aac2` is `fdk-aac-free`, without HE-AAC. Build [fdk-aac](https://github.com/mstorsjo/fdk-aac) and install its `libfdk-aac.so.2` |
 | Fedora | Fedora's own `fdk-aac-free` has no HE-AAC. Install `fdk-aac` from [RPM Fusion](https://rpmfusion.org) in its place |
+| macOS | Not yet: AAC+ stations play their AAC-LC core. A decoder that uses macOS's own HE-AAC support is planned |
 | Windows | Put a 64-bit `fdk-aac.dll` (an MSVC build, such as vcpkg's `fdk-aac`) or `libfdk-aac-2.dll` (MSYS2's `mingw-w64-x86_64-fdk-aac`, with the DLLs it needs) next to `radiotrope.exe` |
 
 On Linux the library is found by the name `libfdk-aac.so.2`, wherever the
@@ -268,6 +269,77 @@ there; otherwise the log goes to `%LOCALAPPDATA%\radiotrope\radiotrope.log`
 [packaging/windows](packaging/windows/README.md) for how the downloads are
 built.
 
+### macOS (experimental)
+
+macOS 12 Monterey and newer, on Apple Silicon and Intel: one universal
+download. Radiotrope builds and runs on macOS, but the Mac version is still
+being finished: the menu bar, the Dock, opening playlists from Finder and
+full AAC+ are not done yet, and it has had little testing on real Macs.
+
+| Download | What it is |
+|----------|------------|
+| `radiotrope-<version>-macos-universal.dmg` | Open it and drag **Radiotrope** onto **Applications** |
+| `radiotrope-<version>-macos-universal.zip` | The same `Radiotrope.app`, zipped |
+
+Until there are releases with it, the files come from the
+[Package (macOS)](https://github.com/goten002/radiotrope/actions/workflows/package-macos.yml)
+workflow: open a run and download `dist-macos` (you need to be signed in to
+GitHub).
+
+**"Radiotrope can't be opened" / "Apple could not verify…".** The app is not
+signed with an Apple Developer ID or notarized yet, so macOS blocks it the
+first time. Move it to Applications first, then:
+
+- macOS 15 Sequoia and newer: open it once (macOS refuses), then go to
+  **System Settings > Privacy & Security**, scroll down to the message about
+  Radiotrope, choose **Open Anyway** and confirm with your password.
+- macOS 12 to 14: Control-click (or right-click) **Radiotrope** in
+  Applications, choose **Open**, then **Open** again in the dialog.
+- Or, in Terminal, remove the "downloaded from the internet" mark:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Radiotrope.app
+  ```
+
+Do this only with a file you got from this project, and check it against
+the `SHA256SUMS` file of the release first (`shasum -a 256 <file>`). macOS
+remembers the choice until the next version.
+
+**Local network.** When the [phone remote](#phone-remote) is on, macOS asks
+whether Radiotrope may find devices on your local network. Allow it, or the
+phone can't find or control the player. To change it later: **System
+Settings > Privacy & Security > Local Network**. With the macOS firewall on,
+it also asks once whether to accept incoming connections.
+
+**The terminal player** is inside the app. To run it from Terminal, link it
+into your `PATH`:
+
+```bash
+sudo ln -s /Applications/Radiotrope.app/Contents/MacOS/radiotrope-cli /usr/local/bin/
+```
+
+**Updates.** Radiotrope tells you when a newer version is out (Help > Check
+for Updates); download the new DMG and replace the app.
+
+**Uninstall:** move `Radiotrope.app` to the Bin. Your settings and favorites
+stay in `~/Library/Application Support/radiotrope/` and the cache in
+`~/Library/Caches/radiotrope/`; delete those folders too to remove
+everything. See [packaging/macos](packaging/macos/README.md) for how the
+downloads are built.
+
+#### Build from source on macOS
+
+```bash
+xcode-select --install     # Apple's compilers and tools
+brew install cmake         # https://brew.sh
+git clone https://github.com/goten002/radiotrope.git
+cd radiotrope
+cargo build --release
+```
+
+The programs are in `target/release/`. `packaging/macos/bundle.sh` makes the
+`.app`, DMG and zip from them.
+
 ## Using the desktop app
 
 Run `radiotrope`. A second start brings the open window forward instead of
@@ -338,7 +410,7 @@ What a newer version means depends on how you installed Radiotrope:
 |---------|----------------------|
 | Windows setup program (also through WinGet) | Checks daily. About offers **Download Update**, then **Restart to Update**, which runs the new setup program. `winget upgrade` works as well |
 | AppImage | Checks daily. **Download Update**, then **Restart to Update**, which replaces the AppImage file in place. AppImageUpdate and Gear Lever work as well |
-| `.deb`, `.rpm`, tarball, Windows portable zip, built from source | Tells you when you ask, or daily if you turn that on; get the new file from the release page |
+| `.deb`, `.rpm`, tarball, Windows portable zip, macOS app, built from source | Tells you when you ask, or daily if you turn that on; get the new file from the release page |
 | Flatpak bundle | The same: it tells you, and you install the new bundle |
 | AUR (`radiotrope`, `radiotrope-bin`) | Nothing: pacman brings the updates, and Help has no update rows |
 | Raspberry Pi appliance | Nothing: a new image brings the updates |
@@ -363,10 +435,16 @@ To turn updates down or off:
 ### Where things are saved
 
 Favorites, listening stats, settings, schedules and pairings are JSON files in
-the config folder: `~/.config/radiotrope/` on Linux and
+the config folder: `~/.config/radiotrope/` on Linux,
+`~/Library/Application Support/radiotrope/` on macOS and
 `%APPDATA%\radiotrope\` on Windows (in [portable mode](#windows),
 `data\config\` next to the program). They are written atomically with a backup,
 and two open players see each other's favorite changes.
+
+On macOS the cache (station logos, directory answers) is in
+`~/Library/Caches/radiotrope/` and recordings go to `~/Music/Radiotrope/` by
+default. Choosing Desktop, Documents or Downloads as the recordings folder
+makes macOS ask once whether Radiotrope may use it.
 
 Logging goes through the standard `log` crate: set `RUST_LOG`, for example
 `RUST_LOG=radiotrope=debug`, to see more.
