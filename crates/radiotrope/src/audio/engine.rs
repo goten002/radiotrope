@@ -3533,8 +3533,12 @@ mod tests {
             other => panic!("Expected Playing, got {:?}", other),
         }
 
-        // Let some audio play to accumulate samples
-        thread::sleep(Duration::from_millis(500));
+        // Let some audio play to accumulate samples: as long as a busy
+        // machine takes to play some
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while sample_count(&engine) == 0 && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
 
         let data = engine.analysis();
         let analysis = data.lock().unwrap();
@@ -5114,14 +5118,26 @@ mod tests {
         // Nobody reads the events: the engine waits to send them. The
         // buffer's status lock must not be held meanwhile, or the decoder
         // waits for it and the audio stops.
+        // Waits for conditions, not a set time: on a busy machine the
+        // paced source and the output's rebuffering can take far longer
         let samples = || engine.analysis().lock().unwrap().sample_count;
-        thread::sleep(Duration::from_secs(2));
+        let wait = |done: &dyn Fn() -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !done() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
+        // The queue is full: from here the engine waits to send
+        let events = engine.event_receiver().clone();
+        wait(&|| events.is_full());
+        assert!(events.is_full(), "the event queue didn't fill");
         let before = samples();
-        thread::sleep(Duration::from_secs(2));
+        // And the audio goes on meanwhile
+        wait(&|| samples() > before);
         let after = samples();
+        assert!(events.is_full(), "somebody read the events");
 
         // Let the engine finish sending, so it can shut down
-        let events = engine.event_receiver().clone();
         let drain = thread::spawn(move || while events.recv().is_ok() {});
         engine.shutdown();
         drain.join().unwrap();
