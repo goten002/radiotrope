@@ -11,6 +11,9 @@ export global Platform {
     out property <bool> has-window-frame: true;
     // A system tray icon, and the View menu's tray options
     out property <bool> has-tray: true;
+    // Media keys and the system's media controls (MPRIS, Windows' media
+    // card, macOS Now Playing): the switch in Keyboard Shortcuts
+    out property <bool> has-media-controls: true;
     // The OS reports its light/dark setting: the View menu's System Theme
     out property <bool> has-system-theme: true;
     // A system clipboard: clicking the song title copies it

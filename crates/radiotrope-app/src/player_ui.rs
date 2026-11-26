@@ -42,6 +42,9 @@ pub(crate) fn setup_header(ui: &App, ctx: &AppContext, last_station: Option<&Sta
             if let Some(ui) = ctx.ui.upgrade() {
                 apply_logo_palette(&ui);
             }
+            // The system's media panel shows the logo too
+            #[cfg(feature = "desktop")]
+            crate::media::logo_changed();
         });
     }
 

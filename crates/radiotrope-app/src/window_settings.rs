@@ -378,6 +378,8 @@ pub(crate) struct WindowSettings {
     pub(crate) frame: Option<(bool, bool)>,
     /// Tray icon, close to tray, start in tray, minimize to tray (desktop)
     pub(crate) tray: Option<(bool, bool, bool, bool)>,
+    /// Media keys and system media controls (desktop)
+    pub(crate) media_controls: Option<bool>,
     pub(crate) last_station: Option<Station>,
     window_size: Option<(u32, u32)>,
 }
@@ -456,6 +458,7 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
                 ui.get_hide_on_minimize(),
             )
         }),
+        media_controls: cfg!(feature = "desktop").then(|| ui.get_media_controls()),
         last_station,
         window_size,
     }
@@ -543,6 +546,9 @@ impl WindowSettings {
             settings.close_to_tray = close_to_tray;
             settings.start_in_tray = start_in_tray;
             settings.hide_on_minimize = hide_on_minimize;
+        }
+        if let Some(on) = w.media_controls {
+            settings.media_controls = on;
         }
         if let Some(station) = &w.last_station {
             settings.last_station = Some(station.clone());

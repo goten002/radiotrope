@@ -25,6 +25,8 @@ mod log_file;
 #[cfg(all(target_os = "macos", feature = "desktop"))]
 mod macos_app;
 mod mcp;
+#[cfg(feature = "desktop")]
+mod media;
 // Playlists opened with the app: only macOS hands them over (the tests run
 // everywhere)
 #[cfg(all(feature = "desktop", any(test, target_os = "macos")))]
@@ -378,6 +380,14 @@ fn main() {
 
     // What the window's controls do
     player_ui::setup(&ui, &ctx);
+    // The media keys and the system's media controls, while turned on
+    #[cfg(feature = "desktop")]
+    media::setup(
+        &ui,
+        shared_state.clone(),
+        logo_service.clone(),
+        settings.media_controls,
+    );
     favorites_ui::setup(&ui, &ctx);
     window_settings::setup(&ui, &ctx);
     // WiFi settings and Power Off / Restart (Raspberry Pi build only)
@@ -434,6 +444,10 @@ fn main() {
                 .with_cover_source(cover_source)
                 .with_play_reporter(play_reporter)
                 .with_backups_of(backups_of);
+            #[cfg(feature = "desktop")]
+            {
+                ctrl = ctrl.with_observer(media::observer());
+            }
             match schedule_path {
                 Ok(path) => ctrl = ctrl.with_schedule(path),
                 Err(e) => eprintln!("Schedule unavailable: {e}"),

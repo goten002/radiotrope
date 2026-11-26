@@ -9,6 +9,8 @@ export global Platform {
     out property <bool> has-window-frame: false;
     // A system tray icon, and the View menu's tray options
     out property <bool> has-tray: false;
+    // Media keys and the system's media controls: not on the kiosk
+    out property <bool> has-media-controls: false;
     // The OS reports its light/dark setting: the View menu's System Theme
     // (no desktop to ask on the Pi)
     out property <bool> has-system-theme: false;

@@ -107,11 +107,13 @@ jobs:
     env:
       LIBGL_ALWAYS_SOFTWARE: 1
       RADIOTROPE_REQUIRE_FEMTOVG: 1
+      # The MPRIS test starts a D-Bus daemon of its own
+      RADIOTROPE_REQUIRE_DBUS: 1
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri
+      - run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri dbus
       - name: cargo test
         shell: bash
         run: |

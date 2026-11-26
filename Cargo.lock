@@ -4883,6 +4883,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-media-player"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "85f2a98483f6e76313cb85a5a185eaa3cda86a177b13a8852d56cbd0085bf635"
+dependencies = [
+ "bitflags 2.13.2",
+ "block2 0.6.2",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+]
+
+[[package]]
 name = "objc2-metal"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5917,6 +5931,7 @@ dependencies = [
 name = "radiotrope-app"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.2",
  "bytes",
  "chrono",
  "clap",
@@ -5940,6 +5955,10 @@ dependencies = [
  "minisign",
  "minisign-verify",
  "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-foundation 0.3.2",
+ "objc2-media-player",
  "qrcode",
  "radiotrope",
  "radiotrope-build",
@@ -5965,6 +5984,7 @@ dependencies = [
  "tower-service",
  "tray-icon",
  "widestring",
+ "windows",
  "x11rb 0.14.0",
  "zbus",
 ]
