@@ -135,7 +135,14 @@ pub struct AppController {
     /// The backups that came with a Play or Step, until its station is
     /// made the current one
     new_backups: Option<Vec<String>>,
+    /// Told the state after every change the controller makes (see
+    /// [`AppController::with_observer`])
+    observer: Option<StateObserver>,
 }
+
+/// Something that follows the player's state: called on the controller's
+/// thread, with the state locked, so it only copies what it needs
+pub type StateObserver = Box<dyn FnMut(&AppSnapshot) + Send>;
 
 impl AppController {
     pub fn new(
@@ -181,6 +188,25 @@ impl AppController {
             unreported: None,
             streams: fallback::StreamList::default(),
             new_backups: None,
+            observer: None,
+        }
+    }
+
+    /// Tell `observer` the state once the controller starts and again each
+    /// time it has handled something (a command, an engine event, song
+    /// info, a tick of its own): every change the controller makes is
+    /// followed by a call, with no timer of the observer's own
+    #[cfg_attr(not(feature = "desktop"), allow(dead_code))]
+    pub fn with_observer(mut self, observer: StateObserver) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    /// Show the observer the state as it is now
+    fn tell_observer(&mut self) {
+        if let Some(observer) = self.observer.as_mut() {
+            let state = self.shared_state.lock().unwrap_or_else(|e| e.into_inner());
+            observer(&state);
         }
     }
 
@@ -235,6 +261,7 @@ impl AppController {
         let mut recording = false;
         let mut scheduled = self.schedule_armed();
         let mut fading = false;
+        self.tell_observer();
         loop {
             let metadata = self.metadata_rx.clone().unwrap_or_else(never);
             // Wakes when the station an outage stopped is due again
@@ -281,6 +308,7 @@ impl AppController {
                 self.retry_resume();
             }
             self.keep_hang_showing();
+            self.tell_observer();
         }
 
         // Finish any recording before the engine goes away

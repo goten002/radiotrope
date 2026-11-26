@@ -89,12 +89,53 @@ x11rb = { version = "0.14", default-features = false, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 widestring = "1"
+# Media keys and the media card of the volume flyout (System Media
+# Transport Controls); the version Slint's and the tray's crates use
+windows = { version = "0.62", optional = true, features = [
+    "Foundation",
+    "Media",
+    "Storage",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_System_WinRT",
+] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # The Objective-C runtime, to answer AppKit's "should the application
 # terminate?" with our own Quit (already in the tree through Slint's and
 # the tray's AppKit code)
 objc2 = { version = "0.6", optional = true }
+# Now Playing in Control Center and the media keys (MediaPlayer). The
+# other objc2 crates are in the tree already, through Slint and the tray.
+objc2-media-player = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "objc2-core-foundation",
+    "MPMediaItem",
+    "MPNowPlayingInfoCenter",
+    "MPRemoteCommand",
+    "MPRemoteCommandCenter",
+    "MPRemoteCommandEvent",
+] }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "NSDictionary",
+    "NSGeometry",
+    "NSString",
+    "NSValue",
+    "objc2-core-foundation",
+] }
+objc2-app-kit = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "NSImage",
+    "objc2-core-foundation",
+] }
+objc2-core-foundation = { version = "0.3", optional = true, default-features = false, features = [
+    "std",
+    "CFCGTypes",
+] }
+block2 = { version = "0.6", optional = true }
 
 [features]
 default = ["desktop", "system-fdk"]
@@ -102,7 +143,7 @@ default = ["desktop", "system-fdk"]
 # installed. Without it (`--no-default-features`) the build has no FDK code
 # at all and plays AAC with the built-in AAC-LC decoder.
 system-fdk = ["radiotrope/system-fdk"]
-desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:x11rb", "dep:zbus", "dep:objc2", "zbus/blocking-api", "zbus/async-io"]
+desktop = ["slint/backend-default", "slint/renderer-femtovg", "slint/renderer-software", "slint/accessibility", "slint/raw-window-handle-06", "slint/unstable-winit-030", "dep:rfd", "dep:tray-icon", "dep:x11rb", "dep:zbus", "dep:objc2", "dep:objc2-media-player", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:objc2-core-foundation", "dep:block2", "dep:windows", "zbus/blocking-api", "zbus/async-io"]
 embedded = ["slint/backend-linuxkms", "slint/renderer-software", "dep:zbus", "zbus/tokio"]
 
 ui-snapshots = ["slint/renderer-software"]

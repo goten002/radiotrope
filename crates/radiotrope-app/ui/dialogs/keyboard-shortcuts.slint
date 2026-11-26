@@ -1,4 +1,4 @@
-import { DialogShell, SectionHeader } from "../components.slint";
+import { DialogShell, InfoTip, SectionHeader, Toggle } from "../components.slint";
 import { Defaults, Theme } from "../defaults.slint";
 import { KeyCaps } from "../keycap.slint";
 import { DesktopShortcuts, ShortcutRow } from "../shortcuts.slint";
@@ -37,12 +37,42 @@ component ShortcutLine inherits Rectangle {
 
 export component KeyboardShortcutsDialog inherits Rectangle {
     in-out property <bool> show-dialog;
+    // The media keys switch (desktop): the keyboard's and a headset's
+    // media keys and the system's media controls
+    in property <bool> has-media-controls;
+    in-out property <bool> media-controls;
+    callback media-controls-toggled(bool);
 
-    if root.show-dialog: DialogShell {
+    if root.show-dialog: shell := DialogShell {
         title: "Keyboard Shortcuts";
         card-width: Defaults.keyboard-shortcuts-width;
         card-height: Defaults.keyboard-shortcuts-height;
         close-requested => { root.show-dialog = false; }
+
+        if root.has-media-controls: VerticalLayout {
+            spacing: Theme.space-4;
+
+            SectionHeader { title: "MEDIA KEYS"; }
+
+            HorizontalLayout {
+                spacing: Theme.space-6;
+
+                Toggle {
+                    label: "Media keys and system media controls";
+                    checked <=> root.media-controls;
+                    toggled(on) => { root.media-controls-toggled(on); }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    InfoTip {
+                        popup-bounds: shell.popup-bounds;
+                        open-below: true;
+                        text: "Play, stop and switch favorites with media keys, headset buttons and the system's media panel, which also shows the station.";
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
 
         for group in DesktopShortcuts.groups: VerticalLayout {
             spacing: Theme.space-4;

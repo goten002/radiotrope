@@ -97,6 +97,13 @@ pub struct Settings {
     #[serde(default)]
     pub hide_on_minimize: bool,
 
+    // === Media keys ===
+    /// The media keys, headset buttons and the system's media controls
+    /// (MPRIS, Windows' media card, macOS Now Playing) control the player
+    /// and show what it plays (desktop)
+    #[serde(default = "default_true")]
+    pub media_controls: bool,
+
     // === Visualization ===
     /// Visualization mode (wave, spectrum, mirror, dots, vu, hbars)
     #[serde(default = "default_viz_mode")]
@@ -380,6 +387,7 @@ impl Default for Settings {
             close_to_tray: false,
             start_in_tray: false,
             hide_on_minimize: false,
+            media_controls: true,
             viz_mode: default_viz_mode(),
             viz_palette: default_viz_palette(),
             show_visualizer: true,
@@ -834,7 +842,17 @@ mod tests {
         assert!(!settings.close_to_tray);
         assert!(!settings.start_in_tray);
         assert!(!settings.hide_on_minimize);
+        assert!(settings.media_controls);
         assert_eq!(settings.theme, Theme::System);
+    }
+
+    #[test]
+    fn media_keys_are_on_unless_turned_off() {
+        // A settings.json from before the switch
+        let Stored(old) = serde_json::from_str(r#"{"volume": 0.5}"#).unwrap();
+        assert!(old.media_controls);
+        let Stored(off) = serde_json::from_str(r#"{"media_controls": false}"#).unwrap();
+        assert!(!off.media_controls);
     }
 
     #[test]
