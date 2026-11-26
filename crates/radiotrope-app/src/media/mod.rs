@@ -150,6 +150,8 @@ pub(crate) enum Command {
     Play,
     /// A live station can't wait where it was: Pause stops it
     Pause,
+    /// Not on Windows, whose card sends Play or Pause by the status shown
+    #[cfg_attr(windows, allow(dead_code))]
     PlayPause,
     Stop,
     /// The next favorite, as the N key
