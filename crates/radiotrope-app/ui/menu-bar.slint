@@ -859,6 +859,12 @@ export component MenuBar inherits Rectangle {
         if command == MenuCommand.tray-icon { root.tray-icon = !root.tray-icon; }
         if command == MenuCommand.close-to-tray { root.close-to-tray = !root.close-to-tray; }
         if command == MenuCommand.start-in-tray { root.start-in-tray = !root.start-in-tray; }
+        // Saved by the system (the autostart file, the Run key, the
+        // LaunchAgent), which then says whether it is on
+        if command == MenuCommand.start-at-login {
+            root.start-at-login = !root.start-at-login;
+            root.start-at-login-changed(root.start-at-login);
+        }
         if command == MenuCommand.recording { root.toggle-recording(); }
         if command == MenuCommand.recording-settings { root.open-recording-settings(); }
         if command == MenuCommand.recordings-folder { root.open-recordings-folder(); }
@@ -895,6 +901,7 @@ export component MenuBar inherits Rectangle {
         tray-icon: root.tray-icon,
         close-to-tray: root.close-to-tray,
         start-in-tray: root.start-in-tray,
+        start-at-login: root.start-at-login,
         tray-available: root.tray-available,
         agents-label: root.agents-label,
         phones-label: root.phones-label,
@@ -1111,8 +1118,10 @@ export component MenuBar inherits Rectangle {
         Platform.has-frame-choice, root.window-open,
         root.window-open && root.custom-frame && root.corners-available,
         // 14 System Tray, 15 Show Tray Icon, 16-18 the three tray choices
-        // (17 Minimize to Tray not on macOS), 19 Start at Login (nor that)
-        Platform.has-tray, root.tray-open, root.tray-usable,
+        // (16 Close to Tray and 17 Minimize to Tray not on macOS),
+        // 19 Start at Login
+        Platform.has-tray, root.tray-open,
+        root.tray-usable && Platform.has-close-to-tray,
         root.tray-usable && Platform.has-minimize-to-tray, root.tray-usable,
         root.tray-open && Platform.has-start-at-login,
     ];
@@ -1674,7 +1683,7 @@ export component MenuBar inherits Rectangle {
                     }
                 }
                 // Greyed with no tray to hide in; they keep their ticks
-                CheckMenuItem {
+                if Platform.has-close-to-tray: CheckMenuItem {
                     slot: 16;
                     label: "Close to Tray";
                     icon: @image-url("icons/rectangle-xmark.svg");
@@ -1707,7 +1716,8 @@ export component MenuBar inherits Rectangle {
                         root.run(MenuCommand.start-in-tray);
                     }
                 }
-                // Saved in the autostart file or the Run key, not the settings
+                // Saved in the autostart file, the Run key or the
+                // LaunchAgent, not the settings
                 if Platform.has-start-at-login: CheckMenuItem {
                     slot: 19;
                     label: "Start at Login";
@@ -1715,8 +1725,7 @@ export component MenuBar inherits Rectangle {
                     indent: Theme.space-16;
                     checked: root.start-at-login;
                     clicked => {
-                        root.start-at-login = !root.start-at-login;
-                        root.start-at-login-changed(root.start-at-login);
+                        root.run(MenuCommand.start-at-login);
                     }
                 }
                 if root.tray-icon && !root.tray-available: MenuNote {

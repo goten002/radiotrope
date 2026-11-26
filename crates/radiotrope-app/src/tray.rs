@@ -503,9 +503,10 @@ fn refresh_after(ui: &App, clicked: bool) {
         }
     });
     // A hidden window with no tray to bring it back would leave the radio
-    // playing with no way to reach it
+    // playing with no way to reach it. Not on macOS, where the Dock icon
+    // brings it back (and the menu bar is still the app's).
     let window = ui.window();
-    if !window.is_visible() && !has_tray(ui) && !QUITTING.get() {
+    if !HIDES_WITHOUT_TRAY && !window.is_visible() && !has_tray(ui) && !QUITTING.get() {
         show_window(ui);
     }
     // Minimized by the window manager or the taskbar (Windows and X11;
@@ -621,9 +622,25 @@ pub fn has_tray(ui: &App) -> bool {
     ui.get_tray_icon() && ui.get_tray_available()
 }
 
+/// macOS: a hidden window needs no tray icon to come back, the Dock icon
+/// does it (`applicationShouldHandleReopen`, macos_app.rs). So closing the
+/// window always hides it there, whatever View > System Tray says, and the
+/// app runs on until Quit, as Mac apps that play do.
+const HIDES_WITHOUT_TRAY: bool = cfg!(target_os = "macos");
+
 /// Whether closing the window should only hide it
 pub fn hides_on_close(ui: &App) -> bool {
-    has_tray(ui) && ui.get_close_to_tray() && !QUITTING.get()
+    closing_hides(
+        HIDES_WITHOUT_TRAY,
+        has_tray(ui) && ui.get_close_to_tray(),
+        QUITTING.get(),
+    )
+}
+
+/// [`hides_on_close`]: on macOS always, elsewhere with Close to Tray on
+/// and a tray to hide in; never once the app is quitting
+fn closing_hides(hides_without_tray: bool, close_to_tray: bool, quitting: bool) -> bool {
+    (hides_without_tray || close_to_tray) && !quitting
 }
 
 /// Whether minimizing the window should hide it to the tray
@@ -800,6 +817,20 @@ mod tests {
         let drawn = pixels - clear;
         assert!(clear > pixels / 10, "{clear} of {pixels} transparent");
         assert!(drawn > pixels / 10, "{drawn} of {pixels} drawn");
+    }
+
+    #[test]
+    fn closing_hides_to_the_tray_or_on_macos_to_the_dock() {
+        // Linux and Windows: only with Close to Tray on and a tray icon
+        assert!(!closing_hides(false, false, false));
+        assert!(closing_hides(false, true, false));
+        // macOS: always, with or without the tray icon
+        assert!(closing_hides(true, false, false));
+        assert!(closing_hides(true, true, false));
+        // Quit closes for good, everywhere
+        assert!(!closing_hides(false, true, true));
+        assert!(!closing_hides(true, false, true));
+        assert_eq!(HIDES_WITHOUT_TRAY, cfg!(target_os = "macos"));
     }
 
     #[test]

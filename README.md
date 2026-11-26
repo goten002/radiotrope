@@ -277,8 +277,8 @@ built.
 
 macOS 12 Monterey and newer, on Apple Silicon and Intel: one universal
 download. Radiotrope builds and runs on macOS, but the Mac version is still
-being finished: the menu bar, the Dock, opening playlists from Finder and
-full AAC+ are not done yet, and it has had little testing on real Macs.
+being finished: full AAC+ and the media keys are not done yet, and it has
+had little testing on real Macs.
 
 | Download | What it is |
 |----------|------------|
@@ -314,6 +314,30 @@ whether Radiotrope may find devices on your local network. Allow it, or the
 phone can't find or control the player. To change it later: **System
 Settings > Privacy & Security > Local Network**. With the macOS firewall on,
 it also asks once whether to accept incoming connections.
+
+**The window and the Dock.** Closing the window (or Cmd+W) hides it and
+Radiotrope keeps running and playing, as Mac apps do: click its Dock icon to
+get the window back, and quit with Cmd+Q or Quit in the menu. So View >
+System Tray has no Close to Tray or Minimize to Tray on a Mac.
+
+**Playlists.** A station's `.m3u`, `.m3u8` or `.pls` file opens from Finder
+with **Open With > Radiotrope** (Radiotrope never makes itself the default
+for them), by dropping it on the Dock icon, or with
+`open -a Radiotrope station.m3u`: the first `http://` or `https://` address
+in it plays.
+
+**Start at Login** (View > System Tray) writes
+`~/Library/LaunchAgents/app.radiotrope.Radiotrope.plist`, which starts the
+app when you log in; turning it off removes the file. macOS 13 and newer
+also list Radiotrope under **System Settings > General > Login Items**, and
+its switch there overrides the menu's tick. Turn it on from the copy in
+Applications: a copy run straight from the disk image can't be started at
+login.
+
+**Sleep.** While a recording runs, Radiotrope keeps the Mac from going to
+sleep by itself (closing the lid or choosing Sleep still does). A Scheduler
+entry does not wake a sleeping Mac: leave it awake, or set a wake time in
+Terminal with `sudo pmset repeat wakeorpoweron MTWRFSU 06:55:00`.
 
 **The terminal player** is inside the app. To run it from Terminal, link it
 into your `PATH`:
@@ -389,7 +413,7 @@ for the full list, including keys for focused controls.
 | F | Add or remove the loaded station as a favorite |
 | Ctrl+F | Open Search Stations or focus its search field |
 | Ctrl+O | Open Network Stream |
-| Ctrl+W | Request to close the window, respecting Close to Tray |
+| Ctrl+W | Request to close the window, respecting Close to Tray (macOS: Cmd+W always hides it) |
 | Ctrl+Q | Quit Radiotrope |
 | F1 | Show Keyboard Shortcuts |
 | Esc | Close the current dialog or popup, or clear the favorites highlight in the main window |
