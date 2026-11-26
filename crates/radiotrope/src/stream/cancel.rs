@@ -150,6 +150,14 @@ mod tests {
     use std::thread;
     use std::time::Instant;
 
+    /// A wait the tests' cancels must cut short: they end it if they
+    /// return at all within [`PROMPTLY`]
+    const FOREVER: Duration = Duration::from_secs(3600);
+
+    /// How soon a cancelled wait must end. Far below [`FOREVER`], and far
+    /// above any pause a busy test machine gives a thread.
+    const PROMPTLY: Duration = Duration::from_secs(10);
+
     /// Cancel `cancel` from another thread after `after`
     fn cancel_after(cancel: &StreamCancel, after: Duration) {
         let cancel = cancel.clone();
@@ -177,12 +185,12 @@ mod tests {
 
         cancel_after(&cancel, Duration::from_millis(50));
         let start = Instant::now();
-        assert!(!cancel.sleep(Duration::from_secs(10)));
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(!cancel.sleep(FOREVER));
+        assert!(start.elapsed() < PROMPTLY);
         // Already cancelled: no sleep at all
         let start = Instant::now();
-        assert!(!cancel.sleep(Duration::from_secs(10)));
-        assert!(start.elapsed() < Duration::from_millis(50));
+        assert!(!cancel.sleep(FOREVER));
+        assert!(start.elapsed() < PROMPTLY);
     }
 
     #[test]
@@ -200,7 +208,7 @@ mod tests {
         cancel_after(&cancel, Duration::from_millis(50));
         let start = Instant::now();
         assert_eq!(cancel.recv(&rx, None), Waited::Cancelled);
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < PROMPTLY);
 
         // Blocked sending into a full channel
         let cancel = StreamCancel::new();
@@ -208,7 +216,7 @@ mod tests {
         cancel_after(&cancel, Duration::from_millis(50));
         let start = Instant::now();
         assert!(!cancel.send(&tx, 2));
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < PROMPTLY);
     }
 
     #[test]

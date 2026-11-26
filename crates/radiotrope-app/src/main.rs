@@ -25,6 +25,10 @@ mod log_file;
 #[cfg(all(target_os = "macos", feature = "desktop"))]
 mod macos_app;
 mod mcp;
+// Playlists opened with the app: only macOS hands them over (the tests run
+// everywhere)
+#[cfg(all(feature = "desktop", any(test, target_os = "macos")))]
+mod open_file;
 mod player_ui;
 mod quit_ui;
 mod recording_ui;
@@ -146,6 +150,13 @@ fn main() {
                 1
             }
         });
+    }
+
+    // `--start-at-login on|off` (macOS): what View > System Tray > Start at
+    // Login does, for scripts and the package's checks
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    if let Some(choice) = args.start_at_login.as_deref() {
+        std::process::exit(start_at_login_from_the_command_line(choice == "on"));
     }
 
     // Started from the desktop, with no terminal to read it: the window's
@@ -415,12 +426,14 @@ fn main() {
     let ctrl_tx = cmd_tx.clone();
     let schedule_path = radiotrope_app::data::data_path(radiotrope_app::data::schedule::FILE_NAME);
     let play_reporter = app::controller::play_report::reporter(favorites.clone());
+    let backups_of = app::controller::fallback::favorite_backups(favorites.clone());
     let controller = std::thread::Builder::new()
         .name("controller".into())
         .spawn(move || {
             let mut ctrl = AppController::new(cmd_rx, ctrl_tx, ctrl_state, analysis_tx, stats_tx)
                 .with_cover_source(cover_source)
-                .with_play_reporter(play_reporter);
+                .with_play_reporter(play_reporter)
+                .with_backups_of(backups_of);
             match schedule_path {
                 Ok(path) => ctrl = ctrl.with_schedule(path),
                 Err(e) => eprintln!("Schedule unavailable: {e}"),
@@ -460,6 +473,9 @@ fn main() {
     // Closing the window ends the app, or only hides it when View > Close
     // to Tray is on and the tray shows our icon. Closing that would stop a
     // recording or skip a Scheduler entry asks first, as Quit does.
+    // On macOS closing always hides, as a Mac app's window does: the app
+    // keeps running (and playing), the Dock icon brings the window back,
+    // and Quit (Cmd+Q) ends it.
     quit_ui::setup(&ui, &shared_state);
     {
         let ui_weak = ui.as_weak();
@@ -546,6 +562,13 @@ fn main() {
     // through this exit too
     #[cfg(all(target_os = "macos", feature = "desktop"))]
     quit_as_macos_asks(&ui, &finish);
+    // macOS: the Dock icon brings the window back, playlists opened in
+    // Finder play, and the Mac stays awake while a recording runs
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    let _awake_timer = {
+        show_and_open_as_macos_asks(&ui);
+        stay_awake_while_recording(&ctx.state)
+    };
 
     // Run Slint event loop (blocks main thread) until Quit, or a close
     // that doesn't go to the tray; a hidden window keeps it going. An
@@ -561,6 +584,10 @@ fn main() {
     }
     let _ = ui.hide();
     run_exit_work(&finish);
+    // What AppKit's questions were answered with holds the window: let go
+    // of it here, not when the thread's own storage is taken down
+    #[cfg(all(target_os = "macos", feature = "desktop"))]
+    macos_app::forget_handlers();
 }
 
 /// The work of the exit, until it has been run
@@ -594,6 +621,7 @@ fn quit_as_macos_asks(ui: &App, finish: &ExitWork) {
         }
         AskedBy::System => {
             run_exit_work(&finish);
+            macos_app::forget_handlers();
             Answer::TerminateNow
         }
     });
@@ -602,10 +630,87 @@ fn quit_as_macos_asks(ui: &App, finish: &ExitWork) {
     }
 }
 
+/// macOS tells a running app that the user asked for it again (a click on
+/// the Dock icon, a second launch from Finder or Spotlight) and what was
+/// opened with it (a playlist in Finder, `open -a Radiotrope list.m3u`):
+/// see [`macos_app`]. The window is shown, and a playlist's station plays.
+/// Both are done after AppKit's call has returned, from the event loop.
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+fn show_and_open_as_macos_asks(ui: &App) {
+    let ui_weak = ui.as_weak();
+    let reopen = macos_app::on_reopen(move || {
+        let _ = ui_weak.upgrade_in_event_loop(|ui| {
+            eprintln!("Asked for again (the Dock icon or a second launch): showing the window");
+            tray::show_window(&ui);
+        });
+    });
+    if let Err(e) = reopen {
+        eprintln!("The Dock icon won't bring the window back: {e}");
+    }
+    let ui_weak = ui.as_weak();
+    let open = macos_app::on_open(move |opened| open_file::open_later(&ui_weak, opened));
+    if let Err(e) = open {
+        eprintln!("Playlists opened in Finder won't play: {e}");
+    }
+}
+
+/// macOS: while a recording runs the Mac doesn't go to sleep by itself
+/// (it still does when the lid is closed or Sleep is chosen). Looked at
+/// every two seconds, as long as the returned timer lives; a recording
+/// that waits for its station to come back counts as running.
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+fn stay_awake_while_recording(state: &Arc<Mutex<AppSnapshot>>) -> slint::Timer {
+    let state = state.clone();
+    let mut awake: Option<macos_app::Activity> = None;
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::Repeated,
+        Duration::from_secs(2),
+        move || {
+            let recording = lock(&state).recording.is_some();
+            if recording && awake.is_none() {
+                awake = macos_app::Activity::begin("Recording a radio station");
+                if awake.is_some() {
+                    eprintln!("Recording: the Mac is kept from sleeping by itself");
+                }
+            } else if !recording && awake.take().is_some() {
+                eprintln!("Recording ended: the Mac may sleep again");
+            }
+        },
+    );
+    timer
+}
+
+/// `radiotrope --start-at-login on|off` (macOS): write or remove the
+/// LaunchAgent file, say where it is, and return the exit status
+#[cfg(all(target_os = "macos", feature = "desktop"))]
+fn start_at_login_from_the_command_line(on: bool) -> i32 {
+    let path = autostart::launch_agent_path()
+        .map(|path| path.display().to_string())
+        .unwrap_or_default();
+    match autostart::set_enabled(on) {
+        Ok(()) if on => {
+            println!("Start at Login is on: {path}");
+            0
+        }
+        Ok(()) => {
+            println!("Start at Login is off: {path} removed");
+            0
+        }
+        Err(e) => {
+            eprintln!("Start at Login: {e}");
+            1
+        }
+    }
+}
+
 /// View > System Tray > Start at Login: the tick shows what the autostart
-/// file or Run key says, also after a change that failed
+/// file, the Run key or the LaunchAgent file says, also after a change
+/// that failed
 #[cfg(feature = "desktop")]
 fn setup_start_at_login(ui: &App) {
+    // macOS: an app moved since is started from where it is now
+    autostart::keep_current();
     ui.set_start_at_login(autostart::is_enabled());
     let ui_weak = ui.as_weak();
     ui.on_start_at_login_changed(move |on| {

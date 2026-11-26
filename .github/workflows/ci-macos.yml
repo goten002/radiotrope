@@ -203,6 +203,25 @@ jobs:
       - name: The menu bar is the app's own
         if: success() || failure()
         run: scripts/macos-menu-check.sh
+      # What reaches a Mac app only from the system, tried as a user's
+      # clicks arrive (Launch Services, through `open`), which needs a
+      # bundle: one is made around the debug build. A playlist starts the
+      # app and plays, a second launch is the first one shown, and launchd
+      # starts the app from the Start at Login file (scripts/, its header
+      # has the list). The app runs with the runner's own home folder here:
+      # Launch Services doesn't pass ours on.
+      - name: Opened from Finder, the Dock icon, Start at Login
+        if: success() || failure()
+        shell: bash
+        run: |
+          app=smoke/bundle/Radiotrope.app
+          mkdir -p "$app/Contents/MacOS"
+          cp target/debug/radiotrope "$app/Contents/MacOS/radiotrope"
+          sed -e "s/@VERSION@/0.0.0/g" -e "s/@MIN_MACOS@/11.0/g" \
+            packaging/macos/Info.plist > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          codesign --force --deep --sign - "$app"
+          scripts/macos-integration-check.sh "$app" smoke
       # A tar keeps the programs executable (the artifact's zip would not).
       # Not a release: debug builds, unsigned, kept for two weeks.
       - name: Pack the programs
@@ -226,6 +245,12 @@ jobs:
             smoke/menu-bar.png
             smoke/menu-open.png
             smoke/menu-app.log
+            smoke/integration.txt
+            smoke/integration.png
+            smoke/integration.log
+            smoke/integration-second.log
+            smoke/integration-launch-agent.plist
+            smoke/integration-crash-*
             smoke/app.log
             smoke/radiotrope.log
             smoke/audio-devices.txt
