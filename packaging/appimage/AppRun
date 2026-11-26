@@ -1,6 +1,6 @@
 #!/bin/sh
-# AppRun: the AppImage starts the desktop app. The two terminal tools are
-# inside it too, reached either way:
+# AppRun: the AppImage starts the desktop app. The terminal player is inside
+# it too, reached either way:
 #
 #   ./Radiotrope.AppImage radiotrope-cli --help      by name as the first argument
 #   ln -s Radiotrope.AppImage radiotrope-cli         or through a link with its name
@@ -12,16 +12,14 @@
 HERE=$(dirname "$(readlink -f "$0")")
 
 case "$1" in
-radiotrope-cli | radiotrope-probe)
-    program=$1
+radiotrope-cli)
     shift
-    exec "$HERE/usr/bin/$program" "$@"
+    exec "$HERE/usr/bin/radiotrope-cli" "$@"
     ;;
 esac
 
 # ARGV0 is the name the AppImage was started by (set by its runtime)
 case "$(basename "${ARGV0:-$0}")" in
 radiotrope-cli*) exec "$HERE/usr/bin/radiotrope-cli" "$@" ;;
-radiotrope-probe*) exec "$HERE/usr/bin/radiotrope-probe" "$@" ;;
 *) exec "$HERE/usr/bin/radiotrope" "$@" ;;
 esac

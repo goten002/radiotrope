@@ -97,7 +97,6 @@ cp assets/icons/icon-256.png "$icon_dir/$APP_ID.png"
     --appdir "$APPDIR" \
     --executable "$APPDIR/usr/bin/radiotrope" \
     --executable "$APPDIR/usr/bin/radiotrope-cli" \
-    --executable "$APPDIR/usr/bin/radiotrope-probe" \
     --desktop-file "$APPDIR/usr/share/applications/$APP_ID.desktop" \
     --icon-file "$icon_dir/$APP_ID.png" \
     --custom-apprun packaging/appimage/AppRun \

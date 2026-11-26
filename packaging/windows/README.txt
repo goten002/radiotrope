@@ -8,7 +8,6 @@ What is in this folder
 
   radiotrope.exe        The desktop app, and the MCP server for AI agents
   radiotrope-cli.exe    The terminal player
-  radiotrope-probe.exe  The station checker
   LICENSE.txt           GNU General Public License, version 3
   THIRD-PARTY-LICENSES.txt
                         Licences of the libraries Radiotrope is built with
@@ -17,6 +16,10 @@ Nothing needs installing: unzip the folder anywhere and run radiotrope.exe.
 For a Start Menu entry, an uninstaller and updates through
 "winget upgrade Radiotrope.Radiotrope", use radiotrope-@VERSION@-setup.exe
 instead. This build never checks for updates by itself.
+
+The station checker, radiotrope-probe.exe, is not in this folder: it is a
+download of its own on the release page
+(radiotrope-probe-@VERSION@-windows-@ARCH@.zip).
 
 Where your settings go
 ----------------------

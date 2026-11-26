@@ -8,6 +8,11 @@ name: Package (Windows)
 #   dist-windows-x64        radiotrope-<ver>-windows-x64.zip
 #   dist-windows-arm64      radiotrope-<ver>-windows-arm64.zip
 #   dist-windows-installer  radiotrope-<ver>-setup.exe (x64 and ARM64)
+#   dist-probe-windows-x64  radiotrope-probe-<ver>-windows-x64.zip
+#   dist-probe-windows-arm64  radiotrope-probe-<ver>-windows-arm64.zip
+#
+# The station checker (radiotrope-probe) is in neither the zips nor the
+# installer: it is a download of its own, from the same build.
 #
 # A pull request that changes the Windows packaging runs it too, and so can
 # a manual run (Actions > Package (Windows) > Run workflow): artefacts only.
@@ -30,6 +35,7 @@ on:
   pull_request:
     paths:
       - packaging/windows/**
+      - packaging/probe/**
       - .github/workflows/package-windows.yml
 
 permissions:
@@ -120,10 +126,29 @@ jobs:
         shell: pwsh
         run: packaging\windows\stage.ps1 -Target ${{ matrix.target }} -Arch ${{ matrix.arch }} -Version ${{ steps.version.outputs.version }}
 
+      - name: The probe's own zip
+        shell: pwsh
+        run: |
+          packaging\windows\stage.ps1 -Target ${{ matrix.target }} -Arch ${{ matrix.arch }} -Version ${{ steps.version.outputs.version }} -Probe
+          $name = "radiotrope-probe-${{ steps.version.outputs.version }}-windows-${{ matrix.arch }}"
+          $check = Join-Path $env:RUNNER_TEMP 'probe-zip'
+          Expand-Archive "dist\$name.zip" $check
+          Get-ChildItem -Recurse $check | Format-Table FullName, Length -AutoSize
+          $out = & "$check\$name\radiotrope-probe.exe" --version
+          if ($out -ne "radiotrope-probe ${{ steps.version.outputs.version }}") { throw "unexpected: $out" }
+          foreach ($f in 'README.txt', 'LICENSE.txt', 'THIRD-PARTY-LICENSES.txt') {
+            if (-not (Test-Path "$check\$name\$f")) { throw "$f is missing from the probe's zip" }
+          }
+
       - uses: actions/upload-artifact@v4
         with:
           name: dist-windows-${{ matrix.arch }}
-          path: dist/radiotrope-*-windows-${{ matrix.arch }}.zip
+          path: dist/radiotrope-${{ steps.version.outputs.version }}-windows-${{ matrix.arch }}.zip
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-probe-windows-${{ matrix.arch }}
+          path: dist/radiotrope-probe-${{ steps.version.outputs.version }}-windows-${{ matrix.arch }}.zip
           if-no-files-found: error
       # The unpacked files, for the installer job only
       - uses: actions/upload-artifact@v4
@@ -200,7 +225,8 @@ jobs:
         run: |
           $app = "$env:LOCALAPPDATA\Programs\Radiotrope"
           Get-ChildItem $app | Format-Table Name, Length -AutoSize
-          foreach ($p in 'radiotrope', 'radiotrope-cli', 'radiotrope-probe') {
+          if (Test-Path "$app\radiotrope-probe.exe") { throw 'The installer put the probe in place (a separate download)' }
+          foreach ($p in 'radiotrope', 'radiotrope-cli') {
             $bytes = [IO.File]::ReadAllBytes("$app\$p.exe")
             $machine = [BitConverter]::ToUInt16($bytes, [BitConverter]::ToInt32($bytes, 0x3C) + 4)
             if ($machine -ne ${{ matrix.machine }}) { throw ("{0}.exe is for machine 0x{1:X4}" -f $p, $machine) }

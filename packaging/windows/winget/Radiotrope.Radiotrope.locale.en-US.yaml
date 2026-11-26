@@ -17,7 +17,7 @@ ShortDescription: An internet radio player for the desktop, the terminal and AI 
 Description: |-
   Radiotrope searches a directory of internet radio stations and plays them,
   with favorites, recording, a scheduler, an equalizer and a system tray icon.
-  It comes with a terminal player and a station checker, and AI agents can
+  It comes with a terminal player, and AI agents can
   control it over MCP. It never checks for updates by itself: update with
   winget upgrade.
 Moniker: radiotrope
