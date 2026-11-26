@@ -385,6 +385,9 @@ impl AppController {
             (previous, same)
         };
         if !same_station {
+            // Its streams as the favorite has them now: a backup plays if
+            // the default doesn't connect
+            self.new_backups = Some(self.backups_of(&station.url));
             self.start_new(
                 &station.url,
                 Some(station.name.clone()).filter(|n| !n.is_empty()),
@@ -1184,6 +1187,33 @@ mod tests {
         controller.active.as_mut().unwrap().retry_at = Some(Instant::now());
         controller.run_schedule(at + TimeDelta::seconds(BEEP_AFTER_SECS - 1));
         assert_eq!(state.lock().unwrap().play_seq, first + 1);
+    }
+
+    #[test]
+    fn a_scheduled_station_falls_back_to_its_favorites_backups() {
+        let (controller, state) = controller();
+        // Nothing listens on these either
+        const BACKUP: &str = "http://127.0.0.1:1/jazz-backup.mp3";
+        let mut controller = controller.with_backups_of(Arc::new(|url: &str| {
+            if url == DEAD_URL {
+                vec![BACKUP.to_string()]
+            } else {
+                Vec::new()
+            }
+        }));
+        let (_, at) = save(&mut controller, entry(Action::Play));
+        controller.run_schedule(at);
+        assert_eq!(state.lock().unwrap().stream_count, 2);
+        // The default doesn't connect: the backup is tried
+        controller.handle_command(AppCommand::InternalStreamResolved {
+            generation: controller.resolve_generation,
+            result: Err("connection refused".into()),
+        });
+        let s = state.lock().unwrap();
+        assert_eq!(s.station_url.as_deref(), Some(DEAD_URL));
+        assert_eq!(s.stream_url.as_deref(), Some(BACKUP));
+        assert_eq!((s.stream_index, s.stream_count), (1, 2));
+        assert!(s.is_resolving);
     }
 
     // Report Play Count: a scheduled start is counted once when it plays,

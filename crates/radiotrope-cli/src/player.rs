@@ -2,7 +2,9 @@
 //!
 //! Follows the app's controller: a station is resolved on a thread of its
 //! own so the screen keeps going, a newer play makes an older resolve
-//! stale, and events about a station that was replaced are ignored.
+//! stale, and events about a station that was replaced are ignored. Like
+//! the app, a station whose default stream doesn't connect tries its
+//! backups in turn before it shows the error.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -18,6 +20,7 @@ use radiotrope::stream::{
     ResolvedStream, StreamCancel, StreamMetadata, StreamResolver, StreamType,
 };
 
+use radiotrope_library::fallback::StreamList;
 use radiotrope_library::text::{self, status};
 
 use crate::library::{RecordFormat, Settings, Station};
@@ -65,6 +68,8 @@ pub struct Player {
     engine: Option<AudioEngine>,
     /// The station playing, or the last one played
     pub station: Option<Station>,
+    /// The station's streams, and which is tried or playing
+    streams: StreamList,
     pub phase: Phase,
     pub status: String,
     pub is_error: bool,
@@ -104,6 +109,7 @@ impl Player {
         let player = Self {
             engine: Some(engine),
             station: None,
+            streams: StreamList::default(),
             phase: Phase::Stopped,
             status: status::READY.to_string(),
             is_error: false,
@@ -168,8 +174,32 @@ impl Player {
         self.phase != Phase::Stopped
     }
 
-    /// Play `station`, replacing what plays now
+    /// Play `station`, replacing what plays now: its default stream, and
+    /// its backups in turn if that doesn't connect
     pub fn play(&mut self, station: Station) {
+        self.streams = StreamList::new(&station.url, station.backups());
+        self.start(station);
+    }
+
+    /// Start `station` again (to catch up with live): from the stream that
+    /// last played, with every stream to try once more
+    fn restart(&mut self, station: Station) {
+        if self.streams.is_station(&station.url) {
+            self.streams.restart();
+        } else {
+            self.streams = StreamList::new(&station.url, station.backups());
+        }
+        self.start(station);
+    }
+
+    /// Which backup plays or is tried, as `stream 2 of 3`: `None` while it
+    /// is the station's default
+    pub fn backup(&self) -> Option<String> {
+        self.station.as_ref()?;
+        self.streams.backup()
+    }
+
+    fn start(&mut self, station: Station) {
         // Switching station ends the recording of the old one
         self.stop_recording();
         self.cancel_stream();
@@ -177,7 +207,7 @@ impl Player {
         self.metadata_rx = None;
         self.stream_failed = false;
 
-        self.station = Some(station.clone());
+        self.station = Some(station);
         self.phase = Phase::Resolving;
         self.status = status::CONNECTING.to_string();
         self.is_error = false;
@@ -188,11 +218,43 @@ impl Player {
         self.artist.clear();
         self.started_at = None;
 
+        let url = self.streams.current().to_string();
+        self.connect(url);
+    }
+
+    /// The stream being tried didn't connect: try the station's next one.
+    /// False when there is none (or the stream had played already), and
+    /// the failure is the station's.
+    fn try_next_stream(&mut self, error: &str) -> bool {
+        let failed = self.streams.current().to_string();
+        let Some(next) = self.streams.next_stream().map(str::to_string) else {
+            return false;
+        };
+        log::warn!("Stream {failed} didn't connect ({error}); trying {next}");
+        let handed_over = self.stream_id.is_some();
+        self.cancel_stream();
+        // The engine lets go of a stream it was given
+        if handed_over {
+            self.engine().stop();
+        }
+        self.metadata_rx = None;
+        self.stream_failed = false;
+        self.phase = Phase::Resolving;
+        self.set_status(status::CONNECTING, false);
+        self.codec = None;
+        self.bitrate = None;
+        self.stream_type = None;
+        self.connect(next);
+        true
+    }
+
+    /// Resolve the stream at `url` on a thread of its own, which sends the
+    /// result back
+    fn connect(&mut self, url: String) {
         let generation = self.generation;
         let cancel = StreamCancel::new();
         self.cancel = Some(cancel.clone());
         let tx = self.resolved_tx.clone();
-        let url = station.url;
         std::thread::Builder::new()
             .name("stream-resolve".into())
             .spawn(move || {
@@ -323,6 +385,10 @@ impl Player {
             }
             Err(e) => {
                 log::warn!("Can't resolve the station: {e}");
+                // The station's next stream may still connect
+                if self.try_next_stream(&e) {
+                    return;
+                }
                 self.cancel = None;
                 self.phase = Phase::Stopped;
                 self.status = text::playback_error(&e);
@@ -336,7 +402,20 @@ impl Player {
         if event.stream.is_some() && event.stream != self.stream_id {
             return;
         }
+        let about_station = event.stream.is_some();
         let event = event.event;
+
+        // A stream that fails before it plays gives way to the station's
+        // next one; the failure counts only when the last has failed too
+        match &event {
+            AudioEvent::Error(e) if about_station && self.try_next_stream(e) => return,
+            AudioEvent::NoAudioTimeout
+                if about_station && self.try_next_stream(status::NO_AUDIO) =>
+            {
+                return
+            }
+            _ => {}
+        }
 
         // The stream ended or failed: keep what was recorded
         if matches!(
@@ -350,7 +429,7 @@ impl Player {
         // live: start it again, to catch up
         if matches!(event, AudioEvent::FellBehind) {
             if let Some(station) = self.station.clone() {
-                self.play(station);
+                self.restart(station);
             }
             return;
         }
@@ -376,6 +455,8 @@ impl Player {
                 self.started_at.get_or_insert_with(Instant::now);
                 self.set_status(status::PLAYING, false);
                 self.stream_failed = false;
+                // This is the stream a restart begins with
+                self.streams.played();
             }
             AudioEvent::CodecChanged(info) => {
                 if let Some(codec) = &mut self.codec {
@@ -591,6 +672,73 @@ impl Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use radiotrope::audio::{EngineConfig, EngineOutput};
+    use radiotrope_library::data::types::Stream;
+
+    /// A player on a silent output, so it runs on a machine with no sound
+    fn player() -> Player {
+        let engine = AudioEngine::with_config(EngineConfig {
+            output: EngineOutput::Silent { speed: 20.0 },
+            ..EngineConfig::default()
+        })
+        .expect("the engine starts");
+        Player::new(engine, &Settings::default())
+    }
+
+    /// Nothing listens on port 1, so each of these fails to connect at once
+    fn dead(name: &str) -> String {
+        format!("http://127.0.0.1:1/{name}.mp3")
+    }
+
+    /// Poll `player` until it stops, keeping which backup it said it tried
+    fn until_stopped(player: &mut Player) -> Vec<Option<String>> {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut said = vec![player.backup()];
+        while player.phase != Phase::Stopped {
+            assert!(Instant::now() < deadline, "the player never gave up");
+            std::thread::sleep(Duration::from_millis(5));
+            player.poll();
+            if said.last() != Some(&player.backup()) {
+                said.push(player.backup());
+            }
+        }
+        said
+    }
+
+    #[test]
+    fn a_station_whose_default_doesnt_connect_tries_its_backups_in_turn() {
+        let mut player = player();
+        let station = Station::new("Jazz", dead("a")).with_streams(vec![
+            Stream::new(dead("a")),
+            Stream::new(dead("b")),
+            Stream::new(dead("c")),
+        ]);
+        player.play(station);
+        assert_eq!(player.backup(), None, "the default first");
+
+        let said = until_stopped(&mut player);
+        assert_eq!(
+            said,
+            [
+                None,
+                Some("stream 2 of 3".into()),
+                Some("stream 3 of 3".into())
+            ]
+        );
+        // The last one failed too: the station's error shows
+        assert!(player.is_error);
+        assert_ne!(player.status, status::CONNECTING);
+        player.shutdown();
+    }
+
+    #[test]
+    fn a_station_with_one_stream_shows_its_error_at_once() {
+        let mut player = player();
+        player.play(Station::new("Jazz", dead("a")));
+        assert_eq!(until_stopped(&mut player), [None]);
+        assert!(player.is_error);
+        player.shutdown();
+    }
 
     /// The texts the terminal shows for engine events are the app's: each
     /// is written in the app's controller (as a literal or by name), so a

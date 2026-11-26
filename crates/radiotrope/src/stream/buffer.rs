@@ -212,8 +212,14 @@ struct BufferState {
 }
 
 /// Longest the producer waits for room in a full buffer without being
-/// woken (it is woken when the consumer makes room, and on a cancel)
-const PRODUCER_FULL_WAIT: Duration = Duration::from_millis(500);
+/// woken (it is woken when the consumer makes room, and on a cancel).
+/// Tests wait far longer, so they see that those wakeups happen rather
+/// than the producer finding room or a cancel at its next look.
+const PRODUCER_FULL_WAIT: Duration = if cfg!(test) {
+    Duration::from_secs(60)
+} else {
+    Duration::from_millis(500)
+};
 
 /// Creates a decoupled producer-consumer stream buffer.
 ///
@@ -1029,11 +1035,11 @@ mod tests {
         }
         assert!(filled(&read) > full, "the producer wasn't woken");
 
-        // A cancel ends its wait at once
+        // A cancel ends its wait at once: well before the wait's own end
         let cancelled = Instant::now();
         stop.cancel();
         handle.join().unwrap();
-        assert!(cancelled.elapsed() < Duration::from_millis(400));
+        assert!(cancelled.elapsed() < PRODUCER_FULL_WAIT / 6);
     }
 
     // --- StreamBuffer: stop flag ---
@@ -2191,59 +2197,95 @@ mod tests {
         handle.join().unwrap();
     }
 
+    /// A network that hands over exactly the chunks the test sends, when it
+    /// sends them; it ends when the sender is dropped
+    struct FedNetwork(crossbeam_channel::Receiver<Vec<u8>>);
+
+    impl Read for FedNetwork {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Ok(chunk) = self.0.recv() else {
+                return Ok(0);
+            };
+            assert!(chunk.len() <= buf.len(), "send chunks of at most a read");
+            buf[..chunk.len()].copy_from_slice(&chunk);
+            Ok(chunk.len())
+        }
+    }
+
+    impl Seek for FedNetwork {
+        fn seek(&mut self, _pos: SeekFrom) -> io::Result<u64> {
+            Ok(0)
+        }
+    }
+
     #[test]
     fn buffering_percentage_progresses() {
-        // During buffering, level_bytes should grow toward the effective watermark.
-        // Status is only updated inside read() calls, so we need a reader
-        // thread blocked in the buffering condvar loop to observe progress.
-        // Data must exceed MAX_WATERMARK_BYTES so the adaptive watermark can be met.
-        let data: Vec<u8> = (0..2_000_000).map(|i| (i % 256) as u8).collect();
-        let sim = SimulatedNetworkReader::new(data).with_latency(Duration::from_millis(2));
-        let (mut reader, handle, stop, status) = buffer_from_sim(sim);
+        // During buffering, level_bytes grows toward the effective watermark
+        // with each chunk that arrives, and the reader stays held until the
+        // watermark is met. Status is only updated inside read() calls, so a
+        // reader thread blocked in the buffering loop is what reports it.
+        //
+        // The test sends each chunk itself and waits until the status shows
+        // it, so how fast the machine is doesn't matter.
+        let (network, chunks) = crossbeam_channel::unbounded::<Vec<u8>>();
+        let status = Arc::new(Mutex::new(BufferStatus::default()));
+        let probing = Arc::new(AtomicBool::new(false));
+        let (mut reader, handle, stop) =
+            StreamBuffer::new(Box::new(FedNetwork(chunks)), status.clone(), probing);
+        let send = |n: usize| {
+            for _ in 0..n {
+                network.send(vec![1u8; PRODUCER_CHUNK_SIZE]).unwrap();
+            }
+        };
+        let level_reaches = |level: usize| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            loop {
+                let now = status.lock().unwrap().level_bytes;
+                if now == level {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "level stuck at {now}, expected {level}"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        };
 
-        // Drain until buffering activates
+        // Enough to start, then drain it: the buffer runs dry and buffers
+        send(start_watermark().div_ceil(PRODUCER_CHUNK_SIZE));
         read_until_buffering(&mut reader, &status);
         assert!(status.lock().unwrap().is_buffering);
 
-        // Spawn reader thread: read() will block in the buffering condvar loop,
-        // calling update_status() on each wakeup so level_bytes progresses.
+        // A reader waits in the buffering loop
         let reader_thread = thread::spawn(move || {
             let mut buf = [0u8; 8192];
-            let _ = reader.read(&mut buf);
-            reader
+            let n = reader.read(&mut buf).unwrap();
+            (reader, n)
         });
 
-        // Poll level_bytes from main thread while reader is blocked in buffering
-        let mut levels = Vec::new();
-        for _ in 0..100 {
-            thread::sleep(Duration::from_millis(5));
-            let level = status.lock().unwrap().level_bytes;
-            levels.push(level);
+        // Each chunk shows as a higher level, while still buffering
+        let watermark = status.lock().unwrap().effective_watermark;
+        let steps = watermark.div_ceil(PRODUCER_CHUNK_SIZE);
+        assert!(
+            steps >= 3,
+            "the watermark ({watermark}) is too low to see progress"
+        );
+        for step in 1..steps {
+            send(1);
+            level_reaches(step * PRODUCER_CHUNK_SIZE);
+            let s = status.lock().unwrap();
+            assert!(s.is_buffering, "stopped buffering at {}", s.level_bytes);
+            assert!(!reader_thread.is_finished(), "the reader didn't wait");
         }
 
-        let _reader = reader_thread.join().unwrap();
+        // The last chunk meets the watermark: the reader gets its data
+        send(1);
+        let (_reader, n) = reader_thread.join().unwrap();
+        assert!(n > 0);
+        assert!(!status.lock().unwrap().is_buffering);
 
-        // Filter to distinct increasing values
-        let mut distinct: Vec<usize> = Vec::new();
-        for &l in &levels {
-            if distinct.is_empty() || l > *distinct.last().unwrap() {
-                distinct.push(l);
-            }
-        }
-
-        assert!(
-            distinct.len() >= 3,
-            "Expected at least 3 distinct increasing level values, got {:?}",
-            distinct
-        );
-
-        // Final level should be approaching or past the watermark
-        assert!(
-            *distinct.last().unwrap() > start_watermark() / 2,
-            "Expected level to grow significantly toward watermark, got {:?}",
-            distinct
-        );
-
+        drop(network);
         stop.cancel();
         handle.join().unwrap();
     }

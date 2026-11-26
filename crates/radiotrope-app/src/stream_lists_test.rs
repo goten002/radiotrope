@@ -81,13 +81,14 @@ fn another_default_is_picked_and_saved_by_keyboard() {
     let (ui, time) = open("edit-favorite-streams");
     let saved = saves(&ui);
 
-    // From the name: the first stream's radio button, its Move Down and
-    // Remove (it can't move up), then the second stream's radio button
-    press_times(&ui, &time, Key::Tab, 4);
+    // From the name: the first stream's radio button, its Edit Address,
+    // Move Down and Remove (it can't move up), then the second stream's
+    // radio button
+    press_times(&ui, &time, Key::Tab, 5);
     press(&ui, Key::Space);
     settle(&time);
     // Back to the name, where Enter saves
-    press_times(&ui, &time, Key::Backtab, 4);
+    press_times(&ui, &time, Key::Backtab, 5);
     press(&ui, Key::Return);
     settle(&time);
 
@@ -106,9 +107,9 @@ fn a_stream_is_added_with_enter_and_a_second_enter_saves() {
     let (ui, time) = open("edit-favorite-streams");
     let saved = saves(&ui);
 
-    // Past the three rows (a radio button, the moves it has, Remove) to
-    // the field for a new address
-    press_times(&ui, &time, Key::Tab, 11);
+    // Past the three rows (a radio button, Edit Address, the moves it
+    // has, Remove) to the field for a new address
+    press_times(&ui, &time, Key::Tab, 14);
     type_text(&ui, &time, "https://new.example/live");
     press(&ui, Key::Return);
     settle(&time);
@@ -137,8 +138,9 @@ fn removing_the_default_makes_the_first_stream_the_default() {
     let (ui, time) = open("edit-favorite-streams");
     let saved = saves(&ui);
 
-    // The first stream (the default): its radio button, Move Down, Remove
-    press_times(&ui, &time, Key::Tab, 3);
+    // The first stream (the default): its radio button, Edit Address,
+    // Move Down, Remove
+    press_times(&ui, &time, Key::Tab, 4);
     press(&ui, Key::Space);
     settle(&time);
     // The row is gone and its button with it: the field for a new
@@ -151,6 +153,69 @@ fn removing_the_default_makes_the_first_stream_the_default() {
         [(
             BACKUP.to_string(),
             vec![BACKUP.to_string(), RELAY.to_string()]
+        )]
+    );
+}
+
+#[test]
+fn the_defaults_address_is_edited_in_place_and_saved() {
+    let (ui, time) = open("edit-favorite-streams");
+    let saved = saves(&ui);
+
+    // The first stream (the default): its radio button, then Edit Address
+    press_times(&ui, &time, Key::Tab, 2);
+    press(&ui, Key::Space);
+    settle(&time);
+    // The field has the focus, with the address: it is replaced
+    assert!(ui.get_dialog_open());
+    for _ in 0..MAIN.chars().count() {
+        press(&ui, Key::Backspace);
+    }
+    settle(&time);
+    type_text(&ui, &time, "https://new.example/live");
+    // Enter keeps the address; the field for a new one has the focus, and
+    // Enter there (with nothing typed) saves
+    press(&ui, Key::Return);
+    settle(&time);
+    assert!(saved.borrow().is_empty(), "Enter keeps the address first");
+    press(&ui, Key::Return);
+    settle(&time);
+
+    // Still the default, in its place
+    let new = "https://new.example/live".to_string();
+    assert_eq!(
+        *saved.borrow(),
+        [(
+            new.clone(),
+            vec![new, BACKUP.to_string(), RELAY.to_string()]
+        )]
+    );
+}
+
+#[test]
+fn esc_leaves_an_address_as_it_was_and_another_streams_is_refused() {
+    let (ui, time) = open("edit-favorite-stream-taken");
+    let saved = saves(&ui);
+
+    // The address typed is the third stream's: Enter keeps nothing, and
+    // the dialog doesn't save
+    press(&ui, Key::Return);
+    settle(&time);
+    assert!(saved.borrow().is_empty());
+    assert!(ui.get_dialog_open());
+
+    // Esc leaves the edit, not the dialog; Enter in the field for a new
+    // address then saves the list as it was
+    press(&ui, Key::Escape);
+    settle(&time);
+    assert!(ui.get_dialog_open());
+    press(&ui, Key::Return);
+    settle(&time);
+    assert_eq!(
+        *saved.borrow(),
+        [(
+            MAIN.to_string(),
+            vec![MAIN.to_string(), BACKUP.to_string(), RELAY.to_string()]
         )]
     );
 }

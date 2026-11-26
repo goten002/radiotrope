@@ -15,11 +15,18 @@ export global StreamEdit {
     pure callback removed([StationStream], int) -> [StationStream];
     // The list with the row at the index moved by -1 (up) or 1 (down)
     pure callback moved([StationStream], int, int) -> [StationStream];
+    // Why the row at the index can't take the address typed; empty when
+    // it can
+    pure callback change-problem([StationStream], int, string) -> string;
+    // The list with the row at the index given the address typed
+    pure callback changed([StationStream], int, string) -> [StationStream];
 }
 
 // One stream of the station: a radio button that makes it the default (the
 // one played), what is known of it and its address, and its place in the
-// list (the others are tried in order when the default doesn't connect)
+// list (the others are tried in order when the default doesn't connect).
+// Edit Address turns the row's text into a field with the address, edited
+// in place: Enter or Done keeps the change, Esc leaves it.
 component StreamRow inherits Rectangle {
     in property <StationStream> stream;
     in property <bool> is-default;
@@ -27,21 +34,31 @@ component StreamRow inherits Rectangle {
     in property <bool> alone;
     in property <bool> first;
     in property <bool> last;
+    // The address is being edited, as `draft`
+    in property <bool> editing;
+    in-out property <string> draft;
+    // The address typed can be kept
+    in property <bool> can-keep;
     callback picked();
     callback move(int);
     callback remove();
+    callback edit();
+    callback keep();
+    callback leave();
 
     property <string> text: root.stream.label == "" ? root.stream.url
         : root.stream.label + " · " + root.stream.url;
 
-    height: Theme.row-menu;
+    height: root.editing ? Theme.control-field : Theme.row-menu;
     border-radius: Theme.radius-sm;
-    background: touch.pressed ? Theme.pressed-bg
+    background: root.editing ? transparent
+        : touch.pressed ? Theme.pressed-bg
         : touch.has-hover ? Theme.hover-bg
         : root.is-default ? Theme.accent-tint : transparent;
     animate background { duration: Theme.fast; }
 
     touch := TouchArea {
+        enabled: !root.editing;
         mouse-cursor: pointer;
         clicked => { root.picked(); }
     }
@@ -88,7 +105,7 @@ component StreamRow inherits Rectangle {
             }
         }
 
-        Text {
+        if !root.editing: Text {
             horizontal-stretch: 1;
             text: root.text;
             color: Theme.text-primary;
@@ -98,7 +115,58 @@ component StreamRow inherits Rectangle {
             accessible-role: none;
         }
 
-        if !root.alone: HorizontalLayout {
+        // The address, edited where it was shown; Esc leaves it as it was
+        // (and the dialog open)
+        if root.editing: FocusScope {
+            horizontal-stretch: 1;
+            focus-on-tab-navigation: false;
+            focus-on-click: false;
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.leave();
+                    return accept;
+                }
+                return reject;
+            }
+
+            StyledLineEdit {
+                width: parent.width;
+                height: parent.height;
+                init => { self.focus-input(); }
+                label: "Stream URL";
+                placeholder-text: "Stream URL";
+                text <=> root.draft;
+                clearable: true;
+                accepted => { root.keep(); }
+            }
+        }
+
+        if root.editing: VerticalLayout {
+            alignment: center;
+            IconButton {
+                width: 26px;
+                height: 26px;
+                icon: @image-url("../icons/tick.svg");
+                icon-size: Theme.icon-sm;
+                label: "Done";
+                enabled: root.can-keep;
+                clicked => { root.keep(); }
+            }
+        }
+
+        if !root.editing: VerticalLayout {
+            alignment: center;
+            IconButton {
+                width: 26px;
+                height: 26px;
+                icon: @image-url("../icons/pencil.svg");
+                icon-size: Theme.icon-sm;
+                label: "Edit Address";
+                clicked => { root.edit(); }
+            }
+        }
+
+        if !root.alone && !root.editing: HorizontalLayout {
             spacing: 0px;
 
             VerticalLayout {
@@ -153,6 +221,17 @@ export component EditFavoriteDialog inherits Rectangle {
     // The address typed to add, and why it can't be
     in-out property <string> new-stream;
     property <string> new-stream-problem: StreamEdit.problem(root.edit-streams, root.new-stream);
+    // The row whose address is edited in place (-1: none), the address as
+    // typed, and why the row can't take it
+    in-out property <int> editing: -1;
+    in-out property <string> stream-draft;
+    property <string> draft-problem: root.editing < 0 ? ""
+        : StreamEdit.change-problem(root.edit-streams, root.editing, root.stream-draft);
+    property <bool> can-keep: root.stream-draft != "" && root.draft-problem == "";
+    // What is said under the streams: why the address typed (in a row,
+    // then in the field for a new one) can't be used, or why Save failed
+    property <string> stream-problem: root.draft-problem != "" ? root.draft-problem
+        : root.new-stream-problem != "" ? root.new-stream-problem : root.error;
     in-out property <string> edit-logo-url;
     in-out property <string> edit-country;
     // Why the last Save didn't go through (nothing was changed); cleared
@@ -178,6 +257,8 @@ export component EditFavoriteDialog inherits Rectangle {
         self.edit-url = station.url;
         self.edit-streams = station.streams;
         self.new-stream = "";
+        self.editing = -1;
+        self.stream-draft = "";
         self.edit-logo-url = station.logo-url;
         self.edit-country = station.country;
         self.error = "";
@@ -189,6 +270,13 @@ export component EditFavoriteDialog inherits Rectangle {
     function save() {
         if !root.can-save {
             return;
+        }
+        // An address edited in place is kept, unless it can't be
+        if root.editing >= 0 {
+            if root.draft-problem != "" {
+                return;
+            }
+            root.keep-address(false);
         }
         root.error = root.accepted(root.station());
         if root.error == "" {
@@ -207,7 +295,37 @@ export component EditFavoriteDialog inherits Rectangle {
         root.error = "";
     }
 
+    // Edit the address of the row at `index` in place
+    public function edit-address(index: int) {
+        root.editing = index;
+        root.stream-draft = root.edit-streams[index].url;
+        root.error = "";
+    }
+
+    // The row being edited takes the address typed; `refocus` moves the
+    // focus to the field for a new address, as the row's field goes away
+    function keep-address(refocus: bool) {
+        let index = root.editing;
+        let was-default = root.edit-streams[index].url == root.edit-url;
+        root.edit-streams = StreamEdit.changed(root.edit-streams, index, root.stream-draft);
+        // The default's address changed: it is still the default
+        if was-default {
+            root.edit-url = root.edit-streams[index].url;
+        }
+        root.editing = -1;
+        root.error = "";
+        if refocus {
+            root.focus-add-request += 1;
+        }
+    }
+
+    function leave-address() {
+        root.editing = -1;
+        root.focus-add-request += 1;
+    }
+
     function remove-stream(index: int) {
+        root.editing = -1;
         let was-default = root.edit-streams[index].url == root.edit-url;
         root.edit-streams = StreamEdit.removed(root.edit-streams, index);
         // The default is gone: the first is the default now
@@ -219,6 +337,7 @@ export component EditFavoriteDialog inherits Rectangle {
     }
 
     function move-stream(index: int, by: int) {
+        root.editing = -1;
         root.edit-streams = StreamEdit.moved(root.edit-streams, index, by);
         root.error = "";
         root.focus-add-request += 1;
@@ -295,6 +414,16 @@ export component EditFavoriteDialog inherits Rectangle {
                         alone: root.edit-streams.length == 1;
                         first: index == 0;
                         last: index == root.edit-streams.length - 1;
+                        editing: index == root.editing;
+                        draft <=> root.stream-draft;
+                        can-keep: root.can-keep;
+                        edit => { root.edit-address(index); }
+                        keep => {
+                            if root.can-keep {
+                                root.keep-address(true);
+                            }
+                        }
+                        leave => { root.leave-address(); }
                         picked => {
                             root.edit-url = stream.url;
                             root.error = "";
@@ -332,8 +461,8 @@ export component EditFavoriteDialog inherits Rectangle {
                 }
             }
 
-            if root.new-stream-problem != "" || root.error != "": Text {
-                text: root.new-stream-problem != "" ? root.new-stream-problem : root.error;
+            if root.stream-problem != "": Text {
+                text: root.stream-problem;
                 color: Theme.danger-text;
                 font-size: Theme.font-md;
                 wrap: word-wrap;
@@ -341,7 +470,7 @@ export component EditFavoriteDialog inherits Rectangle {
                 accessible-live-region: assertive;
             }
 
-            if root.edit-streams.length > 1 && root.new-stream-problem == "" && root.error == "": Text {
+            if root.edit-streams.length > 1 && root.stream-problem == "": Text {
                 text: "The default plays. The others are tried in order if it doesn't connect.";
                 color: Theme.text-tertiary;
                 font-size: Theme.font-sm;
