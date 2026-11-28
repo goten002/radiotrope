@@ -1391,7 +1391,7 @@ async fn timers_recording_and_search_check_what_they_are_given() {
 }
 
 /// A phone's side of a WebRTC call, on this computer: offers to receive
-/// audio and counts the Opus packets that arrive
+/// audio and keeps the Opus packets that arrive, with their RTP time
 struct PhoneCall {
     rtc: str0m::Rtc,
     socket: std::net::UdpSocket,
@@ -1423,8 +1423,9 @@ impl PhoneCall {
     }
 
     /// Take the player's answer and run the call for `time`; the Opus
-    /// packets that came, and whether the player hung up
-    fn run(mut self, answer: &str, time: Duration) -> (Vec<Vec<u8>>, bool) {
+    /// packets that came (RTP time at 48 kHz, payload), and whether the
+    /// player hung up
+    fn run(mut self, answer: &str, time: Duration) -> (Vec<(u64, Vec<u8>)>, bool) {
         use str0m::{Event, IceConnectionState, Input, Output};
         let answer = str0m::change::SdpAnswer::from_sdp_string(answer).unwrap();
         self.rtc
@@ -1442,7 +1443,9 @@ impl PhoneCall {
                     Output::Transmit(t) => {
                         self.socket.send_to(&t.contents, t.destination).unwrap();
                     }
-                    Output::Event(Event::MediaData(data)) => packets.push(data.data.to_vec()),
+                    Output::Event(Event::MediaData(data)) => {
+                        packets.push((data.time.numer(), data.data.to_vec()))
+                    }
                     Output::Event(Event::IceConnectionStateChange(
                         IceConnectionState::Disconnected,
                     )) => return (packets, true),
@@ -1513,7 +1516,15 @@ async fn a_paired_phone_listens_over_webrtc_and_hangs_up() {
     assert!(!hung_up);
     assert!(packets.len() >= 40, "only {} packets", packets.len());
     // Each one a stereo Opus packet
-    assert!(packets.iter().all(|p| !p.is_empty() && p[0] & 0b100 != 0));
+    assert!(packets
+        .iter()
+        .all(|(_, p)| !p.is_empty() && p[0] & 0b100 != 0));
+    // 20 ms apart in RTP time (960 at 48 kHz), none skipped or repeated
+    assert!(
+        packets.windows(2).all(|w| w[1].0 == w[0].0 + 960),
+        "{:?}",
+        packets.iter().map(|(t, _)| t).collect::<Vec<_>>()
+    );
 
     // Hanging up ends the call (another phone can't)
     let (status, _) = player
