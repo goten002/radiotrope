@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use slint::{ComponentHandle, ModelRc, VecModel};
 
-use radiotrope::audio::{HissLevel, LevelTarget};
+use radiotrope::audio::{CrackleLevel, HissLevel, LevelTarget};
 use radiotrope::error::RadioError;
 use radiotrope_app::data::settings::{Settings, Theme as ThemeSetting};
 use radiotrope_app::data::types::Station;
@@ -44,6 +44,7 @@ pub(crate) fn apply(ui: &App, settings: &radiotrope_app::data::settings::Setting
             match_volume: settings.match_volume,
             target: LevelTarget::parse(&settings.match_level).unwrap_or_default(),
             hiss: HissLevel::parse(&settings.hiss_reducer).unwrap_or_default(),
+            crackle: CrackleLevel::parse(&settings.crackle_filter).unwrap_or_default(),
             hum_filter: settings.hum_filter,
             rumble_filter: settings.rumble_filter,
             smooth_switching: settings.smooth_switching,
@@ -235,6 +236,14 @@ pub(crate) fn setup(ui: &App, ctx: &AppContext) {
     }
     {
         let tx = ui_tx.clone();
+        ui.on_crackle_filter_changed(move |id| {
+            if let Some(level) = CrackleLevel::parse(&id) {
+                tx.send(app::state::AppCommand::SetCrackleFilter(level));
+            }
+        });
+    }
+    {
+        let tx = ui_tx.clone();
         ui.on_hum_filter_toggled(move |on| {
             tx.send(app::state::AppCommand::SetHumFilter(on));
         });
@@ -361,6 +370,7 @@ pub(crate) struct WindowSettings {
     pub(crate) match_volume: bool,
     pub(crate) match_level: LevelTarget,
     pub(crate) hiss: HissLevel,
+    pub(crate) crackle: CrackleLevel,
     pub(crate) hum_filter: bool,
     pub(crate) rumble_filter: bool,
     pub(crate) smooth_switching: bool,
@@ -435,6 +445,7 @@ pub(crate) fn window_settings(s: &AppSnapshot, ui: &App) -> WindowSettings {
         match_volume: s.match_volume,
         match_level: s.level_target,
         hiss: s.hiss,
+        crackle: s.crackle,
         hum_filter: s.hum_filter,
         rumble_filter: s.rumble_filter,
         smooth_switching: s.smooth_switching,
@@ -525,6 +536,7 @@ impl WindowSettings {
         settings.match_volume = w.match_volume;
         settings.match_level = w.match_level.as_str().to_string();
         settings.hiss_reducer = w.hiss.as_str().to_string();
+        settings.crackle_filter = w.crackle.as_str().to_string();
         settings.hum_filter = w.hum_filter;
         settings.rumble_filter = w.rumble_filter;
         settings.smooth_switching = w.smooth_switching;
@@ -565,6 +577,7 @@ pub(crate) struct FilterSettings {
     pub(crate) match_volume: bool,
     pub(crate) target: LevelTarget,
     pub(crate) hiss: HissLevel,
+    pub(crate) crackle: CrackleLevel,
     pub(crate) hum_filter: bool,
     pub(crate) rumble_filter: bool,
     pub(crate) smooth_switching: bool,
@@ -576,6 +589,7 @@ impl FilterSettings {
             match_volume: s.match_volume,
             target: s.level_target,
             hiss: s.hiss,
+            crackle: s.crackle,
             hum_filter: s.hum_filter,
             rumble_filter: s.rumble_filter,
             smooth_switching: s.smooth_switching,
@@ -588,6 +602,7 @@ pub(crate) fn show_filters(ui: &App, f: &FilterSettings) {
     ui.set_match_volume(f.match_volume);
     ui.set_level_target(f.target.as_str().into());
     ui.set_hiss_reducer(f.hiss.as_str().into());
+    ui.set_crackle_filter(f.crackle.as_str().into());
     ui.set_hum_filter(f.hum_filter);
     ui.set_rumble_filter(f.rumble_filter);
     ui.set_smooth_switching(f.smooth_switching);

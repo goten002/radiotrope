@@ -1,6 +1,7 @@
 //! Digital signal processing modules
 
 pub mod cleanup;
+pub mod crackle;
 pub mod equalizer;
 pub(crate) mod filter;
 pub mod hiss;
@@ -12,6 +13,7 @@ pub mod resample;
 pub mod sound;
 
 pub use cleanup::CleanupSource;
+pub use crackle::CrackleSource;
 pub use equalizer::{
     find_preset, peak_boost_db, EqParams, EqPreset, EqSource, PresetGroup, SharedEqParams, PRESETS,
 };
@@ -21,6 +23,6 @@ pub use level::LevelSource;
 pub use limiter::LimiterSource;
 pub use resample::ResampleSource;
 pub use sound::{
-    FilterSwitches, HissLevel, HumReadout, LevelPhase, LevelReadout, LevelTarget,
+    CrackleLevel, FilterSwitches, HissLevel, HumReadout, LevelPhase, LevelReadout, LevelTarget,
     SharedSoundParams, SoundParams,
 };

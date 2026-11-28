@@ -22,7 +22,7 @@
     <ul>
       <li>Find stations: typo-tolerant search by name, country, genre and language in the Radiotrope station directory, or play any stream address</li>
       <li>Plays almost anything: MP3, AAC, HE-AAC, Vorbis, Opus and FLAC over Icecast/SHOUTcast, HLS and plain HTTP, with song titles from ICY and ID3</li>
-      <li>Sounds right: 10-band equalizer with 14 presets, volume leveler, hiss, hum and rumble filters</li>
+      <li>Sounds right: 10-band equalizer with 14 presets, volume leveler, hiss, crackle, hum and rumble filters</li>
       <li>Records: MP3, Opus or WAV, by hand or on a schedule</li>
       <li>Wakes you, sends you to sleep: Scheduler for plays, recordings and stops, plus a sleep timer</li>
       <li>AI agents: 19 MCP tools, shared by every agent on your computer or your network</li>

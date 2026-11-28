@@ -35,10 +35,12 @@ use super::analyzer::AnalyzingSource;
 use super::decoder::{start_open, SymphoniaSource};
 use super::dsp::equalizer::{EqParams, EqSource, SharedEqParams};
 use super::dsp::output_stage::{Leaving, OutputStage, SharedVolume};
+use super::dsp::sound::CrackleLevel;
 use super::dsp::sound::{
     FilterSwitches, HissLevel, HumReadout, LevelReadout, LevelTarget, SharedSoundParams,
     SoundParams,
 };
+use super::dsp::CrackleSource;
 use super::dsp::{
     CleanupSource, HissSource, HumSource, LevelSource, LimiterSource, ResampleSource,
 };
@@ -777,6 +779,11 @@ impl AudioEngine {
         self.with_sound(|p| p.set_hiss(level));
     }
 
+    /// The Crackle Filter
+    pub fn set_crackle(&self, level: CrackleLevel) {
+        self.with_sound(|p| p.set_crackle(level));
+    }
+
     /// The Hum Filter
     pub fn set_hum_filter(&self, on: bool) {
         self.with_sound(|p| p.set_hum_filter(on));
@@ -1357,6 +1364,11 @@ impl AudioEngine {
                                     RecordingTap::new(source, recorder.clone(), TapPoint::BeforeEq);
                                 let source =
                                     CleanupSource::new(source).with_switch(sound.switches.clone());
+                                // Clicks first: they would ring in the hum
+                                // notches and spoil the Hiss Reducer's
+                                // quietest levels, and finding them wants
+                                // the waveform as the station sent it
+                                let source = CrackleSource::new(source, sound.switches.clone());
                                 let source = HumSource::new(
                                     source,
                                     sound.switches.clone(),

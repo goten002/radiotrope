@@ -70,7 +70,7 @@ use clap::Parser;
 use crossbeam_channel::bounded;
 use slint::Model;
 
-use radiotrope::audio::{AudioAnalysis, HissLevel, LevelTarget, SharedStats};
+use radiotrope::audio::{AudioAnalysis, CrackleLevel, HissLevel, LevelTarget, SharedStats};
 
 use radiotrope_app::config::ui::{SHUTDOWN_GRACE, SHUTDOWN_SEND_TIMEOUT};
 use radiotrope_app::data::favorites::FavoritesManager;
@@ -261,6 +261,7 @@ fn main() {
         state.match_volume = settings.match_volume;
         state.level_target = LevelTarget::parse(&settings.match_level).unwrap_or_default();
         state.hiss = HissLevel::parse(&settings.hiss_reducer).unwrap_or_default();
+        state.crackle = CrackleLevel::parse(&settings.crackle_filter).unwrap_or_default();
         state.hum_filter = settings.hum_filter;
         state.rumble_filter = settings.rumble_filter;
         state.smooth_switching = settings.smooth_switching;

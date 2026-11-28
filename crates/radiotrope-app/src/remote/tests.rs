@@ -409,6 +409,7 @@ fn fake_controller(commands: Receiver<AppCommand>, state: Arc<Mutex<AppSnapshot>
                 AppCommand::SetMatchVolume(on) => state.lock().unwrap().match_volume = on,
                 AppCommand::SetLevelTarget(target) => state.lock().unwrap().level_target = target,
                 AppCommand::SetHissReducer(level) => state.lock().unwrap().hiss = level,
+                AppCommand::SetCrackleFilter(level) => state.lock().unwrap().crackle = level,
                 AppCommand::SetHumFilter(on) => state.lock().unwrap().hum_filter = on,
                 AppCommand::SetRumbleFilter(on) => state.lock().unwrap().rumble_filter = on,
                 AppCommand::SetSmoothSwitching(on) => state.lock().unwrap().smooth_switching = on,
@@ -1087,6 +1088,7 @@ async fn a_phone_sets_the_filters() {
     assert_eq!(filters["level"], "normal");
     assert_eq!(filters.get("clip_guard"), None, "gone");
     assert_eq!(filters["hiss_reducer"], "off");
+    assert_eq!(filters["crackle_filter"], "off");
     assert_eq!(filters["hum_filter"], true);
     assert_eq!(filters["rumble_filter"], true);
     assert_eq!(filters["smooth_switching"], true);
@@ -1104,6 +1106,7 @@ async fn a_phone_sets_the_filters() {
                 "leveler": false,
                 "level": "loud",
                 "hiss_reducer": "strong",
+                "crackle_filter": "light",
                 "hum_filter": false,
                 "rumble_filter": false,
                 "smooth_switching": false
@@ -1121,6 +1124,7 @@ async fn a_phone_sets_the_filters() {
     assert_eq!(f["leveler"], false);
     assert_eq!(f["level"], "loud");
     assert_eq!(f["hiss_reducer"], "strong");
+    assert_eq!(f["crackle_filter"], "light");
     assert_eq!(f["hum_filter"], false);
     assert_eq!(f["rumble_filter"], false);
 
@@ -1128,6 +1132,7 @@ async fn a_phone_sets_the_filters() {
         json!({"level": "LOUD"}),
         json!({"rumble_filter": "yes"}),
         json!({"hiss_reducer": "medium"}),
+        json!({"crackle_filter": "heavy"}),
         json!({"hum_filter": 1}),
     ] {
         let (status, body) = player.request("PUT", "/v1/filters", t, Some(bad)).await;
