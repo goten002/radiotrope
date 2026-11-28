@@ -11,7 +11,7 @@ Play it yourself, from your phone, or let your AI assistant drive it over the
 
 - **Find stations**: typo-tolerant search by name, country, genre and language in the Radiotrope station directory, or play any stream address
 - **Plays almost anything**: MP3, AAC, HE-AAC, Vorbis, Opus and FLAC over Icecast/SHOUTcast, HLS and plain HTTP, with song titles from ICY and ID3
-- **Sounds right**: 10-band equalizer with 14 presets, volume leveler, hiss, hum and rumble filters
+- **Sounds right**: 10-band equalizer with 14 presets, volume leveler, hiss, crackle, hum and rumble filters
 - **Records**: MP3, Opus or WAV, by hand or on a schedule
 - **Wakes you, sends you to sleep**: Scheduler for plays, recordings and stops, plus a sleep timer
 - **AI agents**: 19 MCP tools, shared by every agent on your computer or your network
@@ -389,7 +389,7 @@ opening another player.
 | Play a stream by its address (stream, PLS, M3U or HLS) | **Open > Network Stream** |
 | Save, reorder and edit favorites | the star on the playing station; drag rows by their logo; right-click a row |
 | Move favorites between computers or phones | **Stations > Export / Import Favorites** (an import shows a preview first) |
-| Shape the sound | **Tools > Equalizer** and **Tools > Filters** (volume leveler, hiss reducer, hum and rumble filters, smooth switching) |
+| Shape the sound | **Tools > Equalizer** and **Tools > Filters** (volume leveler, hiss reducer, crackle, hum and rumble filters, smooth switching) |
 | Record the station playing | **Tools > Start Recording**; **Tools > Recordings > Settings** for format, bitrate and folder |
 | Start, record or stop at set times | **Tools > Scheduler** (once or weekly, with fade-in and an alarm fallback) |
 | Stop after a while | **Tools > Sleep Timer** |

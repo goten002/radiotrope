@@ -788,6 +788,12 @@ const SHOTS: &[Shot] = &[
         "Volume Leveler information bubble.",
     ),
     Shot::new(
+        "filters-crackle-info",
+        "filters",
+        "crackle-info",
+        "Crackle Filter information bubble.",
+    ),
+    Shot::new(
         "recording-settings",
         "recording",
         "",
@@ -1567,6 +1573,7 @@ fn seed(ui: &App) {
     ui.set_eq_band8(1.0);
     show_eq_presets(ui);
     ui.set_hiss_reducer("light".into());
+    ui.set_crackle_filter("strong".into());
     ui.set_recording_folder("/home/radio/Music/Radiotrope".into());
     ui.set_recording_default_folder(ui.get_recording_folder());
     ui.set_recording_format("mp3".into());

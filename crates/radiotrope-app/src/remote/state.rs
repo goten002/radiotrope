@@ -142,6 +142,8 @@ pub struct FiltersState {
     pub level: &'static str,
     /// The Hiss Reducer: "off", "light" or "strong"
     pub hiss_reducer: &'static str,
+    /// The Crackle Filter: "off", "light" or "strong"
+    pub crackle_filter: &'static str,
     pub hum_filter: bool,
     /// The mains hum (50 or 60 Hz) the Hum Filter is taking out of the
     /// station playing now; none when it hears none
@@ -162,6 +164,7 @@ impl FiltersState {
             leveler: s.match_volume,
             level: s.level_target.as_str(),
             hiss_reducer: s.hiss.as_str(),
+            crackle_filter: s.crackle.as_str(),
             hum_filter: s.hum_filter,
             hum_hz: s.hum.as_ref().filter(|_| s.hum_filter).and_then(|h| h.hz()),
             rumble_filter: s.rumble_filter,

@@ -64,16 +64,19 @@ component Line inherits Rectangle {
 }
 
 // The filters, each with its own switch; the Volume Leveler has its levels
-// and Off, the Hiss Reducer its strengths and Off. What the leveler does to
+// and Off, the Hiss Reducer and the Crackle Filter their strengths and Off. What the leveler does to
 // the station playing shows after its channels in the header.
 export component FiltersDialog inherits Rectangle {
     in-out property <bool> show-dialog: false;
     in-out property <bool> show-leveler-info;
+    in-out property <bool> show-crackle-info;
     in-out property <bool> leveler-on: true;
     // "quiet", "normal" or "loud"
     in-out property <string> level-target: "normal";
     // "off", "light" or "strong"
     in-out property <string> hiss-reducer: "off";
+    // "off", "light" or "strong"
+    in-out property <string> crackle-filter: "off";
     in-out property <bool> hum-filter: true;
     in-out property <bool> rumble-filter: true;
     in-out property <bool> smooth-switching: true;
@@ -81,6 +84,7 @@ export component FiltersDialog inherits Rectangle {
     callback leveler-toggled(bool);
     callback level-target-changed(string);
     callback hiss-reducer-changed(string);
+    callback crackle-filter-changed(string);
     callback hum-filter-toggled(bool);
     callback rumble-filter-toggled(bool);
     callback smooth-switching-toggled(bool);
@@ -154,6 +158,25 @@ export component FiltersDialog inherits Rectangle {
                     ];
                     selected <=> root.hiss-reducer;
                     changed(id) => { root.hiss-reducer-changed(id); }
+                }
+            }
+            Line { }
+            FilterRow {
+                popup-bounds: shell.popup-bounds;
+                name: "Crackle Filter";
+                info: "Removes clicks and crackle from old records, such as 78 rpm and vinyl stations. Strong catches more but can soften drums.";
+                show-info: root.show-crackle-info;
+                has-switch: false;
+
+                Picker {
+                    label: "Crackle Filter";
+                    choices: [
+                        { id: "off", label: "Off" },
+                        { id: "light", label: "Light" },
+                        { id: "strong", label: "Strong" },
+                    ];
+                    selected <=> root.crackle-filter;
+                    changed(id) => { root.crackle-filter-changed(id); }
                 }
             }
             Line { }

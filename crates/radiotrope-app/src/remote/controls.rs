@@ -5,7 +5,7 @@ use hyper::body::Incoming;
 use hyper::{Request, Response, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use radiotrope::audio::{HissLevel, LevelTarget, PRESETS};
+use radiotrope::audio::{CrackleLevel, HissLevel, LevelTarget, PRESETS};
 use radiotrope::config::eq::{FREQ_LABELS, MAX_GAIN_DB, MIN_GAIN_DB};
 use radiotrope_app::data::schedule::{self, Action, End, Entry, MAX_MINUTES};
 use radiotrope_app::data::settings::{parse_hex_rgb, RecordingFormat};
@@ -236,6 +236,8 @@ struct FiltersBody {
     #[serde(default)]
     hiss_reducer: Option<String>,
     #[serde(default)]
+    crackle_filter: Option<String>,
+    #[serde(default)]
     hum_filter: Option<bool>,
     #[serde(default)]
     rumble_filter: Option<bool>,
@@ -273,6 +275,18 @@ pub(super) async fn set_filters(shared: &Shared, request: Request<Incoming>) -> 
                     StatusCode::BAD_REQUEST,
                     "bad_request",
                     "hiss_reducer must be off, light or strong",
+                )
+            }
+        }
+    }
+    if let Some(level) = body.crackle_filter {
+        match CrackleLevel::parse(&level) {
+            Some(level) => commands.push(AppCommand::SetCrackleFilter(level)),
+            None => {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "bad_request",
+                    "crackle_filter must be off, light or strong",
                 )
             }
         }

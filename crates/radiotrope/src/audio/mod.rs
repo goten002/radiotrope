@@ -22,7 +22,7 @@ pub use dsp::equalizer::{
     find_preset, peak_boost_db, EqParams, EqPreset, EqSource, PresetGroup, SharedEqParams, PRESETS,
 };
 pub use dsp::sound::{
-    FilterSwitches, HissLevel, HumReadout, LevelPhase, LevelReadout, LevelTarget,
+    CrackleLevel, FilterSwitches, HissLevel, HumReadout, LevelPhase, LevelReadout, LevelTarget,
     SharedSoundParams, SoundParams,
 };
 pub use engine::{AudioEngine, EngineConfig, EngineOutput};

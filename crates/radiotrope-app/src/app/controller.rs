@@ -504,6 +504,15 @@ impl AppController {
                     .unwrap_or_else(|e| e.into_inner())
                     .hiss = level;
             }
+            AppCommand::SetCrackleFilter(level) => {
+                if let Some(engine) = &self.engine {
+                    engine.set_crackle(level);
+                }
+                self.shared_state
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .crackle = level;
+            }
             AppCommand::SetHumFilter(on) => {
                 if let Some(engine) = &self.engine {
                     engine.set_hum_filter(on);
@@ -1584,6 +1593,7 @@ mod tests {
                 match_volume: false,
                 match_level: "loud".into(),
                 hiss_reducer: "strong".into(),
+                crackle_filter: "light".into(),
                 hum_filter: false,
                 rumble_filter: false,
                 smooth_switching: false,
@@ -1596,6 +1606,7 @@ mod tests {
             assert!(!s.match_volume);
             assert_eq!(s.level_target, radiotrope::audio::LevelTarget::Loud);
             assert_eq!(s.hiss, radiotrope::audio::HissLevel::Strong);
+            assert_eq!(s.crackle, radiotrope::audio::CrackleLevel::Light);
             assert!(!s.hum_filter && !s.rumble_filter && !s.smooth_switching);
         }
 

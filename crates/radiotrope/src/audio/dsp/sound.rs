@@ -1,6 +1,6 @@
 //! Settings for the filters: the Volume Leveler (station volume matching),
-//! the Hiss Reducer's strength and the switches of the Hum Filter, the
-//! Rumble Filter and Smooth Switching. What the leveler is doing to the
+//! the Hiss Reducer's and the Crackle Filter's strengths and the switches
+//! of the Hum Filter, the Rumble Filter and Smooth Switching. What the leveler is doing to the
 //! station playing now is read back through [`LevelReadout`], and the hum
 //! the Hum Filter removes through [`HumReadout`].
 
@@ -92,11 +92,57 @@ impl HissLevel {
     }
 }
 
+/// How hard the Crackle Filter works
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum CrackleLevel {
+    #[default]
+    Off,
+    Light,
+    Strong,
+}
+
+impl CrackleLevel {
+    /// "off", "light" or "strong", as settings and the Remote API name it
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CrackleLevel::Off => "off",
+            CrackleLevel::Light => "light",
+            CrackleLevel::Strong => "strong",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(CrackleLevel::Off),
+            "light" => Some(CrackleLevel::Light),
+            "strong" => Some(CrackleLevel::Strong),
+            _ => None,
+        }
+    }
+
+    fn to_u8(self) -> u8 {
+        match self {
+            CrackleLevel::Off => 0,
+            CrackleLevel::Light => 1,
+            CrackleLevel::Strong => 2,
+        }
+    }
+
+    fn from_u8(v: u8) -> Self {
+        match v {
+            1 => CrackleLevel::Light,
+            2 => CrackleLevel::Strong,
+            _ => CrackleLevel::Off,
+        }
+    }
+}
+
 /// The filters' on/off switches, read without the lock by the sources and
 /// the engine
 #[derive(Debug)]
 pub struct FilterSwitches {
     hiss: AtomicU8,
+    crackle: AtomicU8,
     hum_filter: AtomicBool,
     rumble_filter: AtomicBool,
     smooth_switching: AtomicBool,
@@ -105,6 +151,10 @@ pub struct FilterSwitches {
 impl FilterSwitches {
     pub fn hiss(&self) -> HissLevel {
         HissLevel::from_u8(self.hiss.load(Ordering::Relaxed))
+    }
+
+    pub fn crackle(&self) -> CrackleLevel {
+        CrackleLevel::from_u8(self.crackle.load(Ordering::Relaxed))
     }
 
     pub fn hum_filter(&self) -> bool {
@@ -124,6 +174,7 @@ impl Default for FilterSwitches {
     fn default() -> Self {
         Self {
             hiss: AtomicU8::new(0),
+            crackle: AtomicU8::new(0),
             hum_filter: AtomicBool::new(true),
             rumble_filter: AtomicBool::new(true),
             smooth_switching: AtomicBool::new(true),
@@ -141,6 +192,7 @@ pub struct SoundParams {
     match_volume: bool,
     target: LevelTarget,
     hiss: HissLevel,
+    crackle: CrackleLevel,
     hum_filter: bool,
     rumble_filter: bool,
     smooth_switching: bool,
@@ -154,6 +206,7 @@ impl Default for SoundParams {
             match_volume: true,
             target: LevelTarget::Normal,
             hiss: HissLevel::Off,
+            crackle: CrackleLevel::Off,
             hum_filter: true,
             rumble_filter: true,
             smooth_switching: true,
@@ -178,6 +231,10 @@ impl SoundParams {
 
     pub fn hiss(&self) -> HissLevel {
         self.hiss
+    }
+
+    pub fn crackle(&self) -> CrackleLevel {
+        self.crackle
     }
 
     pub fn hum_filter(&self) -> bool {
@@ -223,6 +280,14 @@ impl SoundParams {
     pub fn set_hiss(&mut self, level: HissLevel) {
         self.hiss = level;
         self.switches.hiss.store(level.to_u8(), Ordering::Relaxed);
+        self.changed();
+    }
+
+    pub fn set_crackle(&mut self, level: CrackleLevel) {
+        self.crackle = level;
+        self.switches
+            .crackle
+            .store(level.to_u8(), Ordering::Relaxed);
         self.changed();
     }
 
@@ -390,6 +455,12 @@ mod tests {
         let s = p.switches();
         assert!(s.hum_filter() && s.rumble_filter() && s.smooth_switching());
         assert_eq!(s.hiss(), HissLevel::Off);
+        assert_eq!(
+            p.crackle(),
+            CrackleLevel::Off,
+            "it can soften a modern master's drums: off at first"
+        );
+        assert_eq!(s.crackle(), CrackleLevel::Off);
     }
 
     #[test]
@@ -401,6 +472,10 @@ mod tests {
         for h in [HissLevel::Off, HissLevel::Light, HissLevel::Strong] {
             assert_eq!(HissLevel::parse(h.as_str()), Some(h));
         }
+        for c in [CrackleLevel::Off, CrackleLevel::Light, CrackleLevel::Strong] {
+            assert_eq!(CrackleLevel::parse(c.as_str()), Some(c));
+        }
+        assert_eq!(CrackleLevel::parse("medium"), None);
     }
 
     #[test]
@@ -411,8 +486,10 @@ mod tests {
         p.set_smooth_switching(false);
         p.set_hum_filter(false);
         p.set_hiss(HissLevel::Strong);
+        p.set_crackle(CrackleLevel::Light);
         assert!(!s.rumble_filter() && !s.smooth_switching() && !s.hum_filter());
         assert_eq!(s.hiss(), HissLevel::Strong);
+        assert_eq!(s.crackle(), CrackleLevel::Light);
     }
 
     #[test]
@@ -425,7 +502,8 @@ mod tests {
         p.set_smooth_switching(false);
         p.set_hum_filter(false);
         p.set_hiss(HissLevel::Light);
-        assert_eq!(p.generation(), g + 6);
+        p.set_crackle(CrackleLevel::Strong);
+        assert_eq!(p.generation(), g + 7);
     }
 
     #[test]

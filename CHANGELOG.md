@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - `radiotrope-probe`, a station checker for people and schedulers: it listens to a station for a few seconds and reports whether it is on air, its codec and format, its sound level and what is playing, as text or JSON, with monitoring-style exit codes. It is a separate download from the releases page (Linux x86_64 and aarch64, Windows x64 and ARM64), not part of any package or installer.
 - AI agents over MCP: one shared player for every local agent, 19 tools (play, search, favorites, volume, recording, timer, scheduler, status), an Agents dialog with setup lines for Claude Code, Claude Desktop, Cursor and Codex, and optional network access with a token.
 - Recording of the playing station to MP3, Opus or WAV, with or without the equalizer.
+- Crackle Filter in Tools > Filters (Off, Light or Strong; Off by default): takes clicks and crackle out of old records on 78 rpm and vinyl stations. Light only takes clicks no music makes and leaves modern music alone; Strong also takes the fine crackle and can soften drums. Phones set it through the Remote API (`crackle_filter`).
 - Song titles from ID3v1/ID3v2 tags in MP3, AAC and HLS streams when ICY gives none.
 - Equalizer presets in groups, with an automatic preamp and new 40 Hz and 12 kHz shelves.
 - "AAC+" label for HE-AAC stations.

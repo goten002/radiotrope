@@ -10,8 +10,8 @@ use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use radiotrope::audio::{
-    HissLevel, HumReadout, LevelReadout, LevelTarget, Listen, PlaybackState, RecordingFormat,
-    SharedStats,
+    CrackleLevel, HissLevel, HumReadout, LevelReadout, LevelTarget, Listen, PlaybackState,
+    RecordingFormat, SharedStats,
 };
 use radiotrope_app::data::schedule::{Action, Entry, LastRun};
 use radiotrope_app::data::settings::Settings;
@@ -70,6 +70,7 @@ pub enum AppCommand {
     SetMatchVolume(bool),
     SetLevelTarget(LevelTarget),
     SetHissReducer(HissLevel),
+    SetCrackleFilter(CrackleLevel),
     SetHumFilter(bool),
     SetRumbleFilter(bool),
     SetSmoothSwitching(bool),
@@ -153,6 +154,9 @@ impl AppCommand {
             AppCommand::SetHissReducer(
                 HissLevel::parse(&settings.hiss_reducer).unwrap_or_default(),
             ),
+            AppCommand::SetCrackleFilter(
+                CrackleLevel::parse(&settings.crackle_filter).unwrap_or_default(),
+            ),
             AppCommand::SetHumFilter(settings.hum_filter),
             AppCommand::SetRumbleFilter(settings.rumble_filter),
             AppCommand::SetSmoothSwitching(settings.smooth_switching),
@@ -225,6 +229,7 @@ pub struct AppSnapshot {
     pub match_volume: bool,
     pub level_target: LevelTarget,
     pub hiss: HissLevel,
+    pub crackle: CrackleLevel,
     pub hum_filter: bool,
     pub rumble_filter: bool,
     pub smooth_switching: bool,
@@ -543,6 +548,7 @@ impl Default for AppSnapshot {
             match_volume: true,
             level_target: LevelTarget::default(),
             hiss: HissLevel::Off,
+            crackle: CrackleLevel::Off,
             hum_filter: true,
             rumble_filter: true,
             smooth_switching: true,
