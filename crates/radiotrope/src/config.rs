@@ -314,26 +314,58 @@ pub mod sound {
     /// (ms), so a stream's DC offset doesn't step in or out with a thump
     pub const RUMBLE_FADE_MS: f32 = 50.0;
 
-    /// How long the Hum Filter listens before each decision (ms)
-    pub const HUM_CHECK_MS: u32 = 1000;
-    /// How far a hum line stands above the sound beside it (dB)
-    pub const HUM_ABOVE_DB: f32 = 12.0;
-    /// Hz beside each line the Hum Filter compares it with
-    pub const HUM_BESIDE_HZ: f32 = 8.0;
-    /// The hum and harmonics it looks at, and removes
-    pub const HUM_HARMONICS: usize = 6;
-    /// Lines (of [`HUM_HARMONICS`]) that make it hum
-    pub const HUM_MIN_LINES: usize = 3;
-    /// Checks in a row with hum before it is removed
-    pub const HUM_FOUND_CHECKS: u32 = 6;
-    /// Checks in a row without it before removing stops
-    pub const HUM_GONE_CHECKS: u32 = 10;
+    /// How much sound the Hum Filter judges at once (s): enough to tell
+    /// lines 0.25 Hz apart
+    pub const HUM_WINDOW_SECS: f64 = 4.0;
+    /// How often it decides (ms)
+    pub const HUM_CHECK_MS: u32 = 500;
+    /// How far from 50 or 60 Hz it looks for hum (Hz): a record or tape
+    /// transferred a little off speed moves its hum by as much
+    pub const HUM_SEARCH_HZ: f64 = 1.0;
+    /// Hum this close to 50 or 60 Hz is mains as it is (Hz); further off
+    /// needs the longer proof below
+    pub const HUM_NEAR_HZ: f64 = 0.5;
+    /// How far the fundamental or the 2nd harmonic stands above the sound
+    /// [`HUM_BESIDE_HZ`] beside it before it may be hum (dB)
+    pub const HUM_FOUND_DB: f64 = 10.0;
+    /// While hum is being removed, it is still there above this (dB)
+    pub const HUM_HOLD_DB: f64 = 7.0;
+    /// Hz either side of a line it compares it with
+    pub const HUM_BESIDE_HZ: [f64; 2] = [4.0, 6.0];
+    /// Checks in a row, pitch steady to [`HUM_NEAR_STEADY_HZ`], before hum
+    /// near 50 or 60 Hz is removed (3 s)
+    pub const HUM_NEAR_CHECKS: u32 = 6;
+    pub const HUM_NEAR_STEADY_HZ: f64 = 0.15;
+    /// The same for hum further off (8 s, steady to [`HUM_FAR_STEADY_HZ`]
+    /// and in level to [`HUM_FAR_LEVEL_DB`]): a held bass note is neither
+    pub const HUM_FAR_CHECKS: u32 = 16;
+    pub const HUM_FAR_STEADY_HZ: f64 = 0.05;
+    pub const HUM_FAR_LEVEL_DB: f64 = 3.0;
+    /// Once found, how far it looks for the hum each check (Hz)...
+    pub const HUM_TRACK_HZ: f64 = 0.3;
+    /// ...and the most it moves (Hz): ten times faster than mains drifts,
+    /// slower than a note passing by
+    pub const HUM_TRACK_STEP_HZ: f64 = 0.05;
+    /// Checks in a row without the hum before removing stops (4 s)
+    pub const HUM_GONE_CHECKS: u32 = 8;
+    /// A harmonic is notched while it stands this far above the sound
+    /// beside it (dB)...
+    pub const HUM_LINE_DB: f64 = 8.0;
+    /// ...and for this many checks after (2 s), so a note passing over it
+    /// doesn't switch its notch on and off
+    pub const HUM_LINE_HOLD_CHECKS: i32 = 4;
+    /// The most harmonics notched, and the highest (Hz): rectifier buzz is
+    /// rich, but there is little hum above that
+    pub const HUM_HARMONICS: usize = 20;
+    pub const HUM_MAX_HZ: f64 = 1200.0;
     /// Quietest hum worth removing (amplitude, about -80 dBFS)
-    pub const HUM_MIN_LEVEL: f32 = 1e-4;
-    /// Width of each notch (Hz)
-    pub const HUM_NOTCH_HZ: f64 = 3.0;
-    /// The notches fade in and out over this long (ms)
-    pub const HUM_FADE_MS: f32 = 1000.0;
+    pub const HUM_MIN_LEVEL: f64 = 1e-4;
+    /// Width of each notch (Hz): the first two wider, as a little drift
+    /// moves them least but they carry the most hum
+    pub const HUM_NOTCH_HZ: f64 = 2.0;
+    pub const HUM_LOW_NOTCH_HZ: f64 = 3.0;
+    /// Each notch fades in and out over this long (ms)
+    pub const HUM_FADE_MS: f32 = 500.0;
 
     /// The Hiss Reducer leaves the sound below this alone (Hz)...
     pub const HISS_FROM_HZ: f32 = 1000.0;

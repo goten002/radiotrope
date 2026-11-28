@@ -50,6 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org).
 - The audio output closes while stopped, follows the default device, and reopens after a device is lost.
 - Lower idle cost: fewer redraws and timer wake-ups while playing and stopped.
 - Messages about the audio device and reconnects go through the standard `log` crate instead of straight to stderr. The player, the CLI and the probe print warnings and notices as before; set `RUST_LOG` (for example `RUST_LOG=radiotrope=debug`) to see more or fewer. The probe shows only warnings by default, and programs using the engine as a library choose for themselves.
+- The Hum Filter finds hum where it really is, within 1 Hz of 50 or 60 Hz (old records transferred off speed carry it at 49.25 or 50.22 Hz), follows it as it drifts, and removes every harmonic that stands out, so it now catches hum under speech, a rich buzz, and hum on 78 rpm stations. Hum away from 50/60 Hz takes about 12 s to be removed. Statistics shows its frequency to a tenth ("49.3 Hz"), and the Remote API's `hum_hz` is now that number.
 
 ### Removed
 - Stations > Undo Favorites Import. The import dialog already shows what an import will do before it changes anything. Phones can still undo an import they sent.

@@ -61,6 +61,13 @@ impl Biquad64 {
         self.y[0]
     }
 
+    /// Take `to`'s coefficients but keep this filter's past samples, so a
+    /// filter moved a little while it runs doesn't click
+    pub(crate) fn retune(&mut self, to: &Self) {
+        self.b = to.b;
+        self.a = to.a;
+    }
+
     pub(crate) fn reset(&mut self) {
         self.x = [0.0; 2];
         self.y = [0.0; 2];

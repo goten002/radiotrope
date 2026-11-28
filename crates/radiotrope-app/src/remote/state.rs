@@ -145,9 +145,10 @@ pub struct FiltersState {
     /// The Crackle Filter: "off", "light" or "strong"
     pub crackle_filter: &'static str,
     pub hum_filter: bool,
-    /// The mains hum (50 or 60 Hz) the Hum Filter is taking out of the
-    /// station playing now; none when it hears none
-    pub hum_hz: Option<u32>,
+    /// The hum the Hum Filter is taking out of the station playing now,
+    /// in Hz to a tenth (near 50 or 60: where it really is, as on an old
+    /// record transferred off speed); none when it hears none
+    pub hum_hz: Option<f32>,
     pub rumble_filter: bool,
     pub smooth_switching: bool,
     /// What the leveler does to the station playing now, in dB to half a
@@ -166,7 +167,14 @@ impl FiltersState {
             hiss_reducer: s.hiss.as_str(),
             crackle_filter: s.crackle.as_str(),
             hum_filter: s.hum_filter,
-            hum_hz: s.hum.as_ref().filter(|_| s.hum_filter).and_then(|h| h.hz()),
+            // To a tenth, so following the hum's drift doesn't send an
+            // event every check
+            hum_hz: s
+                .hum
+                .as_ref()
+                .filter(|_| s.hum_filter)
+                .and_then(|h| h.hz())
+                .map(|hz| (hz * 10.0).round() / 10.0),
             rumble_filter: s.rumble_filter,
             smooth_switching: s.smooth_switching,
             // To half a dB, so the gain gliding doesn't send an event for

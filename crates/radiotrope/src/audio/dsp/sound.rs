@@ -406,7 +406,7 @@ impl LevelReadout {
 pub struct HumReadout {
     /// The station allowed to write (see [`LevelReadout`])
     owner: AtomicU64,
-    /// The hum's frequency in Hz, 0 for none
+    /// The hum's frequency in Hz (the bits of an `f32`), 0 for none
     hz: AtomicU32,
 }
 
@@ -415,18 +415,19 @@ impl HumReadout {
         Arc::new(Self::default())
     }
 
-    /// 50 or 60 while hum is being removed
-    pub fn hz(&self) -> Option<u32> {
-        Some(self.hz.load(Ordering::Relaxed)).filter(|&hz| hz > 0)
+    /// The hum being removed, in Hz: near 50 or 60, where it really is
+    pub fn hz(&self) -> Option<f32> {
+        Some(f32::from_bits(self.hz.load(Ordering::Relaxed))).filter(|&hz| hz > 0.0)
     }
 
     pub(crate) fn claim(&self) -> u64 {
         self.owner.fetch_add(1, Ordering::AcqRel) + 1
     }
 
-    pub(crate) fn set_if(&self, owner: u64, hz: Option<u32>) {
+    pub(crate) fn set_if(&self, owner: u64, hz: Option<f32>) {
         if self.owner.load(Ordering::Acquire) == owner {
-            self.hz.store(hz.unwrap_or(0), Ordering::Relaxed);
+            self.hz
+                .store(hz.unwrap_or(0.0).to_bits(), Ordering::Relaxed);
         }
     }
 
