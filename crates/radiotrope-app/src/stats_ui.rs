@@ -222,10 +222,12 @@ fn leveler_text(on: bool, readout: Option<(LevelPhase, f32)>) -> String {
 /// The Statistics dialog's "Hum filter": the mains frequency the Hum
 /// Filter is taking out ("50 Hz", "60 Hz"), "Listening" while it is on
 /// and hears no hum, or "Off"
-fn hum_text(filter_on: bool, hz: Option<u32>) -> String {
+fn hum_text(filter_on: bool, hz: Option<f32>) -> String {
     match (filter_on, hz) {
         (false, _) => "Off".into(),
-        (true, Some(hz)) => format!("{hz} Hz"),
+        // To a tenth: hum off mains (an old record transferred a little
+        // off speed) is worth seeing as such
+        (true, Some(hz)) => format!("{hz:.1} Hz"),
         (true, None) => "Listening".into(),
     }
 }
@@ -368,9 +370,10 @@ mod tests {
 
     #[test]
     fn hum_reads_off_listening_or_the_mains_frequency() {
-        assert_eq!(hum_text(false, Some(50)), "Off");
+        assert_eq!(hum_text(false, Some(50.0)), "Off");
         assert_eq!(hum_text(true, None), "Listening");
-        assert_eq!(hum_text(true, Some(50)), "50 Hz");
-        assert_eq!(hum_text(true, Some(60)), "60 Hz");
+        assert_eq!(hum_text(true, Some(50.0)), "50.0 Hz");
+        assert_eq!(hum_text(true, Some(60.02)), "60.0 Hz");
+        assert_eq!(hum_text(true, Some(49.27)), "49.3 Hz");
     }
 }
