@@ -37,9 +37,22 @@ use radiotrope_app::data::remote::random_hex;
 
 use super::server::{error, json, no_content, read_json, Body, Shared};
 
-/// How many packets back each redundant copy in a RED packet reaches:
-/// the previous one and the one before that
-const RED_DISTANCES: [u32; 2] = [1, 2];
+/// How many packets back each redundant copy in a RED packet reaches: the
+/// previous one, and the third before. Wi-Fi loses packets in runs; with
+/// copies 1 and 2 back a run of three loses its first packet for good, while
+/// with 1 and 3 back the two packets after the run hold all three, for the
+/// same bytes. (Measured with bursty loss at 160 kbps: 0.6 % of the sound
+/// made up with [1, 2], 0.2 % with [1, 3].)
+const RED_DISTANCES: [u32; 2] = [1, 3];
+
+/// Largest UDP packet sent, in bytes. str0m's default (1150) leaves room for
+/// only one copy at 160 kbps (packets of about 400 bytes; three of them and
+/// the headers come to about 1210), so the second copy was left out of
+/// nearly every packet. 1400 fits both, and still fits the 1500 bytes of an
+/// Ethernet or Wi-Fi frame with the IP and UDP headers. A phone that
+/// reaches the player through a VPN on the local network could see such
+/// packets split; listening is meant for the home network.
+const MTU: usize = 1400;
 
 /// Payload type the player offers Opus on (the usual one; the phone's
 /// offer decides the real one)
@@ -119,17 +132,7 @@ pub(super) async fn offer(
     let Ok(local_addr) = socket.local_addr() else {
         return failed("Can't open a port for the sound");
     };
-    // Opus with RED (RFC 2198): each packet also carries the two before it,
-    // so a phone whose Wi-Fi drops a packet here and there rebuilds the sound
-    // without asking for it again or waiting. Three times the audio bytes
-    // (about 390 kbit/s), nothing on a local network. A phone that doesn't
-    // offer RED gets plain Opus. The decoder is stereo either way (opus/48000/2).
-    let config = RtcConfig::new()
-        .set_ice_lite(true)
-        .clear_codecs()
-        .enable_opus(true, true)
-        .set_red_distances(&RED_DISTANCES);
-    let mut rtc = config.build(Instant::now());
+    let mut rtc = rtc_config().build(Instant::now());
     let Ok(candidate) = Candidate::host(local_addr, "udp") else {
         return failed("Can't open a port for the sound");
     };
@@ -243,12 +246,28 @@ fn bind(local: IpAddr) -> std::io::Result<UdpSocket> {
     UdpSocket::bind(SocketAddr::new(local, 0))
 }
 
+/// How a call is set up. Opus with RED (RFC 2198): each packet also
+/// carries copies of earlier ones (see [`RED_DISTANCES`]), so a phone whose
+/// Wi-Fi drops a packet here and there rebuilds the sound without asking for
+/// it again or waiting. Three times the audio bytes (about 490 kbit/s at
+/// 160 kbps), nothing on a local network. A phone that doesn't offer RED
+/// gets plain Opus. The decoder is stereo either way (opus/48000/2).
+fn rtc_config() -> RtcConfig {
+    RtcConfig::new()
+        .set_ice_lite(true)
+        .clear_codecs()
+        .enable_opus(true, true)
+        .set_red_distances(&RED_DISTANCES)
+        .set_mtu(MTU..=MTU)
+}
+
 /// How the sound goes to the phone, for the log once a call plays
 fn redundancy(name: &str, opus: Option<&PayloadParams>) -> String {
     match opus.and_then(|p| p.red()) {
         Some(_) => format!(
-            "{name} gets Opus with RED: each packet repeats the {} before it",
-            RED_DISTANCES.len()
+            "{name} gets Opus with RED: each packet also carries copies of the packets {} \
+             before it",
+            RED_DISTANCES.map(|d| d.to_string()).join(" and ")
         ),
         None => format!("{name} gets plain Opus: the phone didn't offer RED (redundancy)"),
     }
@@ -652,6 +671,18 @@ mod tests {
         // An answer with nothing refused stays as it is
         let plain = "v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=mid:0\r\n";
         assert_eq!(fill_refused(plain, offer), plain);
+    }
+
+    #[test]
+    fn calls_send_two_copies_in_packets_big_enough_for_them() {
+        let mut config = rtc_config();
+        assert_eq!(config.mtu(), 1400);
+        assert_eq!(config.mtu_warn(), 1400);
+        assert_eq!(config.codec_config().red_distances(), [1, 3]);
+        assert_eq!(
+            redundancy("Pixel", None),
+            "Pixel gets plain Opus: the phone didn't offer RED (redundancy)"
+        );
     }
 
     #[test]

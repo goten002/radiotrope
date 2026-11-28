@@ -114,21 +114,15 @@ pub(super) struct OpusPackets {
 }
 
 impl OpusPackets {
-    /// `loss_percent` is the packet loss to expect: above 0, each packet
-    /// also carries a rougher copy of the one before (in-band FEC)
-    pub(super) fn new(channels: u16, kbps: u32, loss_percent: i32) -> Result<Self, String> {
+    /// No in-band FEC, and no packet loss set, on purpose. Opus FEC exists
+    /// only in its SILK and Hybrid (speech) modes, and music at these
+    /// bitrates is all CELT, so FEC added nothing. Worse, a packet loss of 9 %
+    /// or more (libopus 1.6, with SIGNAL_MUSIC) moves the encoder to Hybrid
+    /// to make FEC possible, and Hybrid music sounds far worse (measured on
+    /// a station: spectral distance 3.5 -> 15.6 dB). Lost packets are covered
+    /// by RED instead (copies of earlier packets, see `remote/webrtc.rs`).
+    pub(super) fn new(channels: u16, kbps: u32) -> Result<Self, String> {
         let encoder = Encoder::new(channels, kbps)?;
-        if loss_percent > 0 {
-            // SAFETY: a live encoder; these requests take one opus_int32.
-            unsafe {
-                ffi::opus_encoder_ctl(encoder.0, ffi::OPUS_SET_INBAND_FEC_REQUEST, 1i32);
-                ffi::opus_encoder_ctl(
-                    encoder.0,
-                    ffi::OPUS_SET_PACKET_LOSS_PERC_REQUEST,
-                    loss_percent.clamp(0, 100),
-                );
-            }
-        }
         Ok(Self {
             encoder,
             channels,

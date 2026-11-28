@@ -6,9 +6,16 @@
 //! hands each packet to every listener, so the format never changes,
 //! whatever the station plays or how often it switches. Only the bitrate
 //! follows the station (see [`listen_opus_kbps`]); Opus packets carry their
-//! own size, so a phone needs no notice. When no
-//! audio comes (stopped, buffering, switching station) the encoder fills in
-//! silence at the pace of the clock, so a phone's player never runs dry.
+//! own size, so a phone needs no notice.
+//!
+//! The stream never has holes. When no audio comes (stopped, buffering,
+//! switching station), silence takes over [`SILENCE_AFTER`] after the last
+//! packet would have finished playing, and goes on one packet at a time,
+//! every 20 ms, until the audio is back. A hole would cost far more than the
+//! time it lasts: the phone's jitter buffer (libwebrtc's NetEq) fills it
+//! with made-up sound (a buzzy, robotic fade), takes the hole for a bad
+//! network, grows from about 60 ms to about a second, and then stretches
+//! the music for many seconds to fill itself (a warble on long notes).
 //!
 //! When the player fades a station out (Smooth Switching), the stream
 //! fades it out too. The next station starts on the speakers while the
@@ -37,9 +44,6 @@ use super::opus::OpusPackets;
 use super::{TapPoint, QUEUE_BATCHES};
 use crate::config::sound::FADE_OUT_MS;
 
-/// Sample rate silence is filled in at
-const SILENCE_RATE: u32 = 44_100;
-
 /// Channels of the stream
 pub const LISTEN_CHANNELS: u16 = 2;
 
@@ -47,10 +51,13 @@ pub const LISTEN_CHANNELS: u16 = 2;
 /// sending `station_kbps`. Opus needs fewer bits than MP3 or AAC for the
 /// same sound, and the phone can't hear more than the station sends, so
 /// 160 kbps covers the best stations, and one we know nothing about.
+/// Low-bitrate stations get 128 too, not less: HE-AAC at 32 kbps still
+/// sounds full-band, and Opus at 96 kbps measured clearly further from it.
+/// Not more than 160: with RED each packet carries two earlier ones as well
+/// (see `remote/webrtc.rs`), and at 192 kbps or more they no longer fit.
 pub fn listen_opus_kbps(station_kbps: Option<u32>) -> u32 {
     match station_kbps {
-        Some(1..=64) => 96,
-        Some(65..=128) => 128,
+        Some(1..=128) => 128,
         Some(129..) | Some(0) | None => 160,
     }
 }
@@ -61,17 +68,18 @@ pub const LISTEN_OPUS_RATE: u32 = OpusPackets::RATE;
 /// Samples per channel in each Opus packet (20 ms)
 pub const LISTEN_OPUS_FRAME: usize = OpusPackets::FRAME;
 
-/// Packet loss the Opus encoder prepares for (Wi-Fi drops a few)
-const OPUS_LOSS_PERCENT: i32 = 5;
-
 /// Most listeners at once
 pub const MAX_LISTENERS: usize = 4;
 
-/// How long without audio before silence fills in
-const SILENCE_AFTER: Duration = Duration::from_millis(500);
+/// How long after the last packet has played silence takes over. Not at
+/// once: while a station plays, its audio comes in pieces of about 46 ms,
+/// and one that is a little late shouldn't be pushed back by silence. A
+/// wait this short the phone rides out without making anything up.
+const SILENCE_AFTER: Duration = Duration::from_millis(40);
 
-/// How often the encoder looks at the clock while no audio comes
-const IDLE_TICK: Duration = Duration::from_millis(100);
+/// How often the encoder looks at the clock while no audio comes (well
+/// within a packet, so silence is always queued before it is due)
+const IDLE_TICK: Duration = Duration::from_millis(10);
 
 /// How long one Opus packet plays
 const PACKET_TIME: Duration = Duration::from_millis(20);
@@ -406,19 +414,16 @@ struct Encoders {
 }
 
 impl Encoders {
-    /// Encode `samples` for the listeners. False once nobody can listen
-    /// any more (the [`Listen`] is gone).
+    /// Encode `samples` for the listeners of `shared`, as of `now`
     fn encode(
         &mut self,
-        shared: &Weak<ListenShared>,
+        shared: &ListenShared,
         pacer: &mut Pacer,
+        now: Instant,
         sample_rate: u32,
         channels: u16,
         samples: &[f32],
-    ) -> bool {
-        let Some(shared) = shared.upgrade() else {
-            return false;
-        };
+    ) {
         let listening = !shared
             .listeners
             .lock()
@@ -427,17 +432,17 @@ impl Encoders {
         if !listening {
             self.opus = None;
             pacer.clear();
-            return true;
+            return;
         }
         let kbps =
             listen_opus_kbps(Some(shared.station_kbps.load(Ordering::Relaxed)).filter(|&k| k > 0));
         if self.opus.is_none() {
-            match OpusPackets::new(LISTEN_CHANNELS, kbps, OPUS_LOSS_PERCENT) {
+            match OpusPackets::new(LISTEN_CHANNELS, kbps) {
                 Ok(encoder) => {
                     self.opus = Some(encoder);
                     self.kbps = kbps;
                 }
-                Err(e) => fail(&shared, &e),
+                Err(e) => fail(shared, &e),
             }
         }
         if let Some(encoder) = self.opus.as_mut() {
@@ -445,16 +450,14 @@ impl Encoders {
                 encoder.set_bitrate(kbps);
                 self.kbps = kbps;
             }
-            let now = Instant::now();
             let sent = encoder.encode(sample_rate, channels, samples, |packet| {
                 pacer.push(packet.into(), now)
             });
             if let Err(e) = sent {
                 self.opus = None;
-                fail(&shared, &e);
+                fail(shared, &e);
             }
         }
-        true
     }
 }
 
@@ -471,71 +474,120 @@ fn fail(shared: &ListenShared, error: &str) {
 /// Encode what comes in, and silence while nothing does, for the listeners
 /// of `shared`
 fn encoder_loop(shared: Weak<ListenShared>, rx: Receiver<EncoderMsg>) {
-    let mut encoders = Encoders::default();
-    let mut switch = Switch::default();
-    let mut pacer = Pacer::default();
-    let mut ready = Vec::new();
-    let mut last_audio = Instant::now();
-    // How far silence has been filled in since the last audio
-    let mut silence_until: Option<Instant> = None;
+    let mut stream = Stream::new(Instant::now());
     loop {
-        let wait = pacer
-            .wait(Instant::now())
-            .map_or(IDLE_TICK, |w| w.min(IDLE_TICK));
         let fading = || {
             shared
                 .upgrade()
                 .map_or(0, |s| s.fading.load(Ordering::SeqCst))
         };
-        match rx.recv_timeout(wait) {
-            Ok(EncoderMsg::Pcm(mut pcm)) => {
-                for x in &mut pcm.samples {
-                    *x = x.clamp(-1.0, 1.0);
-                }
-                switch.take(pcm, fading(), Instant::now(), &mut ready);
-            }
+        match rx.recv_timeout(stream.wait(Instant::now())) {
+            Ok(EncoderMsg::Pcm(pcm)) => stream.take(pcm, fading(), Instant::now()),
             Ok(EncoderMsg::Finish) | Err(RecvTimeoutError::Disconnected) => return,
             Err(RecvTimeoutError::Timeout) => {}
         }
-        switch.expire(fading(), Instant::now(), &mut ready);
-        for pcm in ready.drain(..) {
-            if !encoders.encode(
-                &shared,
-                &mut pacer,
-                pcm.sample_rate,
-                pcm.channels,
-                &pcm.samples,
-            ) {
-                return;
-            }
-            last_audio = Instant::now();
-            silence_until = None;
-        }
-
-        // Silence is due once the phone would run out: the audio has
-        // stopped coming, and what is paced has gone out
-        let now = Instant::now();
-        let quiet_since = pacer.runs_out().map_or(last_audio, |t| t.max(last_audio));
-        if pacer.is_empty()
-            && now.saturating_duration_since(quiet_since) >= SILENCE_AFTER
-            && !switch.holding()
-        {
-            let from = silence_until.unwrap_or(quiet_since);
-            let frames = (now.duration_since(from).as_secs_f64() * f64::from(SILENCE_RATE)) as u64;
-            if frames > 0 {
-                let silence = vec![0.0f32; frames as usize * usize::from(LISTEN_CHANNELS)];
-                if !encoders.encode(&shared, &mut pacer, SILENCE_RATE, LISTEN_CHANNELS, &silence) {
-                    return;
-                }
-                silence_until =
-                    Some(from + Duration::from_secs_f64(frames as f64 / f64::from(SILENCE_RATE)));
-            }
-        }
-
         let Some(listening) = shared.upgrade() else {
             return;
         };
-        pacer.send_due(Instant::now(), |packet| broadcast(&listening, packet));
+        let fading = listening.fading.load(Ordering::SeqCst);
+        stream.run(&listening, fading, Instant::now(), |packet| {
+            broadcast(&listening, packet)
+        });
+    }
+}
+
+/// The stream the encoder thread makes: the stations' audio in order,
+/// silence in between, at the pace it plays. Takes the time from its
+/// caller, so tests can run it on a clock of their own.
+struct Stream {
+    encoders: Encoders,
+    switch: Switch,
+    pacer: Pacer,
+    /// Audio the switch let through, to encode
+    ready: Vec<Pcm>,
+    /// When audio was last encoded
+    last_audio: Instant,
+    /// Whether silence has taken over since
+    silent: bool,
+    /// 20 ms of silence at 48 kHz (no resampling, so no delay)
+    silence: Vec<f32>,
+}
+
+impl Stream {
+    fn new(now: Instant) -> Self {
+        Self {
+            encoders: Encoders::default(),
+            switch: Switch::default(),
+            pacer: Pacer::default(),
+            ready: Vec::new(),
+            last_audio: now,
+            silent: false,
+            silence: vec![0.0; LISTEN_OPUS_FRAME * usize::from(LISTEN_CHANNELS)],
+        }
+    }
+
+    /// How long to wait for audio before [`Self::run`] is due again
+    fn wait(&self, now: Instant) -> Duration {
+        self.pacer.wait(now).map_or(IDLE_TICK, |w| w.min(IDLE_TICK))
+    }
+
+    /// A piece of audio from a tap, while station `fading` fades out (0
+    /// for none)
+    fn take(&mut self, mut pcm: Pcm, fading: u64, now: Instant) {
+        for x in &mut pcm.samples {
+            *x = x.clamp(-1.0, 1.0);
+        }
+        self.switch.take(pcm, fading, now, &mut self.ready);
+    }
+
+    /// Encode what is ready, or silence if it is due, and `send` the
+    /// packets due by `now`
+    fn run(&mut self, shared: &ListenShared, fading: u64, now: Instant, send: impl FnMut(&[u8])) {
+        self.switch.expire(fading, now, &mut self.ready);
+        for pcm in self.ready.drain(..) {
+            self.encoders.encode(
+                shared,
+                &mut self.pacer,
+                now,
+                pcm.sample_rate,
+                pcm.channels,
+                &pcm.samples,
+            );
+            self.last_audio = now;
+            self.silent = false;
+        }
+        if self.silence_due(now) {
+            // One packet at a time, queued while the last one plays: the
+            // pacer sends it when that one is over
+            self.encoders.encode(
+                shared,
+                &mut self.pacer,
+                now,
+                LISTEN_OPUS_RATE,
+                LISTEN_CHANNELS,
+                &self.silence,
+            );
+            self.silent = true;
+        }
+        self.pacer.send_due(now, send);
+    }
+
+    /// Whether silence is due: nothing is left to send, and the audio
+    /// stopped coming (or silence has taken over already). Also while the
+    /// next station waits for the last one's fade: if the fading one has
+    /// stopped sending, nothing else would fill the wait.
+    fn silence_due(&self, now: Instant) -> bool {
+        if !self.pacer.is_empty() {
+            return false;
+        }
+        if self.silent {
+            return true;
+        }
+        let quiet_since = self
+            .pacer
+            .runs_out()
+            .map_or(self.last_audio, |t| t.max(self.last_audio));
+        now.saturating_duration_since(quiet_since) >= SILENCE_AFTER
     }
 }
 
@@ -592,7 +644,8 @@ impl Switch {
         self.waiting_since = None;
     }
 
-    /// Whether audio is waiting (so no silence is due)
+    /// Whether the next station's audio is waiting for the fade
+    #[cfg(test)]
     fn holding(&self) -> bool {
         !self.waiting.is_empty()
     }
@@ -761,10 +814,13 @@ mod tests {
 
     #[test]
     fn the_bitrate_follows_the_station() {
-        assert_eq!(listen_opus_kbps(Some(32)), 96);
-        assert_eq!(listen_opus_kbps(Some(64)), 96);
+        // Never below 128, never above 160
+        assert_eq!(listen_opus_kbps(Some(1)), 128);
+        assert_eq!(listen_opus_kbps(Some(32)), 128);
+        assert_eq!(listen_opus_kbps(Some(64)), 128);
         assert_eq!(listen_opus_kbps(Some(96)), 128);
         assert_eq!(listen_opus_kbps(Some(128)), 128);
+        assert_eq!(listen_opus_kbps(Some(129)), 160);
         assert_eq!(listen_opus_kbps(Some(192)), 160);
         assert_eq!(listen_opus_kbps(Some(320)), 160);
         assert_eq!(listen_opus_kbps(Some(0)), 160);
@@ -803,13 +859,13 @@ mod tests {
             got[10..].iter().map(|p| p.len()).sum::<usize>() / 40
         };
         let low = sizes(Some(64));
-        let mid = sizes(Some(128));
         let high = sizes(Some(320));
-        // 20 ms packets: 96 kbps is 240 bytes, 128 is 320, 160 is 400
-        assert!((180..=290).contains(&low), "96 kbps: {low} bytes");
+        let mid = sizes(Some(128));
+        // 20 ms packets: 128 kbps is 320 bytes, 160 is 400
+        assert!((260..=370).contains(&low), "128 kbps: {low} bytes");
         assert!((260..=370).contains(&mid), "128 kbps: {mid} bytes");
         assert!((340..=480).contains(&high), "160 kbps: {high} bytes");
-        assert!(low < mid && mid < high, "{low} {mid} {high}");
+        assert!(low < high && mid < high, "{low} {mid} {high}");
     }
 
     #[test]
@@ -1025,5 +1081,216 @@ mod tests {
         pacer.send_due(start, |_| count += 1);
         assert_eq!(count, 20);
         assert_eq!(pacer.queue.len(), MOST_PACED);
+    }
+
+    /// A [`Stream`] run on a clock of its own, the way `encoder_loop` runs
+    /// it, noting when each packet goes out and how big it is
+    struct Sim {
+        listen: Listen,
+        _phone: Receiver<Arc<[u8]>>,
+        stream: Stream,
+        start: Instant,
+        now: Instant,
+        /// The station fading out, 0 for none
+        fading: u64,
+        sent: Vec<(Duration, usize)>,
+    }
+
+    /// Frames in each piece a tap hands over (about 46 ms at 44.1 kHz)
+    const BATCH: usize = 2048;
+
+    impl Sim {
+        fn new() -> Self {
+            let listen = Listen::new();
+            let (tx, rx) = bounded(LISTENER_QUEUE);
+            listen.lock_listeners().push(Listener {
+                id: 1,
+                name: "Pixel".to_string(),
+                tx,
+            });
+            let start = Instant::now();
+            Self {
+                listen,
+                _phone: rx,
+                stream: Stream::new(start),
+                start,
+                now: start,
+                fading: 0,
+                sent: Vec::new(),
+            }
+        }
+
+        /// Run the stream until `t` (from the start)
+        fn until(&mut self, t: Duration) {
+            let end = self.start + t;
+            while self.now < end {
+                self.now = (self.now + self.stream.wait(self.now)).min(end);
+                self.step();
+            }
+        }
+
+        fn step(&mut self) {
+            let (start, sent) = (self.start, &mut self.sent);
+            let now = self.now;
+            self.stream
+                .run(&self.listen.shared, self.fading, now, |packet| {
+                    sent.push((now - start, packet.len()))
+                });
+        }
+
+        /// A tap of `station` hands over a piece at `t`
+        fn audio(&mut self, t: Duration, station: u64) {
+            self.until(t);
+            let pcm = Pcm {
+                station,
+                sample_rate: 44_100,
+                channels: 2,
+                samples: sine(44_100, 2, BATCH),
+            };
+            self.stream.take(pcm, self.fading, self.now);
+            self.step();
+        }
+
+        /// `station` plays from `from` for `secs`: first the 300 ms the
+        /// player decodes ahead, at once, then piece by piece as the sound
+        /// card takes it
+        fn play(&mut self, station: u64, from: Duration, secs: f64) {
+            let piece = Duration::from_secs_f64(BATCH as f64 / 44_100.0);
+            let pieces = (secs / piece.as_secs_f64()) as u32;
+            for i in 0..pieces {
+                let at = if i < 7 { from } else { from + piece * (i - 7) };
+                self.audio(at, station);
+            }
+        }
+
+        /// The longest wait between two packets, and how many waits were
+        /// longer than one packet
+        fn holes(&self) -> (Duration, usize) {
+            let gaps: Vec<_> = self.sent.windows(2).map(|w| w[1].0 - w[0].0).collect();
+            let longest = gaps.iter().copied().max().unwrap_or_default();
+            let late = gaps
+                .iter()
+                .filter(|&&g| g > PACKET_TIME + Duration::from_millis(1))
+                .count();
+            (longest, late)
+        }
+
+        /// How far the packets fell behind the clock in all: the phone
+        /// counts 20 ms for each (RTP timestamps go up by 960 per packet),
+        /// so this is what its jitter buffer sees as delay
+        fn behind(&self) -> Duration {
+            let (first, last) = (self.sent[0].0, self.sent[self.sent.len() - 1].0);
+            (last - first).saturating_sub(PACKET_TIME * (self.sent.len() as u32 - 1))
+        }
+
+        /// Whether the packet sent at `t` is silence (3 bytes or so)
+        fn silent_at(&self, t: Duration) -> bool {
+            self.sent
+                .iter()
+                .find(|(at, _)| *at >= t)
+                .is_some_and(|&(_, n)| n < 20)
+        }
+    }
+
+    /// The longest a pause may hold up the next packet: the wait before
+    /// silence, plus one look at the clock
+    const MOST_LATE: Duration = Duration::from_millis(
+        (PACKET_TIME.as_millis() + SILENCE_AFTER.as_millis() + IDLE_TICK.as_millis()) as u64,
+    );
+
+    fn secs(s: f64) -> Duration {
+        Duration::from_secs_f64(s)
+    }
+
+    /// Buffering: the station stops for 2 s, then goes on. The phone gets
+    /// a packet every 20 ms throughout, but for one short wait when the
+    /// audio stops, and the packets never fall behind the clock.
+    #[test]
+    fn a_pause_in_the_station_leaves_no_hole() {
+        let mut sim = Sim::new();
+        sim.play(1, secs(0.1), 2.0);
+        // Nothing from about 2.1 s to 4.1 s
+        sim.play(1, secs(4.1), 2.0);
+        sim.until(secs(7.0));
+        let (longest, late) = sim.holes();
+        assert!(longest <= MOST_LATE, "a hole of {longest:?}");
+        // When it stops, and when the first silence starts
+        assert!(late <= 2, "{late} late packets");
+        // Each wait adds no more than itself
+        let most = (SILENCE_AFTER + IDLE_TICK) * late as u32;
+        assert!(sim.behind() <= most, "{:?} behind", sim.behind());
+        // Silence in the pause, the station on either side of it
+        assert!(!sim.silent_at(secs(1.5)));
+        assert!(sim.silent_at(secs(3.0)));
+        assert!(!sim.silent_at(secs(5.5)));
+        // About 50 a second: none missing, none extra
+        let span = sim.sent.last().unwrap().0 - sim.sent[0].0;
+        let expected = span.as_millis() / PACKET_TIME.as_millis();
+        assert!(
+            (sim.sent.len() as i64 - expected as i64).abs() <= 4,
+            "{} packets in {span:?}",
+            sim.sent.len()
+        );
+    }
+
+    /// Stopped: silence goes on every 20 ms, from 40 ms after the last
+    /// packet would have played
+    #[test]
+    fn after_a_stop_silence_goes_out_every_20_ms() {
+        let mut sim = Sim::new();
+        sim.play(1, secs(0.1), 1.0);
+        sim.until(secs(4.0));
+        let (longest, late) = sim.holes();
+        assert!(longest <= MOST_LATE, "a hole of {longest:?}");
+        assert!(late <= 2, "{late} late packets");
+        let quiet: Vec<_> = sim.sent.iter().filter(|(t, _)| *t > secs(2.0)).collect();
+        assert!(
+            quiet.len() >= 99,
+            "{} packets in 2 s of silence",
+            quiet.len()
+        );
+        assert!(quiet.iter().all(|&&(_, n)| n < 20), "silence is tiny");
+        assert!(quiet.windows(2).all(|w| w[1].0 - w[0].0 == PACKET_TIME));
+    }
+
+    /// Switching station with Smooth Switching: the last one fades out, the
+    /// next takes a while to start. Silence fills the wait.
+    #[test]
+    fn a_station_switch_leaves_no_hole() {
+        let mut sim = Sim::new();
+        sim.play(1, secs(0.1), 2.0);
+        sim.until(secs(2.0));
+        sim.listen.fade_out();
+        sim.fading = 1;
+        // The rest of the fade comes, then the next station after 1.5 s
+        sim.play(1, secs(2.0), 0.5);
+        sim.play(2, secs(4.0), 2.0);
+        sim.until(secs(7.0));
+        let (longest, late) = sim.holes();
+        assert!(longest <= MOST_LATE, "a hole of {longest:?}");
+        assert!(late <= 2, "{late} late packets");
+        // Each wait adds no more than itself
+        let most = (SILENCE_AFTER + IDLE_TICK) * late as u32;
+        assert!(sim.behind() <= most, "{:?} behind", sim.behind());
+        assert!(sim.silent_at(secs(3.5)));
+        assert!(!sim.silent_at(secs(5.0)));
+    }
+
+    /// The next station comes before the fade is over, and the fading one
+    /// stops sending: the next waits (see [`FADE_WAIT`]), with silence
+    #[test]
+    fn a_fade_cut_short_leaves_no_hole() {
+        let mut sim = Sim::new();
+        sim.play(1, secs(0.1), 2.0);
+        sim.until(secs(2.0));
+        sim.listen.fade_out();
+        sim.fading = 1;
+        sim.audio(secs(2.0), 1);
+        sim.play(2, secs(2.05), 2.0);
+        sim.until(secs(5.0));
+        let (longest, late) = sim.holes();
+        assert!(longest <= MOST_LATE, "a hole of {longest:?}");
+        assert!(late <= 2, "{late} late packets");
+        assert!(!sim.silent_at(secs(4.0)), "the next station plays");
     }
 }
