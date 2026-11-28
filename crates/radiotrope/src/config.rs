@@ -274,6 +274,21 @@ pub mod sound {
     pub const PANIC_DB_PER_SEC: f32 = 6.0;
     /// How far above the target the last 3 s must be for that (LU)
     pub const PANIC_LU: f32 = 6.0;
+    /// A jump up: the last 400 ms this far above the target (LU) means the
+    /// station suddenly got much louder (quiet talk, then loud music), and
+    /// the last minute no longer says how loud it is
+    pub const JUMP_LOUDER_LU: f32 = 10.0;
+    /// A jump down: every 400 ms of the last [`JUMP_QUIETER_SECS`] of
+    /// sound this far below the target (LU), as when talk follows loud
+    /// music. Far enough that a quiet passage of music doesn't count.
+    pub const JUMP_QUIETER_LU: f32 = 20.0;
+    pub const JUMP_QUIETER_SECS: f32 = 5.0;
+    /// After a jump the station is measured afresh for this long (s)...
+    pub const RELEARN_SECS: f32 = 5.0;
+    /// ...and the gain moves this fast: down, so the blast is over in
+    /// well under a second, and up (dB per second)
+    pub const RELEARN_DOWN_DB_PER_SEC: f32 = 40.0;
+    pub const RELEARN_UP_DB_PER_SEC: f32 = 6.0;
 
     /// A station measured for the first time starts this far down: it is
     /// most likely loud, and a quiet start beats a blast (dB)
@@ -295,6 +310,9 @@ pub mod sound {
 
     /// The rumble filter's corner (Hz): below the lowest note of a bass
     pub const RUMBLE_HZ: f64 = 25.0;
+    /// Switching the Rumble Filter on or off crossfades over this long
+    /// (ms), so a stream's DC offset doesn't step in or out with a thump
+    pub const RUMBLE_FADE_MS: f32 = 50.0;
 
     /// How long the Hum Filter listens before each decision (ms)
     pub const HUM_CHECK_MS: u32 = 1000;
@@ -324,8 +342,13 @@ pub mod sound {
     /// How long it remembers the quietest each band got (s)
     pub const HISS_MEMORY_SECS: f32 = 3.0;
     /// Most it turns a band down: Light, Strong (dB)
-    pub const HISS_LIGHT_DB: f32 = -6.0;
+    pub const HISS_LIGHT_DB: f32 = -9.0;
     pub const HISS_STRONG_DB: f32 = -12.0;
+    /// Where music is playing, the hiss is turned down only until it is
+    /// this far under the music's masking threshold, and no further:
+    /// Light, Strong (dB)
+    pub const HISS_MASK_LIGHT_DB: f32 = 8.0;
+    pub const HISS_MASK_STRONG_DB: f32 = 12.0;
 
     /// A new station fades in over this long (ms)
     pub const FADE_IN_MS: f32 = 800.0;

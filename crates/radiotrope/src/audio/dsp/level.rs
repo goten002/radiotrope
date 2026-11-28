@@ -9,6 +9,18 @@
 //! it still. A station heard before starts at the gain its remembered
 //! loudness calls for; a new one starts turned down and is learned.
 //!
+//! A big jump is the exception, as when a station goes from quiet talk
+//! straight into loud music. The minute of talk behind it would keep the
+//! gain up, and the music would blast at full boost for a second or more;
+//! after the music, the talk would stay turned down for a minute, until
+//! the music has left the window. So when the last 400 ms is far louder
+//! than the target ([`JUMP_LOUDER_LU`]), or every moment of the last few
+//! seconds far quieter ([`JUMP_QUIETER_LU`], [`JUMP_QUIETER_SECS`]), the
+//! old minute is dropped and the station is measured afresh for a few
+//! seconds, with the gain moving fast: down in a fraction of a second, up
+//! in two or three. The thresholds are wide, so a station's own loud and
+//! quiet passages don't trip them.
+//!
 //! The new station also fades in here.
 
 use std::collections::VecDeque;
@@ -200,6 +212,21 @@ impl Window {
         self.blocks.len()
     }
 
+    fn clear(&mut self) {
+        self.blocks.clear();
+    }
+
+    /// Forget all but the newest `n` blocks
+    fn keep_last(&mut self, n: usize) {
+        let old = self.blocks.len().saturating_sub(n);
+        self.blocks.drain(..old);
+    }
+
+    /// Whether each of the newest `n` blocks is quieter than `lufs`
+    fn last_all_below(&self, n: usize, below: f32) -> bool {
+        self.blocks.len() >= n && self.blocks.iter().rev().take(n).all(|&e| lufs(e) < below)
+    }
+
     fn loudness(&self) -> Option<f32> {
         let mean_above = |gate: f32| {
             let (sum, n) = self
@@ -225,6 +252,11 @@ struct Controller {
     /// Sub-blocks with sound heard
     sound_blocks: usize,
     gain_db: f32,
+    /// Sub-blocks of sound left of measuring afresh after a jump
+    relearn: usize,
+    /// Whether a jump was heard: what is measured now beats what was
+    /// remembered
+    jumped: bool,
 }
 
 impl Controller {
@@ -242,6 +274,8 @@ impl Controller {
             start,
             sound_blocks: 0,
             gain_db,
+            relearn: 0,
+            jumped: false,
         };
         c.publish();
         c
@@ -261,7 +295,7 @@ impl Controller {
         let measured = (self.window.len() >= MIN_MEASURED_BLOCKS)
             .then(|| self.window.loudness())
             .flatten();
-        if self.sound_secs() >= SETTLE_SECS {
+        if self.sound_secs() >= SETTLE_SECS || self.jumped {
             measured.or(self.start)
         } else {
             self.start.or(measured)
@@ -278,6 +312,37 @@ impl Controller {
             .set_if(self.owner, phase, self.gain_db, self.station_loudness());
     }
 
+    /// After a big jump in level (see the module docs), drop the old
+    /// measurements and measure afresh
+    fn watch_for_jumps(&mut self, momentary: f32, target: f32) {
+        let relearn = (RELEARN_SECS / SUB_BLOCK_SECS) as usize;
+        if momentary + self.gain_db > target + JUMP_LOUDER_LU {
+            self.window.clear();
+            self.relearn = relearn;
+            self.jumped = true;
+            return;
+        }
+        let quiet = (JUMP_QUIETER_SECS / SUB_BLOCK_SECS) as usize;
+        if self.relearn == 0
+            && self
+                .window
+                .last_all_below(quiet, target - JUMP_QUIETER_LU - self.gain_db)
+        {
+            self.window.keep_last(quiet);
+            self.relearn = relearn;
+            self.jumped = true;
+        }
+    }
+
+    /// How loud the station is since the jump: the fresh window once it
+    /// holds enough, the last 400 ms before that
+    fn fresh_loudness(&self, momentary: Option<f32>) -> Option<f32> {
+        (self.window.len() >= MIN_MEASURED_BLOCKS)
+            .then(|| self.window.loudness())
+            .flatten()
+            .or(momentary)
+    }
+
     /// One sub-block on; returns the gain to reach by the end of the next
     fn step(&mut self, meter: &Meter, on: bool, target: f32) -> f32 {
         let momentary = meter.momentary();
@@ -288,25 +353,43 @@ impl Controller {
             }
             self.sound_blocks += 1;
         }
+        if let (true, true, Some(m)) = (on, sound, momentary) {
+            self.watch_for_jumps(m, target);
+        }
+        let relearning = on && self.relearn > 0;
 
+        let loudness = if relearning {
+            self.fresh_loudness(momentary)
+        } else {
+            self.station_loudness()
+        };
         let mut goal = if !on {
             0.0
         } else if !sound {
             // Dead air or a quiet moment: hold still
             self.gain_db
-        } else if let Some(l) = self.station_loudness() {
+        } else if let Some(l) = loudness {
             (target - l).clamp(MIN_GAIN_DB, MAX_GAIN_DB)
         } else {
             self.gain_db
         };
 
-        let mut rate = if !on || self.learning() {
+        let mut rate = if relearning {
+            if goal < self.gain_db {
+                RELEARN_DOWN_DB_PER_SEC
+            } else {
+                RELEARN_UP_DB_PER_SEC
+            }
+        } else if !on || self.learning() {
             LEARNING_DB_PER_SEC
         } else if goal < self.gain_db {
             DOWN_DB_PER_SEC
         } else {
             UP_DB_PER_SEC
         };
+        if sound && self.relearn > 0 {
+            self.relearn -= 1;
+        }
         // Far too loud right now (a blaring ad): down fast
         if on {
             if let Some(short) = meter.short_term() {
@@ -715,5 +798,124 @@ mod tests {
         let half = (FADE_IN_MS / 2000.0 * RATE as f32) as usize * 2;
         assert!((out[half] - 0.25).abs() < 0.01, "{}", out[half]);
         assert_eq!(out[out.len() - 1], 0.5);
+    }
+
+    /// A mono 1 kHz tone at `rate`, in pieces of (seconds, peak amplitude)
+    fn pieces(rate: u32, parts: &[(f32, f32)]) -> Vec<f32> {
+        let mut out = Vec::new();
+        for &(secs, amplitude) in parts {
+            let start = out.len();
+            for i in 0..(rate as f32 * secs) as usize {
+                let n = (start + i) as f32;
+                out.push(
+                    amplitude * (2.0 * std::f32::consts::PI * 1_000.0 * n / rate as f32).sin(),
+                );
+            }
+        }
+        out
+    }
+
+    /// Runs mono `samples` and gives the output's momentary loudness and
+    /// the gain, every 100 ms
+    fn levels(rate: u32, samples: Vec<f32>, start: Option<f32>) -> Vec<(f32, f32)> {
+        let params = SoundParams::new_shared();
+        let readout = LevelReadout::new_shared();
+        let input = SamplesBuffer::new(
+            NonZero::new(1).unwrap(),
+            NonZero::new(rate).unwrap(),
+            samples,
+        );
+        let s = LevelSource::new(input, params, readout.clone(), start);
+        let mut meter = Meter::new(1, rate);
+        let mut out = Vec::new();
+        for x in s {
+            meter.sample(0, x);
+            if meter.end_frame() {
+                out.push((
+                    meter.momentary().unwrap_or(f32::NEG_INFINITY),
+                    readout.gain_db(),
+                ));
+            }
+        }
+        out
+    }
+
+    /// Peak amplitude of a mono 1 kHz tone at `lufs`: its mean square is
+    /// 3 dB under its peak, and at 1 kHz the K-weighting and BS.1770's
+    /// -0.691 dB cancel out
+    fn amplitude(lufs: f32) -> f32 {
+        db_to_linear(lufs + 3.0)
+    }
+
+    #[test]
+    fn quiet_talk_then_loud_music_doesnt_blast() {
+        let target = LevelTarget::Normal.lufs();
+        for rate in [22_050, 44_100, 48_000] {
+            // RES-3's case: a minute of talk at about -33, then music at -8
+            let samples = pieces(rate, &[(60.0, amplitude(-33.0)), (20.0, amplitude(-8.0))]);
+            let at = levels(rate, samples, Some(-33.0));
+            let (_, before) = at[595];
+            assert!((before - MAX_GAIN_DB).abs() < 0.1, "{rate} Hz: {before}");
+            // Half a second into the music the gain is down where the
+            // music needs it, and from then on (the 400 ms after that,
+            // and every 400 ms on) it plays near the level
+            let (_, gain) = at[605];
+            assert!(
+                (gain - (target - -8.0)).abs() < 1.0,
+                "{rate} Hz: gain {gain}"
+            );
+            for (i, &(m, _)) in at.iter().enumerate().skip(609) {
+                assert!((m - target).abs() < 2.0, "{rate} Hz at {i}: {m} LUFS");
+            }
+        }
+    }
+
+    #[test]
+    fn talk_after_loud_music_comes_back_up_in_seconds() {
+        let rate = 44_100;
+        let samples = pieces(rate, &[(60.0, amplitude(-8.0)), (20.0, amplitude(-33.0))]);
+        let at = levels(rate, samples, Some(-8.0));
+        let (_, before) = at[595];
+        assert!((before - -8.0).abs() < 0.2, "{before}");
+        // Within 10 s the talk is at full boost again (it needs +17 dB,
+        // the most is MAX_GAIN_DB); it used to take over a minute
+        let (_, gain) = at[700];
+        assert!(gain > MAX_GAIN_DB - 1.0, "{gain}");
+        // No overshoot on the way up
+        assert!(at.iter().all(|&(_, g)| g <= MAX_GAIN_DB));
+    }
+
+    #[test]
+    fn a_quiet_passage_isnt_pumped_up() {
+        let rate = 22_050;
+        // A station at -16 with a 15 s passage 15 LU down, then loud again
+        let samples = pieces(
+            rate,
+            &[
+                (60.0, amplitude(-16.0)),
+                (15.0, amplitude(-31.0)),
+                (10.0, amplitude(-16.0)),
+            ],
+        );
+        let at = levels(rate, samples, Some(-16.0));
+        let gains: Vec<f32> = at.iter().skip(100).map(|&(_, g)| g).collect();
+        let most = gains.iter().fold(f32::MIN, |m, &g| m.max(g));
+        let least = gains.iter().fold(f32::MAX, |m, &g| m.min(g));
+        assert!(most - least < 1.0, "gain {least} to {most} dB");
+    }
+
+    #[test]
+    fn ordinary_loud_and_soft_music_doesnt_count_as_a_jump() {
+        let rate = 48_000;
+        // A station at about -16 whose level swings 8 dB every 2 s
+        let mut parts = Vec::new();
+        for i in 0..40 {
+            parts.push((2.0, amplitude(if i % 2 == 0 { -12.0 } else { -20.0 })));
+        }
+        let at = levels(rate, pieces(rate, &parts), Some(-14.5));
+        let gains: Vec<f32> = at.iter().skip(100).map(|&(_, g)| g).collect();
+        let most = gains.iter().fold(f32::MIN, |m, &g| m.max(g));
+        let least = gains.iter().fold(f32::MAX, |m, &g| m.min(g));
+        assert!(most - least < 1.5, "gain {least} to {most} dB");
     }
 }
